@@ -60,6 +60,61 @@ WARN = "#e6c55a"
 BAD = "#f2665e"
 INFO = "#7fb8ff"
 
+# Settings → Appearance: text size and a color preset. Both are read once, when SprigCast starts: every style in
+# the app is built from the names above as it loads, so a change shows after a restart (Settings says so).
+TEXT_SIZE_KEY = "appearance/text_size"
+COLORS_KEY = "appearance/colors"
+TEXT_SIZES = {"small": ("Small", 0.9), "normal": ("Normal", 1.0), "large": ("Large", 1.15)}
+COLOR_PRESETS = {"default": "Default", "colorblind": "Color-blind friendly", "contrast": "High contrast"}
+# What each preset changes. Color-blind friendly: blue, yellow and orange-red in place of green, yellow and red
+# (told apart with the common kinds of color blindness). High contrast: brighter text and stronger edges.
+PRESET_COLORS: dict[str, dict[str, str]] = {
+    "default": {},
+    "colorblind": {
+        "ACCENT": "#56b4e9", "ACCENT_HOVER": "#7cc6ef", "ACCENT_TEXT": "#06121a", "SELECT_BG": "#17303f",
+        "SELECT_TEXT": "#c4e4f7", "WARN": "#f0e442", "BAD": "#e8743b", "INFO": "#c9a7ff",
+    },
+    "contrast": {
+        "BG": "#060908", "TEXT": "#ffffff", "TEXT_BRIGHT": "#ffffff", "MUTED": "#b4c2ba", "EDGE": "#3b4b43",
+        "EDGE_STRONG": "#62776c", "SECTION_EDGE": "#62776c", "FIELD_EDGE": "#8da196", "LABEL": "#e3ebe6",
+        "BUTTON_EDGE": "#7d9187", "BUTTON_TOP": "#8da196",
+    },
+}
+
+
+def preset_colors(name: str) -> dict[str, str]:
+    """The good / warning / bad colors a preset shows (for its preview in Settings)."""
+    base = {"ACCENT": "#4fd88f", "WARN": "#e6c55a", "BAD": "#f2665e"}
+    return {**base, **{k: v for k, v in PRESET_COLORS.get(name, {}).items() if k in base}}
+
+
+def _settings() -> QSettings:
+    """SprigCast's settings, also before the app has been given its name (this module loads before that)."""
+    from PySide6.QtCore import QCoreApplication
+
+    return QSettings() if QCoreApplication.organizationName() else QSettings("Slothbloom", "SprigCast")
+
+
+def chosen_colors() -> str:
+    try:
+        name = str(_settings().value(COLORS_KEY, "default"))
+    except Exception:  # noqa: BLE001  (no settings yet)
+        return "default"
+    return name if name in COLOR_PRESETS else "default"
+
+
+def chosen_text_size() -> str:
+    try:
+        name = str(_settings().value(TEXT_SIZE_KEY, "normal"))
+    except Exception:  # noqa: BLE001
+        return "normal"
+    return name if name in TEXT_SIZES else "normal"
+
+
+colors_in_use = chosen_colors()  # what this run is drawn with (Settings compares it to what's saved)
+text_size_in_use: str | None = None  # set when the theme is first applied
+globals().update(PRESET_COLORS[colors_in_use])
+
 # Older names, kept so plugins and older code keep working.
 BARK, MOSS, LICHEN, LEAF, BLOOM, INPUT, PETAL, DUSK = BG, PANEL, EDGE_STRONG, ACCENT, LIVE, CHROME, TEXT, MUTED
 
@@ -298,6 +353,20 @@ def _set_symbol_fallbacks(app: QApplication) -> None:
     app.setFont(font)
 
 
+def _set_text_size(app: QApplication) -> None:
+    """Settings → Appearance → Text size: the app's font, a little smaller or larger. Once, at start."""
+    global text_size_in_use
+    text_size_in_use = chosen_text_size()
+    scale = TEXT_SIZES[text_size_in_use][1]
+    if scale != 1.0:
+        font = app.font()
+        if font.pointSizeF() > 0:
+            font.setPointSizeF(font.pointSizeF() * scale)
+        elif font.pixelSize() > 0:
+            font.setPixelSize(round(font.pixelSize() * scale))
+        app.setFont(font)
+
+
 def guarded_style(base: str):
     """The system look. A plain Qt style: no Python in it (see roomy_style)."""
     from PySide6.QtWidgets import QStyleFactory
@@ -497,6 +566,7 @@ def apply_theme(app: QApplication, name: str | None = None) -> bool:
     if _system_style is None:
         _system_style = app.style().name()
         _set_symbol_fallbacks(app)
+        _set_text_size(app)
     if wanted == "system":
         app.setStyleSheet("")
         app.setStyle(guarded_style(_system_style))  # the system look, still with the wheel guard

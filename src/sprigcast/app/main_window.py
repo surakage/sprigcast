@@ -7001,7 +7001,8 @@ class MainWindow(QMainWindow):
         for canvas in self.collection.canvases:
             commands.append(Command(f"Pop out {canvas.id.capitalize()}", "Canvas",
                                     lambda cid=canvas.id: self.open_projector(cid, None)))
-        for tab, label in (("General", "General"), ("Stream/Places", "Places to stream"),
+        for tab, label in (("General", "General"), ("Appearance", "Appearance"),
+                           ("Stream/Places", "Places to stream"),
                            ("Stream/Quality", "Stream quality"), ("Audio", "Audio devices"), ("Video", "Canvases"),
                            ("Video/Virtual camera", "Virtual camera"), ("Recording", "Recording"),
                            ("Recording/Clips", "Clips"), ("Hotkeys", "Hotkeys"),
