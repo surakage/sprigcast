@@ -92,3 +92,15 @@ def test_a_cards_whole_shadow_is_put_together_once_per_size(app):
     for extra in range(theme.SHADOWS_KEPT + 3):  # a card that grows: only the last few sizes stay
         theme.card_shadow(600, 430 + extra, 1.0, theme.PANEL)
     assert len(theme._shadows_put_together) == theme.SHADOWS_KEPT
+
+
+def test_the_shadow_picture_is_made_before_the_first_pop_up_opens(app):
+    from PySide6.QtWidgets import QWidget
+
+    from sprigcast.app import theme
+
+    theme._shadow_pictures.clear()
+    window = QWidget()
+    theme.warm_card_shadow(window)
+    assert (window.devicePixelRatioF(), theme.PANEL) in theme._shadow_pictures  # what paint_card_shadow asks for
+    theme.warm_card_shadow(None)  # a warm-up never raises

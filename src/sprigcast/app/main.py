@@ -446,6 +446,9 @@ def run() -> None:
                     name="warm-up")
 
     QTimer.singleShot(warm.WARM_AFTER_MS, warm_up)
+    from sprigcast.app.theme import warm_card_shadow
+
+    QTimer.singleShot(warm.WARM_AFTER_MS + 1_000, lambda: warm_card_shadow(window))  # the shadow pop-ups share
     QTimer.singleShot(warm.WARM_AFTER_MS + 3_000, window.warm_settings)  # Settings opens faster the first time
     workers.run(warm.warm_keyring, name="warm-keyring")  # now: a stream key or chat sign-in may want it soon
     QTimer.singleShot(20_000, pacing.trim_working_set_later)  # start-up's one-time pages (imports, shaders) go back

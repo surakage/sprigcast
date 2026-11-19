@@ -264,6 +264,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   once, as the other pop-ups do, instead of blurring it again on every repaint (61 ms on the PC); the Garden
   check's page is made inside its pop-up from the start (62 ms putting it in afterwards), and Settings' Audio
   page inside its page (51 ms). Message cards (Keyboard shortcuts, 111 ms) get the same shadow.
+- The shadow pop-ups share is made just after start, not by the first pop-up as it opens (69 ms and a late frame on the first Garden check while live).
+- The 10-second and once-a-minute housekeeping waits at most 20 ms for the frame in progress, not 50: the wait is
+  on the window's thread, and a missed frame end held the window 71 ms on the PC as Settings opened.
 - Painting a pop-up's shadow is one call into Qt again (its nine pieces are put together once per size, with no
   blurring): painted piece by piece it was a dozen calls per paint, each waiting for Python's lock while live
   (Garden check 52-61 ms on the PC). The Sounds table makes all its rows a tick apart (Sound gear, 61 ms), and
