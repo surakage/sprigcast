@@ -26,6 +26,9 @@ from sprigcast.core.source import Source, register
 log = logging.getLogger(__name__)
 
 RETRY_SECONDS = 2.0
+QUICK_RETRY_SECONDS = 0.25  # just after a target closed: looked for again this often, QUICK_TRIES times
+QUICK_TRIES = 8  # (a game or window that reopens came back 2.4 s later, waiting the full RETRY_SECONDS: PC 2026-11-19)
+ENGINE_AGAIN_SECONDS = 60.0  # a source the engine refused tries the engine again after this (one slow start)
 LINK_SECONDS = 5.0  # an engine capture nothing took up in this long: the engine isn't drawing, capture in Python
 _PACING_OK: bool | None = None  # does this Windows take minimum_update_interval? None until a capture tried
 
@@ -63,7 +66,8 @@ class _CaptureSource(Source):
         self._thread: threading.Thread | None = None
         self.status = "starting"
         self._engine_target: sprigcore.CaptureTarget | None = None  # the engine captures it (render thread links it)
-        self._engine_refused = False  # the engine couldn't: the package captures it from now on
+        self._engine_refused = False  # the engine couldn't: the package captures it (ENGINE_AGAIN_SECONDS)
+        self._engine_refused_at = 0.0
         self._serial = 0
 
     # Subclasses say what to capture. Return None when the target is not available right now.
@@ -211,21 +215,29 @@ class _CaptureSource(Source):
     def _supervise(self, stop: threading.Event | None = None) -> None:
         stop = stop or self._stop
         windows_capture_cls = None
+        quick = 0  # quick looks left after a target closed
         while not stop.is_set():
             self._restart.clear()
             target = self._target()
             if target is None:
                 self.status = "waiting for target"
-                self._restart.wait(RETRY_SECONDS)
+                self._restart.wait(QUICK_RETRY_SECONDS if quick > 0 else RETRY_SECONDS)
+                quick = max(0, quick - 1)
                 continue
+            if self._engine_refused and time.monotonic() - self._engine_refused_at >= ENGINE_AGAIN_SECONDS:
+                self._engine_refused = False  # one slow start doesn't keep this source off the engine for good
             if not self._engine_refused and sprigcore.use_native_capture():
                 outcome = self._in_engine(target, stop)
                 if outcome == "refused":
-                    self._engine_refused = True
+                    self._engine_refused, self._engine_refused_at = True, time.monotonic()
                 elif outcome == "ended" and not (stop.is_set() or self._restart.is_set()):
                     if self.status == "capturing" or self.status.startswith("capturing "):
                         self.status = "target closed, retrying"
-                    self._restart.wait(RETRY_SECONDS)
+                        quick = QUICK_TRIES
+                    self._restart.wait(QUICK_RETRY_SECONDS if quick > 0 else RETRY_SECONDS)
+                    quick = max(0, quick - 1)
+                else:
+                    quick = 0
                 continue
             if windows_capture_cls is None:
                 try:
@@ -288,7 +300,8 @@ class _CaptureSource(Source):
                 pass
             if ended.is_set() and not (stop.is_set() or self._restart.is_set()):
                 self.status = "target closed, retrying"
-                time.sleep(RETRY_SECONDS)
+                quick = QUICK_TRIES
+                time.sleep(QUICK_RETRY_SECONDS)
 
 
 @register("display_capture")

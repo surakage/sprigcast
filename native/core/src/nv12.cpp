@@ -96,6 +96,12 @@ static_assert(sizeof(Nv12Constants) == 32, "matches the shader's constant buffer
 
 }  // namespace
 
+void sc::warm_nv12_shaders() {
+    ComPtr<ID3DBlob> code;
+    compile(NV12_HLSL, sizeof NV12_HLSL - 1, "vs_main", "vs_4_0", code);
+    compile(NV12_HLSL, sizeof NV12_HLSL - 1, "ps_main", "ps_4_0", code);
+}
+
 int sc_device::prepare_nv12() {
     if (nv12_vs) return SC_OK;
     int ready = prepare_compositor();  // its clamp sampler

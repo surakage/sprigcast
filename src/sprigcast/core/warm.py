@@ -37,6 +37,9 @@ MODULES = [
     "sprigcast.app.camera_popup", "sprigcast.app.web_page_dialog", "sprigcast.app.browser_quick",
     "sprigcast.app.source_record_box", "sprigcast.app.signin_dialog", "sprigcast.app.settings_file",
     "sprigcast.app.projector", "sprigcast.app.stream_details_dialog",
+    # The 10-minute memory line's map (core/pacing.py watch_memory): its first load on the window's thread held the
+    # window 268 ms on the PC (2026-11-19 camera test).
+    "sprigcast.core.memory_map",
 ]
 WINDOWS_ONLY = ["sprigcast.output.nvenc_d3d11"]
 
