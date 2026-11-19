@@ -227,12 +227,12 @@ def longest(settings: dict[str, Any]) -> str:
 
 def timer_width(longest_text: str, text: str, label: str, look=None) -> int:
     """The box for the card: the longest time it will show, or what it shows now if that's longer (a Done
-    text is allowed to shrink to fit, down to 60%)."""
+    text is allowed to shrink to fit, down to 75%)."""
     shown = [cards.Words(longest_text, label)]
     if any(c.isdigit() for c in text):
         shown.append(cards.Words(cards.even(text), label))
     else:
-        shown.append(cards.Words(text, label, shrink=0.6))
+        shown.append(cards.Words(text, label, shrink=0.75))
     return cards.card_width(shown, look)
 
 

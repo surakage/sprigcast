@@ -199,3 +199,54 @@ def test_countdowns_made_before_are_the_card_too(countdown):
     col, host, api = _api({"minutes": 5.0})
     col.source("cd-1").kind = "countdown_timer"
     assert api.run("countdown.get", {})["text"] == "5:00"
+
+
+def test_a_done_text_is_shown_whole(countdown):
+    """PC check 2026-11-19: "Starting now" showed as "Starting no…" (the box was measured with the vine's smaller
+    words, the card painted without it, and a font isn't exactly as wide as its size says)."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QFontMetricsF
+
+    seen = []
+    real = QFontMetricsF.elidedText
+    try:
+        QFontMetricsF.elidedText = lambda self, text, mode, width, *a: seen.append(real(self, text, mode, width)) or seen[-1]
+        for done_text in ("Starting now", "Be right back", "Go", "We are starting the stream now"):
+            for extra in ({}, {"text_scale": 140}, {"vine": False}, {"label": ""}):
+                settings = {**countdown.CountdownSource.defaults, "done_text": done_text, **extra}
+                image = countdown.paint_fitted(done_text, "", settings, False, None, bool(settings["vine"]))
+                assert image.width() <= 1400
+    finally:
+        QFontMetricsF.elidedText = real
+    assert seen and not [t for t in seen if "…" in t], seen
+    assert Qt is not None
+
+
+def test_with_two_countdowns_apps_work_on_the_one_on_air(countdown, monkeypatch):
+    """PC check 2026-11-19: with "FT countdown" off air and "CD check" on air, every answer was about FT countdown."""
+    now = [5000.0]
+    monkeypatch.setattr(countdown.time, "time", lambda: now[0])
+    col, host, api = _api({"minutes": 5.0}, name="FT countdown")  # in no bloom: off air
+    col.sources.append(SourceConfig(id="cd-2", kind="countdown", name="CD check", settings={"minutes": 2.0}))
+    col.scene("p-frame").items.append(SceneItem(source="cd-2"))  # in a sprig of the bloom on air
+    events = []
+    api.plugin_event = lambda name, data: events.append((name, data["source"]))
+    assert countdown.on_air_ids(col) >= {"cd-2", "cam"} and "cd-1" not in countdown.on_air_ids(col)
+
+    out = api.run("countdown.start", {})
+    assert out["source"] == "CD check" and out["sources"] == ["CD check"] and out["text"] == "2:00"
+    assert not countdown.running(col.source("cd-1").settings)  # the one off air is left alone
+    now[0] += 30
+    assert api.run("countdown.get", {})["source"] == "CD check" and api.run("countdown.get", {})["text"] == "1:30"
+    assert api.run("countdown.pause", {})["text"] == "1:30"
+    assert events == [("countdown.changed", "CD check")] * 2
+    assert plugin_hooks.run_hotkey(api, "plugin:countdown:toggle") and countdown.running(col.source("cd-2").settings)
+    out = api.run("countdown.get", {"source": "FT countdown"})  # one by name, on air or not
+    assert out["source"] == "FT countdown" and out["text"] == "5:00" and out["sources"] == ["FT countdown"]
+
+    col.scene("p-frame").items[-1].visible = False  # its eye off: none on air, so every one, as before
+    out = api.run("countdown.reset", {})
+    assert out["sources"] == ["FT countdown", "CD check"] and out["source"] == "FT countdown"
+    col.scene("p-frame").items[-1].visible = True
+    col.active_scenes = {"horizontal": "brb-h", "vertical": "brb-v"}  # another bloom on air
+    assert api.run("countdown.get", {})["source"] == "FT countdown"

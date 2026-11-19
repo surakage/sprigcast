@@ -362,12 +362,12 @@ Plugins added from **Tools → Plugin store** bring their own actions. They're i
 | `timer.reset` | Stream timer | Back to the start, stopped. | `source` (optional) |
 | `timer.add` | Stream timer | More time on a countdown (or a stopwatch); negative takes some off. | `seconds`, `source` (optional) |
 | `timer.get` | Stream timer | Where it is, without changing it. | `source` (optional) |
-| `countdown.start` | Countdown | Start the countdown, or carry on after a pause. `minutes` starts a fresh one of that length. | `minutes` (optional), `source` (optional) |
-| `countdown.pause` | Countdown | Pause it. | `source` (optional) |
-| `countdown.toggle` | Countdown | Start, or pause if it's going (one button for both). | `source` (optional) |
-| `countdown.reset` | Countdown | Back to the start, stopped. | `source` (optional) |
-| `countdown.add` | Countdown | More time; negative takes some off. | `seconds`, `source` (optional) |
-| `countdown.get` | Countdown | Where it is, without changing it. | `source` (optional) |
+| `countdown.start` | Countdown | Start the countdown, or carry on after a pause. `minutes` starts a fresh one of that length. | `minutes` (optional), `source` (optional; default the ones on air) |
+| `countdown.pause` | Countdown | Pause it. | `source` (optional; default the ones on air) |
+| `countdown.toggle` | Countdown | Start, or pause if it's going (one button for both). | `source` (optional; default the ones on air) |
+| `countdown.reset` | Countdown | Back to the start, stopped. | `source` (optional; default the ones on air) |
+| `countdown.add` | Countdown | More time; negative takes some off. | `seconds`, `source` (optional; default the ones on air) |
+| `countdown.get` | Countdown | Where it is, without changing it. | `source` (optional; default the ones on air) |
 | `nowplaying.get` | Now playing | The song on the Now playing card. | |
 | `replay.play` | Instant replay | Play the last seconds back on stream. | `source` (optional; default every Instant replay), `seconds` (1-120, default its Seconds), `speed` (0.25-1; 0.5 is slow motion) |
 | `replay.stop` | Instant replay | End a replay that's playing (it wipes out). | `source` (optional) |
@@ -381,7 +381,7 @@ Plugins added from **Tools → Plugin store** bring their own actions. They're i
 
 **Stream timer** has three modes: Time live (counts up from going live, or from recording with Count from; it runs by itself, so the `timer.*` controls answer `bad_request` for it), Countdown (Minutes, or Until a time of day such as `8:30 PM`) and Stopwatch. Every `timer.*` action answers `{"source", "mode", "seconds", "running", "done", "text"}` and sends `timer.changed` with the same fields; `timer.done` (`{"source": name}`) comes when a countdown reaches 0 on screen. Without `source` they work on every stopwatch and countdown you've added. Where a stopwatch or countdown is is saved with your blooms, so it carries on after a restart. With Restart when shown on (the default), a countdown starts over each time it comes on screen, for a "Starting soon" bloom. The card sits in the top left corner of the bloom in every shape.
 
-**Countdown** counts down Minutes, or to a time of day (Until, such as `8:30 PM`; that one runs by itself, so the controls answer `bad_request` for it). Every `countdown.*` action answers `{"source", "seconds", "running", "done", "text"}` and sends `countdown.changed` with the same fields; `countdown.done` (`{"source": name}`) comes when it reaches 0 on screen. Without `source` they work on every Countdown you've added. With Restart when shown on (the default) it starts over each time it comes on screen, for a "Starting soon" bloom. The card sits in the top left corner of the bloom in every shape, with a vine along its bottom that shrinks as the time runs out.
+**Countdown** counts down Minutes, or to a time of day (Until, such as `8:30 PM`; that one runs by itself, so the controls answer `bad_request` for it). Every `countdown.*` action answers `{"source", "sources", "seconds", "running", "done", "text"}`: `source` is the countdown the numbers are about and `sources` names every countdown the action was for. Each one it changed sends `countdown.changed` (`{"source", "seconds", "running", "done", "text"}`); `countdown.done` (`{"source": name}`) comes when it reaches 0 on screen. Without `source` they work on the Countdowns on air now (in the bloom showing, eye on), and on every Countdown when none is on air; `countdown.get` answers for the one on air, else the first. Pass `source` (name or id) to pick one. With Restart when shown on (the default) it starts over each time it comes on screen, for a "Starting soon" bloom. The card sits in the top left corner of the bloom in every shape, with a vine along its bottom that shrinks as the time runs out.
 
 **Now playing** shows the song Windows says is playing (Spotify, YouTube Music, browsers and most players; no keys or sign-in), with its cover, a time bar and sound bars, in the bottom left corner, in one of four styles. It fades away when the music pauses or stops. It listens to Windows only while the card is on screen, and only when told something changed. `nowplaying.get` answers `{"playing", "title", "artist", "album", "app", "length", "position"}` (seconds; 0 when the app doesn't say), and `nowplaying.changed` (same fields) comes when the song changes, pauses or jumps while the card is on screen.
 
