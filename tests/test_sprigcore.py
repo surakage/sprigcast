@@ -16,12 +16,15 @@ from sprigcast import sprigcore
 def fresh(monkeypatch):
     """A clean slate: the DLL is looked up again and nothing in the environment chooses an engine."""
     monkeypatch.delenv("SPRIGCAST_ENGINE", raising=False)
+    monkeypatch.setattr(sprigcore, "_software", [])
     sprigcore._lib.cache_clear()
     yield monkeypatch
     sprigcore._lib.cache_clear()
 
 
 def test_the_native_engine_is_the_default_on_windows(fresh):
+    card = {"name": "NVIDIA GeForce", "vendor_id": 0x10DE, "device_id": 0x2684, "software": False}
+    fresh.setattr(sprigcore, "adapters", lambda: [card])  # a real card (CI's Windows has only the software one)
     fresh.setattr(sys, "platform", "linux")
     assert sprigcore.engine_choice() == "python"  # not built here
     fresh.setattr(sys, "platform", "win32")
@@ -36,6 +39,21 @@ def test_the_native_engine_is_the_default_on_windows(fresh):
     fresh.setattr(sprigcore, "_python_only", False)
     sprigcore.use_python_engine()  # safe mode
     assert sprigcore.engine_choice() == "python" and not sprigcore.use_native()
+
+
+def test_only_a_software_renderer_means_the_python_engine(fresh):
+    basic = {"name": "Microsoft Basic Render Driver", "vendor_id": 0x1414, "device_id": 0x8C, "software": False}
+    fresh.setattr(sys, "platform", "win32")
+    fresh.setattr(sprigcore, "adapters", lambda: [basic, dict(basic, software=True)])
+    assert sprigcore.engine_choice() == "python"
+    assert sprigcore.why_python() == "no graphics driver here, only a software renderer"
+    fresh.setenv("SPRIGCAST_ENGINE", "native")
+    assert sprigcore.engine_choice() == "native"  # still asked for by name (CI's engine checks)
+    fresh.delenv("SPRIGCAST_ENGINE")
+    fresh.setattr(sprigcore, "_software", [])
+    card = {"name": "NVIDIA GeForce", "vendor_id": 0x10DE, "device_id": 0x2684, "software": False}
+    fresh.setattr(sprigcore, "adapters", lambda: [card, basic])
+    assert sprigcore.engine_choice() == "native"
 
 
 def test_a_missing_dll_means_the_python_engine(fresh, tmp_path):

@@ -427,7 +427,41 @@ def engine_choice() -> str:
     asked = os.environ.get("SPRIGCAST_ENGINE", "").strip().lower()
     if asked in ("native", "python"):
         return asked
-    return "native" if sys.platform == "win32" else "python"
+    if sys.platform != "win32":
+        return "python"
+    return "python" if software_only() else "native"
+
+
+def why_python() -> str:
+    """Why engine_choice() said python, for the log."""
+    if _python_only:
+        return "safe mode"
+    if os.environ.get("SPRIGCAST_ENGINE", "").strip().lower() == "python":
+        return "SPRIGCAST_ENGINE=python"
+    if sys.platform == "win32" and software_only():
+        return "no graphics driver here, only a software renderer"
+    return "the engine is built for Windows only"
+
+
+_software: list[bool] = []  # worked out once: whether Windows has only a software renderer
+
+
+def software_only() -> bool:
+    """True when every graphics card Windows lists is a software renderer (the Microsoft Basic Render Driver: no
+    graphics driver, as on a build machine or a fresh install). The engine draws there on the CPU and falls far
+    behind (CI saw single frames take 5-47 s), so by default the old engine draws instead; SPRIGCAST_ENGINE=native
+    still asks for the engine."""
+    if not _software:
+        found = adapters() if sys.platform == "win32" else []
+        _software.append(bool(found) and all(_is_software(card) for card in found))
+        if _software[0]:
+            log.info("native engine: only a software renderer here (%s); the Python engine draws",
+                     ", ".join(card["name"] for card in found))
+    return _software[0]
+
+
+def _is_software(card: dict) -> bool:
+    return bool(card.get("software")) or (card.get("vendor_id") == 0x1414 and card.get("device_id") == 0x8C)
 
 
 def use_python_engine() -> None:

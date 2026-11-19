@@ -242,7 +242,7 @@ def run() -> None:
                      "loaded" if sprigcore.available() else "not available, using the Python engine",
                      [c["name"] for c in sprigcore.adapters()])
     else:
-        logging.info("Python engine (SPRIGCAST_ENGINE=python)")
+        logging.info("Python engine (%s)", sprigcore.why_python())
     import_av()
     package = inside_package()
     if package:
