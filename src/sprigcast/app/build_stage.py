@@ -199,7 +199,7 @@ KIND_TINTS = {  # each kind its own colour, so a list reads at a glance (pink st
     "game_capture": "#b388ff", "display_capture": "#7fb8ff", "window_capture": "#9aa7ff", "camera": "#4cc9f0",
     "chat": "#ffd23f", "browser": "#5fe0d0", "image": "#a6e36b", "slideshow": "#c8e86b", "media": "#ff9f5a",
     "text": "#dfe7e2", "audio_input": "#ffb35c", "audio_output": "#f2c46b", "app_audio": "#ffc98a",
-    "scene": theme.ACCENT, "nested": "#7fe0b8", "empty": "#7d8f86",
+    "scene": "#e6e0ff", "nested": "#9aa7ff", "empty": "#9fb3a9",
 }
 
 
@@ -302,20 +302,37 @@ def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None
         tri.lineTo(cx - 2, cy + 3)
         tri.closeSubpath()
         p.drawPath(tri)
-    elif kind == "scene":
-        icons.paint_icon(p, QRectF(cx - 7.5, cy - 7.5, 15, 15), "sprig", ink, 1.4)
-    elif kind == "empty":  # a sprig with nothing in it yet: a dashed outline round a faint sprig
-        dash = QPen(ink, 1.2)
-        dash.setDashPattern([2.0, 2.0])
+    elif kind == "scene":  # a sprig mixing things: four little tiles, each a kind's own colour
+        p.setPen(Qt.PenStyle.NoPen)
+        for (dx, dy), tile in zip(((-6.5, -6.5), (0.5, -6.5), (-6.5, 0.5), (0.5, 0.5)),
+                                  ("game_capture", "camera", "chat", "media")):
+            p.setBrush(QColor(KIND_TINTS[tile]))
+            p.drawRoundedRect(QRectF(cx + dx, cy + dy, 6, 6), 1.8, 1.8)
+    elif kind == "empty":  # nothing in it yet: a dashed box with a bright +
+        dash = QPen(ink, 1.3)
+        dash.setDashPattern([2.2, 1.8])
         p.setPen(dash)
-        p.drawRoundedRect(QRectF(cx - 6.5, cy - 6.5, 13, 13), 3, 3)
-        icons.paint_icon(p, QRectF(cx - 5, cy - 5, 10, 10), "sprig", _mix(ink, under, 0.75), 1.2)
-    elif kind == "nested":  # sprigs inside a sprig: two frames stacked, a sprig on the front one
-        p.drawRoundedRect(QRectF(cx - 3, cy - 7, 10, 9.5), 2.5, 2.5)
-        p.setBrush(chip)
-        p.drawRoundedRect(QRectF(cx - 7, cy - 3, 10.5, 10), 2.5, 2.5)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        icons.paint_icon(p, QRectF(cx - 5.6, cy - 1.4, 7.6, 7.6), "sprig", ink, 1.1)
+        p.drawRoundedRect(QRectF(cx - 6.5, cy - 6.5, 13, 13), 3.5, 3.5)
+        plus = QPen(QColor(theme.ACCENT_HOVER), 1.8)
+        plus.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(plus)
+        p.drawLine(QPointF(cx - 3, cy), QPointF(cx + 3, cy))
+        p.drawLine(QPointF(cx, cy - 3), QPointF(cx, cy + 3))
+    elif kind == "nested":  # sprigs inside a sprig: three stacked layers, each its own colour
+        def layer(y: float, fill: str) -> None:
+            path = QPainterPath()
+            path.moveTo(cx, y - 3.6)
+            path.lineTo(cx + 7, y)
+            path.lineTo(cx, y + 3.6)
+            path.lineTo(cx - 7, y)
+            path.closeSubpath()
+            p.setPen(QPen(_mix(fill, under, 0.55), 1))
+            p.setBrush(QColor(fill))
+            p.drawPath(path)
+
+        layer(cy + 3.6, KIND_TINTS["camera"])
+        layer(cy, KIND_TINTS["game_capture"])
+        layer(cy - 3.6, theme.ACCENT)
     else:  # plugins and anything new: a little puzzle-ish dot
         p.drawEllipse(QRectF(cx - 4, cy - 4, 8, 8))
         p.drawPoint(QPointF(cx + 5.5, cy))
