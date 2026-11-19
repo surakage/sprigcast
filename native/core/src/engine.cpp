@@ -40,6 +40,13 @@ constexpr int REBUILDS_PER_MINUTE = 5;   // more than this and the engine gives 
 constexpr int BUILD_TRIES = 10;          // a new device that can't be made after this many tries: faulted
 constexpr int WAIT_MS = 2000;            // how long Python waits for the frame thread before giving up
 constexpr int FRAME_WAIT_MS = 500;       // how long a Python call waits for a frame to let go (a stuck one never does)
+// A capture whose source went to sleep stays open this long, taking a picture a second, and is taken up again if
+// the source wakes: every capture Windows starts leaves about one picture of graphics memory behind for good,
+// whoever starts it and however it is closed (PC 2026-11-19: +8.4 MB per wake of a 1080p window or display, the
+// same with windows-capture on the old engine; 5.5 MB a minute over an 80-minute soak of 15 s bloom switches).
+constexpr double CAPTURE_PARK_S = 600.0;
+constexpr double CAPTURE_BACK_S = 0.5;   // back from parked with nothing new drawn by then: its picture stands
+constexpr double CAPTURE_FRESH_S = 2.0;  // a parked capture's picture this new is shown at once on waking
 constexpr double CAPTURE_START_S = 5.0;  // a capture Windows hasn't started by then is given up (Python captures)
 
 int64_t qpc() {
@@ -91,7 +98,15 @@ struct CaptureRun {
     uint64_t serial = 0;
     uint64_t frames = 0;
     bool done = false;
+    sc::CaptureAsk ask;        // what `cap` captures
+    int64_t parked = 0;        // when its source went to sleep (qpc), 0 while it is wanted: see CAPTURE_PARK_S
+    int64_t copied = 0;        // when it last gave the source a picture (qpc)
+    int64_t back = 0;          // when it came back from being parked (qpc), until its first news is said
 };
+
+bool same_ask(const sc::CaptureAsk &a, const sc::CaptureAsk &b) {
+    return a.window == b.window && a.monitor == b.monitor && a.flags == b.flags && a.interval_ms == b.interval_ms;
+}
 
 struct DrawList {  // sc_engine_source_draws: count < 0 drops it
     int width = 0, height = 0, count = -1;
@@ -1327,15 +1342,44 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     for (auto run = e.capture_runs.begin(); run != e.capture_runs.end();) {
         const bool here = std::any_of(captures.begin(), captures.end(),
                                       [&](const auto &c) { return c.first == run->first; });
-        if (!here) e.capture_staging.erase(run->first);
-        run = here ? std::next(run) : e.capture_runs.erase(run);
+        if (here) {
+            ++run;
+            continue;
+        }
+        e.capture_staging.erase(run->first);
+        // Asleep: parked, not closed (CAPTURE_PARK_S). It takes a picture a second so it is current on waking.
+        CaptureRun &r = run->second;
+        const int64_t tick_now = qpc();
+        const bool forgotten = forgets.count(run->first) != 0;
+        bool keep = !forgotten && r.cap && !r.done && r.cap->device() == e.dev->device.Get();
+        if (keep && !r.parked) {
+            r.parked = tick_now;
+            r.starting.reset();
+            r.cap->slow(true);
+        }
+        if (keep) keep = static_cast<double>(tick_now - r.parked) < CAPTURE_PARK_S * static_cast<double>(qpf());
+        if (keep) {
+            at(e, "a parked capture", run->first);
+            if (r.cap->take(*e.dev, run->first, true)) r.copied = tick_now;
+            keep = !r.cap->ended();
+        }
+        run = keep ? std::next(run) : e.capture_runs.erase(run);
     }
     for (auto &[id, want] : captures) {
         at(e, "a screen or window capture", id);
         CaptureRun &run = e.capture_runs[id];
         if (run.serial != want.serial) {
-            run = CaptureRun();
+            if (run.parked && run.cap && same_ask(run.ask, want.ask) && !run.cap->ended()) {
+                run.cap->slow(false);  // its source woke: the same capture goes on, none is started
+                run.parked = 0;
+                run.frames = 0;
+                run.back = qpc();
+                log_line(SC_LOG_INFO, "engine: a parked capture goes on (its source woke; none started)");
+            } else {
+                run = CaptureRun();
+            }
             run.serial = want.serial;
+            run.ask = want.ask;
         }
         if (run.done) continue;
         if (run.cap && run.cap->device() != e.dev->device.Get()) run.cap.reset();
@@ -1381,6 +1425,22 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         if (got) {
             e.kept_sources.erase(id);
             ++run.frames;
+            run.copied = qpc();
+            run.back = 0;
+        } else if (run.back && run.cap->width() > 0) {
+            // Back from parked and Windows has drawn nothing new (a still window): the picture it took while
+            // parked is the one to show. Said at once when that picture is fresh, else after a short wait for a
+            // newer one.
+            const double f = static_cast<double>(qpf());
+            const int64_t tick_now = qpc();
+            if (static_cast<double>(run.back - run.copied) < CAPTURE_FRESH_S * f ||
+                static_cast<double>(tick_now - run.back) >= CAPTURE_BACK_S * f) {
+                run.back = 0;
+                run.frames = 1;
+                if (!run.cap->ended())
+                    capture_news.emplace_back(id, CaptureShown{SC_SCREEN_RUNNING, run.cap->width(),
+                                                               run.cap->height(), run.frames, want.serial});
+            }
         }
         if (run.cap->ended()) {
             run.done = true;

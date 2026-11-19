@@ -193,6 +193,10 @@ struct ScreenCapture::Impl {
     std::chrono::steady_clock::time_point next_due{};
     int width = 0, height = 0;
     bool counted = false;  // started: one of open_captures
+    bool slowed = false;   // parked: a picture a second (slow)
+    bool paced = false;    // Windows was told a slower rate while parked: told the usual one again after
+    int usual_ms = 0;      // the ask's interval
+    std::chrono::steady_clock::duration usual_step{};
 
     void close() noexcept {
         const auto began = std::chrono::steady_clock::now();
@@ -333,6 +337,7 @@ CapturePtr ScreenCapture::start(const ComPtr<ID3D11Device> &device, const Captur
             }
         }
 #endif
+        c.usual_ms = ask.interval_ms;
         c.opaque = (ask.flags & SC_SCREEN_OPAQUE) != 0;
         c.window = reinterpret_cast<HWND>(static_cast<uintptr_t>(ask.window));
         if (ask.interval_ms > 0)
@@ -437,6 +442,27 @@ bool ScreenCapture::take(sc_device &dev, uint64_t id, bool copy) {
         c.broken = true;
         return false;
     }
+}
+
+void ScreenCapture::slow(bool on) {
+    Impl &c = *impl;
+    if (on == c.slowed) return;
+    c.slowed = on;
+    if (on) c.usual_step = c.step;
+    c.step = on ? std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::seconds(1))
+                : c.usual_step;
+    c.next_due = {};
+#if defined(NTDDI_WIN11_GE) && defined(WDK_NTDDI_VERSION) && WDK_NTDDI_VERSION >= NTDDI_WIN11_GE
+    // Windows draws no more often than it is taken (Windows 11 24H2+; older ones draw on, and take() skips).
+    try {
+        const int ms = on ? 1000 : c.usual_ms > 0 ? c.usual_ms * 9 / 10 : 1;
+        if (c.session && (on || c.paced))
+            c.session.MinUpdateInterval(std::chrono::duration_cast<winrt::Windows::Foundation::TimeSpan>(
+                std::chrono::milliseconds(ms)));
+        if (on) c.paced = true;
+    } catch (...) {
+    }
+#endif
 }
 
 bool ScreenCapture::ended() const { return impl->broken || impl->gone->load(); }
