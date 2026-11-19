@@ -244,8 +244,54 @@ def _name_chat(service: str, name: str) -> None:
         names[service] = name
         settings.setValue(CHAT_NAMES, json.dumps(names))
         log.info("sign-in: %s chat follows the signed-in channel", service)
+        from sprigcast.output import stream_details
+
+        stream_details.announce(service)  # the Chat panel starts reading it now
     except Exception:  # noqa: BLE001
         log.info("sign-in: couldn't name the %s chat", service, exc_info=True)
+
+
+CHAT_NAMED = "{}/chat_named"  # QSettings: chat was pointed at this sign-in's channel once (name_chat_from_sign_in)
+
+
+def name_chat_from_sign_in(service: str) -> bool:
+    """For a sign-in made before sign-ins named the chat (#603): point Chat at the signed-in channel, once.
+    Worker thread (YouTube asks for the channel's @handle). True when chat got a name."""
+    import json
+
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.output import stream_details
+
+    settings = QSettings()
+    if service not in ("youtube", "kick") or settings.value(CHAT_NAMED.format(service), False, type=bool):
+        return False
+    account = stream_details.account(service)
+    if not account:
+        return False
+    try:
+        names = json.loads(str(settings.value(CHAT_NAMES, "") or "{}"))
+    except ValueError:
+        names = {}
+    if isinstance(names, dict) and names.get(service):
+        settings.setValue(CHAT_NAMED.format(service), True)  # already reading a channel there
+        return False
+    if service == "kick":
+        name = account if account != "Kick" else ""
+    else:
+        try:
+            token = stream_details.access_token("youtube")
+            name = str(_youtube_channel(token).get("customUrl") or "")
+        except stream_details.NeedsSignIn:
+            return False  # signed out meanwhile: the next sign-in names the chat itself
+        except Exception as exc:  # noqa: BLE001 - offline, quota: try again next run
+            log.info("sign-in: couldn't look up the YouTube channel for chat (%s)", exc)
+            return False
+    settings.setValue(CHAT_NAMED.format(service), True)
+    if not name:
+        return False
+    _name_chat(service, name)
+    return True
 
 
 def _youtube_rest(flow: Flow, code: str) -> Fetched:
