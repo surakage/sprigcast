@@ -905,7 +905,9 @@ class ChatPanel(QWidget):
         self._menu, self._menu_key = self.build_menu(), key
         self._menu.ensurePolished()
         self._menu.adjustSize()
-        self._menu.winId()
+        # create(), not winId(): winId() marks it native, which makes its parent and the parent's other
+        # children native too, and a native parent window warned "must be a top level window" (PC soak 2026-11-18).
+        self._menu.create()
 
     def build_menu(self) -> QMenu:
         menu = QMenu(self)
