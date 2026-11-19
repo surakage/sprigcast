@@ -193,8 +193,13 @@ def main() -> int:
     if size(crash_log) > crash_from:
         crash = crash_log.read_bytes()[crash_from:].decode("utf-8", "replace")
         print(f"----- crash.log -----\n{crash[-6000:]}")
-        if "Fatal Python error" in crash or "Windows fatal exception" in crash:
+        # Python's faulthandler also writes "Windows fatal exception" for native exceptions that are caught and
+        # handled (it sees them first): with SprigCast still running and no Python stack, that's not a crash.
+        python_stack = "most recent call first" in crash
+        if "Fatal Python error" in crash or ("Windows fatal exception" in crash and (python_stack or not alive)):
             failed.append("crash.log has a crash")
+        elif "Windows fatal exception" in crash:
+            print("NOTE: crash.log has native exceptions that were handled (SprigCast kept running); not a crash")
     for line in failed:
         print(f"FAILED: {line}")
     if not failed:
