@@ -407,3 +407,60 @@ def test_an_older_sign_in_names_its_chat_once(app, monkeypatch):
     chat_panel.save_names({})  # you cleared them: they aren't put back
     assert not service_signin.name_chat_from_sign_in("kick") and not service_signin.name_chat_from_sign_in("youtube")
     assert chat_panel.saved_names() == {}
+
+
+def test_hidden_accounts_never_show_and_a_line_can_hide_its_sender(app, monkeypatch):
+    from PySide6.QtCore import QPoint
+
+    from sprigcast.app import chat_panel
+    from sprigcast.chat import hidden
+    from sprigcast.chat.feed import FEED
+    from sprigcast.output import twitch_auth
+
+    assert hidden.parse("Nightbot, @StreamElements\nnightbot  a b!") == ["nightbot", "streamelements", "a"]
+    monkeypatch.setattr(twitch.TwitchChat, "start", lambda self, ch: setattr(self, "channel", ch))
+    monkeypatch.setattr(twitch.TwitchChat, "stop", lambda self: None)
+    QSettings().setValue(twitch_auth.LOGIN_SETTING, "surakage")
+    FEED.clear()
+    panel = chat_panel.ChatPanel()
+    panel.resize(320, 500)
+    panel.show()
+    panel.activate()
+    for user, text in (("Nightbot", "!commands"), ("fern", "hello"), ("oak", "hi fern")):
+        panel.hub._message(ChatMessage("twitch", user, text))
+    panel.view.flush()
+    app.processEvents()
+    assert [m.user for m in panel.view.messages] == ["Nightbot", "fern", "oak"]
+
+    # Right-click the first line: Reply (Twitch, signed in), Hide, Copy
+    first = panel.view.document().firstBlock()
+    rect = panel.view.document().documentLayout().blockBoundingRect(first)
+    message = panel.view.message_at(QPoint(20, int(rect.center().y())))
+    assert message is not None and message.user == "Nightbot"
+    menu = panel.view.line_menu(message)
+    labels = [a.text() for a in menu.actions() if not a.isSeparator()]
+    assert labels == ["Reply to Nightbot", "Hide Nightbot", "Copy message"]
+    next(a for a in menu.actions() if a.text() == "Reply to Nightbot").trigger()
+    assert panel.say.text() == "@Nightbot "
+    next(a for a in menu.actions() if a.text() == "Hide Nightbot").trigger()
+    assert [m.user for m in panel.view.messages] == ["fern", "oak"]  # gone from the panel...
+    assert [line.message.user for line in FEED.snapshot()[1]] == ["fern", "oak"]  # ...and from chat on your stream
+    assert hidden.load() == ["nightbot"]
+    panel.hub._message(ChatMessage("kick", "NIGHTBOT", "again"))  # any platform, any capitals
+    panel.hub._message(ChatMessage("twitch", "", "Nightbot subscribed", notice=True))  # events still show
+    panel.view.flush()
+    assert [m.text for m in panel.view.messages] == ["hello", "hi fern", "Nightbot subscribed"]
+
+    # The list in the ⋯ menu: edit it, add the usual bots, take one back out
+    assert "Hidden accounts (1)…" in [a.text() for a in panel.build_menu().actions()]
+    panel.ask_hidden()
+    assert panel.hidden_field.toPlainText() == "nightbot"
+    panel._add_common_bots()
+    assert "streamelements" in panel.hidden_field.toPlainText().split("\n")
+    panel.hidden_field.setPlainText("oak")
+    panel._use_hidden()
+    assert hidden.load() == ["oak"] and [m.user for m in panel.view.messages] == ["fern", ""]
+    panel.hub._message(ChatMessage("twitch", "Nightbot", "back"))
+    panel.view.flush()
+    assert panel.view.messages[-1].user == "Nightbot"
+    panel.sleep()

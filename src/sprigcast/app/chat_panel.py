@@ -29,10 +29,12 @@ from collections import OrderedDict, deque
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QTextDocument
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMenu,
+    QPlainTextEdit,
     QPushButton,
     QStackedWidget,
     QTextBrowser,
@@ -41,7 +43,7 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import theme
-from sprigcast.chat import PLATFORMS, ChatMessage, name_for, readable_colour
+from sprigcast.chat import PLATFORMS, ChatMessage, hidden, name_for, readable_colour
 
 log = logging.getLogger(__name__)
 KEY = "chat"  # the panel's key in app/panels.py
@@ -132,6 +134,9 @@ def _words(text: str) -> str:
 
 
 class ChatView(QTextBrowser):
+    reply_asked = Signal(object)  # a ChatMessage: start a reply to its sender
+    hide_asked = Signal(str)  # a chatter's name: never show them again
+
     """The native chat list. Keeps the last KEEP lines; emote pictures load once each.
 
     Scrolled up to read? New lines don't yank you down: a "New messages" pill appears instead."""
@@ -144,6 +149,7 @@ class ChatView(QTextBrowser):
         self.document().setDocumentMargin(2)
         self.document().setMaximumBlockCount(KEEP)  # the oldest line leaves as a new one comes
         self.messages: deque[ChatMessage] = deque(maxlen=KEEP)
+        self.can_reply = lambda message: False  # the panel says which lines can be answered from here
         self.mixed = False  # several chats at once: mark each line with its platform
         self.names: frozenset[str] = frozenset()  # your channel names, lowercase, for mention highlights
         self._urls: dict[str, str] = {}  # emote id -> picture, for platforms that send their own
@@ -177,6 +183,41 @@ class ChatView(QTextBrowser):
         self.notice.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.notice.hide()
         self.verticalScrollBar().valueChanged.connect(self._scrolled)
+
+    # Right-click a line -------------------------------------------------------------------
+
+    def message_at(self, pos) -> ChatMessage | None:
+        """The chat line under a point of the view, or None (between lines, or the page is being redrawn)."""
+        self.flush()
+        if self.document().blockCount() != len(self.messages):
+            return None
+        cursor = self.cursorForPosition(pos)
+        block = cursor.block()
+        rect = self.document().documentLayout().blockBoundingRect(block)
+        y = pos.y() + self.verticalScrollBar().value()
+        if not (rect.top() <= y <= rect.bottom()):
+            return None
+        return self.messages[block.blockNumber()]
+
+    def line_menu(self, message: ChatMessage) -> QMenu:
+        """Reply, Hide and Copy for one line (made here, shown by contextMenuEvent)."""
+        menu = QMenu(self)
+        if message.user and not message.notice:
+            if self.can_reply(message):
+                menu.addAction(f"Reply to {message.user}").triggered.connect(lambda: self.reply_asked.emit(message))
+            menu.addAction(f"Hide {message.user}").triggered.connect(lambda: self.hide_asked.emit(message.user))
+            menu.addSeparator()
+        menu.addAction("Copy message").triggered.connect(
+            lambda: QApplication.clipboard().setText(f"{message.user}: {message.text}" if message.user else message.text))
+        return menu
+
+    def contextMenuEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        message = self.message_at(event.pos())
+        if message is None:
+            return
+        menu = self.line_menu(message)
+        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        menu.popup(event.globalPos())  # popup(), not exec(): no second event loop inside the click
 
     def set_notice(self, text: str) -> None:
         if not text:
@@ -270,7 +311,8 @@ class ChatView(QTextBrowser):
         self.document().clear()  # also drops the pictures it holds
         self.redraw()
 
-    def remove(self, *, message_id: str = "", user_id: str = "", platform: str = "", everything: bool = False) -> None:
+    def remove(self, *, message_id: str = "", user_id: str = "", platform: str = "", everything: bool = False,
+               user: str = "") -> None:
         """A moderator deleted a message, timed someone out, or cleared chat (on one platform).
         Only those lines leave the page; the rest isn't rebuilt (a full redraw cost 60 ms on a Twitch clear)."""
         from PySide6.QtGui import QTextCursor
@@ -278,7 +320,8 @@ class ChatView(QTextBrowser):
         def goes(m: ChatMessage) -> bool:
             if platform and m.platform != platform:
                 return False
-            return everything or bool(message_id and m.id == message_id) or bool(user_id and m.user_id == user_id)
+            return (everything or bool(message_id and m.id == message_id) or bool(user_id and m.user_id == user_id)
+                    or bool(user and not m.notice and m.user.lower() == user))  # a hidden account, by name
 
         self.flush()
         gone = [i for i, m in enumerate(self.messages) if goes(m)]
@@ -461,7 +504,8 @@ class ChatPanel(QWidget):
         self.view = ChatView()
         self.web_holder = QWidget()
         QVBoxLayout(self.web_holder).setContentsMargins(0, 0, 0, 0)
-        for page in (self.empty, self.link_page, self.names_page, self.view, self.web_holder):
+        self.hidden_page = self._hidden_page()
+        for page in (self.empty, self.link_page, self.names_page, self.hidden_page, self.view, self.web_holder):
             self.pages.addWidget(page)
         root.addWidget(self._say_row())
         self.pages.currentChanged.connect(lambda _: self._show_say())
@@ -478,6 +522,11 @@ class ChatPanel(QWidget):
         self.hub.cleared.connect(lambda platform, uid: self.view.remove(platform=platform, user_id=uid,
                                                                         everything=not uid))
         self.hub.changed.connect(self._hub_changed)
+        self.hub.hid.connect(lambda name: self.view.remove(user=name))
+        self.view.hide_asked.connect(self.hub.hide)
+        self.view.reply_asked.connect(self.reply_to)
+        self.view.can_reply = lambda message: message.platform == "twitch" and self.say_row.isVisibleTo(self) \
+            and bool(self._account())
 
     # Chatting back -----------------------------------------------------------------------
 
@@ -712,6 +761,56 @@ class ChatPanel(QWidget):
         self.link_field.setFocus()
         self.link_field.selectAll()
 
+    # Hidden accounts ---------------------------------------------------------------------
+
+    def _hidden_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(10)
+        label = QLabel("Hidden accounts")
+        label.setStyleSheet(f"color: {theme.TEXT}; font-weight: 600")
+        layout.addWidget(label)
+        self.hidden_field = QPlainTextEdit()
+        self.hidden_field.setPlaceholderText("One name a line")
+        self.hidden_field.setStyleSheet(FIELD_STYLE.replace("QLineEdit", "QPlainTextEdit"))
+        layout.addWidget(self.hidden_field, 1)
+        hint = QLabel("These never show in chat here or on your stream. They aren't blocked on the platform.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {theme.MUTED}")
+        layout.addWidget(hint)
+        row = self._buttons(("Add common bots", CHIP_STYLE, self._add_common_bots))
+        row.insertStretch(row.count(), 1)
+        row.takeAt(0)  # the button sits on the left
+        layout.addLayout(row)
+        layout.addLayout(self._buttons(("Cancel", CHIP_STYLE, self.refresh), ("Save", GO_STYLE, self._use_hidden)))
+        return page
+
+    def ask_hidden(self) -> None:
+        self.hidden_field.setPlainText("\n".join(hidden.load()))
+        self.pages.setCurrentWidget(self.hidden_page)
+        self.where.setText("Hidden accounts")
+        self._show_say()
+        self.hidden_field.setFocus()
+
+    def _add_common_bots(self) -> None:
+        names = hidden.parse(self.hidden_field.toPlainText())
+        self.hidden_field.setPlainText("\n".join([*names, *(b for b in hidden.COMMON_BOTS if b not in names)]))
+
+    def _use_hidden(self) -> None:
+        self.hub.set_hidden(hidden.parse(self.hidden_field.toPlainText()))
+        self.refresh()
+
+    def reply_to(self, message: ChatMessage) -> None:
+        """Start a reply: the message box begins with @name (sent like any message, on Twitch)."""
+        if not self.say_row.isVisibleTo(self):
+            return
+        start = f"@{message.user} "
+        if not self.say.text().startswith(start):
+            self.say.setText(start + self.say.text())
+        self.say.setFocus()
+        self.say.setCursorPosition(len(self.say.text()))
+
     def ask_names(self) -> None:
         names = saved_names()
         mine = self._account()
@@ -926,7 +1025,7 @@ class ChatPanel(QWidget):
 
         kind, _ = self.source()
         key = (bool(self.reading()), kind, bool(QSettings().value(LINK, "")), bool(self._account()),
-               self.web is not None)
+               self.web is not None, len(self.hub.hidden))
         menu = getattr(self, "_menu", None)
         if menu is not None and shiboken6.isValid(menu) and self._menu_key == key:
             return
@@ -957,6 +1056,8 @@ class ChatPanel(QWidget):
             menu.addSeparator()
         menu.addAction("Channels…").triggered.connect(self.ask_names)
         menu.addAction("Change link…" if saved else "Paste a link…").triggered.connect(self.ask_link)
+        count = len(self.hub.hidden)
+        menu.addAction(f"Hidden accounts ({count})…" if count else "Hidden accounts…").triggered.connect(self.ask_hidden)
         if not self._account():
             menu.addAction("Sign in…").triggered.connect(self._connect)
         menu.addSeparator()

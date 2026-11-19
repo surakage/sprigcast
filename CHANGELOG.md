@@ -517,6 +517,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 - Kick chat is back, rebuilt on Kick's official API: SprigCast's small relay (integrations/kick-chat) takes Kick's
   signed chat webhooks and passes them to the app. Nobody signs in, and the app never talks to kick.com itself.
   It needs the relay deployed once (see its README).
+- Hidden accounts: right-click a chat line to hide its sender, or edit the list under ⋯ → Hidden accounts… (common
+  bots one click away). Hidden accounts never show in the Chat panel or in chat on your stream. Right-click also
+  offers Reply (starts your message with @name, Twitch) and Copy.
 
 ### Gardens and paths
 

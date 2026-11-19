@@ -34,13 +34,16 @@ class Feed:
             self._lines.append(Line(message, time.monotonic()))
             self.version += 1
 
-    def remove(self, *, platform: str = "", message_id: str = "", user_id: str = "", everything: bool = False) -> None:
+    def remove(self, *, platform: str = "", message_id: str = "", user_id: str = "", everything: bool = False,
+               user: str = "") -> None:
+        """`user` is a chatter's name without capitals (a hidden account), on any platform."""
         with self._lock:
             kept = [
                 line for line in self._lines
                 if not ((not platform or line.message.platform == platform)
                         and (everything or (message_id and line.message.id == message_id)
-                             or (user_id and line.message.user_id == user_id)))
+                             or (user_id and line.message.user_id == user_id)
+                             or (user and not line.message.notice and line.message.user.lower() == user)))
             ]
             if len(kept) != len(self._lines):
                 self._lines = deque(kept, maxlen=self._lines.maxlen)
