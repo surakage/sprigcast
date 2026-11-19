@@ -414,3 +414,21 @@ def test_what_did_not_come_over_is_noted_first():
     _, notes = from_obs(data, _like())
     glow = next(i for i, n in enumerate(notes) if n.startswith("Glow:"))
     assert glow < 5 and all("has no match" in n or "isn't supported" in n for n in notes[:glow + 1])
+
+
+def test_stinger_finds_its_vertical_video_beside_it(tmp_path):
+    """OBS's vertical canvas plugin keeps its own stinger outside the collection; the "-vertical" file beside
+    the main one becomes the vertical canvas's video (PC, 2026-11-19)."""
+    from sprigcast.core.convert import vertical_twin
+
+    main = tmp_path / "stinger.webm"
+    main.write_bytes(b"x")
+    assert vertical_twin(str(main)) == ""
+    (tmp_path / "stinger-vertical.webm").write_bytes(b"x")
+    assert vertical_twin(str(main)) == str(tmp_path / "stinger-vertical.webm")
+    data = obs_file()
+    data["transitions"] = [{"name": "Sting", "id": "obs_stinger_transition",
+                            "settings": {"path": str(main), "transition_point": 900}}]
+    data["current_transition"] = "Sting"
+    col, _ = from_obs(data, _like())
+    assert col.transition.stinger.vertical_path == str(tmp_path / "stinger-vertical.webm")

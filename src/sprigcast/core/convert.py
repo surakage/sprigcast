@@ -860,6 +860,23 @@ _ALIGN_SHARE = {a: ((i % 3) / 2, (i // 3) / 2) for i, a in enumerate(
     ("top_left", "top", "top_right", "left", "center", "right", "bottom_left", "bottom", "bottom_right"))}
 
 
+def vertical_twin(path: str) -> str:
+    """The stinger's vertical video beside it ("x-vertical.webm" for "x.webm"), or "". OBS's vertical canvas
+    plugin keeps its own stinger outside the scene collection (PC, 2026-11-19: the vertical canvas got the
+    wide video though hidden-sloth-village-stinger-vertical.webm sat next to it)."""
+    if not path:
+        return ""
+    p = Path(path)
+    for tail in ("-vertical", "_vertical", " vertical", " (Vertical)", "-Vertical", "_Vertical", " Vertical"):
+        twin = p.with_name(p.stem + tail + p.suffix)
+        try:
+            if twin.is_file():
+                return str(twin).replace("\\", "/") if "/" in path else str(twin)
+        except OSError:
+            continue
+    return ""
+
+
 def _transition(obs: dict[str, Any] | None, duration: int, notes: list[str]) -> Transition | None:
     if obs is None:
         return None
@@ -880,8 +897,9 @@ def _transition(obs: dict[str, Any] | None, duration: int, notes: list[str]) -> 
     if kind == "obs_stinger_transition":
         point = int(_num(s.get("transition_point"), 500))
         matte = "right" if s.get("track_matte_layout", 0) == 0 else "below"
+        path = str(s.get("path", ""))
         return Transition(kind="stinger", duration_ms=max(duration, point),
-                          stinger=Stinger(path=str(s.get("path", "")), cut_ms=point,
+                          stinger=Stinger(path=path, vertical_path=vertical_twin(path), cut_ms=point,
                                           matte=matte if s.get("track_matte_enabled") else "none"))
     notes.append(f"{obs.get('name') or kind}: that transition has no match yet (using fade).")
     return Transition(kind="fade", duration_ms=duration)
