@@ -46,11 +46,15 @@ from sprigcast.plugin_hooks import register_hotkeys, register_item_menu
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "countdown", "name": "Countdown", "version": 2, "adds": "Source",
+PLUGIN = {"id": "countdown", "name": "Countdown", "version": 3, "adds": "Source",
           "about": "A countdown on a SprigCast card, for a Starting soon bloom or a break.",
-          "new": "A Style tab: your own colors, font, text size and corners, and a custom look box."}
+          "new": "Countdowns made from the old plugins-folder example are drawn on the new card too."}
 
-KIND = "countdown_timer"  # "countdown" is the plugins folder's example
+# "countdown" was the plugins-folder example's kind: owning it, a countdown made from the example becomes this card
+# (its minutes carry on). The example is "example_countdown" now (plugins.py). Version 1 called it countdown_timer.
+KIND = "countdown"
+OLD_KIND = "countdown_timer"
+KINDS = (KIND, OLD_KIND)
 H = cards.H
 W = 396  # how wide the card starts (its box follows the length: card_width)
 MOST_MINUTES = 24 * 60
@@ -242,7 +246,7 @@ def _make_ui():
         def on_restart(self, source_id: str) -> None:
             api = _window_api()
             source = next((s for s in api.col.sources if s.id == source_id), None) if api is not None else None
-            if source is not None and source.kind == KIND:
+            if source is not None and source.kind in KINDS:
                 change(api, [source], restarted)
 
         @Slot(str)
@@ -364,6 +368,13 @@ class CountdownSource(Source):
         return frame
 
 
+@register(OLD_KIND)
+class CountdownTimerSource(CountdownSource):
+    """A countdown made with version 1 (kind countdown_timer): the same card, left out of the + menu."""
+
+    label = ""
+
+
 # The API, hotkeys and right-click ----------------------------------------------------------------
 
 
@@ -371,12 +382,12 @@ def _countdowns(api, data: dict | None = None, *, control: bool = True) -> list:
     """The countdowns this is for: the one named (source), or every one (that start and pause work on)."""
     if data and data.get("source") is not None:
         source = api._source(data, "source")
-        if source.kind != KIND:
+        if source.kind not in KINDS:
             raise ApiError("bad_request", f"{source.name} isn't a countdown.")
         if control and to_a_time(source.settings):
             raise ApiError("bad_request", _why_not(source))
         return [source]
-    found = [s for s in api.col.sources if s.kind == KIND]
+    found = [s for s in api.col.sources if s.kind in KINDS]
     if not found:
         raise ApiError("not_found", "Add a Countdown first (+ → Plugins → Countdown).")
     if not control:
@@ -473,7 +484,7 @@ HOTKEYS = {
 
 
 def _hotkeys(collection):
-    if not any(s.kind == KIND for s in collection.sources):
+    if not any(s.kind in KINDS for s in collection.sources):
         return []
     return [(hid, label) for hid, (label, _fn) in HOTKEYS.items()]
 
@@ -494,7 +505,7 @@ register_hotkeys(_hotkeys, _run_hotkey)
 
 
 def _menu(api, source, add):
-    if source is None or source.kind != KIND or to_a_time(source.settings):
+    if source is None or source.kind not in KINDS or to_a_time(source.settings):
         return
     going = reading(source.settings)["counting"]
     add("Pause" if going else "Start", lambda: change(api, [source], toggled))
