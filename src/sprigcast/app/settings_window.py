@@ -1232,7 +1232,7 @@ class SettingsWindow(QDialog):
                                     streaming=self.streaming, first=first, levels=levels, parent=page)
         page.layout().insertWidget(0, self.audio_page)
         for name in list(self.audio_page.later):
-            self._slice(lambda name=name: self.audio_page.build_tab(name))
+            self._slice(lambda name=name: self.audio_page.build_tab(name, later=self._slice_first))
         return page
 
     def _video_page(self) -> QWidget:

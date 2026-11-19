@@ -946,26 +946,33 @@ def nature_rules(folder: str | None = None) -> str:
     return "\n".join(rules) + "\n"
 
 
-# A pop-up card's soft shadow, drawn once per size and then copied. A QGraphicsDropShadowEffect on the card drew the
-# whole card into a picture and blurred it on every repaint of anything in it (a Garden check's numbers each second,
-# a busy bar, hover): part of every pop-up's open on the PC while live (2026-11-18).
+# A pop-up card's soft shadow: one small picture, made once, whose corners are copied and whose edges are stretched
+# to any card's size. A QGraphicsDropShadowEffect on the card drew the whole card into a picture and blurred it on
+# every repaint of anything in it (a Garden check's numbers each second, a busy bar, hover): part of every pop-up's
+# open on the PC while live (2026-11-18). A picture per card size still blurred a whole card the first time each
+# size was shown, and a card that fits its contents changes size as it fills (Garden check and Stream details,
+# about 55 ms each on the PC, 2026-11-19).
 CARD_SHADOW = (36, 10, 190)  # blur, drop and darkness, as the effect had them
 CARD_RADIUS = 24
+SHADOW_CORNER = CARD_RADIUS + CARD_SHADOW[0]  # this far in from a card's corner its shadow is the same all along
+_SHADOW_CARD = 2 * SHADOW_CORNER + 8  # the small card the picture is made from
 _shadow_pictures: dict[tuple, tuple] = {}
 
 
-def _shadow_picture(w: int, h: int, ratio: float, colour: str) -> tuple:
-    """(picture, left, top): the shadow of a w x h rounded card, and where its top left sits from the card's."""
+def _shadow_picture(ratio: float, colour: str) -> tuple:
+    """(picture, left, top, right, bottom): the shadow of a small rounded card, and how far it reaches past each of
+    the card's sides."""
     from PySide6.QtGui import QBrush, QImage, QPixmap
     from PySide6.QtWidgets import QGraphicsDropShadowEffect, QGraphicsPathItem, QGraphicsScene
 
-    key = (w, h, ratio, colour)
+    key = (ratio, colour)
     found = _shadow_pictures.get(key)
     if found is not None:
         return found
     blur, drop, dark = CARD_SHADOW
+    side = _SHADOW_CARD
     path = QPainterPath()
-    path.addRoundedRect(QRectF(0, 0, w, h), CARD_RADIUS, CARD_RADIUS)
+    path.addRoundedRect(QRectF(0, 0, side, side), CARD_RADIUS, CARD_RADIUS)
     scene = QGraphicsScene()
     item = QGraphicsPathItem(path)
     item.setPen(QPen(Qt.PenStyle.NoPen))
@@ -976,7 +983,7 @@ def _shadow_picture(w: int, h: int, ratio: float, colour: str) -> tuple:
     effect.setColor(QColor(0, 0, 0, dark))
     item.setGraphicsEffect(effect)
     scene.addItem(item)
-    area = effect.boundingRectFor(QRectF(0, 0, w, h)).toAlignedRect()
+    area = effect.boundingRectFor(QRectF(0, 0, side, side)).toAlignedRect()
     image = QImage(round(area.width() * ratio), round(area.height() * ratio), QImage.Format.Format_ARGB32_Premultiplied)
     image.fill(Qt.GlobalColor.transparent)
     painter = QPainter(image)
@@ -984,11 +991,25 @@ def _shadow_picture(w: int, h: int, ratio: float, colour: str) -> tuple:
     scene.render(painter, QRectF(0, 0, image.width(), image.height()), QRectF(area))
     painter.end()
     picture = QPixmap.fromImage(image)
-    picture.setDevicePixelRatio(ratio)
-    if len(_shadow_pictures) > 8:  # a few sizes at most (pop-ups that grow): the oldest go
+    if len(_shadow_pictures) > 4:  # a screen scale and a theme or two: the oldest go
         _shadow_pictures.pop(next(iter(_shadow_pictures)))
-    found = _shadow_pictures[key] = (picture, area.left(), area.top())
+    found = _shadow_pictures[key] = (picture, -area.left(), -area.top(), area.right() + 1 - side,
+                                     area.bottom() + 1 - side)
     return found
+
+
+def shadow_pieces(w: int, h: int, left: int, top: int, right: int, bottom: int) -> list[tuple]:
+    """Nine (target, source) rectangles (x, y, w, h each; the target from the card's top left, the source in the
+    small picture, both in the card's own units): corners copied as they are, edges and middle stretched."""
+    corner = min(SHADOW_CORNER, w // 2, h // 2)
+    side = _SHADOW_CARD
+    xs = ((-left, left + corner, 0, left + corner),  # (target x, width, source x, source width)
+          (corner, w - 2 * corner, left + corner, side - 2 * corner),
+          (w - corner, corner + right, left + side - corner, corner + right))
+    ys = ((-top, top + corner, 0, top + corner),
+          (corner, h - 2 * corner, top + corner, side - 2 * corner),
+          (h - corner, corner + bottom, top + side - corner, corner + bottom))
+    return [((tx, ty, tw, th), (sx, sy, sw, sh)) for ty, th, sy, sh in ys for tx, tw, sx, sw in xs if tw > 0 and th > 0]
 
 
 def paint_card_shadow(window, card) -> None:
@@ -996,7 +1017,11 @@ def paint_card_shadow(window, card) -> None:
     rect = card.geometry()
     if rect.width() <= 0 or rect.height() <= 0:
         return
-    picture, left, top = _shadow_picture(rect.width(), rect.height(), window.devicePixelRatioF(), PANEL)
+    ratio = window.devicePixelRatioF()
+    picture, left, top, right, bottom = _shadow_picture(ratio, PANEL)
     painter = QPainter(window)
-    painter.drawPixmap(rect.left() + left, rect.top() + top, picture)
+    painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    for (tx, ty, tw, th), (sx, sy, sw, sh) in shadow_pieces(rect.width(), rect.height(), left, top, right, bottom):
+        painter.drawPixmap(QRectF(rect.left() + tx, rect.top() + ty, tw, th), picture,
+                           QRectF(sx * ratio, sy * ratio, sw * ratio, sh * ratio))
     painter.end()

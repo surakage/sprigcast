@@ -425,7 +425,8 @@ def run() -> None:
     # Each piece waits for the end of a frame and they run seconds apart (see pacing.housekeeping): together, at
     # once, they made a late frame on the same second of the minute on the PC (2026-11-17).
     tidy.timeout.connect(lambda: QTimer.singleShot(  # which threads come and go, for the next long test
-        20_000, lambda: pacing.housekeeping("thread count", pacing.watch_threads)))
+        20_000, lambda: workers.run(pacing.watch_threads, name="thread count")))
+    # (on a shared worker: asking Windows for the process's thread count held the window about 50 ms, 2026-11-19)
     tidy.timeout.connect(lambda: QTimer.singleShot(  # and where memory goes, every 10 minutes
         40_000, lambda: pacing.housekeeping("memory line", pacing.watch_memory)))
     tidy.timeout.connect(lambda: QTimer.singleShot(  # and which threads use the CPU, every 5 minutes

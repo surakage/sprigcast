@@ -63,3 +63,20 @@ def test_garden_check_page_is_made_inside_its_pop_up(app):
     assert pop.garden.parent() is pop.stack and pop.stack.currentWidget() is pop.garden
     pop.timer.stop()
     pop.deleteLater()
+
+
+def test_card_shadow_is_one_small_picture_for_every_size(app):
+    from sprigcast.app import theme
+
+    theme._shadow_pictures.clear()
+    picture, left, top, right, bottom = theme._shadow_picture(1.0, theme.PANEL)
+    assert picture.width() == theme._SHADOW_CARD + left + right < 260
+    for w, h in ((600, 420), (700, 900), (100, 60)):
+        pieces = theme.shadow_pieces(w, h, left, top, right, bottom)
+        assert len(pieces) == (9 if h > 2 * theme.SHADOW_CORNER else 6)  # a short card has no middle band
+        xs = sorted({(t[0], t[2]) for t, _ in pieces})
+        assert xs[0][0] == -left and xs[-1][0] + xs[-1][1] == w + right  # covers the card and its shadow, side to side
+        assert all(a[0] + a[1] == b[0] for a, b in zip(xs, xs[1:]))  # with no gap or overlap
+        corner = pieces[0]
+        assert corner[0][2:] == corner[1][2:]  # corners are copied, not stretched
+    assert len(theme._shadow_pictures) == 1
