@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QFrame,
-    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLayout,
@@ -59,11 +58,10 @@ class CardDialog(QDialog):
         card.setObjectName("popCard")
         card.setStyleSheet(f"#popCard {{ background: {theme.PANEL}; border: 1px solid {theme.EDGE_STRONG};"
                            " border-radius: 24px; }")
-        shadow = QGraphicsDropShadowEffect(card)
-        shadow.setBlurRadius(36)
-        shadow.setOffset(0, 10)
-        shadow.setColor(QColor(0, 0, 0, 190))
-        card.setGraphicsEffect(shadow)
+        # Its shadow is a picture made once per size and drawn under it (paintEvent), as the other pop-ups' is. A
+        # drop-shadow effect blurred the whole card in software on its first paint and again on every repaint
+        # inside it, the text field's blinking caret among them (Gardens > New, 61 ms on the PC, 2026-11-19).
+        self._card = card
         outer.addWidget(card)
         self.body = QVBoxLayout(card)
         self.body.setContentsMargins(24, 20, 24, 20)
@@ -76,6 +74,9 @@ class CardDialog(QDialog):
         heading.setFont(font)
         heading.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; background: transparent;")
         self.body.addWidget(heading)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        theme.paint_card_shadow(self, self._card)
 
     def line_edit(self, placeholder: str = "") -> QLineEdit:
         edit = QLineEdit()

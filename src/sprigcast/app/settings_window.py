@@ -1196,11 +1196,15 @@ class SettingsWindow(QDialog):
         first = self._subs.get("Audio") or "Devices"
         main = self.parent()
         levels = (lambda: main._last_levels) if hasattr(main, "_last_levels") else None  # the Devices meters
+        # Made inside its page from the start: put in afterwards, Qt went through every field again to hand it the
+        # page's look (51 ms of the Sound gear's first open on the PC, 2026-11-19).
+        page = _page()
         self.audio_page = AudioPage(self.collection, audio_devices, recording=self.recording,
-                                    streaming=self.streaming, first=first, levels=levels)
+                                    streaming=self.streaming, first=first, levels=levels, parent=page)
+        page.layout().insertWidget(0, self.audio_page)
         for name in list(self.audio_page.later):
             self._slice(lambda name=name: self.audio_page.build_tab(name))
-        return _page(self.audio_page)
+        return page
 
     def _video_page(self) -> QWidget:
         """Canvases (a card each, side by side: on, size, frame rate; "Sent out at" for experts) and the camera."""

@@ -43,3 +43,23 @@ def test_number_field_lights_its_edge_without_a_filter(app):
     assert isinstance(field.box, _NumberBox) and field.box.frame is field
     field.box._light(True)
     assert field.property("focused") is True
+
+
+def test_cards_draw_their_shadow_from_a_picture(app):
+    from sprigcast.app.card import TextDialog
+
+    d = TextDialog("New garden", "Name")
+    assert d._card.graphicsEffect() is None
+    d.show()
+    app.processEvents()
+    d.grab()  # paints: the shadow picture under the card
+    d.close()
+
+
+def test_garden_check_page_is_made_inside_its_pop_up(app):
+    from sprigcast.app.garden_check import GardenSnapshot, garden_check_popup
+
+    pop = garden_check_popup(lambda: GardenSnapshot(), [], None)
+    assert pop.garden.parent() is pop.stack and pop.stack.currentWidget() is pop.garden
+    pop.timer.stop()
+    pop.deleteLater()
