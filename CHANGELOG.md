@@ -175,6 +175,12 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   Python drew every sprig and copied every source of every canvas again; now only the sources it waits for are
   copied. Sources waking are spread over ticks (about 4 ms of waking a tick), and the window measures its
   previews four times a second, not on every poll.
+- New engine capture: a display, window or game capture whose bloom leaves the screen is parked, not closed: it
+  takes one picture a second for up to 10 minutes and goes on at once when the bloom comes back. Every capture
+  Windows starts left about one picture of graphics memory behind for good (PC 2026-11-19: +8.4 MB per wake at
+  1080p, the same on the old engine with windows-capture, so not something closing it better could fix; 5.5 MB a
+  minute over the 80-minute soak). Coming back is also instant now, with no wait for Windows to start. Not
+  confirmed on the PC yet.
 - New engine capture: graphics memory grew about 16 MB each time a display capture woke (PC soak 2026-11-19,
   5.5 MB a minute over 80 minutes; 16 MB is one capture's pool of 2 pictures). A capture going to sleep now hands
   every picture Windows drew back before it closes its pool, and the log says each capture's start and close with

@@ -59,6 +59,8 @@ public:
     // that broke says so through ended().
     bool take(sc_device &dev, uint64_t id, bool copy);
     bool ended() const;  // the window closed, the display went, or the capture broke
+    // Parked (its source asleep, engine.cpp CAPTURE_PARK_S): at most a picture a second, until slow(false).
+    void slow(bool on);
     ID3D11Device *device() const;
     int width() const;
     int height() const;
