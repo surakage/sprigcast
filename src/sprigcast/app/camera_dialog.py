@@ -4,16 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtWidgets import (
-    QCheckBox,
-    QComboBox,
-    QDialog,
-    QDialogButtonBox,
-    QFormLayout,
-    QLabel,
-    QPushButton,
-    QWidget,
-)
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+
+from sprigcast.app import theme
+from sprigcast.app.card import CardDialog, combo, field_label
 
 from sprigcast.core.device_makers import label as camera_label
 from sprigcast.sources.camera import (
@@ -28,19 +23,29 @@ from sprigcast.sources.camera import (
 RATES = (60, 30, 15)
 
 
-class CameraDialog(QDialog):
+def _field(label: str, box: QWidget) -> QVBoxLayout:
+    """A label over its drop-down."""
+    col = QVBoxLayout()
+    col.setSpacing(6)
+    col.addWidget(field_label(label))
+    col.addWidget(box)
+    return col
+
+
+class CameraDialog(CardDialog):
     def __init__(self, cameras: list[CameraDevice], current: dict[str, Any] | None = None,
                  parent: QWidget | None = None, *, max_fps: int = 60, modes: list | None = None):
         """max_fps: the canvas frame rate (a camera faster than that only costs more); modes: what the
         chosen camera said it offers, when it's already open (see CameraSource.modes_seen)."""
-        super().__init__(parent)
-        self.setWindowTitle("Camera")
+        super().__init__("Camera", parent, width=480)
+        from sprigcast.app.game_dialog import _row
+        from sprigcast.app.live_stage import Switch
+
         self.cameras = cameras
         self._modes = {}  # camera path or name -> its listed modes, once known
         current = current or {}
-        form = QFormLayout(self)
 
-        self.device = QComboBox()
+        self.device = combo()
         for cam in cameras:
             self.device.addItem(camera_label(cam.name))
         index = next((i for i, c in enumerate(cameras) if c.path and c.path == current.get("path")), None)
@@ -49,47 +54,49 @@ class CameraDialog(QDialog):
         self.device.setCurrentIndex(index)
         if modes and cameras:
             self._modes[self._key(cameras[index])] = list(modes)
-        form.addRow("Camera", self.device)
+        self.body.addLayout(_field("Camera", self.device))
 
-        self.size = QComboBox()
+        self.size = combo(8)
         for w, h in SIZES:
             self.size.addItem(f"{w} x {h}", (w, h))
         wanted = (current.get("width", 1280), current.get("height", 720))
         self.size.setCurrentIndex(next((i for i, s in enumerate(SIZES) if s == wanted), SIZES.index((1280, 720))))
-        form.addRow("Size", self.size)
 
-        self.rate = QComboBox()
+        self.rate = combo(6)
         rates = [r for r in RATES if r <= max_fps] or [min(RATES)]
         for r in rates:  # faster than the canvas only costs more: those frames are never shown
             self.rate.addItem(f"{r} fps", r)
         fps = min(int(current.get("fps", 30)), max(rates))
         self.rate.setCurrentIndex(next((i for i, r in enumerate(rates) if r == fps), rates.index(min(30, max(rates)))
                                        if min(30, max(rates)) in rates else 0))
-        form.addRow("Frame rate", self.rate)
+        pair = QHBoxLayout()
+        pair.setSpacing(12)
+        pair.addLayout(_field("Size", self.size), 1)
+        pair.addLayout(_field("Frame rate", self.rate), 1)
+        self.body.addLayout(pair)
 
-        self.pause = QCheckBox("Pause when not on screen")
+        self.pause = Switch()
         self.pause.setToolTip("Frees the camera and its memory while no bloom on screen shows it.\n"
                               "It takes a second to come back.")
         self.pause.setChecked(bool(current.get("pause_off_screen", True)))
-        form.addRow("", self.pause)
-
-        self.mirror = QCheckBox("Mirror")
+        self.body.addLayout(_row("Pause when not on screen", self.pause))
+        self.mirror = Switch()
         self.mirror.setChecked(bool(current.get("mirror", False)))
-        form.addRow("", self.mirror)
+        self.body.addLayout(_row("Mirror", self.mirror))
 
         self.note = QLabel()
         self.note.setWordWrap(True)
-        form.addRow(self.note)
+        self.note.setStyleSheet(f"{theme.NOTE_STYLE} padding: 10px 14px;")
+        self.body.addWidget(self.note)
         self.lighter = QPushButton("Find a lighter camera")
+        self.lighter.setStyleSheet(theme.button_style(17, "8px 16px"))
+        self.lighter.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lighter.setAutoDefault(False)
         self.lighter.setToolTip("Checks what your other cameras offer at this size and frame rate")
         self.lighter.clicked.connect(self._find_lighter)
-        form.addRow("", self.lighter)
+        self.body.addWidget(self.lighter, 0, Qt.AlignmentFlag.AlignLeft)
         self.lighter.setVisible(len(cameras) > 1)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
+        self.ok = self.add_buttons("Save")
 
         for box in (self.device, self.size, self.rate):
             box.currentIndexChanged.connect(self._explain)
@@ -103,13 +110,17 @@ class CameraDialog(QDialog):
         w, h = self.size.currentData()
         return w, h, int(self.rate.currentData())
 
+    def _say(self, text: str) -> None:
+        self.note.setText(text)
+        self.note.setVisible(bool(text))
+
     def _explain(self) -> None:
         """Say what the camera really sends for what's asked, when we know (it's open, or was checked)."""
         if not self.cameras:
-            self.note.setText("")
+            self._say("")
             return
         modes = self._modes.get(self._key(self.device_choice()))
-        self.note.setText(describe_mode(modes, *self._ask()) if modes else "")
+        self._say(describe_mode(modes, *self._ask()) if modes else "")
 
     def _modes_of(self, cam: CameraDevice) -> list:
         key = self._key(cam)
@@ -124,12 +135,12 @@ class CameraDialog(QDialog):
         best = lighter_camera(here, [c for c in self.cameras if c != here], self._modes_of, w, h, fps)
         self._explain()
         if best is None:
-            self.note.setText((self.note.text() + "\n" if self.note.text() else "")
-                              + "None of your other cameras is lighter for this.")
+            self._say((self.note.text() + "\n" if self.note.text() else "")
+                      + "None of your other cameras is lighter for this.")
             return
         cam, mode = best
-        self.note.setText((self.note.text() + "\n" if self.note.text() else "")
-                          + f"Lighter: {cam.name} sends {plain_mode(mode)}.")
+        self._say((self.note.text() + "\n" if self.note.text() else "")
+                  + f"Lighter: {cam.name} sends {plain_mode(mode)}.")
         self.device.setCurrentIndex(self.cameras.index(cam))
 
     def device_choice(self) -> CameraDevice:

@@ -382,7 +382,7 @@ def test_new_part_dialog(app):
 def test_main_window_friendly_part_flows(app, tmp_path, monkeypatch):
     import keyring
     from PySide6.QtCore import QCoreApplication, QSettings
-    from PySide6.QtWidgets import QInputDialog
+    from sprigcast.app import card as popups
 
     from sprigcast.app.main import load_collection
     from sprigcast.app.main_window import MainWindow
@@ -413,7 +413,7 @@ def test_main_window_friendly_part_flows(app, tmp_path, monkeypatch):
         w._refresh_sources()
         w.source_list.item(0).setSelected(True)  # top row: b
         w.source_list.item(1).setSelected(True)  # a
-        monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("Cam corner", True)))
+        monkeypatch.setattr(popups, "ask_text", lambda *a, **k: ("Cam corner", True))
         w._turn_into_part()
         made = next(s for s in col.parts() if s.name == "Cam corner")
         assert [i.source for i in made.items] == ["a", "b"] and made.items[1].x == 7

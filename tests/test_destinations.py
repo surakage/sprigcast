@@ -121,7 +121,7 @@ def test_main_window_modes(app, tmp_path, monkeypatch):
 
 def test_build_canvas_tabs_and_linking(app, tmp_path, monkeypatch):
     import keyring
-    from PySide6.QtWidgets import QInputDialog
+    from sprigcast.app import card as popups
 
     monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
     QCoreApplication.setOrganizationName("SprigCastTests")
@@ -163,8 +163,8 @@ def test_build_canvas_tabs_and_linking(app, tmp_path, monkeypatch):
         assert col.scene("v1").linked_to is None
         # New blooms land on the tab you're on, and can be linked as they're made.
         answers = iter([("Gameplay", True)])
-        monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: next(answers))
-        monkeypatch.setattr(QInputDialog, "getItem", lambda *a, **k: ("BRB", True))
+        monkeypatch.setattr(popups, "ask_text", lambda *a, **k: next(answers))
+        monkeypatch.setattr(popups, "ask_choice", lambda _w, _t, _l, items, *a, **k: items.index("BRB"))
         w._add_scene()
         new = col.scene(w.selected_scene_id)
         assert new.canvas == "vertical" and new.linked_to == "h2"

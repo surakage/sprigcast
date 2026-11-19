@@ -157,10 +157,10 @@ def test_sound_list_is_a_to_z_and_has_its_own_menu(window):
 
 
 def test_rename_keeps_a_to_z_and_remove_drops_a_sound(window, monkeypatch):
-    from PySide6.QtWidgets import QInputDialog
+    from sprigcast.app import card as popups
 
     w = window
-    monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("Alerts", True))
+    monkeypatch.setattr(popups, "ask_text", lambda *a, **k: ("Alerts", True))
     w._rename_sound("mic")
     assert w.collection.source("mic").name == "Alerts"
     assert _sound_rows(w)[1] == ["Alerts", "Desktop", "Game"]

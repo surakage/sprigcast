@@ -62,7 +62,7 @@ def _window(tmp_path, monkeypatch, name):
 
 def test_library_lists_blooms_then_sprigs_and_files_sprigs_by_drag(tmp_path, monkeypatch):
     from PySide6.QtCore import QSettings
-    from PySide6.QtWidgets import QInputDialog
+    from sprigcast.app import card as popups
 
     from sprigcast.app.library import PART_ROOT, ROLE_FOLDER, ROLE_ID, ROLE_ON_AIR, ROLE_ROW, ROLE_TAG
 
@@ -77,7 +77,7 @@ def test_library_lists_blooms_then_sprigs_and_files_sprigs_by_drag(tmp_path, mon
         assert [sprigs.child(i).data(0, ROLE_ID) for i in range(sprigs.childCount())] == ["p1", "p2"]
         assert sprigs.child(0).data(0, ROLE_TAG) == "in 1" and sprigs.child(1).data(0, ROLE_TAG) == "unused"
         # A sprig folder, made from the Sprigs + menu, then a new sprig lands in it.
-        monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("Browser Scenes", True))
+        monkeypatch.setattr(popups, "ask_text", lambda *a, **k: ("Browser Scenes", True))
         w._add_folder(holds="part")
         folder = col.part_folders()[0]
         assert w.selected_folder_id == folder.id and not col.folders_for("horizontal")
@@ -133,7 +133,7 @@ def test_opening_a_sprig_says_where_it_shows_and_goes_back(tmp_path, monkeypatch
 
 def test_sprig_drops_copies_icons_and_links(tmp_path, monkeypatch):
     from PySide6.QtCore import QMimeData, QSettings
-    from PySide6.QtWidgets import QInputDialog
+    from sprigcast.app import card as popups
 
     from sprigcast.app.build_stage import ROLE_KIND, ROLE_TAG
     from sprigcast.app.library import SPRIG_MIME
@@ -177,7 +177,7 @@ def test_sprig_drops_copies_icons_and_links(tmp_path, monkeypatch):
         assert {i.source for i in copy.items}.isdisjoint({i.source for i in col.scene("h2").items})
         assert [s.id for s in col.scenes].index(copy.id) == [s.id for s in col.scenes].index("h2") + 1
         # Make sprig from Inside's selection.
-        monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: ("Pair", True))
+        monkeypatch.setattr(popups, "ask_text", lambda *a, **k: ("Pair", True))
         w.source_list.selectAll()
         w._turn_into_part()
         assert any(p.name == "Pair" for p in col.parts())

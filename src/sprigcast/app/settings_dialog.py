@@ -17,13 +17,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -32,13 +31,14 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QTabWidget,
-    QVBoxLayout,
     QWidget,
 )
 
 from sprigcast.app import theme
+from sprigcast.app.card import BOX_HEIGHT, CardDialog, combo, field_label
 from sprigcast.core import style
 
 log = logging.getLogger(__name__)
@@ -105,41 +105,75 @@ def _label(key: str) -> str:
     return LABELS.get(key) or key.replace("_", " ").capitalize()
 
 
-class SettingsDialog(QDialog):
+FIELD_RADIUS = 16
+FORM_STYLE = (
+    f"QLineEdit, QSpinBox, QDoubleSpinBox {{ background: {theme.CHROME}; color: {theme.TEXT};"
+    f" border: 1px solid {theme.EDGE_STRONG}; border-radius: {FIELD_RADIUS}px; padding: 6px 14px; min-height: 22px; }}"
+    f"QPlainTextEdit {{ background: {theme.CHROME}; color: {theme.TEXT}; border: 1px solid {theme.EDGE_STRONG};"
+    " border-radius: 14px; padding: 6px 8px; }"
+    f"QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QPlainTextEdit:focus {{ border-color: {theme.ACCENT}; }}"
+    "QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button"
+    " { width: 0px; border: none; }"  # type a number or use the wheel: the tiny square arrows broke the round end
+    "#formTabs::pane { border: none; top: 0px; }"
+    "#formTabs > QTabBar::tab { margin: 0 6px 10px 0; }"
+)
+
+
+def _form(parent: QWidget | None = None) -> QFormLayout:
+    form = QFormLayout(parent) if parent is not None else QFormLayout()
+    form.setContentsMargins(0, 0, 0, 0)
+    form.setHorizontalSpacing(16)
+    form.setVerticalSpacing(12)
+    form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
+    form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+    return form
+
+
+def _name(text: str) -> QLabel:
+    """A field's name, level with the middle of a one-line box (and the first line of a bigger one)."""
+    label = field_label(text)
+    label.setStyleSheet(label.styleSheet() + " padding-top: 9px;")
+    label.setMinimumHeight(BOX_HEIGHT)
+    label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    return label
+
+
+class SettingsDialog(CardDialog):
     def __init__(self, title: str, defaults: dict[str, Any], settings: dict[str, Any], parent: QWidget | None = None,
                  cls: type | None = None, collection: Any = None):
-        super().__init__(parent)
+        super().__init__(title, parent, width=560)
+        self.setStyleSheet(FORM_STYLE)
         self.collection = collection
         self.choices: dict[str, Any] = dict(getattr(cls, "choices", None) or {})
         self.secrets: dict[str, str] = dict(getattr(cls, "secrets", None) or {})
         self.placeholders: dict[str, str] = dict(getattr(cls, "placeholders", None) or {})  # shown when empty
         self.secret_fields: dict[str, QLineEdit] = {}
         secrets_after = getattr(cls, "secrets_after", None)  # the field the secrets follow (else at the end)
-        self.setWindowTitle(title)
         self._opened_with = {k: settings.get(k, v) for k, v in defaults.items()}  # for the log line on OK
-        self.setMinimumWidth(460)
         self.defaults = defaults
         self.fields: dict[str, Any] = {}
         self.look_note: QLabel | None = None
         styled = [k for k in style.style_keys(defaults) if k not in self.secrets]
         if len(styled) < 2 or len(styled) == len(defaults):  # a colour or two alone stays on one page
             styled = []
-        outer = QVBoxLayout(self)
+        outer = self.body
         if styled:
             tabs = QTabWidget()
+            tabs.setObjectName("formTabs")
             page, style_page = QWidget(), QWidget()
-            form, style_form = QFormLayout(page), QFormLayout(style_page)
+            form, style_form = _form(page), _form(style_page)
             tabs.addTab(page, "Settings")
             tabs.addTab(style_page, "Style")
             outer.addWidget(tabs)
         else:
-            form = QFormLayout()
+            form = _form()
             style_form = form
             outer.addLayout(form)
         for key, default in defaults.items():
             value = settings.get(key, default)
             widget = self._field(key, default, value)
-            (style_form if key in styled else form).addRow(_label(key), widget)
+            (style_form if key in styled else form).addRow(_name(_label(key)), widget)
             if key == "custom_look":
                 self.look_note = QLabel()
                 self.look_note.setWordWrap(True)
@@ -157,7 +191,9 @@ class SettingsDialog(QDialog):
             self._add_secrets(form)
         if styled:
             reset = QPushButton("Reset style")
-            reset.setAutoDefault(False)  # Enter never resets the style: it means OK
+            reset.setStyleSheet(theme.button_style(16, "7px 16px"))
+            reset.setAutoDefault(False)
+            reset.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)  # Enter never resets the style: it means OK
             reset.clicked.connect(lambda: self._reset_style(styled))
             style_form.addRow("", reset)
         if "text" in defaults:
@@ -178,10 +214,7 @@ class SettingsDialog(QDialog):
             tip.setWordWrap(True)
             tip.setStyleSheet(f"color: {theme.MUTED}")
             form.addRow("", tip)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        outer.addWidget(buttons)
+        self.ok = self.add_buttons("Save")
 
     def _check_look(self) -> None:
         """Name the custom look lines that are skipped (they fall back to the plugin's own look)."""
@@ -218,13 +251,13 @@ class SettingsDialog(QDialog):
             edit = QLineEdit(read_secret(self.secrets[key]))
             edit.setEchoMode(QLineEdit.EchoMode.Password)
             self.secret_fields[key] = edit
-            form.addRow(_label(key), edit)
+            form.addRow(_name(_label(key)), edit)
 
     def _field(self, key: str, default: Any, value: Any) -> QWidget:
         if key == "corners" and key not in self.choices:
             self.choices[key] = style.CORNERS
         if key == "font" and isinstance(default, str) and not default.lower().endswith((".ttf", ".otf")):
-            box = QComboBox()  # a short list, typed names work too (a full font list is slow to open)
+            box = combo()  # a short list, typed names work too (a full font list is slow to open)
             box.setEditable(True)
             box.addItem("SprigCast's own", "")
             for family in style.FONTS[1:]:
@@ -250,7 +283,7 @@ class SettingsDialog(QDialog):
                 options = list(_list_of(options, self.collection) if callable(options) else options)
             except Exception:
                 options = []
-            box = QComboBox()
+            box = combo()
             for data, label in options:
                 box.addItem(str(label), data)
             index = box.findData(value)
@@ -262,6 +295,7 @@ class SettingsDialog(QDialog):
             return box
         if isinstance(default, bool):
             box = QCheckBox()
+            box.setMinimumHeight(BOX_HEIGHT)  # level with its name
             box.setChecked(bool(value))
             self.fields[key] = box
             return box
@@ -305,8 +339,10 @@ class SettingsDialog(QDialog):
         row = QWidget()
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
         layout.addWidget(edit, 1)
         button = QPushButton(text)
+        button.setStyleSheet(theme.button_style(16, "7px 14px"))
         button.setAutoDefault(False)  # Enter means OK, not Pick… or Browse…
         button.clicked.connect(slot)
         layout.addWidget(button)
