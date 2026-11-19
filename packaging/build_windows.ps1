@@ -67,6 +67,7 @@ if ($LASTEXITCODE -ne 0) { throw "The native engine's checks failed" }
 $engineDir = Join-Path $build "python\Lib\site-packages\sprigcast\engine"
 New-Item -ItemType Directory -Force $engineDir | Out-Null
 Copy-Item (Join-Path $build "core\Release\sprigcore.dll") $engineDir
+Copy-Item (Join-Path $build "core\Release\SprigCastCapture.exe") $engineDir
 
 # 2c. SprigCast.exe next to python312.dll: the app runs as SprigCast.exe, so other tools can recognise it.
 #     Built against the bundled Python's headers, before step 3 removes them.

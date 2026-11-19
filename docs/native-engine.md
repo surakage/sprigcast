@@ -384,8 +384,10 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   into a small helper program that can be ended while nothing is captured. First piece: `sc_capture_feed_*` runs a
   capture on a device of its own on the engine's card and shares each picture as a browser page is shared (a
   keyed-mutex texture `<block>-tex<n>` in B8G8R8A8, a 64-byte header in shared memory whose fifth number says
-  `SHARED_STRAIGHT`/`SHARED_OPAQUE`); the engine takes it with `sc_engine_source_shared`. The helper program and
-  the Python side come next; until then captures stay in the engine, parked while asleep.
+  `SHARED_STRAIGHT`/`SHARED_OPAQUE`); the engine takes it with `sc_engine_source_shared`. Second piece: the program,
+  `SprigCastCapture.exe` (`tools/capture_helper.cpp`, shipped next to `sprigcore.dll`), takes `start`/`stop`/`quit`
+  lines on its standard input and says each capture's state on its output; the end of its input ends it. The
+  Python side comes next; until then captures stay in the engine, parked while asleep.
 - A frame stuck anyway: Python's calls that wait for the frame (`sc_engine_capture_read`, `sc_engine_canvas_read`)
   give up after 0.5 s, and once no frame has finished for 3 s after the watchdog's report, the bridge turns the
   engine off and Python's compositor draws everything again.

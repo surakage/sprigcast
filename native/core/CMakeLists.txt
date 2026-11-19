@@ -49,15 +49,21 @@ endif()
 add_executable(sprigcore_tests tests/core_tests.cpp)
 target_link_libraries(sprigcore_tests PRIVATE sprigcore)
 
+# The capture helper (tools/capture_helper.cpp): captures run in it, so ending it gives Windows' capture memory back.
+add_executable(SprigCastCapture tools/capture_helper.cpp)
+target_link_libraries(SprigCastCapture PRIVATE sprigcore)
+
 if(MSVC)
   # Warnings are errors, and every Release build keeps a .pdb so crash dumps name the engine's functions.
   # /EHa: the crash gate (catch (...) at every exported function) also stops Windows faults.
   target_compile_options(sprigcore PRIVATE /W4 /WX /permissive- /Zi /EHa)
   target_link_options(sprigcore PRIVATE /DEBUG /OPT:REF /OPT:ICF)
   target_compile_options(sprigcore_tests PRIVATE /W4 /permissive-)
+  target_compile_options(SprigCastCapture PRIVATE /W4 /WX /permissive-)
   if(SPRIGCORE_ASAN)
     target_compile_options(sprigcore PRIVATE /fsanitize=address)
     target_compile_options(sprigcore_tests PRIVATE /fsanitize=address)
+    target_compile_options(SprigCastCapture PRIVATE /fsanitize=address)
     target_compile_definitions(sprigcore_tests PRIVATE SPRIGCORE_ASAN)
   endif()
 else()
@@ -68,6 +74,9 @@ endif()
 enable_testing()
 add_test(NAME engine_checks COMMAND sprigcore_tests)
 # The test program finds sprigcore.dll next to itself.
-set_target_properties(sprigcore sprigcore_tests PROPERTIES
+# Asked to check itself it says "ready" and ends: it starts, finds sprigcore.dll and stops cleanly.
+add_test(NAME capture_helper_starts COMMAND SprigCastCapture --check)
+set_tests_properties(capture_helper_starts PROPERTIES TIMEOUT 30 PASS_REGULAR_EXPRESSION "ready")
+set_target_properties(sprigcore sprigcore_tests SprigCastCapture PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/Release
   RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}/Debug)
