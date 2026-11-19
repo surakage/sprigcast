@@ -2033,7 +2033,8 @@ class Engine:
             try:
                 # (A capture the engine does itself isn't copied for a waiting switch either: the engine says
                 # when it has a picture, see _has_picture. Its copy is a read-back from the card.)
-                if direct and not self._python_drew and (source_id not in awaited or hasattr(type(source), "engine_shows")):
+                if direct and not self._python_drew and (
+                        source_id not in awaited or hasattr(type(source), "engine_shows")):
                     source.engine_tick()  # nothing of Python's shows it this tick: no picture is copied at all
                     frame = None
                 else:
