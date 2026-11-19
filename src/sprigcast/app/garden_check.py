@@ -291,13 +291,11 @@ class GardenCheckPage(QWidget):
         for i, (name, detail, row_level, word) in enumerate(s.rows):
             row = self._row(name, detail, row_level, word, first=i == 0)
             self._row_parts.append(row.parts)
-            self.rows.addWidget(row)
-            row.show()
+            self.rows.addWidget(row)  # shown with the rest when the layout next runs: once, not once per row
         if not s.rows:
             none = QLabel("No places to stream yet.")
             none.setStyleSheet(f"color: {theme.MUTED}; background: transparent; padding: 6px 0;")
             self.rows.addWidget(none)
-            none.show()
 
         while self.checks.count():
             widget = self.checks.takeAt(0).widget()
@@ -310,7 +308,6 @@ class GardenCheckPage(QWidget):
             chip.setProperty("state", "ok" if ok else "warn" if ok is False else "quiet")
             chip.setToolTip(tip)
             self.checks.addWidget(chip, i // 4, i % 4)
-            chip.show()
 
     def _overload_bar(self) -> QFrame:
         """Shown while the encoder can't keep up: says so, with one tap to make encoding lighter."""

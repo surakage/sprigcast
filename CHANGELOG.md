@@ -194,6 +194,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   couldn't say which one.
 - `SPRIGCAST_CRASH_TEST=<seconds>[,main]` crashes SprigCast on purpose, to test the crash guard on a PC.
 - The safe-mode question after a crash no longer adds a "0x8001010d" note to crash.log while it waits.
+- Pop-ups open lighter (sweep 13): the Live screen's place rows, the number fields and the previews no longer run
+  Python for every event they get (the window losing focus to a pop-up reached each of them), and the Garden
+  check shows its rows in one layout pass.
 - The Garden check, Last stream and the command palette hand Python's lock back quickly while they open, as the
   other pop-ups do (57-76 ms), and the Plugin store makes its cards two a tick, handing it back quickly too
   (147 ms over its fill).
