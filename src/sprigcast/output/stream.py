@@ -10,8 +10,10 @@ import logging
 import queue
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from sprigcast.output.autopilot import Autopilot
 from sprigcast.output.recorder import Recorder, rate_limits, video_options
@@ -19,6 +21,7 @@ from sprigcast.output.recorder import Recorder, rate_limits, video_options
 log = logging.getLogger(__name__)
 
 RETRY_FIRST, RETRY_MAX = 2.0, 30.0
+CONNECT_TIMEOUT, SEND_TIMEOUT = 10.0, 20.0  # seconds: connecting, and any one send stalled on the network
 GRACE_SECONDS = 5.0  # right after connecting, frames queued during the handshake are still going out
 HOLD_SECONDS = 10.0  # a warning stays on screen this long so it can be read
 SEVERITY = {"good": 0, "warning": 1, "bad": 2}
@@ -79,7 +82,52 @@ def preset_size(service: Service, canvas) -> tuple[int, int]:
 
 def stream_url(server: str, key: str, bandwidth_test: bool = False) -> str:
     """Twitch's bandwidth test sends the stream to Twitch without showing it to anyone."""
-    return f"{server.rstrip('/')}/{key}" + ("?bandwidthtest=true" if bandwidth_test else "")
+    server = server.strip().rstrip("/")
+    parts = urlsplit(server)
+    if parts.hostname and parts.hostname.endswith(".live-video.net") and not parts.path.strip("/"):
+        server += "/app"  # Kick and other IVS ingests need the app name; a bare host makes the key the app
+    return f"{server}/{key}" + ("?bandwidthtest=true" if bandwidth_test else "")
+
+
+def ingest_name(url: str) -> str:
+    """Where a stream URL goes, without the key: rtmps://host:443/app."""
+    parts = urlsplit(url)
+    path = parts.path.strip("/").split("/")
+    app = "/".join(path[:-1])
+    port = f":{parts.port}" if parts.port else ""
+    return f"{parts.scheme}://{parts.hostname or '?'}{port}/{app}"
+
+
+def open_ingest(url: str):
+    """An FLV container for an RTMP(S) ingest. PyAV connects at the first packet (start_encoding), so wrap that
+    in explain_connect. Bounded: a server that never answers must not hold the link (or a stop) forever."""
+    import av
+
+    return av.open(url, "w", format="flv", timeout=(CONNECT_TIMEOUT, SEND_TIMEOUT))
+
+
+@contextmanager
+def explain_connect(url: str):
+    """Around the connect: a failure names the server (never the key) and adds what FFmpeg itself logged, which
+    is where the real reason is ("[Errno 5] I/O error" alone says nothing; Kick, 2026-11-18)."""
+    import av.logging as avlog
+
+    old = avlog.get_level()
+    louder = old is None or old > avlog.WARNING
+    if louder:
+        avlog.set_level(avlog.WARNING)
+    try:
+        with avlog.Capture(True) as logs:  # this thread only: the connect happens here
+            try:
+                yield
+            except Exception as exc:
+                said = [str(line[2]).strip() for line in logs if str(line[2]).strip()]
+                hint = "" if urlsplit(url).path.strip("/").count("/") else " (the server address has no app part)"
+                detail = " | FFmpeg: " + " / ".join(said[-4:]) if said else ""
+                raise ConnectionError(f"couldn't connect to {ingest_name(url)}{hint}: {exc}{detail}") from exc
+    finally:
+        if louder:
+            avlog.set_level(old)
 
 
 @dataclass
@@ -96,6 +144,7 @@ class StreamTarget:
     canvases: list | None = None  # with enhanced: the canvases its tracks come from (index = canvas_index)
     output_id: str | None = None  # the scene collection Output this target came from
     auto_bitrate: bool = False  # lower the bitrate when the upload struggles (output/autopilot.py)
+    max_kbps: int = 0  # the most its service accepts (Service.max_kbps); 0 = no limit
 
 
 class Streamer(Recorder):
@@ -244,9 +293,7 @@ class Streamer(Recorder):
             pass
 
     def _open_container(self):
-        import av
-
-        return av.open(self._url, "w", format="flv")
+        return open_ingest(self._url)
 
     @staticmethod
     def default_encoder():
@@ -356,7 +403,11 @@ class Streamer(Recorder):
                 self._backlog_bytes -= packet.size  # connection already failed: discard
                 continue
             try:
-                Recorder._mux(self, container, [packet])  # timing, bytes_out and longest_stall
+                if self.connected or self.bytes_out:
+                    Recorder._mux(self, container, [packet])  # timing, bytes_out and longest_stall
+                else:
+                    with explain_connect(self._url):  # the first packet connects
+                        Recorder._mux(self, container, [packet])
             except Exception as exc:
                 self._send_error = exc
             finally:
@@ -441,6 +492,37 @@ def log_live(st) -> None:
         log.info("stream %s live", st.name)
 
 
+def engine_encodes_streams() -> bool:
+    """With the native engine, every stream goes through a shared encoder (output/shared_stream.py), which the
+    engine's writer runs on its own thread (packets mode): Python only sends the packets. SPRIGCAST_NO_WRITER or
+    SPRIGCAST_NO_PACKET_WRITER keeps a lone stream on its own Python encoder (Streamer)."""
+    import os
+
+    from sprigcast import sprigcore
+
+    if os.environ.get("SPRIGCAST_NO_WRITER") or os.environ.get("SPRIGCAST_NO_PACKET_WRITER"):
+        return False
+    try:
+        return sprigcore.use_native_media()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def is_youtube(target: StreamTarget) -> bool:
+    return "youtube.com" in (target.server or "").lower()
+
+
+def is_vertical(target: StreamTarget) -> bool:
+    w, h = target.size or (getattr(target.canvas, "width", 0), getattr(target.canvas, "height", 0))
+    return h > w
+
+
+def dual_stream_order(targets: list[StreamTarget]) -> list[StreamTarget]:
+    """YouTube's Dual stream: the horizontal feed connects before the vertical one, so YouTube has the stream
+    the vertical one joins. Everything else keeps its order."""
+    return sorted(targets, key=lambda t: is_youtube(t) and is_vertical(t))
+
+
 class StreamSession:
     """Every live output at once. Each output encodes its own canvas; all share the mixed audio."""
 
@@ -454,9 +536,11 @@ class StreamSession:
               delay_s: float = 0.0, share_all: bool = False) -> "StreamSession":
         """share_all: a destination on its own gets a shared encoder too, so a recording set to "Same as
         stream" can write its packets (Settings → Recording)."""
-        from sprigcast.output.shared_stream import SharedStreamEncoder, StreamLink, share_key
+        from sprigcast.output.shared_stream import SharedStreamEncoder, StreamLink, bitrate_groups, share_key
 
         start_time = time.perf_counter()
+        share_all = share_all or engine_encodes_streams()
+        targets = dual_stream_order(targets)
         streamers, taps, shared = [], [], []
         owned: dict[int, list[tuple]] = {}  # id(streamer or shared encoder) -> its frame taps (drop() takes them off)
         for t in targets:  # no size of its own: the canvas's output (scaled) size
@@ -464,18 +548,52 @@ class StreamSession:
                 size = t.canvas.output_size()
                 if size != (t.canvas.width, t.canvas.height):
                     t.size = size
-        # Destinations that want the same picture (canvas, size, fps, bitrate) share one encoder.
-        groups: dict[tuple, list[StreamTarget]] = {}
+        # Destinations that want the same picture (canvas, size, fps) at close bitrates share one encoder.
+        pictures: dict[tuple, list[StreamTarget]] = {}
         for t in targets:
             key = share_key(t)
             if key is not None:
-                groups.setdefault(key, []).append(t)
+                pictures.setdefault(key, []).append(t)
+        groups: dict[tuple, list[StreamTarget]] = {}
+        for (canvas_id, size, fps), alike in pictures.items():
+            for kbps, auto, members in bitrate_groups(alike):
+                groups[(canvas_id, size, fps, kbps, auto, len(groups))] = members
         done: set[int] = set()
-        for (canvas_id, size, fps, kbps, auto), group in groups.items():
+        # Twitch Enhanced Broadcasting first: a destination wanting one of its qualities' pictures (YouTube or Kick
+        # at the same canvas, size and frame rate) sends that quality's packets, with no encoder of its own.
+        enhanced: list = []
+        for t in targets:
+            if t.enhanced is not None:
+                st, mine = cls._one(t, codec, encoder, delay_s, start_time)
+                taps += mine
+                owned[id(st)] = mine
+                enhanced.append((t.canvas.id, st))
+                done.add(id(t))
+        qualities = {(tr.canvas.id, (tr.cfg.width, tr.cfg.height), tr.fps): tr.encoder
+                     for _, st in enhanced for tr in getattr(st, "tracks", ()) if getattr(st, "native", False)}
+        borrowed_encoders: list = []
+        for (canvas_id, size, fps, kbps, auto, _n), group in groups.items():
+            borrowed = qualities.get((canvas_id, size, fps))
+            if borrowed is not None:
+                for t in group:
+                    link = StreamLink(t.name, t.server, t.key, borrowed, t.bandwidth_test)
+                    link.output_id = t.output_id or t.name
+                    link.delay_s = delay_s
+                    borrowed.links.append(link)
+                    streamers.append((canvas_id, link))
+                    done.add(id(t))
+                    link.start()
+                if all(borrowed is not b for b in borrowed_encoders):
+                    borrowed_encoders.append(borrowed)  # its links need sound: it encodes the stream's mix too
+                log.info("%s send%s Twitch's %dx%d quality (%d kbps): no encoder of their own",
+                         ", ".join(t.name for t in group), "" if len(group) > 1 else "s", size[0], size[1],
+                         borrowed.bitrate_kbps)
+                continue
             if len(group) < 2 and not share_all:
                 continue
             c = group[0].canvas
             enc = SharedStreamEncoder(c, fps, kbps, codec, start_time, group[0].size, encoder, auto_bitrate=auto)
+            enc.share_picture = (canvas_id, size, fps)  # a place started later may join it (add)
             for t in group:
                 link = StreamLink(t.name, t.server, t.key, enc, t.bandwidth_test)
                 link.output_id = t.output_id or t.name
@@ -484,7 +602,8 @@ class StreamSession:
                 streamers.append((c.id, link))
                 done.add(id(t))
             if len(group) > 1:
-                log.info("streams %s share one encoder", ", ".join(t.name for t in group))
+                log.info("streams %s share one encoder at %d kbps (%s)", ", ".join(t.name for t in group), kbps,
+                         ", ".join(f"{t.name} set {t.bitrate_kbps}" for t in group))
             enc.start()
             for link in enc.links:
                 link.start()
@@ -498,15 +617,17 @@ class StreamSession:
             taps += mine
             owned[id(st)] = mine
             streamers.append((t.canvas.id, st))
+        streamers += enhanced  # last: stopping, the links sending its qualities end before its encoders do
         session = cls(engine, streamers)
         session.taps = taps
         session.shared = shared
+        session.borrowed = borrowed_encoders
         session.owned = owned
         for canvas_id, callback, *size in taps:
             engine.add_frame_tap(canvas_id, callback, *size)
         for _, st in streamers:
             engine.mixer.add_tap(st.push_audio, ("stream",))
-        for enc in shared:
+        for enc in [*shared, *borrowed_encoders]:
             engine.mixer.add_tap(enc.push_audio, ("stream",))
         return session
 
@@ -518,7 +639,7 @@ class StreamSession:
         c = t.canvas
         if t.enhanced is not None:
             st = EnhancedStreamer(t.name, t.enhanced, t.canvases or [c], start_time, user_key=t.key)
-            taps = [(canvas_id, st.push_for(canvas_id)) for canvas_id in st.canvas_ids()]
+            taps = st.frame_taps()
         else:
             fps = min(t.fps or c.fps, c.fps)
             st = Streamer(t.name, t.server, t.key, c.width, c.height, fps, t.bitrate_kbps, codec, start_time,
@@ -537,11 +658,30 @@ class StreamSession:
         return next((st for _, st in self.streamers if getattr(st, "output_id", None) == output_id), None)
 
     def add(self, target: StreamTarget, codec: str, encoder=None, delay_s: float = 0.0):
-        """Start one more destination while live (an app's place.start), with its own encoder."""
+        """Start one more destination while live (an app's place.start): on a running shared encoder of the same
+        picture at a close bitrate it may take (output/shared_stream.py bitrate_groups), else its own."""
+        from sprigcast.output.shared_stream import SHARE_WITHIN, StreamLink, share_key
+
         if target.size is None and hasattr(target.canvas, "output_size"):
             size = target.canvas.output_size()
             if size != (target.canvas.width, target.canvas.height):
                 target.size = size
+        picture = share_key(target)
+        ceiling = int(target.max_kbps or 0) or int(target.bitrate_kbps)
+        for enc in getattr(self, "shared", []):
+            kbps = int(getattr(enc, "bitrate_kbps", 0))
+            if picture is None or getattr(enc, "share_picture", None) != picture or kbps > ceiling or \
+                    abs(kbps - int(target.bitrate_kbps)) > SHARE_WITHIN * max(kbps, int(target.bitrate_kbps)):
+                continue
+            link = StreamLink(target.name, target.server, target.key, enc, target.bandwidth_test)
+            link.output_id = target.output_id or target.name
+            link.delay_s = delay_s
+            enc.links.append(link)
+            self.streamers.append((target.canvas.id, link))
+            link.start()
+            log.info("stream %s joins the shared encoder at %d kbps (set %d)", target.name, kbps, target.bitrate_kbps)
+            self.engine.mixer.add_tap(link.push_audio, ("stream",))
+            return link
         st, mine = self._one(target, codec, encoder, delay_s, time.perf_counter())
         self.streamers.append((target.canvas.id, st))
         if not hasattr(self, "taps"):
@@ -609,7 +749,7 @@ class StreamSession:
             self.shared = list(shared)
         for _, st in self.streamers:
             self.engine.mixer.remove_tap(st.push_audio)
-        for enc in shared:
+        for enc in [*shared, *getattr(self, "borrowed", [])]:
             self.engine.mixer.remove_tap(enc.push_audio)
 
         def finish():

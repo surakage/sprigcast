@@ -5,7 +5,8 @@ What they left behind on a PC that ran an earlier build:
 * the models folder (<settings>/models): speech and background models that Live captions and the
   Background remover downloaded, 100 MB or more. Nothing else used it.
 * settings: Live captions' (captions/..., including a Google key), Wave Link sync's (wavelink/...),
-  Kick chat's (kick/pusher_key, and the Kick name in Chat's channel names), Auto clip's (auto_clip.json).
+  the old Kick chat's (kick/pusher_key), Auto clip's (auto_clip.json). (A Kick name in Chat's channel names
+  stays: Kick chat is back, through Kick's official API.)
 * Auto clip's unkept suggestions: the clips listed in <recordings>/Suggested clips/suggested.json
   (clean_up_recordings, once the recordings folder is known). Kept ones had moved to Clips already.
 
@@ -28,7 +29,6 @@ FILES = ("auto_clip.json",)  # in the settings folder
 SUGGESTED_DONE = "cleanup/suggested_clips"
 GROUPS = ("captions", "wavelink")
 KEYS = ("kick/pusher_key",)
-CHAT_NAMES = "chat/names"
 
 
 def clean_up(config: Path, settings=None) -> list[str]:
@@ -66,13 +66,6 @@ def clean_up(config: Path, settings=None) -> list[str]:
         if settings.contains(key):
             settings.remove(key)
             removed.append(key)
-    try:
-        names = json.loads(str(settings.value(CHAT_NAMES, "") or "{}"))
-    except ValueError:
-        names = {}
-    if isinstance(names, dict) and "kick" in names:
-        settings.setValue(CHAT_NAMES, json.dumps({k: v for k, v in names.items() if k != "kick"}))
-        removed.append("Kick chat name")
     settings.setValue(DONE, VERSION)
     if removed:
         log.info("tidied up after removed features: %s", ", ".join(removed))

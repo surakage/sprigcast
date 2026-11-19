@@ -15,6 +15,7 @@ reach these files.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import sys
@@ -117,6 +118,32 @@ def setup(now: datetime | None = None) -> Path | None:
     logging.getLogger("sprigcast").info("SprigCast %s started; logs in %s%s", _version(), folder,
                                         f" ({removed} older than {keep_days()} days removed)" if removed else "")
     return path
+
+
+@contextlib.contextmanager
+def crash_notes_paused(platform: str | None = None):
+    """Windows: no faulthandler notes while a message box waits on its own (the safe-mode question).
+
+    faulthandler notes every exception with an error code, also the ones COM raises and handles itself: a
+    message box's input call answering UI Automation logged "Windows fatal exception: code 0x8001010d" at
+    safe_mode.py:47 on every start after a crash (PC, 2026-11-18). faulthandler can't be told to skip a code.
+    A real crash meanwhile is still caught by SprigCast.exe's crash guard, which writes the dump."""
+    import faulthandler
+
+    paused = (platform or sys.platform) == "win32" and faulthandler.is_enabled()
+    if paused:
+        faulthandler.disable()
+    try:
+        yield paused
+    finally:
+        if paused:
+            try:
+                if _crash_file is not None:
+                    faulthandler.enable(file=_crash_file, all_threads=crash_dumps_all_threads())
+                else:
+                    faulthandler.enable(all_threads=crash_dumps_all_threads())
+            except (OSError, RuntimeError, ValueError):
+                pass
 
 
 def crash_dumps_all_threads(platform: str | None = None) -> bool:

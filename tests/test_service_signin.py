@@ -53,7 +53,7 @@ def ids(monkeypatch):
 
 def test_youtube_reads_the_channel_and_a_reusable_key(ids, monkeypatch):
     posts = []
-    monkeypatch.setattr(service_signin, "post_form", lambda url, fields, who: posts.append((url, fields)) or
+    monkeypatch.setattr(service_signin, "post_form", lambda url, fields, who, **kw: posts.append((url, fields)) or
                         {"access_token": "tok"})
 
     def get_json(url, token, who, headers=None):
@@ -73,12 +73,13 @@ def test_youtube_reads_the_channel_and_a_reusable_key(ids, monkeypatch):
     assert url == service_signin.HELPER_URL  # the helper adds the secret: none in the app
     assert token_call["service"] == "youtube" and token_call["code"] == "abc" and token_call["code_verifier"]
     assert "client_secret" not in token_call and token_call["redirect_uri"] == seen["redirect_uri"]
-    assert posts[-1][0].endswith("/revoke")  # only the key is kept
+    assert token_call["keep"] == "1" and seen["access_type"] == "offline"  # one sign-in: Stream details too
+    assert not any(url.endswith("/revoke") for url, _ in posts)  # Google would end the whole grant
 
 
 def test_kick_reads_server_and_key_on_its_fixed_redirect(ids, monkeypatch):
     posts = []
-    monkeypatch.setattr(service_signin, "post_form", lambda url, fields, who: posts.append((url, fields)) or
+    monkeypatch.setattr(service_signin, "post_form", lambda url, fields, who, **kw: posts.append((url, fields)) or
                         {"access_token": "tok"})
     monkeypatch.setattr(service_signin, "get_json", lambda url, token, who, headers=None: {"data": [
         {"slug": "slothbloom", "stream": {"url": "rtmps://ingest.kick/app", "key": "sk_1"}}]})
@@ -125,3 +126,115 @@ def test_no_secret_ships_in_the_app():
 
     text = inspect.getsource(service_signin)
     assert "GOCSPX" not in text and "client_secret" not in text
+
+
+def test_a_vertical_youtube_place_gets_its_own_key_for_dual_stream(monkeypatch):
+    """YouTube's Dual stream takes the vertical feed on a second key: never the horizontal one."""
+    made = []
+    streams = [{"contentDetails": {"isReusable": True}, "snippet": {"title": "SprigCast"},
+                "cdn": {"ingestionInfo": {"streamName": "wide"}}}]
+    monkeypatch.setattr(service_signin, "get_json", lambda url, token, who, headers=None: {"items": list(streams)})
+
+    class Reply:
+        def __init__(self, body):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return self.body
+
+    def urlopen(request, timeout=10):
+        import json
+
+        body = json.loads(request.data)
+        made.append(body["snippet"]["title"])
+        return Reply(json.dumps({"cdn": {"ingestionInfo": {"streamName": "tall"}}}).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert service_signin._youtube_key("tok") == "wide"
+    assert service_signin._youtube_key("tok", vertical=True) == "tall" and made == ["SprigCast Vertical"]
+    streams.append({"contentDetails": {"isReusable": True}, "snippet": {"title": "SprigCast Vertical"},
+                    "cdn": {"ingestionInfo": {"streamName": "tall"}}})
+    streams.reverse()  # the vertical one listed first: horizontal still gets its own
+    assert service_signin._youtube_key("tok") == "wide"
+    assert service_signin._youtube_key("tok", vertical=True) == "tall" and len(made) == 1
+
+
+def test_the_helper_is_asked_again_when_it_doesnt_answer(monkeypatch):
+    import io
+    import urllib.request
+
+    from sprigcast.output import oauth_loopback
+
+    seen = []
+
+    class Reply(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def urlopen(request, timeout):
+        seen.append(timeout)
+        if len(seen) == 1:
+            raise TimeoutError("The read operation timed out")
+        return Reply(b'{"access_token": "a"}')
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(oauth_loopback.time, "sleep", lambda s: None)
+    reply = oauth_loopback.post_form("https://helper.test", {"code": "c"}, "the helper",
+                                     timeout=oauth_loopback.HELPER_TIMEOUT, tries=2)
+    assert reply == {"access_token": "a"}
+    assert seen == [oauth_loopback.HELPER_TIMEOUT] * 2
+
+
+def test_the_helper_isnt_asked_again_after_a_refusal(monkeypatch):
+    import io
+    import urllib.error
+    import urllib.request
+
+    from sprigcast.output import oauth_loopback
+
+    seen = []
+
+    def urlopen(request, timeout):
+        seen.append(1)
+        raise urllib.error.HTTPError(request.full_url, 400, "Bad", {}, io.BytesIO(b'{"error": "invalid_grant"}'))
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    reply = oauth_loopback.post_form("https://helper.test", {"code": "c"}, "the helper", tries=2)
+    assert reply["error"] == "invalid_grant" and len(seen) == 1
+
+
+def test_one_destination_sign_in_also_signs_in_stream_details_and_names_chat(ids, monkeypatch):
+    import json
+
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.app.chat_panel import NAMES
+    from sprigcast.output import stream_details
+
+    assert service_signin.CHAT_NAMES == NAMES
+    QSettings().setValue(NAMES, json.dumps({"twitch": "sloth"}))
+    monkeypatch.setattr(service_signin, "post_form", lambda url, fields, who, **kw: {
+        "access_token": "tok", "refresh_token": "ref", "expires_in": 3600})
+    monkeypatch.setattr(service_signin, "get_json", lambda url, token, who, headers=None: {"data": [
+        {"slug": "slothbloom", "stream": {"url": "rtmps://ingest.kick/app", "key": "sk_1"}}]})
+    open_url, seen = _browser()
+    service_signin.kick(open_url=open_url)
+    assert "channel:write" in seen["scope"] and "streamkey:read" in seen["scope"]
+    assert stream_details.account("kick") == "slothbloom"
+    assert json.loads(stream_details.get_key(stream_details.TOKEN_REF["kick"]))["refresh_token"] == "ref"
+    assert json.loads(QSettings().value(NAMES)) == {"twitch": "sloth", "kick": "slothbloom"}
+    QSettings().setValue(NAMES, json.dumps({"kick": "mine"}))
+    service_signin.kick(open_url=_browser()[0])
+    assert json.loads(QSettings().value(NAMES)) == {"kick": "mine"}  # a channel you typed stays
+    stream_details._remember("kick", "")
+    stream_details.set_key(stream_details.TOKEN_REF["kick"], "")
+    QSettings().remove(NAMES)

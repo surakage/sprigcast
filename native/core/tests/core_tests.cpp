@@ -71,6 +71,126 @@ int main() {
     CHECK(sc_adapter_info_get(9999, &info) == SC_ERR_ARGUMENT);
     CHECK(std::string(sc_last_error()).size() > 0);
 
+    {  // The sound mixer: two sounds into the stream track, one at half volume.
+        sc_mixer *mixer = nullptr;
+        CHECK(sc_mixer_create(0, &mixer) == SC_OK);
+        sc_mixer_source_settings one{1.0f, 0, 0.0f, 0, 1u << SC_TRACK_STREAM, 0, 0, 0}, half = one;
+        half.gain = 0.5f;
+        int a = 0, b = 0, tap = 0, track = SC_TRACK_STREAM;
+        CHECK(sc_mixer_source_add(mixer, &one, &a) == SC_OK && sc_mixer_source_add(mixer, &half, &b) == SC_OK);
+        CHECK(sc_mixer_tap_add(mixer, &track, 1, &tap) == SC_OK);
+        std::vector<float> block(SC_MIXER_BLOCK * 2, 0.25f), out(SC_MIXER_BLOCK * 2);
+        CHECK(sc_mixer_source_push(mixer, a, block.data(), SC_MIXER_BLOCK) == SC_OK);
+        CHECK(sc_mixer_source_push(mixer, b, block.data(), SC_MIXER_BLOCK) == SC_OK);
+        CHECK(sc_mixer_tick(mixer, 1) == SC_OK);
+        int64_t index = -1;
+        CHECK(sc_mixer_tap_take(mixer, tap, out.data(), static_cast<int>(out.size()), &index, nullptr) == 1);
+        CHECK(index == 0 && std::abs(out[0] - 0.375f) < 1e-5f && std::abs(out.back() - 0.375f) < 1e-5f);
+        CHECK(sc_mixer_tap_take(mixer, tap, out.data(), static_cast<int>(out.size()), &index, nullptr) == 0);
+        CHECK(sc_mixer_source_push(mixer, 999, block.data(), SC_MIXER_BLOCK) == SC_ERR_ARGUMENT);
+        sc_mixer_destroy(mixer);
+        sc_mixer *clocked = nullptr;  // its own thread mixes, and stops cleanly
+        CHECK(sc_mixer_create(1, &clocked) == SC_OK);
+        int64_t now = 0;
+        CHECK(sc_mixer_wait(clocked, 2, 1000, &now) == 1 && now > 2);
+        sc_mixer_destroy(clocked);
+    }
+    {  // Built-in filters: a -6.02 dB gain then invert polarity, before the mix.
+        sc_mixer *mixer = nullptr;
+        CHECK(sc_mixer_create(0, &mixer) == SC_OK);
+        sc_mixer_source_settings one{1.0f, 0, 0.0f, 0, 1u << SC_TRACK_STREAM, 0, 0, 0};
+        int a = 0, tap = 0, track = SC_TRACK_STREAM;
+        CHECK(sc_mixer_source_add(mixer, &one, &a) == SC_OK && sc_mixer_tap_add(mixer, &track, 1, &tap) == SC_OK);
+        sc_mixer_filter filters[2]{};
+        filters[0].kind = SC_FILTER_GAIN;
+        filters[0].p[0] = 20.0f * std::log10(0.5f);
+        filters[1].kind = SC_FILTER_INVERT;
+        CHECK(sc_mixer_source_filters(mixer, a, filters, 2) == SC_OK);
+        CHECK(sc_mixer_source_filters(mixer, 999, filters, 2) == SC_ERR_ARGUMENT);
+        std::vector<float> block(SC_MIXER_BLOCK * 2, 0.25f), out(SC_MIXER_BLOCK * 2);
+        CHECK(sc_mixer_source_push(mixer, a, block.data(), SC_MIXER_BLOCK) == SC_OK);
+        CHECK(sc_mixer_tick(mixer, 1) == SC_OK);
+        int64_t index = -1;
+        CHECK(sc_mixer_tap_take(mixer, tap, out.data(), static_cast<int>(out.size()), &index, nullptr) == 1);
+        CHECK(std::abs(out[0] + 0.125f) < 1e-5f && std::abs(out.back() + 0.125f) < 1e-5f);
+        sc_mixer_destroy(mixer);
+    }
+    {  // Audio visualizer: its thread hears a clocked mixer's stream track and draws; it closes before the mixer.
+        sc_mixer *mixer = nullptr;
+        CHECK(sc_mixer_create(1, &mixer) == SC_OK);
+        sc_mixer_source_settings one{1.0f, 0, 0.0f, 0, 1u << SC_TRACK_STREAM, 0, 0, 0};
+        int sound = 0;
+        CHECK(sc_mixer_source_add(mixer, &one, &sound) == SC_OK);
+        sc_visual *visual = nullptr;
+        CHECK(sc_visual_open(mixer, SC_TRACK_STREAM, 1, &visual) == SC_OK && visual);
+        sc_visual_look look{SC_VISUAL_CIRCLE, 64, 0.5, 1.0, 1, {0.3, 0.8, 0.5, 1.0}, {0.9, 0.9, 0.8, 1.0}};
+        CHECK(sc_visual_set_look(visual, &look) == SC_OK);
+        std::vector<float> tone(SC_MIXER_BLOCK * 2);
+        for (int i = 0; i < SC_MIXER_BLOCK; ++i) tone[2 * i] = tone[2 * i + 1] = 0.4f * std::sin(i * 0.07f);
+        std::vector<uint8_t> picture(SC_VISUAL_WIDTH * SC_VISUAL_HEIGHT * 4);
+        uint64_t seen = 0;
+        bool drawn = false;
+        for (int i = 0; i < 150 && !drawn; ++i) {
+            CHECK(sc_mixer_source_push(mixer, sound, tone.data(), SC_MIXER_BLOCK) == SC_OK);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            drawn = sc_visual_frame(visual, &seen, picture.data()) == 1 && seen > 2;
+        }
+        CHECK(drawn);
+        CHECK(sc_visual_listen(visual, SC_MIXER_SOURCE_TAP + sound) == SC_OK);
+        CHECK(sc_visual_listen(visual, -1) == SC_OK);
+        look.style = 99;
+        CHECK(sc_visual_set_look(visual, &look) == SC_ERR_ARGUMENT);
+        sc_visual_close(visual);
+        sc_mixer_destroy(mixer);
+    }
+    {  // Sound playback: the monitor mix plays on the test sink in real time, and closes before the mixer.
+        sc_mixer *mixer = nullptr;
+        CHECK(sc_mixer_create(1, &mixer) == SC_OK);
+        sc_playback *playback = nullptr;
+        CHECK(sc_playback_open(mixer, SC_MIXER_MONITOR, L"sprigcast-test-sink", &playback) == SC_OK && playback);
+        sc_playback_stats st{};
+        for (int i = 0; i < 100 && (st.frames < 4800 || st.state != SC_CAPTURE_CAPTURING); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            CHECK(sc_playback_stats_get(playback, &st) == SC_OK);
+        }
+        CHECK(st.state == SC_CAPTURE_CAPTURING && st.frames >= 4800 && st.rate == 48000 && st.channels == 2);
+        sc_playback_close(playback);
+        CHECK(sc_playback_open(nullptr, SC_MIXER_MONITOR, nullptr, &playback) == SC_ERR_ARGUMENT);
+        sc_mixer_destroy(mixer);
+    }
+    {  // Sound capture: the test tone reaches the mix; a missing device and the default open and close cleanly
+       // (CI has no sound card: they only say why they aren't capturing).
+        sc_mixer *mixer = nullptr;
+        CHECK(sc_mixer_create(0, &mixer) == SC_OK);
+        sc_mixer_source_settings one{1.0f, 0, 0.0f, 0, 1u << SC_TRACK_STREAM, 0, 0, 0};
+        int sound = 0, tap = 0, track = SC_TRACK_STREAM;
+        CHECK(sc_mixer_source_add(mixer, &one, &sound) == SC_OK && sc_mixer_tap_add(mixer, &track, 1, &tap) == SC_OK);
+        sc_capture *tone = nullptr, *missing = nullptr, *usual = nullptr;
+        CHECK(sc_capture_open(mixer, sound, L"sprigcast-test-tone", 0, &tone) == SC_OK);
+        CHECK(sc_capture_open(mixer, sound, L"No such microphone", 0, &missing) == SC_OK);
+        CHECK(sc_capture_open(mixer, sound, nullptr, 1, &usual) == SC_OK);
+        sc_capture_stats st{};
+        for (int i = 0; i < 200 && (sc_capture_stats_get(tone, &st) == SC_OK && st.frames < 2 * SC_MIXER_BLOCK); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        CHECK(st.state == SC_CAPTURE_CAPTURING && st.frames >= 2 * SC_MIXER_BLOCK);
+        CHECK(sc_mixer_tick(mixer, 1) == SC_OK);
+        std::vector<float> out(SC_MIXER_BLOCK * 2);
+        int64_t index = 0;
+        CHECK(sc_mixer_tap_take(mixer, tap, out.data(), static_cast<int>(out.size()), &index, nullptr) == 1);
+        float peak = 0.0f;
+        for (float v : out) peak = std::fmax(peak, std::fabs(v));
+        CHECK(peak > 0.2f && peak < 0.26f);
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        CHECK(sc_capture_stats_get(missing, &st) == SC_OK && st.state != SC_CAPTURE_CAPTURING && st.frames == 0);
+        std::printf("capture: a missing device says \"%s\"\n", st.error);
+        CHECK(sc_capture_stats_get(usual, &st) == SC_OK);
+        std::printf("capture: the default desktop sound: state %d, \"%s\"\n", st.state, st.error);
+        sc_capture_close(tone);
+        sc_capture_close(missing);
+        sc_capture_close(usual);
+        sc_mixer_destroy(mixer);
+    }
+
     sc_device *dev = nullptr;
     CHECK(sc_device_create(-1, SC_DEVICE_WARP, &dev) == SC_OK);
     if (!dev) return 1;
@@ -216,8 +336,64 @@ int main() {
         t.softness = 0.2f;
         CHECK(sc_canvas_render_transition(c2, 1, 12345, 0.0, &t, 0.5f) == SC_OK);
     }
+    // Stinger: with no clip yet it just cuts at the cut point; a solid clip covers the canvas (centred, cropped).
+    {
+        sc_transition sting = fade;
+        sting.mode = SC_TRANSITION_STINGER;
+        sting.cut_seconds = 0.15f;
+        CHECK(sc_canvas_render_transition(c2, 1, 12345, 0.0, &sting, 0.1f) == SC_OK);
+        CHECK(sc_canvas_read_bgra(c2, mixed.data(), 32 * 4) == SC_OK);
+        CHECK(mixed == out);  // before the cut: the old scene
+        CHECK(sc_canvas_render_transition(c2, 1, 12345, 0.0, &sting, 0.6f) == SC_OK);
+        CHECK(sc_canvas_read_bgra(c2, mixed.data(), 32 * 4) == SC_OK);
+        CHECK(at(mixed, 32, 1, 1).a == 0);  // after it: the new one (see-through)
+        sting.overlay = 11;  // the 8 x 8 picture: red top left
+        CHECK(sc_canvas_render_transition(c2, 1, 12345, 0.0, &sting, 0.6f) == SC_OK);
+        CHECK(sc_canvas_read_bgra(c2, mixed.data(), 32 * 4) == SC_OK);
+        Pixel clip = at(mixed, 32, 1, 1);
+        std::printf("stinger pixel: %d,%d,%d,%d\n", clip.r, clip.g, clip.b, clip.a);
+        CHECK(clip.r > 200 && clip.g < 40 && clip.a == 255);
+    }
     fade.mode = 99;
     CHECK(sc_canvas_render_transition(c2, 1, 12345, 0.0, &fade, 0.5f) == SC_ERR_ARGUMENT);
+
+    // Move: the picture glides from the top left to the bottom right; the sprig, only in the old bloom, fades away.
+    // At the start it is the old bloom exactly, and at the end the new one.
+    {
+        auto place = [](sc_move_piece &p, uint64_t source, uint64_t part, float x, float y) {
+            p = sc_move_piece{};
+            p.source = source;
+            p.part = part;
+            const float corners[4][4] = {{x, y, 0, 0}, {x + 8, y, 1, 0}, {x, y + 8, 0, 1}, {x + 8, y + 8, 1, 1}};
+            std::memcpy(p.quad, corners, sizeof corners);
+            p.opacity = 1;
+            p.effects = -1;
+            p.paired = -1;
+        };
+        sc_move_piece pieces[3];
+        place(pieces[0], 11, 0, 0, 0);
+        place(pieces[1], 99, 500, 16, 0);
+        place(pieces[2], 11, 0, 24, 8);
+        pieces[2].paired = 0;
+        sc_move mv = {pieces, 2, 1, nullptr, 0, SC_MOVE_SMOOTH, SC_MOVE_FADE};
+        std::vector<uint8_t> moved(32 * 16 * 4);
+        CHECK(sc_canvas_render_move(c2, &mv, 0.0, 0.0f) == SC_OK);
+        CHECK(sc_canvas_read_bgra(c2, moved.data(), 32 * 4) == SC_OK);
+        CHECK(moved == out);
+        CHECK(sc_canvas_render_move(c2, &mv, 0.0, 1.0f) == SC_OK);
+        CHECK(sc_canvas_read_bgra(c2, moved.data(), 32 * 4) == SC_OK);
+        Pixel there = at(moved, 32, 25, 9), left = at(moved, 32, 1, 1), gone = at(moved, 32, 17, 1);
+        CHECK(there.r == 255 && there.g == 0 && there.a == 255);
+        CHECK(left.a == 0 && gone.a == 0);
+        CHECK(sc_canvas_render_move(c2, &mv, 0.0, 0.5f) == SC_OK);
+        sc_move_piece drawn[4];
+        CHECK(sc_move_frame(&mv, 0.5f, 32, 16, drawn, 4) == 2);  // the sprig half gone, the picture half way
+        CHECK(drawn[0].source == 11 && std::abs(drawn[0].quad[0][0] - 12.0f) < 1e-3f);
+        CHECK(drawn[1].part == 500 && drawn[1].opacity > 0.99f);
+        CHECK(sc_move_frame(&mv, 0.5f, 32, 16, drawn, 1) == SC_ERR_ARGUMENT);  // too little room
+        mv.easing = 42;
+        CHECK(sc_canvas_render_move(c2, &mv, 0.0, 0.5f) == SC_ERR_ARGUMENT);
+    }
 
     // NV12 for encoders, BT.709 limited range: red is Y 63, Cb 102, Cr 240; white Y 235; see-through is black.
     CHECK(sc_canvas_render(c2, 1, 0.0) == SC_OK);
@@ -471,6 +647,100 @@ int main() {
         print_stats("after a fault", st);
         CHECK(st.faulted == 0 && st.running == 1);
         engine_draws_it("after a rebuild");
+    }
+    // Screen capture in the engine: a display captured on the engine's device and read back, a window whose capture
+    // ends when it closes. CI may have no desktop to capture: then the capture says it couldn't, and nothing breaks.
+    {
+        CHECK(sc_engine_source_capture(eng, 21, 1, 2, 0, 0) == SC_ERR_ARGUMENT);  // a window and a display
+        CHECK(sc_engine_source_capture(eng, 21, 0, 1, 64, 0) == SC_ERR_ARGUMENT);  // unknown flags
+        int state = -1, w = 0, h = 0;
+        uint64_t frames = 0;
+        CHECK(sc_engine_capture_state(eng, 21, &state, &w, &h, &frames) == SC_OK && state == SC_SCREEN_NONE);
+        auto settle = [&](uint64_t id) {
+            for (int waited = 0; waited < 3000; waited += 20) {
+                sc_engine_capture_state(eng, id, &state, &w, &h, &frames);
+                if (state != SC_SCREEN_STARTING) break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+        };
+        const POINT origin = {0, 0};
+        HMONITOR monitor = MonitorFromPoint(origin, MONITOR_DEFAULTTOPRIMARY);
+        CHECK(sc_engine_source_capture(eng, 21, 0, reinterpret_cast<uint64_t>(monitor), SC_SCREEN_CURSOR, 16) ==
+              SC_OK);
+        settle(21);
+        std::printf("display capture: state %d, %dx%d, %llu pictures\n", state, w, h,
+                    static_cast<unsigned long long>(frames));
+        CHECK(state == SC_SCREEN_RUNNING || state == SC_SCREEN_ENDED || state == SC_SCREEN_REFUSED);
+        if (state == SC_SCREEN_RUNNING) {
+            CHECK(w > 0 && h > 0 && frames > 0);
+            int rw = 0, rh = 0;
+            CHECK(sc_engine_capture_read(eng, 21, nullptr, 0, 0, 0, &rw, &rh) == SC_OK);  // its size only
+            CHECK(rw == w && rh == h);
+            std::vector<uint8_t> screen(static_cast<size_t>(rw) * rh * 4);
+            CHECK(sc_engine_capture_read(eng, 21, screen.data(), rw * 4, rw, rh, &rw, &rh) == SC_OK);
+            CHECK(sc_engine_source_capture_hold(eng, 21, 1) == SC_OK);
+            CHECK(sc_engine_source_capture_hold(eng, 21, 0) == SC_OK);
+        }
+        engine_draws_it("while a display is captured");
+        CHECK(sc_engine_source_capture(eng, 21, 0, 0, 0, 0) == SC_OK);  // stopped: the source keeps its picture
+        CHECK(sc_engine_capture_state(eng, 21, &state, nullptr, nullptr, nullptr) == SC_OK && state == SC_SCREEN_NONE);
+
+        {  // The capture helper's way: captured on a device of its own, shared with the engine on the card.
+            void *engine_device = nullptr;
+            int engine_rebuilds = 0;
+            uint32_t low = 0;
+            int32_t high = 0;
+            CHECK(sc_engine_device(eng, &engine_device, &engine_rebuilds) == SC_OK && engine_device);
+            CHECK(sc_d3d_device_luid(engine_device, &low, &high) == SC_OK);
+            sc_capture_feed *feed = nullptr;
+            CHECK(sc_capture_feed_create(low, high, 1, 2, 0, 0, L"sprigcore-feed-check", &feed) == SC_ERR_ARGUMENT);
+            CHECK(sc_capture_feed_create(low, high, 0, reinterpret_cast<uint64_t>(monitor), SC_SCREEN_CURSOR, 16,
+                                         L"sprigcore-feed-check", &feed) == SC_OK && feed);
+            sc_capture_feed *twice = nullptr;  // a block of that name is there already
+            CHECK(sc_capture_feed_create(low, high, 0, reinterpret_cast<uint64_t>(monitor), 0, 16,
+                                         L"sprigcore-feed-check", &twice) == SC_ERR_DEVICE && !twice);
+            CHECK(sc_engine_source_shared(eng, 23, L"sprigcore-feed-check") == SC_OK);
+            int fstate = SC_SCREEN_STARTING, fw = 0, fh = 0;
+            uint64_t fframes = 0;
+            for (int waited = 0; waited < 7000 && fstate == SC_SCREEN_STARTING; waited += 20) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                CHECK(sc_capture_feed_state(feed, &fstate, &fw, &fh, &fframes) == SC_OK);
+            }
+            std::printf("capture feed: state %d, %dx%d, %llu pictures\n", fstate, fw, fh,
+                        static_cast<unsigned long long>(fframes));
+            CHECK(fstate == SC_SCREEN_RUNNING || fstate == SC_SCREEN_ENDED || fstate == SC_SCREEN_REFUSED);
+            if (fstate == SC_SCREEN_RUNNING) CHECK(fw > 0 && fh > 0 && fframes > 0);
+            engine_draws_it("while the helper's capture is shown");
+            CHECK(sc_engine_source_shared(eng, 23, nullptr) == SC_OK);
+            sc_capture_feed_destroy(feed);
+            sc_capture_feed_destroy(nullptr);
+            engine_draws_it("after the helper's capture ended");
+        }
+
+        HWND window = CreateWindowExW(0, L"STATIC", L"sprigcore capture check", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40,
+                                      40, 200, 120, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (window) {
+            CHECK(sc_engine_source_capture(eng, 22, reinterpret_cast<uint64_t>(window), 0, 0, 0) == SC_OK);
+            for (int i = 0; i < 50; ++i) {  // a window only draws while its messages are read
+                MSG msg;
+                while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) DispatchMessageW(&msg);
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                sc_engine_capture_state(eng, 22, &state, &w, &h, &frames);
+                if (state != SC_SCREEN_STARTING) break;
+            }
+            std::printf("window capture: state %d, %dx%d\n", state, w, h);
+            const bool ran = state == SC_SCREEN_RUNNING;
+            DestroyWindow(window);
+            if (ran) {
+                for (int waited = 0; waited < 3000 && state == SC_SCREEN_RUNNING; waited += 20) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                    sc_engine_capture_state(eng, 22, &state, nullptr, nullptr, nullptr);
+                }
+                CHECK(state == SC_SCREEN_ENDED);  // closed: SprigCast looks for it again
+            }
+            CHECK(sc_engine_source_forget(eng, 22) == SC_OK);
+        }
+        CHECK(sc_engine_source_forget(eng, 21) == SC_OK);
     }
     // A stuck frame: the watchdog says so, and the engine goes on afterwards.
     CHECK(sc_engine_debug_fault(eng, 4) == SC_OK);

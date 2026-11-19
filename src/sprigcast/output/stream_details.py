@@ -14,6 +14,7 @@ Sign-ins:
 
 What each platform takes:
 - Twitch: title, category, tags (PATCH helix/channels).
+- Tags on YouTube sit on the stream's video, like its category; Kick's are custom_tags on the channel.
 - YouTube: title, description, privacy and thumbnail of the stream that's live now, else the next one waiting.
   With none waiting, Save makes one that starts by itself when you go live, on your SprigCast stream key.
 - Kick: title and category (PATCH public/v1/channels).
@@ -41,6 +42,12 @@ LABELS = {"twitch": "Twitch", "youtube": "YouTube", "kick": "Kick"}
 TITLE_MAX = {"twitch": 140, "youtube": 100, "kick": 100}
 DESCRIPTION_MAX = 5000
 PRIVACY = ("public", "unlisted", "private")
+# YouTube's categories a video can be put in (the same everywhere). YouTube picks the game itself from what's
+# played: its API has no way to name the game, so Gaming is as close as an app gets.
+YOUTUBE_CATEGORIES = {"1": "Film & Animation", "2": "Autos & Vehicles", "10": "Music", "15": "Pets & Animals",
+                      "17": "Sports", "19": "Travel & Events", "20": "Gaming", "22": "People & Blogs",
+                      "23": "Comedy", "24": "Entertainment", "25": "News & Politics", "26": "Howto & Style",
+                      "27": "Education", "28": "Science & Technology", "29": "Nonprofits & Activism"}
 THUMB_MAX_BYTES = 2 * 1024 * 1024  # YouTube's limit for a custom thumbnail
 TWITCH_TAGS_MAX, TWITCH_TAG_LEN = 10, 25
 
@@ -59,6 +66,10 @@ class DetailsError(Exception):
     """Something went wrong, worded for the person."""
 
 
+class StartLocked(DetailsError):
+    """YouTube won't let this broadcast's scheduled start change (it's live, or the start has passed)."""
+
+
 class NeedsSignIn(DetailsError):
     """Not signed in (or the sign-in ran out): the pop-up shows Sign in."""
 
@@ -68,13 +79,18 @@ class Details:
     title: str = ""
     category: str = ""  # its name (Twitch, Kick)
     category_id: str = ""
-    tags: list[str] = field(default_factory=list)  # Twitch
+    tags: list[str] = field(default_factory=list)  # Twitch and Kick: the channel's; YouTube: the stream's video
+    old_tags: list[str] = field(default_factory=list)  # as read, so tags nobody touched are never sent
     description: str = ""  # YouTube
     privacy: str = "public"  # YouTube
     broadcast_id: str = ""  # YouTube: the stream being edited, "" = none waiting (Save makes one)
     starts: str = ""  # YouTube: its scheduled start, which an update has to send back
     thumbnail: str = ""  # YouTube: the current thumbnail's web address, to show it
-    note: str = ""  # after a save: what didn't go through although the rest did (the thumbnail)
+    from_last: bool = False  # YouTube: nothing scheduled, so from your last stream; Kick: from your last save
+    vertical_key_name: str = ""  # YouTube Dual stream: what the vertical key is called in YouTube Studio
+    video_category: str = ""  # YouTube: the category id (YOUTUBE_CATEGORIES); "" = leave it as it is
+    unread: bool = False  # Kick sent nothing back, so what's typed is all there is (tags are always sent)
+    note: str = ""  # what didn't go through although the rest did (the thumbnail), or where these came from
 
 
 # Who's signed in, without opening the credential store --------------------------------------------------
@@ -169,7 +185,7 @@ def _tokens(service: str) -> dict:
 
 def _refresh(service: str, old: dict) -> dict:
     from sprigcast.output import service_signin
-    from sprigcast.output.oauth_loopback import SignInError, post_form
+    from sprigcast.output.oauth_loopback import HELPER_TIMEOUT, SignInError, post_form
 
     with _refresh_lock:
         latest = _tokens(service)
@@ -178,7 +194,7 @@ def _refresh(service: str, old: dict) -> dict:
         try:
             reply = post_form(service_signin.helper_url(), {"service": service, "grant_type": "refresh_token",
                                                              "refresh_token": latest.get("refresh_token", "")},
-                              "SprigCast's sign-in helper")
+                              "SprigCast's sign-in helper", timeout=HELPER_TIMEOUT, tries=2)
         except SignInError as exc:
             raise DetailsError(str(exc)) from exc
         if "error" in reply or not reply.get("access_token"):
@@ -249,6 +265,8 @@ def _worded(who: str, code: int, reason: str) -> DetailsError:
         return DetailsError("YouTube only takes custom thumbnails from verified channels (youtube.com/verify).")
     if "livestreamingnotenabled" in low or "not enabled for live streaming" in low:
         return DetailsError("Live streaming isn't on for this YouTube channel yet (youtube.com/features).")
+    if "scheduledstarttime" in low:
+        return StartLocked("YouTube wouldn't take the stream's start time.")
     if "quotaexceeded" in low.replace(" ", ""):
         return DetailsError("YouTube's daily limit for SprigCast is used up. Try again tomorrow.")
     if code == 403:
@@ -282,9 +300,9 @@ def _twitch(call):
     cid = twitch_auth.client_id()
     tokens = twitch_auth._load()
     if not tokens:
-        raise NeedsSignIn("Connect Twitch to change your stream details.")
+        raise NeedsSignIn("Sign in to Twitch to change your stream details.")
     if TWITCH_SCOPE not in (tokens.get("scope") or []):
-        raise NeedsSignIn("Reconnect Twitch once so SprigCast may change your stream details.")
+        raise NeedsSignIn("Sign in to Twitch again once (Settings → Stream), so SprigCast may change your stream details.")
     try:
         if time.time() >= float(tokens.get("expires_at", 0)):
             tokens = twitch_auth._refresh(tokens, cid)
@@ -296,7 +314,7 @@ def _twitch(call):
     except twitch_auth.TwitchAuthError as exc:
         raise NeedsSignIn(str(exc)) from exc
     except PermissionError as exc:
-        raise NeedsSignIn("Reconnect Twitch in Settings → Stream.") from exc
+        raise NeedsSignIn("Sign in to Twitch again in Settings → Stream.") from exc
 
 
 def _helix(method: str, path: str, token: str, cid: str, body: dict | None = None) -> dict:
@@ -314,6 +332,25 @@ def clean_tags(text: str | list[str]) -> list[str]:
         if tag and tag.lower() not in (t.lower() for t in tags):
             tags.append(tag)
     return tags
+
+
+YOUTUBE_TAGS_MAX = 500  # letters for all tags together, as YouTube counts them
+
+
+def split_tags(text: str | list[str]) -> list[str]:
+    """YouTube's and Kick's tags from what was typed: split on commas (a tag may have spaces), no #, no doubles."""
+    parts = text if isinstance(text, list) else text.split(",")
+    tags: list[str] = []
+    for part in parts:
+        tag = " ".join(str(part).replace("#", " ").split())
+        if tag and tag.lower() not in (t.lower() for t in tags):
+            tags.append(tag)
+    return tags
+
+
+def youtube_tag_problem(tags: list[str]) -> str | None:
+    size = sum(len(t) + (2 if " " in t else 0) for t in tags) + max(0, len(tags) - 1)
+    return f"YouTube takes {YOUTUBE_TAGS_MAX} letters of tags at most." if size > YOUTUBE_TAGS_MAX else None
 
 
 def tag_problem(tags: list[str]) -> str | None:
@@ -368,30 +405,78 @@ def _yt(token: str, method: str, path: str, body: dict | None = None) -> dict:
     return _call(method, f"{YOUTUBE_API}/{path}", token, body, who="YouTube")
 
 
-def _youtube_broadcast(token: str) -> dict | None:
-    """The stream that's live now, else the soonest one waiting, else None."""
-    part = "id,snippet,status"
-    live = _yt(token, "GET", f"liveBroadcasts?part={part}&broadcastStatus=active&broadcastType=all&maxResults=5")
-    items = live.get("items") or []
+def _youtube_streams_for_keys(token: str, *keys: str | None) -> list[dict | None]:
+    """The channel's YouTube stream (id, snippet.title) for each key, None where a key isn't one of the channel's."""
+    if not any(keys):
+        return [None for _ in keys]
+    streams = _yt(token, "GET", "liveStreams?part=id,cdn,snippet&mine=true&maxResults=50").get("items") or []
+    return [next((s for s in streams if key and
+                  ((s.get("cdn") or {}).get("ingestionInfo") or {}).get("streamName") == key), None) for key in keys]
+
+
+def _youtube_broadcast(token: str, stream_id: str | None = None) -> dict | None:
+    """The stream that's live now, else the soonest one waiting, else None. With a stream id (horizontal and
+    vertical each go to YouTube on their own key), only the ones that key goes to."""
+    part = "id,snippet,status,contentDetails"
+
+    def mine(items: list) -> list:
+        if not stream_id:
+            return items
+        return [b for b in items if (b.get("contentDetails") or {}).get("boundStreamId") == stream_id]
+
+    live = _yt(token, "GET", f"liveBroadcasts?part={part}&broadcastStatus=active&broadcastType=all&maxResults=25")
+    items = mine(live.get("items") or [])
     if items:
         return items[0]
-    waiting = _yt(token, "GET", f"liveBroadcasts?part={part}&broadcastStatus=upcoming&broadcastType=all"
-                                "&maxResults=25").get("items") or []
+    waiting = mine(_yt(token, "GET", f"liveBroadcasts?part={part}&broadcastStatus=upcoming&broadcastType=all"
+                                     "&maxResults=50").get("items") or [])
     waiting.sort(key=lambda b: (b.get("snippet") or {}).get("scheduledStartTime") or "9999")
     return waiting[0] if waiting else None
 
 
-def _youtube_load() -> Details:
+def _youtube_last(token: str) -> dict | None:
+    """Your most recent finished stream, or None."""
+    try:
+        done = _yt(token, "GET", "liveBroadcasts?part=id,snippet,status&broadcastStatus=completed"
+                                 "&broadcastType=all&maxResults=10").get("items") or []
+    except DetailsError:
+        return None
+    done.sort(key=lambda b: (b.get("snippet") or {}).get("actualEndTime")
+              or (b.get("snippet") or {}).get("scheduledStartTime") or "", reverse=True)
+    return done[0] if done else None
+
+
+def _youtube_load(stream_key: str | None = None, vertical_key: str | None = None) -> Details:
     def call(token):
-        found = _youtube_broadcast(token)
+        main, vertical = _youtube_streams_for_keys(token, stream_key, vertical_key)
+        vertical_name = ((vertical or {}).get("snippet") or {}).get("title", "") if vertical_key else ""
+        if vertical_key and not vertical_name:
+            vertical_name = "your vertical key"
+        found = _youtube_broadcast(token, (main or {}).get("id"))
+        from_last = False
         if found is None:
-            return Details(privacy="public")
+            # A reusable key with nothing scheduled: YouTube makes the stream when you go live and the API can't
+            # read its settings ahead. Start from your last stream's details; Save sets up the next one with them.
+            found = _youtube_last(token)
+            from_last = True
+        if found is None:
+            return Details(privacy="public", vertical_key_name=vertical_name)
         snippet, status = found.get("snippet") or {}, found.get("status") or {}
+        try:  # the category sits on the stream's video
+            video = (_yt(token, "GET", f"videos?part=snippet&id={found.get('id', '')}").get("items") or [{}])[0]
+        except DetailsError:
+            video = {}
         thumbs = snippet.get("thumbnails") or {}
         thumb = next((thumbs[k].get("url", "") for k in ("medium", "high", "default") if k in thumbs), "")
         return Details(title=snippet.get("title", ""), description=snippet.get("description", ""),
-                       privacy=status.get("privacyStatus", "public"), broadcast_id=found.get("id", ""),
-                       starts=snippet.get("scheduledStartTime", ""), thumbnail=thumb)
+                       privacy=status.get("privacyStatus", "public"),
+                       broadcast_id="" if from_last else found.get("id", ""),
+                       starts="" if from_last else snippet.get("scheduledStartTime", ""),
+                       thumbnail="" if from_last else thumb, from_last=from_last,
+                       video_category=str((video.get("snippet") or {}).get("categoryId") or ""),
+                       tags=list((video.get("snippet") or {}).get("tags") or []),
+                       old_tags=list((video.get("snippet") or {}).get("tags") or []),
+                       vertical_key_name=vertical_name)
 
     return _with_token("youtube", call)
 
@@ -427,8 +512,19 @@ def _youtube_save(details: Details, thumbnail: bytes | None, stream_key: str | N
     def call(token):
         broadcast_id = details.broadcast_id
         if broadcast_id:
-            _yt(token, "PUT", "liveBroadcasts?part=snippet,status",
-                {"id": broadcast_id, "snippet": snippet, "status": {"privacyStatus": privacy}})
+            # The start goes back exactly as YouTube sent it (an update has to carry it). Once a broadcast is
+            # live, or its start has passed, YouTube refuses any start at all: then send none.
+            sent = dict(snippet) if details.starts else {k: v for k, v in snippet.items() if k != "scheduledStartTime"}
+            try:
+                _yt(token, "PUT", "liveBroadcasts?part=snippet,status",
+                    {"id": broadcast_id, "snippet": sent, "status": {"privacyStatus": privacy}})
+            except StartLocked:
+                if "scheduledStartTime" not in sent:
+                    raise
+                log.info("stream details: youtube keeps this stream's start, saving without it")
+                sent = {k: v for k, v in sent.items() if k != "scheduledStartTime"}
+                _yt(token, "PUT", "liveBroadcasts?part=snippet,status",
+                    {"id": broadcast_id, "snippet": sent, "status": {"privacyStatus": privacy}})
         else:
             stream_id = _youtube_stream_id(token, stream_key)
             made = _yt(token, "POST", "liveBroadcasts?part=snippet,status,contentDetails",
@@ -440,6 +536,27 @@ def _youtube_save(details: Details, thumbnail: bytes | None, stream_key: str | N
             log.info("stream details: youtube made a stream waiting on the SprigCast key")
 
     _with_token("youtube", call)
+    missed = []
+    tags = split_tags(details.tags)
+    if details.video_category in YOUTUBE_CATEGORIES or tags or details.old_tags:
+        def video_part(token):
+            video = (_yt(token, "GET", f"videos?part=snippet&id={details.broadcast_id}").get("items") or [{}])[0]
+            old = video.get("snippet") or {}
+            category = details.video_category if details.video_category in YOUTUBE_CATEGORIES \
+                else str(old.get("categoryId") or "20")
+            if str(old.get("categoryId") or "") == category and list(old.get("tags") or []) == tags:
+                return  # already there: no call spent
+            keep = {k: old[k] for k in ("defaultLanguage", "defaultAudioLanguage") if old.get(k)}
+            _yt(token, "PUT", "videos?part=snippet", {"id": details.broadcast_id, "snippet": {
+                **keep, "title": title, "description": snippet["description"], "categoryId": category,
+                "tags": tags}})
+
+        try:
+            _with_token("youtube", video_part)
+            details.tags = details.old_tags = tags
+        except DetailsError as exc:
+            log.info("stream details: youtube category and tags not saved: %s", exc)
+            missed.append(("category or tags", ""))
     if thumbnail:
         def upload(token):
             _call("POST", f"{YOUTUBE_UPLOAD}/thumbnails/set?videoId={details.broadcast_id}", token, data=thumbnail,
@@ -448,7 +565,10 @@ def _youtube_save(details: Details, thumbnail: bytes | None, stream_key: str | N
         try:
             _with_token("youtube", upload)
         except DetailsError as exc:  # the rest is saved: say what didn't go
-            details.note = f"Saved, but not the thumbnail. {exc}"
+            missed.append(("thumbnail", str(exc)))
+    if missed:
+        what = " or ".join(name for name, _ in missed)
+        details.note = " ".join([f"Saved, but not the {what}.", *(why for _, why in missed if why)])
 
 
 def thumbnail_bytes(path: str) -> bytes:
@@ -476,12 +596,88 @@ def thumbnail_bytes(path: str) -> bytes:
 # Kick --------------------------------------------------------------------------------------------------
 
 
+KICK_LAST_SETTING = "kick/details_last"  # QSettings: what SprigCast last saved to Kick (title etc.). Not secret.
+
+
+def _kick_named(channel: dict) -> str:
+    """The channel's category name; Kick sends an empty category (no name) while you're offline."""
+    category = channel.get("category")
+    return str(category.get("name") or "") if isinstance(category, dict) else ""
+
+
+def _kick_channel(token: str) -> dict:
+    """The signed-in channel. Kick answers for "you" with no query; the channel name (slug) is the fallback."""
+    channels = _call("GET", f"{KICK_API}/channels", token, who="Kick").get("data") or []
+    if not channels and account("kick"):
+        slug = urllib.parse.quote(account("kick"))
+        channels = _call("GET", f"{KICK_API}/channels?slug={slug}", token, who="Kick").get("data") or []
+    channel = channels[0] if channels and isinstance(channels[0], dict) else {}
+    slug = channel.get("slug")
+    if slug and not (channel.get("stream_title") or _kick_named(channel)):  # asked by name, Kick may say more
+        named = _call("GET", f"{KICK_API}/channels?slug={urllib.parse.quote(str(slug))}", token,
+                      who="Kick").get("data") or []
+        if named and isinstance(named[0], dict) and (named[0].get("stream_title") or _kick_named(named[0])):
+            channel = named[0]
+    stream = channel.get("stream") if isinstance(channel.get("stream"), dict) else {}
+    # What came back, never the values (the stream part carries the stream key).
+    category = channel.get("category") if isinstance(channel.get("category"), dict) else {}
+    log.info("stream details: kick sent %d channel(s), fields %s, stream fields %s, category fields %s; title %s, "
+             "category %s, tags %d, live %s", len(channels), sorted(channel), sorted(stream), sorted(category),
+             "set" if channel.get("stream_title") else "empty", "named" if category.get("name") else "empty",
+             len(stream.get("custom_tags") or channel.get("custom_tags") or []), bool(stream.get("is_live")))
+    return channel
+
+
+def _kick_last() -> Details | None:
+    try:
+        from PySide6.QtCore import QSettings
+
+        raw = QSettings().value(KICK_LAST_SETTING, "") or ""
+        last = json.loads(raw) if raw else None
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(last, dict) or last.get("account") != account("kick"):
+        return None
+    tags = [str(t) for t in last.get("tags") or [] if t]
+    return Details(title=str(last.get("title") or ""), category=str(last.get("category") or ""),
+                   category_id=str(last.get("category_id") or ""), tags=tags, old_tags=list(tags), from_last=True,
+                   note="Kick didn't send your details, so these are what you last saved here.")
+
+
+def _kick_keep(details: Details) -> None:
+    try:
+        from PySide6.QtCore import QSettings
+
+        QSettings().setValue(KICK_LAST_SETTING, json.dumps({
+            "account": account("kick"), "title": details.title.strip(), "category": details.category,
+            "category_id": details.category_id, "tags": list(details.tags)}))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _kick_load() -> Details:
     def call(token):
-        channel = (_call("GET", f"{KICK_API}/channels", token, who="Kick").get("data") or [{}])[0]
-        category = channel.get("category") or {}
-        return Details(title=channel.get("stream_title", "") or "", category=category.get("name", "") or "",
-                       category_id=str(category.get("id") or ""))
+        channel = _kick_channel(token)
+        category = channel.get("category") if isinstance(channel.get("category"), dict) else {}
+        stream = channel.get("stream") if isinstance(channel.get("stream"), dict) else {}
+        tags = stream.get("custom_tags") or channel.get("custom_tags") or []
+        tags = [str(t) for t in tags if t] if isinstance(tags, list) else []
+        details = Details(title=channel.get("stream_title", "") or "", category=category.get("name", "") or "",
+                          category_id=str(category.get("id") or ""), tags=tags, old_tags=list(tags))
+        if not details.category:
+            details.category_id = ""  # an id with no name is Kick's offline placeholder
+        if not (details.title and details.category):  # offline, Kick leaves these out: fill from the last save
+            last = _kick_last()
+            if not details.title and not details.tags:
+                details.unread = True  # Kick sends no tags offline either, so an empty box clears them
+            if last:
+                details.title = details.title or last.title
+                if not details.category:
+                    details.category, details.category_id = last.category, last.category_id
+                if not details.tags:
+                    details.tags, details.old_tags = list(last.tags), list(last.tags)
+                details.from_last, details.note = True, last.note
+        return details
 
     return _with_token("kick", call)
 
@@ -490,11 +686,17 @@ def _kick_save(details: Details) -> None:
     body: dict = {"stream_title": details.title.strip()[:TITLE_MAX["kick"]]}
     if details.category_id:
         body["category_id"] = int(details.category_id)
+    tags = split_tags(details.tags)
+    if tags or details.old_tags or details.unread:  # never sent when there were none and none were typed
+        body["custom_tags"] = tags
 
     def call(token):
         _call("PATCH", f"{KICK_API}/channels", token, body, who="Kick")
 
     _with_token("kick", call)
+    details.tags = details.old_tags = tags
+    details.note = ""
+    _kick_keep(details)
 
 
 def _kick_search(text: str) -> list[tuple[str, str]]:
@@ -516,9 +718,14 @@ def _kick_search(text: str) -> list[tuple[str, str]]:
 # What the pop-up calls (on a worker) -------------------------------------------------------------------
 
 
-def load(service: str) -> Details:
+def load(service: str, stream_key_ref: str | None = None, vertical_key_ref: str | None = None) -> Details:
+    """YouTube: stream_key_ref is the horizontal destination's key (the stream it goes to is the one edited);
+    vertical_key_ref the vertical destination's, which joins that stream through YouTube's Dual stream."""
     log.info("stream details: reading %s", service)
-    return {"twitch": _twitch_load, "youtube": _youtube_load, "kick": _kick_load}[service]()
+    if service == "youtube":
+        return _youtube_load(get_key(stream_key_ref) if stream_key_ref else None,
+                             get_key(vertical_key_ref) if vertical_key_ref else None)
+    return {"twitch": _twitch_load, "kick": _kick_load}[service]()
 
 
 def save(service: str, details: Details, thumbnail_path: str = "", stream_key_ref: str | None = None) -> Details:

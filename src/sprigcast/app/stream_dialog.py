@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -51,13 +51,17 @@ def _output_label(output: Output) -> str:
 
 
 PLACE_CARDS_STYLE = (
-    f"#placeCards {{ background: transparent; border: none; outline: none; }}"
-    f"#placeCards::item {{ background: {theme.PANEL}; color: {theme.TEXT}; border-radius: 14px;"
-    f" padding: 10px 14px; margin-bottom: 8px; }}"
+    f"#placeCards {{ background: transparent; border: none; outline: none; padding: 0px; }}"
+    f"#placeCards::item {{ background: {theme.SECTION}; color: {theme.TEXT}; border: 1px solid {theme.SECTION_EDGE};"
+    f" border-radius: 14px; padding: 10px 14px; margin-bottom: 8px; }}"
     f"#placeCards::item:hover {{ background: {theme.RAISED_HOVER}; }}"
-    f"#placeCards::item:selected {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}"
+    f"#placeCards::item:selected {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT};"
+    f" border-color: {theme.ACCENT}; }}"
+    f"QPushButton#streamAdd {{ background: transparent; color: {theme.LABEL}; border: 1px dashed {theme.FIELD_EDGE};"
+    f" border-radius: 14px; padding: 10px 14px; font-weight: 600; }}"
+    f"QPushButton#streamAdd:hover {{ color: {theme.TEXT_BRIGHT}; border-color: {theme.ACCENT}; }}"
+    f"#streamListTitle {{ color: {theme.MUTED}; font-size: 12px; font-weight: 600; letter-spacing: 1px; }}"
 )
-REMOVE_STYLE = theme.SMALL_PILL_STYLE + f"QPushButton {{ color: {theme.BAD}; }}"
 
 
 def _heading(text: str, size: int) -> QLabel:
@@ -73,19 +77,26 @@ LABEL_W = 104  # every card's labels share one column, so the fields line up dow
 
 
 def _section(title: str) -> tuple[QWidget, QFormLayout]:
-    """A soft rounded card with its title inside (no OBS-style group box frame)."""
+    """A titled section card, like every Settings section: a leaf before the title."""
     card = QFrame()
-    card.setObjectName("streamCard")
-    card.setStyleSheet(f"#streamCard {{ background: {theme.CARD}; border-radius: 20px; }}")
+    card.setObjectName("streamCard")  # styled by the page (PAGE_STYLE)
     outer = QVBoxLayout(card)
-    outer.setContentsMargins(26, 20, 26, 22)
-    outer.setSpacing(14)
-    outer.addWidget(_heading(title, 15))
+    outer.setContentsMargins(0, 0, 0, 22)
+    outer.setSpacing(18)
+    head = QHBoxLayout()
+    head.setContentsMargins(24, 16, 24, 0)
+    head.setSpacing(10)
+    leaf = QLabel()
+    leaf.setObjectName("streamLeaf")
+    leaf.setFixedSize(14, 14)
+    head.addWidget(leaf)
+    head.addWidget(_heading(title, theme.SECTION_TITLE_PX), 1)
+    outer.addLayout(head)
     form = QFormLayout()
-    form.setContentsMargins(0, 0, 0, 0)
+    form.setContentsMargins(26, 0, 26, 0)
     form.setHorizontalSpacing(18)
     form.setVerticalSpacing(12)
-    form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+    form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
     form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
     outer.addLayout(form)
     _FORMS.append(form)
@@ -101,7 +112,38 @@ def _line_up_labels(forms: list[QFormLayout]) -> None:
             item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
             if item is not None and item.widget() is not None:
                 item.widget().setFixedWidth(LABEL_W)
-                item.widget().setStyleSheet(theme.MUTED_STYLE)
+                item.widget().setObjectName("streamLabel")  # styled by the page (PAGE_STYLE)
+                if isinstance(item.widget(), QLabel):
+                    item.widget().setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+
+# The page's look in one style sheet, picked by object names: a style sheet on each card, label and note was
+# 30-odd of them, and the page was 245 ms of Settings' warm-up slices on the PC (2026-11-18, just after start).
+def _leaf_rule() -> str:
+    try:
+        pic = theme.nature_pictures()
+    except OSError:  # can't write the picture: titles without the leaf
+        return ""
+    return f"#streamLeaf {{ image: url({pic['section_leaf']}); background: transparent; }}"
+
+
+PAGE_STYLE = (
+    f"#streamCard {{ background: {theme.SECTION}; border: 1px solid {theme.SECTION_EDGE}; border-radius: 20px; }}"
+    f"#streamCard QLabel {{ color: {theme.LABEL}; }}"
+    f"#streamLabel {{ color: {theme.LABEL}; }}"
+    f"#streamMuted {{ color: {theme.MUTED}; }}"
+    "#streamScroll, #streamForm { background: transparent; }"
+    f"#streamWarn {{ color: {theme.WARN}; }}"
+    f"#streamDivider {{ background: {theme.EDGE}; }}"
+    + PLACE_CARDS_STYLE
+    + theme.button_style(13, "6px 13px", "QPushButton#streamSmall, QPushButton#streamRemove")
+    + f"QPushButton#streamRemove {{ color: {theme.BAD}; }}"
+    + f"#streamCard QLineEdit, #streamCard QComboBox, #streamCard QSpinBox {{ background: {theme.FIELD};"
+    f" border: 1px solid {theme.FIELD_EDGE}; border-radius: 10px; padding: 6px 13px; min-height: 20px; }}"
+    + f"#streamCard QLineEdit:focus, #streamCard QComboBox:focus, #streamCard QSpinBox:focus"
+    f" {{ border-color: {theme.ACCENT}; }}"
+    + _leaf_rule()
+)
 
 
 log = logging.getLogger(__name__)
@@ -130,6 +172,7 @@ class StreamPage(QWidget):
 
     def __init__(self, collection: SceneCollection, parent: QWidget | None = None):
         super().__init__(parent)
+        self.setStyleSheet(PAGE_STYLE)
         self.collection = collection
         self.outputs = [o.model_copy() for o in collection.outputs if o.type == "stream"]
         self.other_paths_ids: set[str] = set()  # places in other paths (their ids name their keys)
@@ -146,29 +189,35 @@ class StreamPage(QWidget):
         root.setSpacing(0)
         _FORMS.clear()
 
-        # Left: the places you stream to, as cards. "+ Add" sits on top so it never scrolls away.
+        # Left: the places you stream to, as cards, with "+ Add place" right under the last one (the list is as tall
+        # as its cards, so the button never scrolls away; with many places the list scrolls above it).
         left = QVBoxLayout()
         left.setSpacing(10)
-        top = QHBoxLayout()
-        top.addWidget(_heading("Places", 17), 1)
-        self.add_button = QPushButton("+ Add")
-        self.add_button.setStyleSheet(theme.SMALL_PILL_STYLE)
-        self.add_button.setToolTip("Add another place to stream")
-        self.add_button.clicked.connect(self._add)
-        top.addWidget(self.add_button)
-        left.addLayout(top)
+        title = QLabel("PLACES")
+        title.setObjectName("streamListTitle")
+        left.addWidget(title)
         self.list = QListWidget()
         self.list.setObjectName("placeCards")
         self.list.setFixedWidth(220)
         self.list.setFrameShape(QListWidget.Shape.NoFrame)
-        self.list.setStyleSheet(PLACE_CARDS_STYLE)
+        self.list.setSizeAdjustPolicy(QListWidget.SizeAdjustPolicy.AdjustToContents)
         self.list.currentRowChanged.connect(self._load)
-        left.addWidget(self.list, 1)
+        self.list.model().rowsInserted.connect(lambda *_: self._fit_list())
+        self.list.model().rowsRemoved.connect(lambda *_: self._fit_list())
+        left.addWidget(self.list)
+        self.add_button = QPushButton("+ Add place")
+        self.add_button.setObjectName("streamAdd")
+        self.add_button.setFixedWidth(220)
+        self.add_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_button.setToolTip("Add another place to stream")
+        self.add_button.clicked.connect(self._add)
+        left.addWidget(self.add_button)
+        left.addStretch(1)
         root.addLayout(left)
         root.addSpacing(22)
         divider = QFrame()
         divider.setFixedWidth(1)
-        divider.setStyleSheet(f"background: {theme.EDGE};")
+        divider.setObjectName("streamDivider")
         root.addWidget(divider)
         root.addSpacing(6)
 
@@ -186,7 +235,7 @@ class StreamPage(QWidget):
         self.bandwidth_test.setToolTip("On: the stream reaches Twitch so you can check it, but viewers don't see it")
         self.bandwidth_test.toggled.connect(self._edited)
         self.bandwidth_label = QLabel("Test only")
-        self.bandwidth_label.setStyleSheet(theme.MUTED_STYLE)
+        self.bandwidth_label.setObjectName("streamMuted")
         self.bandwidth_label.setToolTip(self.bandwidth_test.toolTip())
         hero.addWidget(self.bandwidth_label)
         hero.addWidget(self.bandwidth_test)
@@ -195,11 +244,11 @@ class StreamPage(QWidget):
         self.enabled.setToolTip("On: Go live sends here. Off: skipped.")
         self.enabled.toggled.connect(self._edited)
         self.enabled_label = QLabel("Go live here")
-        self.enabled_label.setStyleSheet(theme.MUTED_STYLE)
+        self.enabled_label.setObjectName("streamMuted")
         hero.addWidget(self.enabled_label)
         hero.addWidget(self.enabled)
         self.remove_button = QPushButton("Remove")
-        self.remove_button.setStyleSheet(REMOVE_STYLE)
+        self.remove_button.setObjectName("streamRemove")
         self.remove_button.setToolTip("Remove this place (and its saved stream key)")
         self.remove_button.clicked.connect(self._remove)
         hero.addWidget(self.remove_button)
@@ -218,7 +267,6 @@ class StreamPage(QWidget):
         self.server = QLineEdit()
         self.server.setPlaceholderText("rtmp://… or rtmps://…")
         self.server.textEdited.connect(self._edited)
-        form.addRow("Server", self.server)
         # Twitch: connect the account instead of pasting the key.
         self.twitch_row = QWidget()
         twitch = QHBoxLayout(self.twitch_row)
@@ -226,8 +274,13 @@ class StreamPage(QWidget):
         self.twitch_label = QLabel()
         self.twitch_button = QPushButton()
         self.twitch_button.clicked.connect(self._twitch_clicked)
+        self.twitch_sign_out = QPushButton("Sign out")
+        self.twitch_sign_out.clicked.connect(lambda: self._sign_out("twitch"))
+        twitch.setSpacing(12)
         twitch.addWidget(self.twitch_button)
-        twitch.addWidget(self.twitch_label, 1)
+        twitch.addWidget(self.twitch_label)
+        twitch.addWidget(self.twitch_sign_out)
+        twitch.addStretch(1)
         self.account_label = QLabel("Account")
         form.addRow(self.account_label, self.twitch_row)
         self.use_account = QCheckBox("Get the stream key from my Twitch account when I go live")
@@ -253,22 +306,33 @@ class StreamPage(QWidget):
         self.sign_in_button.setToolTip("Sign in to fill in the stream key")
         self.sign_in_button.clicked.connect(self._sign_in_clicked)
         self.signin_state = QLabel()
+        self.sign_out_button = QPushButton("Sign out")
+        self.sign_out_button.clicked.connect(lambda: self._sign_out(self._current_service()))
+        signin.setSpacing(12)
         signin.addWidget(self.sign_in_button)
-        signin.addWidget(self.signin_state, 1)
+        signin.addWidget(self.signin_state)
+        signin.addWidget(self.sign_out_button)
+        signin.addStretch(1)
         self.signin_label = QLabel("Account")
         form.addRow(self.signin_label, self.signin_row)
         self.signin_error = QLabel()
         self.signin_error.setWordWrap(True)
-        self.signin_error.setStyleSheet(f"color: {theme.WARN}")
+        self.signin_error.setObjectName("streamWarn")
         self.signin_error.hide()
         form.addRow("", self.signin_error)
+        groups.addWidget(destination)
+
+        # Server and key: where the stream goes.
+        self._key_section, form = _section("Server and key")
+        self._key_form = form
+        form.addRow("Server", self.server)
         self.key_label = QLabel("Stream key")
         form.addRow(self.key_label, self.key_row)
         self.help = QLabel()
         self.help.setWordWrap(True)
-        self.help.setStyleSheet(f"color: {theme.MUTED}")
+        self.help.setObjectName("streamMuted")
         form.addRow("", self.help)
-        groups.addWidget(destination)
+        groups.addWidget(self._key_section)
 
         # Picture: what this place gets from its canvas.
         video, form = _section("Picture")
@@ -291,7 +355,7 @@ class StreamPage(QWidget):
         form.addRow("Bitrate", self.bitrate)
         self.video_note = QLabel("Encoder and quality are on the Quality tab.")
         self.video_note.setWordWrap(True)
-        self.video_note.setStyleSheet(f"color: {theme.MUTED}")
+        self.video_note.setObjectName("streamMuted")
         self.auto_bitrate = QCheckBox("Auto-pilot bitrate")
         self.auto_bitrate.setToolTip("When your upload can't keep up, lower the bitrate smoothly instead of "
                                      "dropping frames, then climb back to this bitrate once it recovers")
@@ -336,7 +400,7 @@ class StreamPage(QWidget):
             "Twitch sets sizes and bitrates; the Video settings above are the fallback. Needs an NVIDIA or Intel Arc GPU."
         )
         self.enhanced_note.setWordWrap(True)
-        self.enhanced_note.setStyleSheet(f"color: {theme.MUTED}")
+        self.enhanced_note.setObjectName("streamMuted")
         form.addRow("", self.enhanced_note)
         groups.addWidget(self.enhanced_box)
 
@@ -347,7 +411,7 @@ class StreamPage(QWidget):
         form.addRow("", self.ignore_recommendations)
         note = QLabel("Keys are saved in Windows Credential Manager, never in the scenes file.")
         note.setWordWrap(True)
-        note.setStyleSheet(f"color: {theme.MUTED}")
+        note.setObjectName("streamMuted")
         form.addRow("", note)
         groups.addWidget(advanced)
         self._extras_section = advanced
@@ -358,7 +422,6 @@ class StreamPage(QWidget):
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         scroll.setObjectName("streamScroll")
         self.form_widget.setObjectName("streamForm")
-        scroll.setStyleSheet("#streamScroll, #streamForm { background: transparent; }")
         scroll.viewport().setAutoFillBackground(False)
         scroll.setWidget(self.form_widget)
         root.addWidget(scroll, 1)
@@ -526,26 +589,37 @@ class StreamPage(QWidget):
         can_sign_in = service_signin.available(output.service or "")
         self.signin_row.setVisible(can_sign_in)
         self.signin_label.setVisible(can_sign_in)
-        if can_sign_in:
-            signed_in = bool(output.account)
-            self.signin_state.setText(f"Signed in as {output.account}" if signed_in else "Not signed in")
-            self.sign_in_button.setText("Sign out" if signed_in else "Sign in")
-            self.sign_in_button.setToolTip("Forget this account and its stream key" if signed_in
+        if can_sign_in:  # one sign-in per platform: signed in, the key comes without a new sign-in
+            from sprigcast.output import stream_details
+
+            central = stream_details.account(output.service or "")
+            name = central or output.account
+            self.signin_state.setText(f"Signed in as {name}" if name else "Not signed in")
+            self.sign_out_button.setVisible(bool(central))
+            self.sign_in_button.setText("Get key" if central else "Sign in")
+            self.sign_in_button.setToolTip("Fill in the stream key from your account" if central
                                            else "Sign in to fill in the stream key")
         if not can_sign_in or output.id != self._error_for:
             self.signin_error.hide()
         if is_twitch:
             self.twitch_label.setText(f"Connected as {account}" if account else "Not connected")
-            self.twitch_button.setText("Disconnect Account" if account else "Connect Account (recommended)")
+            self.twitch_button.setText("Connect Account (recommended)")
+            self.twitch_button.setVisible(not account)
+            self.twitch_sign_out.setVisible(bool(account))
+
+    def _fit_list(self) -> None:
+        """The place list as tall as its cards (so + Add place sits under the last), scrolling once it can't be."""
+        rows = sum(self.list.sizeHintForRow(i) for i in range(self.list.count()))
+        self.list.setMaximumHeight(max(4, rows + 4))
 
     def _card_text(self, output: Output) -> str:
         return f"{NEW_PLACE}\n{PICK_SERVICE}" if output.id in self._unpicked else place_card_text(output)
 
     def _show_unpicked(self, unpicked: bool) -> None:
         """A new place shows only the service to pick; the rest appears once one is picked."""
-        for widget in (self.server, self.twitch_row, self.use_account, self.signin_row, self.key_row, self.help):
+        for widget in (self.twitch_row, self.use_account, self.signin_row):
             self._account_form.setRowVisible(widget, not unpicked)
-        for widget in (self._picture_section, self.enabled, self.enabled_label):
+        for widget in (self._picture_section, self._key_section, self.enabled, self.enabled_label):
             widget.setVisible(not unpicked)
         extras_on = self.ignore_recommendations.isChecked()
         self._extras_section.setVisible(not unpicked and (self._expert or extras_on))  # never hidden while on
@@ -625,12 +699,7 @@ class StreamPage(QWidget):
         output = self._current()
         if output is None:
             return
-        if twitch_auth.connected_account():
-            try:
-                twitch_auth.disconnect()
-            except Exception as exc:
-                QMessageBox.warning(self, "SprigCast", f"Could not remove the Twitch sign-in:\n{exc}")
-            self.use_account.setChecked(False)
+        if twitch_auth.connected_account():  # connected already: Sign out is the button beside it
             self._show_service(output)
             return
         from sprigcast.app.twitch_connect import TwitchConnectDialog
@@ -663,20 +732,20 @@ class StreamPage(QWidget):
         return self.keys[ref]
 
     def _sign_in_clicked(self) -> None:
-        """YouTube or Kick: sign in once, fill in the key (and Kick's server); signed in, sign out."""
+        """YouTube or Kick: fill in the key (and Kick's server). Signed in to the platform already, straight from
+        the account; otherwise sign in once, which signs in Stream details and chat too."""
         output = self._current()
         if output is None:
             return
-        if output.account:  # Sign out: forget who it was and the key it fetched
-            log.info("sign-in: %s place signed out", output.service)
-            output.account = ""
-            self.key.setText("")
-            self.signin_error.hide()
-            self._edited()
-            return
         from sprigcast.app.signin_dialog import SignInDialog
+        from sprigcast.output import service_signin, stream_details
 
-        dialog = SignInDialog(output.service or "", self)
+        vertical = output.service == "youtube" and output.canvas == "vertical"  # its own key for Dual stream
+        if stream_details.account(output.service or ""):
+            self._key_from_account(output, vertical)
+            return
+        extra = {"begin": lambda s: service_signin.begin(s, vertical=True)} if vertical else {}
+        dialog = SignInDialog(output.service or "", self, **extra)
         try:
             ok = bool(dialog.exec())
             fetched, error = dialog.fetched if ok else None, dialog.error
@@ -688,6 +757,29 @@ class StreamPage(QWidget):
                 self.signin_error.setText(error)
                 self.signin_error.show()
             return
+        self._use_fetched(output, fetched)
+
+    def _current_service(self) -> str:
+        output = self._current()
+        return (output.service or "") if output is not None else ""
+
+    def _sign_out(self, service: str) -> None:
+        """Sign out of the platform everywhere: every place on it, Stream details and chat. Keys already filled in
+        keep working. Never done after a place's own sign-in: Google's revoke ends the whole grant (#596/#603)."""
+        if not service:
+            return
+        from sprigcast.app.accounts_page import sign_out
+
+        error = sign_out(service)
+        output = self._current()
+        if error and output is not None:
+            self._error_for = output.id
+            self.signin_error.setText(error)
+            self.signin_error.show()
+        if output is not None:
+            self._show_service(output)
+
+    def _use_fetched(self, output: Output, fetched) -> None:
         self._error_for = ""
         self.signin_error.hide()
         output.account = fetched.account
@@ -695,6 +787,46 @@ class StreamPage(QWidget):
         if fetched.server and not self.server.isReadOnly():
             self.server.setText(fetched.server)
         self._edited()
+
+    def _key_from_account(self, output: Output, vertical: bool) -> None:
+        """On a worker: the key through the signed-in account. The answer is picked up on the UI thread."""
+        import threading
+
+        from sprigcast.output import service_signin
+
+        box: dict = {}
+
+        def work() -> None:  # no Qt in here
+            try:
+                box["fetched"] = service_signin.key_from_account(output.service or "", vertical)
+            except Exception as exc:  # noqa: BLE001 (worded for the person, or a plain note)
+                box["error"] = str(exc) if isinstance(exc, service_signin.SignInError) else "Couldn't get the key."
+                if not isinstance(exc, service_signin.SignInError):
+                    log.warning("sign-in: %s key from the account failed", output.service, exc_info=True)
+
+        self.sign_in_button.setEnabled(False)
+        thread = threading.Thread(target=work, name="destination-key", daemon=True)
+        thread.start()
+        timer = QTimer(self)
+        timer.setInterval(100)
+
+        def check() -> None:
+            if thread.is_alive():
+                return
+            timer.stop()
+            timer.deleteLater()
+            self.sign_in_button.setEnabled(True)
+            if self._current() is not output:
+                return  # another place is showing now
+            if "fetched" in box:
+                self._use_fetched(output, box["fetched"])
+            else:
+                self._error_for = output.id
+                self.signin_error.setText(box.get("error", "Couldn't get the key."))
+                self.signin_error.show()
+
+        timer.timeout.connect(check)
+        timer.start()
 
     # Result ------------------------------------------------------------------------
 

@@ -85,6 +85,7 @@ Error codes:
 | `busy` | already doing it, e.g. already live |
 | `unknown_action` | no such action |
 | `doctor_warnings` | going live or recording would have asked first (the Stream doctor, low space): nothing started; `warnings` lists why, and `force: true` goes ahead |
+| `places_differ` | stream.start was given `places` and the places switched on aren't exactly those: nothing started; `places` lists the ones switched on |
 | `plugin_missing` | the action comes with a store plugin that isn't added; the message names it |
 | `failed` | something went wrong inside SprigCast |
 
@@ -301,7 +302,7 @@ Blooms hold sprigs, so `{"bloom": "Chatting", "item": "Cam"}` also finds the Cam
 | `source.new` | Make a source (a browser page, text, image...). Put it in a bloom with item.add. | `name`: name, `kind`: browser, text, image, color, media..., `settings` (optional): {key: value}, e.g. url, width, height |
 | `source.rename` | Give a source a new name. | `source`: name or id, `name`: new name |
 | `source.rotate` | Turn a source to an angle wherever it's shown (0: upright again). | `source`: name or id, `degrees`: clockwise, -3600 to 3600 |
-| `source.set` | Change some of a source's settings: text, a browser page's url, an image file, a colour... | `source`: name or id, `settings`: {key: value} |
+| `source.set` | Change some of a source's settings: text, a browser page's url, an image file, a color... | `source`: name or id, `settings`: {key: value} |
 | `sources.list` | Every source (cameras, text, browser pages, images, sounds...). | none |
 
 ### sprig
@@ -315,7 +316,7 @@ Blooms hold sprigs, so `{"bloom": "Chatting", "item": "Cam"}` also finds the Cam
 
 | Action | What it does | Fields |
 | --- | --- | --- |
-| `stream.start` | Go live to every place that's switched on. If the Stream doctor would warn first, nothing starts: doctor_warnings lists them. | `force` (optional): true: go live past the doctor's warnings |
+| `stream.start` | Go live to every place that's switched on; the answer lists them (places). If the Stream doctor would warn first, nothing starts: doctor_warnings lists them. places: the ids you expect to go live; if the places switched on differ, nothing starts (places_differ lists them). | `force` (optional): true: go live past the doctor's warnings; `places` (optional): list of place ids from places.list: go live only if exactly these are switched on |
 | `stream.status` | Live or not, for how long, dropped frames, and each place on its own. | none |
 | `stream.stop` | End the stream. | none |
 | `stream.toggle` | Go live, or end the stream (going live answers like stream.start). | `force` (optional): true: go live past the doctor's warnings |
@@ -370,7 +371,7 @@ Plugins added from **Tools → Plugin store** bring their own actions. They're i
 | `nowplaying.get` | Now playing | The song on the Now playing card. | |
 | `replay.play` | Instant replay | Play the last seconds back on stream. | `source` (optional; default every Instant replay), `seconds` (1-120, default its Seconds), `speed` (0.25-1; 0.5 is slow motion) |
 | `replay.stop` | Instant replay | End a replay that's playing (it wipes out). | `source` (optional) |
-| `visualizer.set` | Audio visualizer | Change the look: style, colours, sensitivity. | `style` (bars, wave, circle or line), `color`, `peak_color` (#rrggbb), `sensitivity` (0.05 to 10), `source` (optional; default every visualizer), all optional |
+| `visualizer.set` | Audio visualizer | Change the look: style, colors, sensitivity. | `style` (bars, wave, circle or line), `color`, `peak_color` (#rrggbb), `sensitivity` (0.05 to 10), `source` (optional; default every visualizer), all optional |
 
 **Death count** answers every `deaths.*` action with `{"count": N}` and sends a `deaths.changed` event (`{"count": N}`, `plugin` group) after each change. Without `source` it changes every Death count you've added. The count is saved with your blooms, so it survives a restart. Adding a Death count (+ → Plugins → Death count) makes a sprig of its own on top of the bloom, like Snap: a gravestone grows out of the ground at the bottom, flips to the new number, holds for a few seconds (its Seconds setting) and sinks back.
 
@@ -384,7 +385,7 @@ Plugins added from **Tools → Plugin store** bring their own actions. They're i
 
 **Now playing** shows the song Windows says is playing (Spotify, YouTube Music, browsers and most players; no keys or sign-in), with its cover, a time bar and sound bars, in the bottom left corner, in one of four styles. It fades away when the music pauses or stops. It listens to Windows only while the card is on screen, and only when told something changed. `nowplaying.get` answers `{"playing", "title", "artist", "album", "app", "length", "position"}` (seconds; 0 when the app doesn't say), and `nowplaying.changed` (same fields) comes when the song changes, pauses or jumps while the card is on screen.
 
-**Audio visualizer** draws bars, a wave, a circle or a line that move with a sound SprigCast already mixes (everything viewers hear, or one sound: a mic, desktop, music, an app). It listens only while it's on air. `visualizer.set` answers with the names it changed and the style and colours now. Adding one (+ → Plugins → Audio visualizer) makes a sprig of its own along the bottom of the bloom.
+**Audio visualizer** draws bars, a wave, a circle or a line that move with a sound SprigCast already mixes (everything viewers hear, or one sound: a mic, desktop, music, an app). It listens only while it's on air. `visualizer.set` answers with the names it changed and the style and colors now. Adding one (+ → Plugins → Audio visualizer) makes a sprig of its own along the bottom of the bloom.
 
 **Snap** has no actions of its own: it turns every saved screenshot (`screenshot.take`, the button or its hotkey) into a polaroid animation on stream. A camera pops up, flashes and prints the screenshot. The polaroid shows the whole screenshot. The saved file is the plain screenshot, and a screenshot taken while a polaroid is up leaves it out; turn on **Save a polaroid copy** in the Snap's settings (off by default) to also save the framed polaroid next to it. Adding a Snap (+ → Plugins → Snap) makes a sprig of its own that fills the canvas, on top of the bloom in every shape, so it overlays the stream without any placing. With **Freeze the screen while it prints** on (the default), the bloom on air holds still from the snapped frame until the polaroid slides away, so viewers see exactly the moment that was snapped; the Snap itself keeps moving.
 

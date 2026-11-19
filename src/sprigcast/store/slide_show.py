@@ -57,7 +57,9 @@ def fit(picture: np.ndarray, box: tuple[int, int]) -> np.ndarray:
     h, w = picture.shape[:2]
     scale = min(bw / w, bh / h)
     sw, sh = max(1, round(w * scale)), max(1, round(h * scale))
-    image = QImage(np.ascontiguousarray(picture).data, w, h, w * 4, QImage.Format.Format_RGBA8888)
+    pixels = np.ascontiguousarray(picture)  # kept while the QImage reads it: it doesn't copy, and a passing
+    # temporary could be freed under it (on a worker thread, after a bloom switch woke the slide show)
+    image = QImage(pixels.data, w, h, w * 4, QImage.Format.Format_RGBA8888)
     image = image.scaled(sw, sh, Qt.AspectRatioMode.IgnoreAspectRatio,
                          Qt.TransformationMode.SmoothTransformation).convertToFormat(QImage.Format.Format_RGBA8888)
     rows = np.frombuffer(image.constBits(), dtype=np.uint8).reshape(sh, image.bytesPerLine())[:, : sw * 4]

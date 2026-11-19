@@ -26,7 +26,7 @@ def test_removed_features_leave_nothing_behind(tmp_path):
     assert "models folder" in removed and not (tmp_path / "models").exists()
     assert not settings.contains("captions/google_key") and not settings.contains("wavelink/sync")
     assert not settings.contains("kick/pusher_key") and settings.value("kick/client_id") == "keep"
-    assert json.loads(settings.value("chat/names")) == {"twitch": "moss"}
+    assert json.loads(settings.value("chat/names")) == {"twitch": "moss", "kick": "fern"}  # Kick chat is back
     assert leftovers.clean_up(tmp_path, settings) == []  # once per PC
 
 

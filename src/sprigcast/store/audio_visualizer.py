@@ -9,7 +9,9 @@ Smoothing (0 snappy to 0.95 slow), Mirror (bass in the middle, the same both way
 
 It's light: it hears the sound SprigCast already mixes (no device is opened again), a small FFT
 (2048 samples) runs at most 30 times a second, and it only works while it's on air. Off air, or
-hidden, it stops listening; during silence, once it has settled, nothing is drawn at all.
+hidden, it stops listening; during silence, once it has settled, nothing is drawn at all. With the
+native engine, the engine hears and draws it itself (native/core/src/visual.cpp, the same numbers and
+pixels as here): neither the sound nor the pictures pass through Python.
 
 Apps can change its look, for a redeem or a song change:
     {"do": "visualizer.set", "style": "circle", "color": "#7fb8ff"}
@@ -19,7 +21,9 @@ A SprigCast store plugin: add it from Tools → Plugin store.
 
 from __future__ import annotations
 
+import logging
 import math
+import os
 import re
 import time
 from typing import Any
@@ -31,9 +35,11 @@ from sprigcast.control.native import ApiError, register_action
 from sprigcast.core import workers
 from sprigcast.core.source import Source, register
 
-PLUGIN = {"id": "audio_visualizer", "name": "Audio visualizer", "version": 2, "adds": "Source",
+PLUGIN = {"id": "audio_visualizer", "name": "Audio visualizer", "version": 3, "adds": "Source",
           "about": "Bars, a wave, a circle or a line that move with your mic, music or the whole stream.",
-          "new": "Starts at a better size on wide canvases."}
+          "new": "Lighter: drawn by SprigCast's engine."}
+
+log = logging.getLogger(__name__)
 
 KIND = "audio_visualizer"
 W, H = 1280, 400  # the box; scale it on the canvas like anything else
@@ -427,6 +433,10 @@ class AudioVisualizerSource(Source):
         self._turn = 0  # goes up whenever it stops listening: drawings asked for before then are dropped
         self._busy = False  # a drawing is being made
         self._ready: np.ndarray | None = None  # a finished drawing, for the next video_frame
+        self._visual = None  # sprigcore.SoundVisual when the engine hears and draws it
+        self._visual_mixer = None
+        self._engine_failed = False  # the engine's visualizer faulted: Python draws from now on
+        self._copies: list[np.ndarray] = []  # the engine's drawings copied for Python's compositor, reused in turn
         self.status = "ok"
 
     @property
@@ -438,20 +448,59 @@ class AudioVisualizerSource(Source):
     def _sound(self) -> str:
         return str(self.settings.get("sound") or listen.MIX)
 
+    def _engine_mixer(self):
+        """The engine's mixer, when the engine should hear and draw this visualizer."""
+        if self._engine_failed or os.environ.get("SPRIGCAST_NO_NATIVE_VISUALIZER"):
+            return None
+        from sprigcast.audio import native_mixer
+
+        return native_mixer.current()
+
+    def _send_look(self) -> None:
+        style, count, smoothing, sensitivity, mirror = look(self.settings)
+        self._visual.set_look(style, count, smoothing, sensitivity, mirror,
+                              colour(self.settings.get("color"), "#4fd88f"),
+                              colour(self.settings.get("peak_color"), "#bff3d6"))
+
     def _listen(self) -> None:
         sound = self._sound()
         if self._heard == sound:
             return
         self._quiet()
-        listen.add(sound, self.analyser.feed)
+        mixer = self._engine_mixer()
+        if mixer is not None:
+            try:
+                self._visual, self._visual_mixer = mixer.visual(sound), mixer
+                self._send_look()
+            except Exception as exc:  # noqa: BLE001 (Python hears and draws it instead)
+                log.warning("audio visualizer %s: the engine can't draw it (%s); Python does", self.id, exc)
+                self._drop_visual()
+                self._engine_failed = True
+        if self._visual is None:
+            listen.add(sound, self.analyser.feed)
         self._heard = sound
         known = {sid for sid, _ in listen.sounds()}
         self.status = "ok" if sound == listen.MIX or not known or sound in known else "Its sound isn't here"
 
+    def _drop_visual(self) -> None:
+        visual, mixer = self._visual, self._visual_mixer
+        self._visual = self._visual_mixer = None
+        self._copies = []
+        if visual is not None:
+            try:
+                if mixer is not None:
+                    mixer.drop_visual(visual)
+                else:
+                    visual.close()
+            except Exception:  # closed with its mixer already
+                log.debug("audio visualizer %s: closing the engine's", self.id, exc_info=True)
+
     def _quiet(self) -> None:
         if self._heard is not None:
-            listen.remove(self._heard, self.analyser.feed)
+            if self._visual is None:
+                listen.remove(self._heard, self.analyser.feed)
             self._heard = None
+        self._drop_visual()
         self._turn += 1
         self.analyser = Analyser()  # a drawing still being made keeps the old ones; nothing is shared
         self._painter = Painter()  # (and the frames go with them)
@@ -486,6 +535,30 @@ class AudioVisualizerSource(Source):
         self._still = False  # draw the new look straight away
         if self._heard is not None and self._heard != self._sound():
             self._listen()
+        elif self._visual is not None:
+            try:
+                self._send_look()
+            except Exception as exc:  # noqa: BLE001
+                self._engine_gave_up(exc)
+
+    def _engine_gave_up(self, exc: Exception) -> None:
+        log.error("audio visualizer %s: the engine's stopped (%s); Python hears and draws it from now on",
+                  self.id, exc)
+        self._engine_failed = True
+        self._heard = None  # listen again, in Python
+        self._drop_visual()
+        if not self._hidden:
+            self._listen()
+
+    @property
+    def engine_player(self):
+        """The engine's visualizer: the native engine's compositor takes its drawings from it directly
+        (render/engine.py), and the render thread only calls :meth:`engine_tick`."""
+        visual = self._visual
+        return visual if visual is not None and not visual.closed else None
+
+    def engine_tick(self) -> None:
+        """Render thread, on a tick the engine showed the drawing itself: nothing to do."""
 
     # Drawing ---------------------------------------------------------------------------------
 
@@ -496,6 +569,15 @@ class AudioVisualizerSource(Source):
         """The last finished drawing (once), and maybe ask for the next. Never draws here."""
         if self._heard is None:
             return None
+        if self._visual is not None:  # Python's compositor draws this tick: a copy of the engine's newest drawing
+            if not self._copies:
+                self._copies = [np.zeros((H, W, 4), np.uint8) for _ in range(3)]
+            self._copies.append(out := self._copies.pop(0))
+            try:
+                return out if self._visual.frame(out) else None
+            except Exception as exc:  # noqa: BLE001 (its thread faulted, or it closed with the mixer)
+                self._engine_gave_up(exc)
+                return None
         ready, self._ready = self._ready, None
         now = time.monotonic() if now is None else now
         dt = now - self._last
@@ -550,7 +632,7 @@ def _set(api, data):
         if data.get(key) is not None:
             value = str(data[key]).strip()
             if not re.fullmatch(r"#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?", value):
-                raise ApiError("bad_request", f"{key} must be a colour like #4fd88f.")
+                raise ApiError("bad_request", f"{key} must be a color like #4fd88f.")
             change[key] = value
     if data.get("sensitivity") is not None:
         value = data["sensitivity"]
@@ -566,5 +648,5 @@ def _set(api, data):
 
 register_action("visualizer.set", "Change an audio visualizer's look (no source: every one).",
                 {"source": "?which Audio visualizer (default: all of them)", "style": "?bars, wave, circle or line",
-                 "color": "?colour like #4fd88f", "peak_color": "?colour the tips light up to",
+                 "color": "?color like #4fd88f", "peak_color": "?color the tips light up to",
                  "sensitivity": "?0.05 to 10 (1 is normal)"}, _set)

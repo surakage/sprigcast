@@ -2,6 +2,7 @@
 #pragma once
 
 #include "base.h"
+#include "move.h"
 
 #include <d3d11.h>
 #include <d3d11_4.h>
@@ -77,6 +78,14 @@ struct Target {
     int width = 0, height = 0;
 };
 
+// A source drawn from a list of other sources' pictures (sc_source_draws): drawn into `target` when the list changes.
+struct Drawn {
+    int width = 0, height = 0;
+    std::vector<sc_item> items;
+    bool dirty = true;
+    Target target;
+};
+
 struct Snapshot {
     std::vector<sc_scene> scenes;
     std::vector<sc_item> items;
@@ -93,11 +102,21 @@ struct Compositor {
     std::unordered_map<uint64_t, Look> looks;
     std::unordered_map<uint64_t, Mask> masks;
     std::unordered_map<uint64_t, Target> parts;          // a sprig's drawing, by snapshot scene id
+    std::unordered_map<uint64_t, Drawn> drawn;           // sources drawn from a list (store plugins' animations)
     std::map<std::pair<uint64_t, int>, double> spins;    // (source, run) -> when its barrel roll started
     std::shared_ptr<const Snapshot> snapshot;
 };
 
 HRESULT compile(const char *source, size_t size, const char *entry, const char *profile, ComPtr<ID3DBlob> &out);
+// Compiles every shader the engine draws with into compile()'s cache, ahead of the first frame that needs it
+// (sc_engine_create runs it on a thread of its own): compiling one on the frame thread held a frame 2.3 s on the
+// software renderer (CI start-up check, 2026-11-19), and slow PCs are not much quicker.
+void warm_shaders();
+void warm_drawing_shaders();
+void warm_compositor_shaders();
+void warm_repack_shaders();
+void warm_nv12_shaders();
+void warm_transition_shaders();
 int make_target(ID3D11Device *device, int width, int height, Target &out,
                 DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM);
 // Checks an upload's description; gives the bytes its data spans (the last row needs only its own pixels).
@@ -114,7 +133,16 @@ int upload_nv12(sc_device &device, uint64_t id, const uint8_t *data, const sc_up
 // A browser page's newest picture, drawn by the browser helper into the texture shared as `name`
 // (page_texture.cpp), copied into source `id` (its top-left `width` x `height`). SC_NOT_YET while the helper
 // still holds the texture. `page` keeps the opened texture from one frame to the next. Takes device.lock.
-int source_page(sc_device &device, uint64_t id, PageTexture &page, const std::wstring &name, int width, int height);
+// copy = false: the picture is taken (the helper may draw the next) but the source keeps the one it has (a freeze).
+int source_page(sc_device &device, uint64_t id, PageTexture &page, const std::wstring &name, int width, int height,
+                bool copy = true, uint32_t flags = 0);
+// What a shared block's header says about its pictures (the u32 after the texture number; 0 for a browser page,
+// whose pictures are premultiplied RGBA). The capture helper's (capture_feed.cpp) are as Windows captured them.
+constexpr uint32_t SHARED_STRAIGHT = 1;  // not premultiplied
+constexpr uint32_t SHARED_OPAQUE = 2;    // alpha ignored
+// A shared texture as sc_page_target_create makes, in B8G8R8A8 (what Windows captures in).
+int page_target_bgra(uint32_t luid_low, int32_t luid_high, void *device, int width, int height, const wchar_t *name,
+                     sc_page_target **out);
 
 }  // namespace sc
 
@@ -167,6 +195,7 @@ struct sc_canvas {
     ComPtr<ID3D11Texture2D> staging;  // made on the first read
     sc::Target outgoing, incoming;    // transitions: the two scenes, let go after a while unused
     double transition_used = 0;
+    std::vector<sc::MoveDraw> move_draws;  // a Move's pieces this frame, kept so frames don't allocate
 };
 
 namespace sc {
@@ -176,6 +205,8 @@ int render_scene(sc_device &dev, ID3D11RenderTargetView *target, int width, int 
 // Draws a transition onto the canvas. The device's lock must be held.
 int render_transition(sc_canvas &canvas, uint64_t from, uint64_t to, double time, const sc_transition &how,
                       float progress);
+// Draws a frame of a Move onto the canvas (move.h). The device's lock must be held.
+int render_move(sc_canvas &canvas, const MovePlan &plan, double time, float progress);
 // Whether the snapshot has this scene.
 bool has_scene(sc_device &dev, uint64_t scene);
 

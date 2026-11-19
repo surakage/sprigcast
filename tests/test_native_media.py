@@ -23,7 +23,9 @@ from sprigcast import sprigcore
 av = pytest.importorskip("av")
 ROOT = Path(__file__).resolve().parent.parent
 CORE = ROOT / "native" / "core"
-MEDIA_SOURCES = ("base.cpp", "ffmpeg.cpp", "media.cpp", "writer.cpp")  # the parts of the engine without Direct3D
+# the parts of the engine without Direct3D
+MEDIA_SOURCES = ("base.cpp", "ffmpeg.cpp", "media.cpp", "writer.cpp", "mixer.cpp", "capture.cpp", "playback.cpp",
+                 "visual.cpp")
 
 
 @pytest.fixture(scope="session")
@@ -551,7 +553,7 @@ def test_media_source_plays_through_the_engine(player_lib, files, monkeypatch):
 def test_media_source_keeps_the_python_player_otherwise(player_lib, files, monkeypatch):
     from sprigcast.sources.media import MediaSource
 
-    monkeypatch.delenv("SPRIGCAST_ENGINE", raising=False)
+    monkeypatch.setenv("SPRIGCAST_ENGINE", "python")
     assert MediaSource("m2", {**MediaSource.defaults, "path": files["video"]})._native is None
 
 

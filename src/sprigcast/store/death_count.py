@@ -32,15 +32,15 @@ from typing import Any
 import numpy as np
 
 from sprigcast.control.native import ApiError, commit_settings, register_action, send_event
-from sprigcast.core import painted
+from sprigcast.core import drawn, painted
 from sprigcast.core.source import Source, register
 from sprigcast.plugin_hooks import not_here, on_air, register_hotkeys, register_item_menu
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "death_count", "name": "Death count", "version": 5, "adds": "Source",
+PLUGIN = {"id": "death_count", "name": "Death count", "version": 8, "adds": "Source",
           "about": "A gravestone grows out of the ground, ticks the death count over and sinks back down.",
-          "new": "Lighter on your PC: the number flip is drawn ahead of time."}
+          "new": "Deaths show at once even while a Snap polaroid is up, and quick deaths each flip in turn."}
 
 KIND = "death_count"
 W, H = 800, 1000  # the box (same as Snap's, so it sits the same way on both shapes)
@@ -64,6 +64,8 @@ GROUND_IN = (0.0, 0.3)
 RISE = (0.15, 1.05)
 FLIP = 0.35  # how long the number takes to change
 FLIP_AT = 1.3  # when it changes, the first time
+FLIP_GAP = 0.15  # between one flip and the next, when deaths come quicker than the number can flip
+MOST_FLIPS = 3  # flips waiting on one trip; a death past those changes the last one's number instead
 SINK = 0.75
 GROUND_OUT = 0.3
 
@@ -121,6 +123,20 @@ class _Job:
         self.started = 0.0
         self.hold_from = FLIP_AT + FLIP  # when the hold starts (moves on if the number changes again)
         self.seed = random.randrange(1 << 30)
+        self.flips: list[int] = []  # numbers still to flip to, each in its turn after the flip showing now
+
+    def next_flip_at(self) -> float:
+        """When the next waiting number may start flipping: the flip now done, and a breath."""
+        return max(self.flip_at, FLIP_AT) + FLIP + FLIP_GAP
+
+    def turn(self, t: float) -> bool:
+        """Start the next waiting flip if its time came by t. True when the number changed."""
+        if not self.flips or t < self.next_flip_at():
+            return False
+        at = self.next_flip_at()
+        self.old, self.new = self.new, self.flips.pop(0)
+        self.flip_at, self.hold_from = at, max(self.hold_from, at + FLIP)
+        return True
 
 
 @register(KIND)
@@ -128,6 +144,7 @@ class DeathCountSource(Source):
     label = "Death count"
     defaults = {"count": 0, "label": "Deaths", "seconds": 3.0}
     sleeps = False  # a death can come while it's hidden; it costs nothing until then
+    holds_still = False  # Snap's freeze leaves it moving: a death while a polaroid is up rises then, not after
     own_sprig = (W, H)  # added from + → Plugins, it gets its own sprig filling the canvas, on top
 
     def __init__(self, source_id: str, settings: dict[str, Any]):
@@ -139,7 +156,28 @@ class DeathCountSource(Source):
         self._count = count_of(self.settings)  # the number last shown (or asked for)
         self._frame = painted.Frame()
         self._still: tuple | None = None  # the still frame already sent (nothing moves until it sinks)
+        self._art_lock = threading.RLock()  # the art caches: made ahead on a thread of their own (_warm)
+        self._warming: threading.Thread | None = None
         self.status = "ok"
+
+    def start(self) -> None:
+        """The stone, its number and the mound made ahead, off the render thread: made on the first death they held
+        it for seconds on the PC (fonts and pictures made the first time, 2026-11-18: the first stone came 3.5 s
+        late)."""
+        if self._warming is None or not self._warming.is_alive():
+            self._warming = threading.Thread(target=self._warm, name="Death count art", daemon=True)
+            self._warming.start()
+
+    def stop(self) -> None:
+        warming = self._warming
+        if warming is not None and warming is not threading.current_thread():
+            warming.join(5.0)
+
+    def _warm(self) -> None:
+        try:
+            self._make_art(_Job(self._count, self._count + 1))
+        except Exception:  # noqa: BLE001 - made on the first death instead
+            log.debug("death count: couldn't make the art ahead", exc_info=True)
 
     @property
     def size(self) -> tuple[int, int]:
@@ -151,9 +189,17 @@ class DeathCountSource(Source):
         self._clear = True
         self._still = None
 
+    def _make_art(self, job: _Job) -> None:
+        """Paint (and let go) the trip's moments that make its art: the stone, its numbers, the mound."""
+        for t in (RISE[1], job.flip_at + FLIP / 2, job.flip_at + 1.0) if job.flip_at >= 0 else (RISE[1],):
+            self.paint(job, t)
+
     def update(self, settings: dict[str, Any]) -> None:
+        label = self._label()
         super().update(settings)
         self._still = None  # a new label or hold time: draw it again
+        if self._label() != label and self._warming is not None:
+            self.start()  # the new label's stone made ahead too
         new = count_of(self.settings)
         if new != self._count:  # changed in its settings window: show it
             self.show(self._count, new)
@@ -166,21 +212,38 @@ class DeathCountSource(Source):
             self._count = new
             job = self._job
             if job is not None and not self._queue:
-                t = time.monotonic() - job.started
+                t = time.monotonic() - job.started if job.started else 0.0
                 if t < self._sink_at(job):  # still up: change the number again and stay up longer
-                    if new != job.new:
-                        job.old = self._showing(job, t)
-                        job.new = new
-                        job.flip_at = max(t, RISE[1])
-                        job.hold_from = job.flip_at + FLIP
-                    else:
-                        job.hold_from = max(job.hold_from, t)
+                    self._change(job, t, new)
                     return True
+            if self._queue:  # not up yet: the last one waiting flips on to it in turn
+                self._change(self._queue[-1], 0.0, new)
+                return True
             if len(self._queue) >= MOST_WAITING:
                 return False
             last = self._queue[-1].new if self._queue else job.new if job else old
             self._queue.append(_Job(last if job or self._queue else old, new))
             return True
+
+    @staticmethod
+    def _change(job: _Job, t: float, new: int) -> None:
+        """A new number for a trip that is up (or waiting to go up): each number flips in its turn (a quick second
+        death showed 0 then 2 on the PC, 2026-11-18, never 1)."""
+        last = job.flips[-1] if job.flips else job.new
+        if new == last:
+            job.hold_from = max(job.hold_from, t)
+            return
+        if job.flip_at >= 0 and t < job.next_flip_at() or job.flips:  # a flip is coming or under way: after it
+            if len(job.flips) >= MOST_FLIPS:
+                job.flips[-1] = new
+            else:
+                job.flips.append(new)
+            job.hold_from = max(job.hold_from, job.next_flip_at() + (FLIP + FLIP_GAP) * len(job.flips))
+            return
+        job.old = DeathCountSource._showing(job, t)
+        job.new = new
+        job.flip_at = max(t, RISE[1])
+        job.hold_from = job.flip_at + FLIP
 
     def clear(self) -> None:
         with self._lock:
@@ -214,8 +277,10 @@ class DeathCountSource(Source):
         with self._lock:
             if self._job is None and self._queue:
                 self._job = self._queue.popleft()
-                self._job.started = time.monotonic()
+                self._job.started = 0.0  # its clock starts with its first picture (see below)
             job = self._job
+            if job is not None and job.started:
+                job.turn(time.monotonic() - job.started)
         if job is None:
             if self._clear:
                 self._clear = False
@@ -224,6 +289,12 @@ class DeathCountSource(Source):
                 # was sent on every wake, 26 ms of the PC's switch frame (2026-11-18, "death_count-1 26.1").
                 return painted.clear_frame(2, 2)
             return None
+        if not job.started:  # the first picture: its clock starts once it's made, so no part of the rise is lost
+            self._make_art(job)  # at once if made ahead (start); else now, before the clock runs
+            picture = self.paint(job, 0.0, listed=drawn.wanted())
+            with self._lock:
+                job.started = time.monotonic()
+            return picture if isinstance(picture, drawn.Drawn) else self._frame(picture)
         t = time.monotonic() - job.started
         if t >= self._length(job):
             with self._lock:
@@ -237,7 +308,8 @@ class DeathCountSource(Source):
             if self._still == key:
                 return None  # standing still: the last frame is still right
             self._still = key
-        return self._frame(self.paint(job, t))
+        picture = self.paint(job, t, listed=drawn.wanted())
+        return picture if isinstance(picture, drawn.Drawn) else self._frame(picture)
 
     @staticmethod
     def _still_from(job: _Job) -> float:
@@ -247,17 +319,25 @@ class DeathCountSource(Source):
             settled = max(settled, job.flip_at + max(FLIP, 0.4))
         return settled
 
-    def paint(self, job: _Job, t: float):
-        """The death count at t seconds into this trip, as a QImage."""
+    def paint(self, job: _Job, t: float, listed: bool = False):
+        """The death count at t seconds into this trip, as a QImage; listed: as a list of pictures for the engine
+        to draw (core/drawn.py), nothing painted."""
+        with self._art_lock:  # the art may be being made ahead (_warm)
+            return self._paint(job, t, listed)
+
+    def _paint(self, job: _Job, t: float, listed: bool):
         from PySide6.QtCore import QPointF, QRectF, Qt
         from PySide6.QtGui import QColor, QImage, QPainter
 
-        image = QImage(W, H, QImage.Format.Format_ARGB32_Premultiplied)
-        image.fill(Qt.GlobalColor.transparent)
-        p = QPainter(image)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+        if listed:
+            image = p = drawn.Drawn(W, H)
+        else:
+            image = QImage(W, H, QImage.Format.Format_ARGB32_Premultiplied)
+            image.fill(Qt.GlobalColor.transparent)
+            p = QPainter(image)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
 
         sink_at = self._sink_at(job)
         end = sink_at + SINK

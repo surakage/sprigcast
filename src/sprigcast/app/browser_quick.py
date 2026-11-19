@@ -41,7 +41,12 @@ Item {
     signal loaded(bool ok)
     signal crashed(int status, int code)
     property var scripts: []
-    property alias view: view
+    // Set from Python through these: Python can't hold the WebEngineView itself (PySide6 has no
+    // converter for QQuickWebEngineView*: the PC log said so and every page fell back to memory, 2026-11-18).
+    property alias profile: view.profile
+    property alias url: view.url
+    property alias audioMuted: view.audioMuted
+    property alias pageVisible: view.visible
 
     function run(code) { view.runJavaScript(code) }
     function reloadPage() { view.reloadAndBypassCache() }
@@ -148,8 +153,7 @@ class QuickPage:
         if self.root is None:
             raise RuntimeError("the page's QML didn't load")
         self.root.setParentItem(self.window.contentItem())
-        self.view = self.root.property("view")
-        self.view.setProperty("profile", profile)
+        self.root.setProperty("profile", profile)
         self.root.loaded.connect(self._loaded)
         self.root.crashed.connect(self._crashed)
         self.control.sceneChanged.connect(self._changed)
@@ -175,13 +179,13 @@ class QuickPage:
             self._set_up_sound()
             self._scripts()
             url = browser.page_url(settings)
-            self.view.setProperty("url", QUrl(url) if url else QUrl("about:blank"))
+            self.root.setProperty("url", QUrl(url) if url else QUrl("about:blank"))
         self._mute()
 
     def _resize(self, w: int, h: int) -> None:
         """A texture of the page's size on the card (the first one also starts Qt Quick on its device). Raises
         when the first can't be made: the host then makes a widget page instead."""
-        from PySide6.QtQuick import QQuickGraphicsDevice, QQuickRenderTarget
+        from PySide6.QtQuick import QQuickRenderTarget
 
         self.window.setGeometry(0, 0, w, h)
         self.root.setWidth(w)
@@ -196,17 +200,98 @@ class QuickPage:
             return
         self.target = target
         if not self._initialized:
-            self.window.setGraphicsDevice(QQuickGraphicsDevice.fromDeviceAndContext(target.device, target.context))
-            if not self.control.initialize():
-                self.target = None
-                target.close()
-                raise RuntimeError("Qt Quick couldn't start on the engine's card")
-            self._initialized = True
-        self.window.setRenderTarget(QQuickRenderTarget.fromD3D11Texture(target.texture, QSize(w, h)))
+            target = self._start_quick(target, w, h)
+        try:
+            self.window.setRenderTarget(self._render_target(QQuickRenderTarget, target.texture, QSize(w, h)))
+        except Exception as exc:
+            if old is None:
+                raise
+            log.warning("browser source %s: the new texture couldn't be drawn to (%s), the old one stays", self.id,
+                        exc)
+            self._drop_target(target)
+            self.target = old
+            return
         if old is not None:
             old.close()
         self._waiting_since = None
         self.dirty = True
+
+    def _start_quick(self, target, w: int, h: int):
+        """Start Qt Quick on the page texture's device. Some PySide builds can't take Direct3D pointers
+        (fromDeviceAndContext refuses them: PC, 2026-11-18): then Qt Quick makes its own device on the engine's card
+        (fromAdapter, by the card's LUID) and the page's texture is made on that device instead. Returns the target
+        used."""
+        from PySide6.QtQuick import QQuickGraphicsDevice, QSGRendererInterface
+
+        device, own, why = None, False, []
+        for label, args in self._pointer_forms(target):
+            try:
+                device = QQuickGraphicsDevice.fromDeviceAndContext(*args)
+                break
+            except Exception as exc:  # noqa: BLE001 - PySide's binding refuses this form: try the next
+                why.append(f"{label}: {exc}")
+        if device is None:
+            luid = getattr(self.host, "card", None)
+            adapter = getattr(QQuickGraphicsDevice, "fromAdapter", None)
+            if luid is None or adapter is None:
+                self._drop_target(target)
+                missing = "no card given" if luid is None else "this PySide has no fromAdapter"
+                raise RuntimeError(f"Qt Quick can't take the engine's card here ({missing}; {' | '.join(why)})")
+            log.info("browser source %s: Qt Quick makes its own device on the engine's card (%s)", self.id,
+                     " | ".join(why)[:300])
+            device = adapter(int(luid[0]) & 0xFFFFFFFF, int(luid[1]))
+            own = True
+        self.window.setGraphicsDevice(device)
+        if not self.control.initialize():
+            self._drop_target(target)
+            raise RuntimeError("Qt Quick couldn't start on the engine's card")
+        self._initialized = True
+        if own:
+            found = self.window.rendererInterface().getResource(self.window,
+                                                                  QSGRendererInterface.Resource.DeviceResource)
+            pointer = int(found) if found is not None else 0
+            if not pointer:
+                self._drop_target(target)
+                raise RuntimeError("Qt Quick's device on the card couldn't be read")
+            self._drop_target(target)
+            target = self.target = self.host.target_for(self.id, w, h, pointer)  # on Qt Quick's own device
+        return target
+
+    def _render_target(self, render_target, texture: int, size):
+        """The page texture as Qt Quick's render target, in whichever form this PySide takes the pointer (on the PC
+        an int over 2^31 was refused here too: "Found signature (texture: int, pixelSize, sampleCount)")."""
+        why = []
+        for label, (pointer,) in self._pointer_forms_of(texture):
+            try:
+                made = render_target.fromD3D11Texture(pointer, size)
+                if label != "ints" and not getattr(self, "_said_texture_form", False):
+                    self._said_texture_form = True
+                    log.info("browser source %s: the page texture went to Qt Quick as a %s", self.id, label)
+                return made
+            except Exception as exc:  # noqa: BLE001 - PySide's binding refuses this form: try the next
+                why.append(f"{label}: {exc}")
+        raise RuntimeError("Qt Quick can't take the page texture here (" + " | ".join(why)[:400] + ")")
+
+    @staticmethod
+    def _pointer_forms_of(*pointers):
+        """Pointers as ints, then as shiboken VoidPtrs."""
+        yield "ints", tuple(pointers)
+        try:
+            from shiboken6 import VoidPtr
+        except ImportError:
+            return
+        yield "VoidPtr", tuple(VoidPtr(p) for p in pointers)
+
+    @staticmethod
+    def _pointer_forms(target):
+        """The ways a PySide build may take the Direct3D pointers: as ints, or as shiboken VoidPtrs (on the PC an
+        int over 2^31 was refused: "Found signature (device: int, context: int)")."""
+        yield from QuickPage._pointer_forms_of(target.device, target.context)
+
+    def _drop_target(self, target) -> None:
+        if self.target is target:
+            self.target = None
+        target.close()
 
     def _card_failed(self, why: str) -> None:
         if self.on_card:
@@ -215,7 +300,7 @@ class QuickPage:
 
     def _mute(self) -> None:
         to_mixer = self.sound is not None and not self.sound.on_desktop_reason
-        self.view.setProperty("audioMuted", bool(self.settings.get("mute", False)) or to_mixer)
+        self.root.setProperty("audioMuted", bool(self.settings.get("mute", False)) or to_mixer)
 
     def _set_up_sound(self) -> None:
         from sprigcast.sources.browser import sound_to_mixer
@@ -285,7 +370,7 @@ class QuickPage:
             return
         self.paused = paused
         self._call("run", f"window.__sprigcastVisible && window.__sprigcastVisible({'false' if paused else 'true'})")
-        self.view.setProperty("visible", not paused)  # hidden like a background tab: Chromium stops painting
+        self.root.setProperty("pageVisible", not paused)  # hidden like a background tab: Chromium stops painting
         self.timer.start(HIDDEN_TICK_MS if paused else max(4, round(1000 / browser.page_fps(self.settings))))
         if not paused:
             self.dirty = True

@@ -27,7 +27,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QMenu,
     QMessageBox,
@@ -38,6 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import card as popups
 from sprigcast.app.modal import modal
 from sprigcast.app.terms import COLLECTION, COLLECTIONS, PROFILE, PROFILES, cap
 from sprigcast.core import convert, pack
@@ -341,7 +341,7 @@ class GardenControl:
                 action.triggered.connect(lambda _=False, k=kind, e=entry.id: self._pick(k, e))
 
     def _ask_name(self, title: str, text: str = "") -> str | None:
-        name, ok = QInputDialog.getText(self.w, title, "Name:", text=text)
+        name, ok = popups.ask_text(self.w, title, "Name", text)
         return name if ok and name.strip() else None
 
     def _ask_new(self, kind: str, copy: bool) -> None:
@@ -372,10 +372,10 @@ class GardenControl:
         if not others:
             return
         names = [e.name for e in others]
-        name, ok = QInputDialog.getItem(self.w, f"Remove {word}", f"{cap(word)}:", names, 0, False)
-        if not ok:
+        at = popups.ask_choice(self.w, f"Remove {word}", cap(word), names, 0, "Remove")
+        if at is None:
             return
-        entry = others[names.index(name)]
+        entry = others[at]
         answer = QMessageBox.question(self.w, "SprigCast", f"Remove {entry.name}?")
         if answer == QMessageBox.StandardButton.Yes:
             self._report(self.do(kind, "remove", entry.id))

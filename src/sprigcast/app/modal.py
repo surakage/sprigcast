@@ -15,6 +15,10 @@ def modal(dialog) -> int:
     from sprigcast.app.theme import ui_burst
 
     ui_burst()  # showing it lays out and polishes every widget: Python's lock comes back quickly meanwhile
+    from sprigcast.app import privacy
+
+    if privacy.hidden():  # Settings → General → Privacy: kept out of screen captures like the main window
+        privacy.apply_to(dialog, True)
     try:
         return dialog.exec()
     finally:

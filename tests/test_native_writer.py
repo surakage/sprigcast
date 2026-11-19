@@ -198,6 +198,62 @@ def test_an_output_linked_to_a_writer_is_written_without_python(player_lib, tmp_
 
 
 @pytest.mark.skipif(not sprigcore.available(), reason="sprigcore.dll isn't built here")
+def test_an_output_linked_to_the_virtual_camera_is_written_into_its_block():
+    """Phase 4: the frame thread writes the camera's frames into its shared block itself, in the middle of the
+    camera's frame (black around), with the count even when done; once unlinked it writes nothing more."""
+    import ctypes
+    import sys
+
+    from sprigcast.output.virtualcam import BLOCK_SIZE, HEADER, MAGIC, SharedBlock
+
+    if sys.platform != "win32":
+        pytest.skip("Windows' shared memory")
+    k32 = ctypes.windll.kernel32
+    k32.CreateFileMappingW.restype = ctypes.c_void_p
+    k32.CreateFileMappingW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+                                       ctypes.c_uint32, ctypes.c_wchar_p]
+    k32.MapViewOfFile.restype = ctypes.c_void_p
+    k32.MapViewOfFile.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_size_t]
+    k32.UnmapViewOfFile.argtypes = [ctypes.c_void_p]
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    name = f"Local\\SprigCastCameraTest{time.monotonic_ns()}"
+    handle = k32.CreateFileMappingW(ctypes.c_void_p(-1), None, 0x04, 0, BLOCK_SIZE, name)  # PAGE_READWRITE
+    assert handle
+    view = k32.MapViewOfFile(handle, 0x0002 | 0x0004, 0, 0, 0)
+    assert view
+    block = SharedBlock(view, BLOCK_SIZE, name=name)
+    ctypes.c_uint32.from_address(view).value = MAGIC
+    try:
+        with sprigcore.Engine(warp=True, fps=(30, 1)) as eng:
+            eng.set_canvas(0, 64, 36)
+            eng.set_output(0, 0, 64, 36)
+            with pytest.raises(sprigcore.NativeError):
+                eng.link_camera(0, 0, name, 32, 18)  # smaller than the output
+            with pytest.raises(sprigcore.NativeError):
+                eng.link_camera(0, 0, "Local\\NoSuchSprigCastCamera", 64, 64)
+            eng.link_camera(0, 0, name, 64, 64)
+            end = time.monotonic() + 5
+            while eng.camera_frames(0, 0) < 5 and time.monotonic() < end:
+                time.sleep(0.02)
+            assert eng.camera_frames(0, 0) >= 5
+            assert eng.take_output(0, 0, 64, 36) is None  # the camera had them all
+            _last, linked = eng.unlink_output(0, 0)
+            assert linked and eng.camera_frames(0, 0) == 0
+            count = block._u64(24).value
+            assert count % 2 == 0 and count >= 10 and block._u32(16).value == 64 and block._u32(20).value == 64
+            time.sleep(0.3)
+            assert block._u64(24).value == count  # nothing written once unlinked
+            picture = ctypes.string_at(view + HEADER, 64 * 64 * 3 // 2)
+            assert picture[0] == 16 and picture[64 * 13] == 16  # the black bar above the picture (rows 0-13)
+            assert picture[64 * 64] == 128  # its colour
+            assert not eng.stats()["faulted"]
+    finally:
+        block.closed = True
+        k32.UnmapViewOfFile(view)
+        k32.CloseHandle(handle)
+
+
+@pytest.mark.skipif(not sprigcore.available(), reason="sprigcore.dll isn't built here")
 def test_frames_on_the_card_go_only_to_a_writer_on_the_engines_device(player_lib, tmp_path):  # noqa: F811
     """Phase 4 step 4: an output whose frames stay on the card links only to a writer whose encoder is on the
     engine's device; one whose encoder can't take them there fails to open cleanly (the recording then goes
@@ -264,3 +320,126 @@ def test_a_video_encoder_that_fails_once_starts_again_and_the_file_goes_on(playe
     assert stats.state_name == "failed" and "deliberate fault" in stats.error_text and stats.recoveries == 1
     with av.open(str(path)) as f:  # ended cleanly: what was written before plays
         assert 25 <= sum(1 for _ in f.decode(video=0)) <= 31
+
+
+@pytest.mark.parametrize("fault", ["", "40"])
+def test_packets_mode_encodes_and_hands_the_packets_over(player_lib, tmp_path, monkeypatch, fault):  # noqa: F811
+    """Packets mode: the engine encodes, the caller muxes (a stream, clips, a recording from the same packets). The
+    header file's streams carry the codec headers; a keyframe asked for comes next; the bitrate can change. An
+    encoder started again after a failure (fault) puts its headers in its keyframes: the packets still play."""
+    if fault:
+        monkeypatch.setenv("SPRIGCAST_WRITER_FAULT", fault)
+    header = tmp_path / "streams.nut"
+    writer = sprigcore.Writer(str(header), "libx264", W, H, fps=30,
+                              video_options={"preset": "ultrafast", "forced-idr": "1"},
+                              keyframe_frames=300, audio_tracks=2, queue_frames=120, packets=True)
+    packets = []
+    try:
+        for n in range(60):
+            if n == 30:
+                writer.keyframe()
+                writer.set_bitrate(300, 300, 600)
+            assert writer.video(nv12(16 + 3 * n), n) == sprigcore.SC_OK
+            for track in (0, 1):
+                writer.audio(np.zeros((1600, 2), np.float32), track)
+            while (p := writer.take_packet()) is not None:
+                packets.append(p)
+        stats = finished(writer)
+        while (p := writer.take_packet()) is not None:
+            packets.append(p)
+    finally:
+        writer.close()
+    assert stats.state_name == "finished", stats.error_text
+    assert stats.recoveries == (1 if fault else 0)
+    video = [p for p in packets if p[0] == 0]
+    assert len(video) == 60 and {p[0] for p in packets} == {0, 1, 2}
+    keys = [p[2] for p in video if p[1]]
+    assert keys[0] == 0 and 30 in keys  # the first picture, and the one asked for
+    if fault:
+        assert 40 in keys  # the new encoder starts on a keyframe
+    assert stats.bytes == sum(len(p[5]) for p in packets)
+    from fractions import Fraction
+
+    path = tmp_path / "muxed.mkv"
+    with av.open(str(header)) as probe, av.open(str(path), "w") as out:
+        assert probe.streams.video[0].codec_context.extradata and len(probe.streams.audio) == 2
+        streams = [out.add_stream_from_template(s) for s in (probe.streams.video[0], *probe.streams.audio)]
+        for track, key, pts, dts, tb, data in packets:
+            packet = av.Packet(data)
+            packet.pts, packet.dts, packet.time_base = pts, dts, Fraction(*tb)
+            packet.is_keyframe = key
+            packet.stream = streams[track]
+            out.mux(packet)
+    with av.open(str(path)) as f:
+        lumas = [int(frame.to_ndarray()[:H].mean()) for frame in f.decode(video=0)]
+    assert len(lumas) == 60 and abs(lumas[59] - (16 + 3 * 59)) <= 4
+
+
+def test_frames_keep_coming_while_the_encoder_opens_again(player_lib, tmp_path, monkeypatch, caplog):  # noqa: F811
+    """A graphics reset: the encoder takes about a second to open again (PC 2026-11-18: 1.03 s missing from both
+    files). The queue fills meanwhile; the newest picture stands for the frames that come, so none is lost."""
+    monkeypatch.setenv("SPRIGCAST_WRITER_FAULT", "10")
+    monkeypatch.setenv("SPRIGCAST_WRITER_REOPEN_MS", "700")
+    caplog.set_level("INFO")
+    path = tmp_path / "held.mkv"
+    writer = sprigcore.Writer(str(path), "libx264", W, H, fps=30, video_options={"preset": "ultrafast"},
+                              audio_tracks=0, queue_frames=8)
+    try:
+        for n in range(60):
+            assert writer.video(nv12(16 + 3 * n), n) == sprigcore.SC_OK  # never SC_WRITER_DROPPED
+            time.sleep(1 / 30)
+        stats = finished(writer)
+    finally:
+        writer.close()
+    assert stats.state_name == "finished", stats.error_text
+    # While it opens, more pictures than queue_frames wait (PC 2026-11-18: a 0.4 s still before): every frame is
+    # its own picture, none a repeat.
+    assert stats.recoveries == 1 and stats.frames_dropped == 0 and stats.frames_repeated == 0
+    assert stats.frames_written == 60
+    with av.open(str(path)) as f:
+        lumas = [int(frame.to_ndarray()[:H].mean()) for frame in f.decode(video=0)]
+    assert len(lumas) >= 59 and all(b > a for a, b in zip(lumas[12:], lumas[13:]))  # moving through the reopen
+    sprigcore.drain_log()
+    assert any("goes on from memory (opened again in" in r.getMessage() and "while the old one finished in"
+               in r.getMessage() for r in caplog.records)
+
+
+def test_a_very_long_reopen_still_holds_the_newest_picture(player_lib, tmp_path, monkeypatch):  # noqa: F811
+    """Past the reopen room (90 pictures at most), the newest picture stands for the frames that come, as before:
+    a short still, never a hole."""
+    monkeypatch.setenv("SPRIGCAST_WRITER_FAULT", "5")
+    monkeypatch.setenv("SPRIGCAST_WRITER_REOPEN_MS", "2000")
+    path = tmp_path / "long.mkv"
+    writer = sprigcore.Writer(str(path), "libx264", W, H, fps=60, video_options={"preset": "ultrafast"},
+                              audio_tracks=0, queue_frames=8)
+    try:
+        for n in range(150):
+            assert writer.video(nv12(16 + n), n) == sprigcore.SC_OK
+            time.sleep(1 / 60)
+        stats = finished(writer)
+    finally:
+        writer.close()
+    assert stats.state_name == "finished", stats.error_text
+    assert stats.recoveries == 1 and stats.frames_dropped == 0 and stats.frames_repeated > 0
+    assert stats.frames_written == 150
+
+
+def test_what_waited_is_written_without_dropping_new_frames(player_lib, tmp_path, monkeypatch):  # noqa: F811
+    """After the reopen the encoder writes the pictures that waited while new ones keep coming: the extra room stays
+    until it has caught up (PC 2026-11-18: 25 frames dropped right after a 0.9 s reopen)."""
+    monkeypatch.setenv("SPRIGCAST_WRITER_FAULT", "10")
+    monkeypatch.setenv("SPRIGCAST_WRITER_REOPEN_MS", "700")
+    monkeypatch.setenv("SPRIGCAST_WRITER_SLOW_MS", "20")  # 50 a second against 30 coming: catches up in about 1 s
+    path = tmp_path / "caught.mkv"
+    writer = sprigcore.Writer(str(path), "libx264", W, H, fps=30, video_options={"preset": "ultrafast"},
+                              audio_tracks=0, queue_frames=8)
+    try:
+        for n in range(90):
+            assert writer.video(nv12(16 + 2 * n), n) == sprigcore.SC_OK
+            time.sleep(1 / 30)
+        stats = finished(writer)
+    finally:
+        writer.close()
+    assert stats.state_name == "finished", stats.error_text
+    assert stats.recoveries == 1 and stats.frames_dropped == 0 and stats.frames_repeated == 0
+    assert stats.frames_written == 90

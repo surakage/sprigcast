@@ -93,11 +93,11 @@ def test_twitch_reads_and_saves_title_category_and_tags(monkeypatch):
 def test_twitch_without_the_new_permission_asks_to_reconnect(monkeypatch):
     Web(monkeypatch)
     _twitch_signed_in(scope=("channel:read:stream_key", "user:write:chat"))
-    with pytest.raises(sd.NeedsSignIn, match="Reconnect Twitch once"):
+    with pytest.raises(sd.NeedsSignIn, match="Sign in to Twitch again once"):
         sd.load("twitch")
     assert not sd.twitch_can_edit()
     set_key(twitch_auth.TOKEN_REF, "")
-    with pytest.raises(sd.NeedsSignIn, match="Connect Twitch"):
+    with pytest.raises(sd.NeedsSignIn, match="Sign in to Twitch"):
         sd.load("twitch")
 
 
@@ -119,13 +119,64 @@ def test_twitch_scope_is_asked_for_at_connect():
 
 # YouTube ------------------------------------------------------------------------------------------------
 
-LIVE = sd.YOUTUBE_API + "/liveBroadcasts?part=id,snippet,status&broadcastStatus=active"
-WAITING = sd.YOUTUBE_API + "/liveBroadcasts?part=id,snippet,status&broadcastStatus=upcoming"
+LIVE = sd.YOUTUBE_API + "/liveBroadcasts?part=id,snippet,status,contentDetails&broadcastStatus=active"
+WAITING = sd.YOUTUBE_API + "/liveBroadcasts?part=id,snippet,status,contentDetails&broadcastStatus=upcoming"
 
 
-def _broadcast(bid, start, title="Stream"):
+def _broadcast(bid, start, title="Stream", stream="s1"):
     return {"id": bid, "snippet": {"title": title, "description": "d", "scheduledStartTime": start},
-            "status": {"privacyStatus": "unlisted"}}
+            "status": {"privacyStatus": "unlisted"}, "contentDetails": {"boundStreamId": stream}}
+
+
+def test_youtube_edits_the_stream_its_key_goes_to_and_names_the_vertical_key(monkeypatch):
+    _signed_in("youtube")
+    set_key("out-h", "key-h")
+    set_key("out-v", "key-v")
+    web = Web(monkeypatch)
+    web.on("GET", sd.YOUTUBE_API + "/liveStreams", {"items": [
+        {"id": "sh", "cdn": {"ingestionInfo": {"streamName": "key-h"}}},
+        {"id": "sv", "cdn": {"ingestionInfo": {"streamName": "key-v"}}, "snippet": {"title": "SprigCast vertical"}}]})
+    web.on("GET", LIVE, {"items": []})
+    web.on("GET", WAITING, {"items": [_broadcast("wide", "2026-11-19T01:00:00Z", "Wide", "sh"),
+                                      _broadcast("tall", "2026-11-19T01:00:00Z", "Tall", "sv")]})
+    web.on("GET", sd.YOUTUBE_API + "/videos", {"items": []})
+    both = sd.load("youtube", "out-h", "out-v")
+    assert both.broadcast_id == "wide" and both.vertical_key_name == "SprigCast vertical"
+    assert sd.load("youtube", "out-h").vertical_key_name == ""
+    assert sd.load("youtube", "out-v").broadcast_id == "tall"
+    set_key("out-x", "key-elsewhere")  # a key that isn't one of the channel's: any stream, as before
+    assert sd.load("youtube", "out-x").broadcast_id in ("wide", "tall")
+
+
+def test_horizontal_and_vertical_youtube_share_one_chip_on_the_horizontal_key():
+    from types import SimpleNamespace as O
+
+    from sprigcast.app.stream_details_dialog import places_for
+
+    outs = [O(id="t1", service="twitch", canvas="horizontal", key_ref=None),
+            O(id="t2", service="twitch", canvas="vertical", key_ref=None),
+            O(id="y2", service="youtube", canvas="vertical", key_ref="out-v"),
+            O(id="y1", service="youtube", canvas="horizontal", key_ref="out-h"),
+            O(id="c", service="custom", canvas="horizontal", key_ref=None)]
+    places = places_for(outs)
+    assert [(p.id, p.label, p.key_ref, p.vertical_key_ref) for p in places] == [
+        ("twitch", "Twitch", None, None), ("youtube", "YouTube", "out-h", "out-v")]
+    assert places_for(outs[2:3])[0].key_ref == "out-v"  # only vertical: its own key
+
+
+def test_going_live_connects_horizontal_youtube_before_vertical():
+    from types import SimpleNamespace as O
+
+    from sprigcast.output.stream import StreamTarget, dual_stream_order
+
+    wide, tall = O(width=1920, height=1080), O(width=1080, height=1920)
+    yt = "rtmp://a.rtmp.youtube.com/live2"
+    targets = [StreamTarget("YouTube (vertical)", tall, yt, "v", 6000),
+               StreamTarget("Twitch", wide, "rtmp://live.twitch.tv/app", "t", 6000),
+               StreamTarget("YouTube (horizontal)", wide, yt, "h", 6000),
+               StreamTarget("TikTok", tall, "rtmp://push.tiktok", "k", 6000)]
+    assert [t.name for t in dual_stream_order(targets)] == ["Twitch", "YouTube (horizontal)", "TikTok",
+                                                            "YouTube (vertical)"]
 
 
 def test_youtube_edits_the_stream_live_now_else_the_soonest_waiting(monkeypatch):
@@ -134,10 +185,32 @@ def test_youtube_edits_the_stream_live_now_else_the_soonest_waiting(monkeypatch)
     web.on("GET", LIVE, [{"items": []}, {"items": [_broadcast("live1", "2026-11-18T01:00:00Z", "On now")]}])
     web.on("GET", WAITING, {"items": [_broadcast("later", "2026-11-20T01:00:00Z"),
                                       _broadcast("soon", "2026-11-19T01:00:00Z", "Soon")]})
+    web.on("GET", sd.YOUTUBE_API + "/videos?part=snippet&id=soon", {"items": [{"snippet": {"categoryId": "24"}}]})
+    web.on("GET", sd.YOUTUBE_API + "/videos", sd.DetailsError("no video"))
     first = sd.load("youtube")
-    assert (first.broadcast_id, first.title, first.privacy, first.starts) == \
-        ("soon", "Soon", "unlisted", "2026-11-19T01:00:00Z")
+    assert (first.broadcast_id, first.title, first.privacy, first.starts, first.video_category) == \
+        ("soon", "Soon", "unlisted", "2026-11-19T01:00:00Z", "24")
     assert sd.load("youtube").broadcast_id == "live1"
+
+
+def test_youtube_with_nothing_scheduled_starts_from_the_last_stream(monkeypatch):
+    """A reusable key and nothing scheduled (found on the PC, 2026-11-18): the fields were empty."""
+    _signed_in("youtube")
+    web = Web(monkeypatch)
+    web.on("GET", LIVE, {"items": []})
+    web.on("GET", WAITING, {"items": []})
+    old = _broadcast("old", "2026-11-10T01:00:00Z", "Old one")
+    old["snippet"]["actualEndTime"] = "2026-11-10T03:00:00Z"
+    last = _broadcast("last", "2026-11-16T01:00:00Z", "Cozy sloth stream")
+    last["snippet"]["actualEndTime"] = "2026-11-16T03:00:00Z"
+    web.on("GET", sd.YOUTUBE_API + "/liveBroadcasts?part=id,snippet,status&broadcastStatus=completed",
+           {"items": [old, last]})
+    web.on("GET", sd.YOUTUBE_API + "/videos?part=snippet&id=last",
+           {"items": [{"snippet": {"categoryId": "20", "tags": ["Cozy"]}}]})
+    got = sd.load("youtube")
+    assert (got.title, got.description, got.video_category, got.tags, got.from_last) == \
+        ("Cozy sloth stream", "d", "20", ["Cozy"], True)
+    assert got.broadcast_id == "" and got.starts == ""  # Save sets up the next stream, never edits the old one
 
 
 def test_youtube_saves_title_description_and_privacy_keeping_the_start(monkeypatch):
@@ -150,6 +223,41 @@ def test_youtube_saves_title_description_and_privacy_keeping_the_start(monkeypat
     assert web.calls[-1]["body"] == {"id": "b1", "snippet": {"title": "New", "description": "All about sloths",
                                                              "scheduledStartTime": "2026-11-19T01:00:00Z"},
                                      "status": {"privacyStatus": "private"}}
+
+
+def test_youtube_category_goes_on_the_video_with_its_tags(monkeypatch):
+    _signed_in("youtube")
+    web = Web(monkeypatch)
+    web.on("PUT", sd.YOUTUBE_API + "/liveBroadcasts", {})
+    web.on("GET", sd.YOUTUBE_API + "/videos?part=snippet&id=b1",
+           [{"items": [{"snippet": {"categoryId": "24", "tags": ["sloth"], "title": "Old"}}]},
+            {"items": [{"snippet": {"categoryId": "20", "tags": ["sloth"]}}]}, sd.DetailsError("YouTube said 500.")])
+    web.on("PUT", sd.YOUTUBE_API + "/videos?part=snippet", {})
+    details = sd.Details(title="New", description="d", broadcast_id="b1", starts="s", video_category="20",
+                         tags=["sloth"], old_tags=["sloth"])
+    assert sd.save("youtube", details).note == ""
+    assert web.calls[-1]["body"] == {"id": "b1", "snippet": {"title": "New", "description": "d",
+                                                             "categoryId": "20", "tags": ["sloth"]}}
+    count = len(web.calls)
+    sd.save("youtube", details)  # already Gaming with these tags: nothing more is sent
+    assert web.calls[-1]["method"] == "GET" and len(web.calls) == count + 2
+    assert sd.save("youtube", details).note == "Saved, but not the category or tags."
+    assert "20" in sd.YOUTUBE_CATEGORIES and sd.YOUTUBE_CATEGORIES["20"] == "Gaming"
+
+
+def test_youtube_tags_are_saved_on_the_video(monkeypatch):
+    _signed_in("youtube")
+    web = Web(monkeypatch)
+    web.on("PUT", sd.YOUTUBE_API + "/liveBroadcasts", {})
+    web.on("GET", sd.YOUTUBE_API + "/videos?part=snippet&id=b1",
+           {"items": [{"snippet": {"categoryId": "20", "defaultLanguage": "en"}}]})
+    web.on("PUT", sd.YOUTUBE_API + "/videos?part=snippet", {})
+    saved = sd.save("youtube", sd.Details(title="T", broadcast_id="b1", starts="s", tags=["Sloth facts", "cozy"]))
+    assert web.calls[-1]["body"]["snippet"] == {"defaultLanguage": "en", "title": "T", "description": "",
+                                                "categoryId": "20", "tags": ["Sloth facts", "cozy"]}
+    assert saved.old_tags == ["Sloth facts", "cozy"]
+    assert sd.split_tags("Cozy, #Sloth  facts, cozy,") == ["Cozy", "Sloth facts"]
+    assert sd.youtube_tag_problem(["x" * 30] * 20) and sd.youtube_tag_problem(["Cozy"]) is None
 
 
 def test_youtube_with_nothing_waiting_makes_a_stream_on_the_sprigcast_key(monkeypatch):
@@ -199,6 +307,19 @@ def test_youtube_needs_a_title_and_sign_in():
         sd.save("youtube", sd.Details(title="  "))
 
 
+def test_a_live_youtube_stream_saves_without_touching_its_start(monkeypatch):
+    _signed_in("youtube")
+    web = Web(monkeypatch)
+    locked = sd._worded("YouTube", 403, "Modification of scheduledStartTime is not allowed for this broadcast.")
+    assert isinstance(locked, sd.StartLocked)
+    web.on("PUT", sd.YOUTUBE_API + "/liveBroadcasts", [locked, {}])
+    details = sd.Details(title="Live now", broadcast_id="b1", starts="2026-11-18T20:30:00Z", privacy="public")
+    sd.save("youtube", details)
+    puts = [c for c in web.calls if c["method"] == "PUT"]
+    assert puts[0]["body"]["snippet"]["scheduledStartTime"] == "2026-11-18T20:30:00Z"  # sent back as it was
+    assert "scheduledStartTime" not in puts[1]["body"]["snippet"] and puts[1]["body"]["snippet"]["title"] == "Live now"
+
+
 # Kick ---------------------------------------------------------------------------------------------------
 
 
@@ -212,7 +333,92 @@ def test_kick_reads_and_saves_title_and_category(monkeypatch):
     assert (details.title, details.category, details.category_id) == ("Hi", "Art", "15")
     details.title = "New"
     sd.save("kick", details)
-    assert web.calls[-1]["body"] == {"stream_title": "New", "category_id": 15}
+    assert web.calls[-1]["body"] == {"stream_title": "New", "category_id": 15}  # no tags then, none sent
+    details.tags = ["Cozy", "#Sloth facts", "cozy"]
+    sd.save("kick", details)
+    assert web.calls[-1]["body"]["custom_tags"] == ["Cozy", "Sloth facts"]
+    details.tags = []
+    sd.save("kick", details)
+    assert web.calls[-1]["body"]["custom_tags"] == []  # cleared on purpose
+
+
+def test_kick_reads_tags_from_the_stream_part(monkeypatch):
+    _signed_in("kick")
+    web = Web(monkeypatch)
+    web.on("GET", sd.KICK_API + "/channels", {"data": [{"stream_title": "Hi", "category": None, "slug": "sloth",
+                                                        "stream": {"custom_tags": ["Cozy"], "key": "secret"}}]})
+    assert sd.load("kick").tags == ["Cozy"]
+
+
+def test_kick_asks_by_channel_name_when_it_sends_nothing(monkeypatch):
+    _signed_in("kick")
+    monkeypatch.setattr(sd, "account", lambda service: "sloth")
+    web = Web(monkeypatch)
+    web.on("GET", sd.KICK_API + "/channels?slug=sloth", {"data": [{"stream_title": "Found", "slug": "sloth"}]})
+    web.on("GET", sd.KICK_API + "/channels", {"data": []})
+    assert sd.load("kick").title == "Found"
+
+
+def test_kick_shows_the_last_save_when_it_sends_empty_details(monkeypatch):
+    from PySide6.QtCore import QSettings
+
+    QSettings().remove(sd.KICK_LAST_SETTING)
+    _signed_in("kick")
+    monkeypatch.setattr(sd, "account", lambda service: "sloth")
+    web = Web(monkeypatch)
+    web.on("GET", sd.KICK_API + "/channels", {"data": [{"stream_title": "", "category": None, "slug": "sloth"}]})
+    web.on("PATCH", sd.KICK_API + "/channels", {})
+    assert sd.load("kick").from_last is False  # nothing saved here yet: empty, as Kick sent it
+    sd.save("kick", sd.Details(title="Sloth time", category="Art", category_id="15", tags=["Cozy"]))
+    details = sd.load("kick")
+    assert (details.title, details.category, details.category_id, details.tags) == ("Sloth time", "Art", "15",
+                                                                                   ["Cozy"])
+    assert details.from_last and details.note
+    monkeypatch.setattr(sd, "account", lambda service: "someone else")
+    assert sd.load("kick").title == ""  # another account never sees it
+    QSettings().remove(sd.KICK_LAST_SETTING)
+
+
+def test_kick_offline_placeholder_category_is_filled_from_the_last_save(monkeypatch):
+    from PySide6.QtCore import QSettings
+
+    QSettings().remove(sd.KICK_LAST_SETTING)
+    _signed_in("kick")
+    monkeypatch.setattr(sd, "account", lambda service: "sloth")
+    web = Web(monkeypatch)
+    offline = {"stream_title": "", "category": {"id": 0, "name": "", "thumbnail": ""}, "slug": "sloth",
+               "stream": {"is_live": False, "key": "secret"}}
+    web.on("GET", sd.KICK_API + "/channels", {"data": [offline]})
+    web.on("PATCH", sd.KICK_API + "/channels", {})
+    first = sd.load("kick")
+    assert (first.category, first.category_id, first.unread) == ("", "", True)
+    sd.save("kick", sd.Details(title="Sloth time", category="Art", category_id="15"))
+    again = sd.load("kick")
+    assert (again.title, again.category, again.category_id, again.from_last) == ("Sloth time", "Art", "15", True)
+    QSettings().remove(sd.KICK_LAST_SETTING)
+
+
+def test_kick_tags_can_be_cleared_when_kick_sends_nothing(monkeypatch):
+    from PySide6.QtCore import QSettings
+
+    QSettings().remove(sd.KICK_LAST_SETTING)
+    _signed_in("kick")
+    web = Web(monkeypatch)
+    web.on("GET", sd.KICK_API + "/channels", {"data": [{"stream_title": "", "category": None}]})
+    web.on("PATCH", sd.KICK_API + "/channels", {})
+    details = sd.load("kick")
+    assert details.unread
+    details.title = "Hi"
+    sd.save("kick", details)
+    assert web.calls[-1]["body"]["custom_tags"] == []  # the box is all there is: an empty one clears them
+    QSettings().remove(sd.KICK_LAST_SETTING)
+
+
+def test_category_names_best_match_first():
+    from sprigcast.app.stream_details_dialog import best_first
+
+    assert best_first(["Just Sleeping", "Chess", "Just Chatting", "Just Chatting Live"], "just chatting") == [
+        "Just Chatting", "Just Chatting Live", "Just Sleeping", "Chess"]
 
 
 def test_kick_category_search_falls_back_to_the_newer_one(monkeypatch):
@@ -230,7 +436,7 @@ def test_an_expired_sign_in_is_renewed_through_the_helper(monkeypatch):
     _signed_in("kick", expires=time.time() - 5)
     sent = []
 
-    def helper(url, fields, who):
+    def helper(url, fields, who, **kw):
         sent.append((url, dict(fields)))
         return {"access_token": "new", "refresh_token": "ref2", "expires_in": 7200}
 
@@ -248,7 +454,7 @@ def test_an_expired_sign_in_is_renewed_through_the_helper(monkeypatch):
 def test_a_refused_renewal_signs_out(monkeypatch):
     _signed_in("youtube", expires=time.time() - 5)
     monkeypatch.setattr("sprigcast.output.oauth_loopback.post_form",
-                        lambda url, fields, who: {"error": "invalid_grant", "status": 400})
+                        lambda url, fields, who, **kw: {"error": "invalid_grant", "status": 400})
     Web(monkeypatch)
     with pytest.raises(sd.NeedsSignIn, match="ran out"):
         sd.load("youtube")
@@ -262,13 +468,13 @@ def test_keeping_a_sign_in_asks_for_offline_access_and_edit_permission(monkeypat
     query = urllib.parse.parse_qs(urllib.parse.urlsplit(yt.url).query)
     assert query["access_type"] == ["offline"] and "consent" in query["prompt"][0] and yt.keep
     plain = urllib.parse.parse_qs(urllib.parse.urlsplit(service_signin.begin("youtube").url).query)
-    assert "access_type" not in plain
+    assert plain["access_type"] == ["offline"]  # one sign-in: the destination's keeps Stream details too
     kick = urllib.parse.parse_qs(urllib.parse.urlsplit(service_signin.begin("kick", keep=True).url).query)
     assert "channel:write" in kick["scope"][0].split()
 
 
 def test_a_kept_sign_in_is_saved_and_named(monkeypatch):
-    monkeypatch.setattr(service_signin, "post_form", lambda url, fields, who: (
+    monkeypatch.setattr(service_signin, "post_form", lambda url, fields, who, **kw: (
         {"access_token": "a", "refresh_token": "r", "expires_in": 3600} if fields.get("keep") == "1" else {}))
     monkeypatch.setattr(service_signin, "get_json", lambda url, token, who: {"items": [{"snippet": {"title": "Sloth"}}]})
 
@@ -310,16 +516,18 @@ def test_the_card_shows_at_once_then_fills_and_saves(monkeypatch):
         return loaded
 
     monkeypatch.setattr(sd, "account", lambda service: "sloth" if service == "kick" else "")
-    monkeypatch.setattr(sd, "load", slow_load)
+    monkeypatch.setattr(sd, "load", lambda service, key=None, vertical=None: slow_load(service))
     monkeypatch.setattr(sd, "save", lambda service, details, thumb, key: calls.append((service, details)) or details)
     started = time.time()
     dialog = sdd.StreamDetailsDialog(None, ["kick", "twitch"])
     assert time.time() - started < 0.15  # it doesn't wait on the web
     pane = dialog.panes["kick"]
-    assert list(dialog.chips) == ["kick", "twitch", "youtube"]
+    assert list(dialog.chips) == ["kick", "twitch"]  # only where you stream
+    assert len({chip.width() for chip in dialog.chips.values()}) == 1
     assert not dialog.save_button.isEnabled()
     assert _wait(dialog, lambda: pane.loaded)
     assert pane.title.text() == "Hi" and pane.category.text() == "Art"
+    assert pane.title.cursorPosition() == 0  # a long title opens at its start
     pane.category.setText("Unknown game")
     dialog._save()
     assert "Pick a category" in dialog.note.text() and not calls
@@ -330,8 +538,19 @@ def test_the_card_shows_at_once_then_fills_and_saves(monkeypatch):
     assert calls[0][1].title == "New" and calls[0][1].category_id == "15"
     dialog.show_service("twitch")  # nobody signed in: a button, no web call
     assert dialog.panes["twitch"].signed_out.isVisibleTo(dialog)
-    assert dialog.panes["twitch"].sign_in.text() == "Connect Twitch"
+    assert dialog.panes["twitch"].sign_in.text() == "Sign in"
     assert not dialog.save_button.isEnabled()
+    dialog.done(0)
+    dialog.deleteLater()
+
+
+def test_no_streaming_places_means_no_chips(monkeypatch):
+    from sprigcast.app import stream_details_dialog as sdd
+
+    monkeypatch.setattr(sd, "load", lambda service, key=None, vertical=None: pytest.fail("nothing to read"))
+    dialog = sdd.StreamDetailsDialog(None, ["custom"])
+    assert dialog.chips == {} and not dialog.save_button.isEnabled()
+    dialog._save()
     dialog.done(0)
     dialog.deleteLater()
 
@@ -340,7 +559,7 @@ def test_a_failed_save_is_a_quiet_note(monkeypatch):
     from sprigcast.app import stream_details_dialog as sdd
 
     monkeypatch.setattr(sd, "account", lambda service: "sloth")
-    monkeypatch.setattr(sd, "load", lambda service: sd.Details(title="Hi"))
+    monkeypatch.setattr(sd, "load", lambda service, key=None, vertical=None: sd.Details(title="Hi"))
 
     def fail(*_a):
         raise sd.DetailsError("Couldn't reach Twitch. Check your internet and try again.")

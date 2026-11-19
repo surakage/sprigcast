@@ -286,6 +286,43 @@ def _draw(p: QPainter, name: str) -> None:
         path.lineTo(P(12, 9))
         path.lineTo(P(17, 14))
         p.drawPath(path)
+    elif name == "warning":  # a rounded triangle with a mark: something needs a look
+        path = QPainterPath(P(12, 4))
+        path.lineTo(P(21, 19.5))
+        path.lineTo(P(3, 19.5))
+        path.closeSubpath()
+        p.drawPath(path)
+        p.drawLine(P(12, 10), P(12, 13.5))
+        p.drawPoint(P(12, 16.6))
+    elif name == "clock":  # waiting or starting
+        p.drawEllipse(P(12, 12), 8, 8)
+        p.drawLine(P(12, 12), P(12, 7.5))
+        p.drawLine(P(12, 12), P(15.2, 13.8))
+    elif name == "moon":  # asleep
+        path = QPainterPath()
+        path.addEllipse(P(12, 12), 8, 8)
+        bite = QPainterPath()
+        bite.addEllipse(P(16.5, 8.5), 6.8, 6.8)
+        p.drawPath(path.subtracted(bite))
+    elif name == "plug":  # unplugged
+        p.drawRoundedRect(QRectF(7, 8, 10, 7), 2, 2)
+        p.drawLine(P(10, 8), P(10, 4))
+        p.drawLine(P(14, 8), P(14, 4))
+        p.drawLine(P(12, 15), P(12, 20))
+    elif name == "eye-off":  # hidden here
+        path = QPainterPath(P(3, 12))
+        path.quadTo(P(12, 4), P(21, 12))
+        path.quadTo(P(12, 20), P(3, 12))
+        p.drawPath(path)
+        p.drawEllipse(P(12, 12), 2.6, 2.6)
+        p.drawLine(P(5, 19), P(19, 5))
+    elif name == "sliders":  # filters on it
+        for x, knob in ((7, 9), (12, 15), (17, 8)):
+            p.drawLine(P(x, 4.5), P(x, 19.5))
+            p.save()
+            p.setBrush(p.pen().color())
+            p.drawEllipse(P(x, knob), 2, 2)
+            p.restore()
     else:  # anything unknown: a small dot
         p.drawEllipse(P(12, 12), 2, 2)
 
@@ -293,7 +330,7 @@ def _draw(p: QPainter, name: str) -> None:
 NAMES = ("sprig", "bloom", "leaf", "gear", "search", "lock", "unlock", "link", "key", "upload", "monitor", "mic",
          "camera", "disk", "bolt", "panel", "plus", "compass", "folder", "trash", "speaker", "speaker-off",
          "gamepad", "keyboard", "shutter", "chat", "note", "trophy", "ball", "broadcast", "record", "landscape",
-         "portrait", "dual", "clip", "heart", "tree", "paw", "chevron-down", "chevron-up")
+         "portrait", "dual", "clip", "heart", "tree", "paw", "chevron-down", "chevron-up", "warning", "clock", "moon", "plug", "eye-off", "sliders")
 
 
 def paint_icon(p: QPainter, r: QRectF, name: str, colour: str | QColor | None = None, width: float = 1.7) -> None:

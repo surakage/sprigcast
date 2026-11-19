@@ -460,9 +460,8 @@ class NoiseGate(AudioFilter):
                 self.held -= step_s
                 if self.held <= 0:
                     self.open = False
-            target = 1.0 if self.open else 0.0
             start = self.level
-            if target > self.level:
+            if self.open:  # (not "below 1": fully open, it stayed and didn't flutter by a release step)
                 self.level = min(1.0, self.level + attack)
             else:
                 self.level = max(0.0, self.level - release)

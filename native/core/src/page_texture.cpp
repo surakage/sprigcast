@@ -51,7 +51,8 @@ ComPtr<IDXGIAdapter1> adapter_with(uint32_t low, int32_t high) {
 
 namespace sc {
 
-int source_page(sc_device &dev, uint64_t id, PageTexture &page, const std::wstring &name, int width, int height) {
+int source_page(sc_device &dev, uint64_t id, PageTexture &page, const std::wstring &name, int width, int height,
+                bool copy, uint32_t flags) {
     std::lock_guard<std::mutex> lock(dev.lock);
     if (page.name != name || !page.texture) {
         page = PageTexture();
@@ -78,15 +79,21 @@ int source_page(sc_device &dev, uint64_t id, PageTexture &page, const std::wstri
         page = PageTexture();
         return fail_hr(SC_ERR_DEVICE, "AcquireSync (browser page)", hr);
     }
+    if (!copy) {
+        page.mutex->ReleaseSync(0);  // the helper may draw the next one; the source keeps its picture
+        return SC_OK;
+    }
     Source &s = dev.comp.sources[id];
-    if (!s.texture || s.data_w != width || s.data_h != height || s.planar) {
+    D3D11_TEXTURE2D_DESC have = {};
+    if (s.texture) s.texture->GetDesc(&have);
+    if (!s.texture || s.data_w != width || s.data_h != height || s.planar || have.Format != desc.Format) {
         s = Source();
         D3D11_TEXTURE2D_DESC td = {};
         td.Width = static_cast<UINT>(width);
         td.Height = static_cast<UINT>(height);
         td.MipLevels = 1;
         td.ArraySize = 1;
-        td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        td.Format = desc.Format;  // the shared texture's own (a page's R8G8B8A8, a capture's B8G8R8A8)
         td.SampleDesc.Count = 1;
         td.Usage = D3D11_USAGE_DEFAULT;
         td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
@@ -103,8 +110,8 @@ int source_page(sc_device &dev, uint64_t id, PageTexture &page, const std::wstri
     const D3D11_BOX box = {0, 0, 0, static_cast<UINT>(width), static_cast<UINT>(height), 1};
     dev.context->CopySubresourceRegion(s.texture.Get(), 0, 0, 0, 0, page.texture.Get(), 0, &box);
     page.mutex->ReleaseSync(0);  // the helper may draw the next one
-    s.format = SC_FMT_RGBA;
-    s.premultiplied = true;  // Qt Quick draws premultiplied alpha
+    s.format = (flags & SHARED_OPAQUE) ? SC_FMT_RGB : SC_FMT_RGBA;
+    s.premultiplied = !(flags & SHARED_STRAIGHT);  // Qt Quick draws premultiplied alpha
     return SC_OK;
 }
 
@@ -128,8 +135,12 @@ SC_API int sc_d3d_device_luid(void *device, uint32_t *low, int32_t *high) {
     });
 }
 
-SC_API int sc_page_target_create(uint32_t luid_low, int32_t luid_high, void *device, int width, int height,
-                                 const wchar_t *name, sc_page_target **out) {
+}  // extern "C"
+
+namespace {
+
+int make_page_target(uint32_t luid_low, int32_t luid_high, void *device, int width, int height, const wchar_t *name,
+                DXGI_FORMAT format, sc_page_target **out) {
     return sc::guarded("sc_page_target_create", [&]() -> int {
         if (!out || !name || !*name || width < 1 || height < 1 || width > 8192 || height > 8192)
             return sc::fail(SC_ERR_ARGUMENT, "sc_page_target_create: no name, or a size it can't make");
@@ -157,7 +168,7 @@ SC_API int sc_page_target_create(uint32_t luid_low, int32_t luid_high, void *dev
         td.Height = static_cast<UINT>(height);
         td.MipLevels = 1;
         td.ArraySize = 1;
-        td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        td.Format = format;
         td.SampleDesc.Count = 1;
         td.Usage = D3D11_USAGE_DEFAULT;
         td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
@@ -180,6 +191,20 @@ SC_API int sc_page_target_create(uint32_t luid_low, int32_t luid_high, void *dev
         *out = t.release();
         return SC_OK;
     });
+}
+
+}  // namespace
+
+int sc::page_target_bgra(uint32_t luid_low, int32_t luid_high, void *device, int width, int height,
+                         const wchar_t *name, sc_page_target **out) {
+    return make_page_target(luid_low, luid_high, device, width, height, name, DXGI_FORMAT_B8G8R8A8_UNORM, out);
+}
+
+extern "C" {
+
+SC_API int sc_page_target_create(uint32_t luid_low, int32_t luid_high, void *device, int width, int height,
+                                 const wchar_t *name, sc_page_target **out) {
+    return make_page_target(luid_low, luid_high, device, width, height, name, DXGI_FORMAT_R8G8B8A8_UNORM, out);
 }
 
 SC_API int sc_page_target_handles(sc_page_target *t, void **device, void **context, void **texture) {

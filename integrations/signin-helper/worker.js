@@ -3,7 +3,10 @@
 // token, only for SprigCast's own redirect back to the PC (127.0.0.1 / localhost). With keep=1 (Stream
 // details stays signed in) it also hands back the refresh token, and grant_type=refresh_token swaps one of
 // those for a new access token. It keeps nothing: no logs of codes or tokens, no storage. The IP is read
-// only for the rate limit.
+// only for the rate limit. It also serves SprigCast's home page, privacy policy and terms (pages.js), which
+// Google's sign-in verification needs on SprigCast's own domain.
+
+import { servePage } from "./pages.js";
 
 const SERVICES = {
   youtube: {
@@ -41,6 +44,8 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/v1/health") return json({ ok: true });
+    const shown = servePage(request, url.pathname); // the home page, privacy policy and terms
+    if (shown) return shown;
     if (url.pathname !== "/v1/token") return json({ error: "not_found" }, 404);
     if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
 

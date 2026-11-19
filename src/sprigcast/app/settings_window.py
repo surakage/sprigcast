@@ -1,8 +1,8 @@
 """The Settings window: one place for every option, a page for each topic picked from the side.
 
-Six pages, each answering one question: General (how the app behaves, and This PC), Stream (where you go
-live and how good), Recording (where recordings and clips go, and how good), Audio, Video (canvases and
-the virtual camera) and Connections. Hotkeys and the plugin store have windows of their own (Tools menu).
+Seven pages, each answering one question: General (how the app behaves, and This PC), Appearance (theme, text
+size and colors), Stream (where you go live and how good), Audio, Video (canvases and the virtual camera), Recording (where recordings and clips
+go, and how good) and Connections. Hotkeys and the plugin store have windows of their own (Tools menu).
 
 Rows most people never need (encoder internals, output scaling, ports...) show only with Expert settings
 on, a tick at the bottom that's remembered. OK and Apply write the changes into the scene collection and
@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QStackedWidget,
     QTabWidget,
@@ -54,12 +55,14 @@ from sprigcast.core.scene import SceneCollection
 
 log = logging.getLogger(__name__)
 
-TABS = ["General", "Stream", "Recording", "Audio", "Video", "Connections"]
+TABS = ["General", "Appearance", "Stream", "Audio", "Video", "Recording", "Connections"]
 # Older names, and the windows that left Settings, land somewhere sensible ("Tab/Sub": a page's own tab).
 TAB_ALIASES = {"Output": "Stream/Quality", "Clips": "Recording/Clips", "Replay": "Recording/Clips",
-               "Advanced": "General", "Camera": "Video/Virtual camera", "Hotkeys": "General", "Plugins": "General"}
+               "Advanced": "General", "Camera": "Video/Virtual camera", "Hotkeys": "General", "Plugins": "General",
+               "Accounts": "Stream/Places"}  # sign-in is on each place now (user, 2026-11-19)
 ABOUT = {  # one line under each page's title
     "General": "How SprigCast behaves, and how much this PC carries.",
+    "Appearance": "How SprigCast looks: theme, text size and colors.",
     "Stream": "Where you go live, and how good it looks.",
     "Recording": "Where recordings and clips go, and how good they look.",
     "Audio": "Devices, sound tracks and which sounds go on each.",
@@ -73,8 +76,14 @@ PREVIEW_FPS = {"smooth": 30, "light": 15, "off": 0}
 
 # Settings search: what you might type, and where it lives ("Tab/Sub"). expert: shown only with Expert on.
 SEARCH: list[tuple[str, str, bool]] = [
-    ("Theme", "General", False), ("Start with Windows", "General", False), ("Start minimised", "General", False),
-    ("Updates", "General", False), ("Ask before ending a stream", "General", False),
+    ("Theme", "Appearance", False), ("Text size", "Appearance", False), ("Colors", "Appearance", False),
+    ("Color-blind friendly", "Appearance", False), ("High contrast", "Appearance", False), ("Start with Windows", "General", False), ("Start minimized", "General", False),
+    ("Updates", "General", False), ("Ask before ending the stream", "General", False),
+    ("Ask before going live", "General", False), ("Keep recording when the stream ends", "General", False),
+    ("Start Instant replay when I go live", "General", False), ("Snapping", "General", False),
+    ("Snap distance", "General", False), ("Pop-out views", "General", False), ("Projectors", "General", False),
+    ("Always on top", "General", False), ("Hide the mouse pointer", "General", False),
+    ("Hide from screen capture", "General", False), ("Privacy", "General", False),
     ("Ask before stopping a recording", "General", False), ("Keep logs", "General", False),
     ("This PC", "General", False), ("Optimize for this PC", "General", False),
     ("Process priority", "General", False), ("Sources not on screen", "General", False),
@@ -102,6 +111,9 @@ SEARCH: list[tuple[str, str, bool]] = [
     ("Canvas size", "Video/Canvases", False), ("Canvas frame rate", "Video/Canvases", False),
     ("Vertical canvas", "Video/Canvases", False), ("Output (scaled) size", "Video/Canvases", True),
     ("Downscale filter", "Video/Canvases", True), ("Virtual camera", "Video/Virtual camera", False),
+    ("Accounts", "Stream/Places", False), ("Sign in", "Stream/Places", False), ("Sign out", "Stream/Places", False),
+    ("Twitch account", "Stream/Places", False), ("YouTube account", "Stream/Places", False),
+    ("Kick account", "Stream/Places", False),
     ("Control API", "Connections", False), ("Password (API)", "Connections", False),
     ("Pair a device", "Connections", False), ("Streamer.bot", "Connections", False),
     ("OBS-style connection", "Connections", False), ("Port", "Connections", False),
@@ -110,25 +122,34 @@ SEARCH: list[tuple[str, str, bool]] = [
 
 
 def window_style() -> str:
-    """The Settings look: a pill menu on the left, soft cards with titles inside, borderless fields."""
+    """The Settings look: a pill menu on the left, titled section cards that stand off the window (a leaf
+    before each title), fields that sink into the card with an edge that reads, bright labels."""
     t = theme
+    try:
+        leaf = t.section_title_rule(t.nature_pictures(), "#settingsWindow QGroupBox::title")
+    except OSError:  # can't write the picture: titles without the leaf
+        leaf = ""
     return f"""
 #settingsWindow {{ background: {t.BG}; border: none; }}
 #settingsNav {{ background: transparent; border: none; padding: 0px; outline: none; }}
 #settingsNav::item {{ color: {t.MUTED}; padding: 10px 16px; margin: 2px 0px; border-radius: 18px; border: none; }}
 #settingsNav::item:hover {{ background: {t.PANEL}; color: {t.TEXT}; }}
 #settingsNav::item:selected {{ background: {t.SELECT_BG}; color: {t.SELECT_TEXT}; font-weight: 600; }}
-#settingsWindow QGroupBox {{ background: {t.CARD}; border: none; border-radius: 20px; margin-top: 0px;
-    padding: 46px 18px 16px 18px; font-weight: 400; }}
+#settingsWindow QGroupBox {{ background: {t.SECTION}; border: 1px solid {t.SECTION_EDGE}; border-radius: 20px;
+    margin-top: 0px; padding: 50px 18px 16px 18px; font-weight: 400; }}
 #settingsWindow QGroupBox::title {{ subcontrol-origin: padding; subcontrol-position: top left; left: 18px;
-    top: 16px; padding: 0px; color: {t.TEXT_BRIGHT}; font-size: 14px; font-weight: 600; }}
+    top: 16px; padding: 0px; color: {t.TEXT_BRIGHT}; font-size: {t.SECTION_TITLE_PX}px; font-weight: 600; }}
+{leaf}
+#settingsWindow QGroupBox QLabel {{ color: {t.LABEL}; }}
+#settingsWindow QGroupBox QCheckBox, #settingsWindow QGroupBox QRadioButton {{ color: {t.LABEL}; }}
 #settingsWindow QLineEdit, #settingsWindow QSpinBox, #settingsWindow QDoubleSpinBox,
-#settingsWindow QComboBox, #settingsWindow QPlainTextEdit {{ background: {t.PANEL}; border: none;
-    border-radius: 10px; padding: 7px 14px; min-height: 20px; }}
+#settingsWindow QComboBox, #settingsWindow QPlainTextEdit {{ background: {t.FIELD}; border: 1px solid {t.FIELD_EDGE};
+    border-radius: 10px; padding: 6px 13px; min-height: 20px; }}
 #settingsWindow QSpinBox, #settingsWindow QDoubleSpinBox {{ padding-right: 24px; }}
-#settingsWindow QLabel#valueChip {{ background: {t.PANEL}; border-radius: 10px; padding: 7px 14px; }}
+#settingsWindow QLabel#valueChip {{ background: {t.FIELD}; border: 1px solid {t.FIELD_EDGE}; border-radius: 10px;
+    padding: 6px 13px; }}
 #settingsWindow QLineEdit:focus, #settingsWindow QSpinBox:focus, #settingsWindow QDoubleSpinBox:focus,
-#settingsWindow QComboBox:focus {{ background: {t.RAISED}; }}
+#settingsWindow QComboBox:focus {{ border-color: {t.ACCENT}; }}
 #settingsWindow QComboBox::drop-down {{ border: none; width: 26px; background: transparent; }}
 #settingsWindow QSpinBox::up-button, #settingsWindow QSpinBox::down-button,
 #settingsWindow QDoubleSpinBox::up-button, #settingsWindow QDoubleSpinBox::down-button {{
@@ -159,8 +180,18 @@ SAVE_STYLE = theme.PILL_STYLE + (
     f"QPushButton:hover {{ background: {theme.ACCENT_HOVER}; }}")
 
 CONFIRM_STREAM = "general/confirm_end_stream"
+CONFIRM_GO_LIVE = "general/confirm_go_live"  # off unless picked: Go live has always gone at once
+KEEP_RECORDING = "general/keep_recording_after_stream"  # "Record when I go live" carries on past the stream
+REPLAY_ON_LIVE = "general/replay_on_live"  # Instant replay (clips) starts with the stream
+SNAP_DISTANCES = (5, 10, 20, 40)  # px on screen (the same as Build's right-click → Snapping → Sensitivity)
 CONFIRM_RECORDING = "general/confirm_stop_recording"
 PENDING_VIDEO = "video/pending"  # canvas changes saved here, applied at the next start
+
+
+def appearance_waiting() -> bool:
+    """Text size or colors saved that this run isn't drawn with yet (they're read when SprigCast starts)."""
+    size = theme.text_size_in_use
+    return theme.chosen_colors() != theme.colors_in_use or (size is not None and theme.chosen_text_size() != size)
 
 
 def confirm_enabled(key: str) -> bool:
@@ -235,10 +266,71 @@ def _devices(devices) -> dict[str, list[str]]:
     return devices
 
 
+class ColorPreview(QWidget):
+    """A level bar in a color preset's good, warning and bad colors (Appearance → Colors → Preview)."""
+
+    def __init__(self, preset: str, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setFixedHeight(10)
+        self.setMinimumWidth(240)
+        self.setMaximumWidth(520)
+        self.colors = theme.preset_colors(preset)
+
+    def show_preset(self, preset: str) -> None:
+        self.colors = theme.preset_colors(preset)
+        self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        from PySide6.QtGui import QColor, QPainter, QPainterPath
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        clip = QPainterPath()
+        clip.addRoundedRect(0, 0, w, h, h / 2, h / 2)
+        p.setClipPath(clip)
+        p.fillRect(0, 0, w, h, QColor(theme.TRACK))
+        x = 0.0
+        for name, share in (("ACCENT", 0.46), ("WARN", 0.20), ("BAD", 0.10)):
+            p.fillRect(int(x), 0, int(w * share) + 1, h, QColor(self.colors[name]))
+            x += w * share
+        p.end()
+
+
+LINED_UP = "settingsLinedUp"  # a form label already set level with its box
+TALL_FIELD = 48  # a box taller than this (text areas, lists) keeps its label at the top
+
+
+def line_up_labels(root: QWidget) -> None:
+    """Every form label in `root` sits level with its box. Qt puts a label at the top of its row, so next to
+    a padded box it rode high (Settings redesign, 2026-11-19). Cheap to run again: done labels are skipped."""
+    import shiboken6
+
+    if not shiboken6.isValid(root):
+        return
+    label_role, field_role = QFormLayout.ItemRole.LabelRole, QFormLayout.ItemRole.FieldRole
+    for form in root.findChildren(QFormLayout):
+        for row in range(form.rowCount()):
+            label, field = form.itemAt(row, label_role), form.itemAt(row, field_role)
+            widget = label.widget() if label is not None else None
+            if not isinstance(widget, QLabel) or field is None or widget.property(LINED_UP):
+                continue
+            if field.sizeHint().height() > TALL_FIELD:
+                continue
+            widget.setProperty(LINED_UP, True)
+            widget.setSizePolicy(widget.sizePolicy().horizontalPolicy(), QSizePolicy.Policy.Expanding)
+            flags = widget.alignment() & ~Qt.AlignmentFlag.AlignVertical_Mask
+            widget.setAlignment(flags | Qt.AlignmentFlag.AlignVCenter)
+
+
+SECTION_GAP = 14  # between a page's section cards
+
+
 def _page(*widgets: QWidget, stretch: bool = True) -> QWidget:
     page = QWidget()
     layout = QVBoxLayout(page)
     layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(SECTION_GAP)
     for widget in widgets:
         layout.addWidget(widget)
     if stretch:
@@ -247,6 +339,8 @@ def _page(*widgets: QWidget, stretch: bool = True) -> QWidget:
 
 
 FILL_AFTER_MS = 30  # the window shows first, then its page is made (fill_after_show)
+STAND_IN = "settingsStandIn"
+PAGE_LATE_MS = 400  # a picked page still not in its place this long after: put it in now (_make_sure_shown)
 SLICE_GAP_MS = 20  # between the parts of a page made a tick apart (SettingsWindow._slice)
 
 
@@ -296,6 +390,7 @@ class SettingsWindow(QDialog):
         # of them before showing anything kept the window from answering 2.4 s on the PC (2026-11-16).
         self._makers = {
             "General": self._general_page,
+            "Appearance": self._appearance_page,
             "Stream": lambda: self._stream_page(encoder),
             "Recording": lambda: self._recording_page(encoder),
             "Audio": lambda: self._audio_page(lambda: _devices(audio_devices)),
@@ -310,7 +405,9 @@ class SettingsWindow(QDialog):
         self.on_clear_data = None  # the main window's clear_all_data(parent)
         for name in TABS:
             QListWidgetItem(name, self.tabs)
-            self.stack.addWidget(QWidget())  # stands in until the page is made
+            stand_in = QWidget()  # stands in until the page is made
+            stand_in.setObjectName(STAND_IN)
+            self.stack.addWidget(stand_in)
         self.tabs.currentRowChanged.connect(self._show_row)
 
         self.search = QLineEdit()
@@ -453,7 +550,8 @@ class SettingsWindow(QDialog):
     _PAGE_OF = {"stream_page": "Stream", "stream_quality": "Stream", "stream_tabs": "Stream",
                 "recording_tabs": "Recording", "recording_page": "Recording", "audio_page": "Audio",
                 "video_tabs": "Video", "camera_tab": "Video", "video_fields": "Video", "video_output": "Video",
-                "connections_page": "Connections"}
+                "connections_page": "Connections", "theme": "Appearance", "text_size": "Appearance",
+                "color_preset": "Appearance"}
 
     def __getattr__(self, name: str):
         """A page's widgets asked for before the page was made: make that page (not knowing which: up to the one)."""
@@ -491,14 +589,29 @@ class SettingsWindow(QDialog):
             page.set_expert(self._expert)
         if name not in ("Stream", "Recording", "Video"):  # those scroll each of their own tabs
             page = _scrolled(page)
-        index = TABS.index(name)
-        current = self.stack.currentIndex()
-        placeholder = self.stack.widget(index)
-        self.stack.insertWidget(index, self._titled(name, page))
-        self.stack.removeWidget(placeholder)
-        placeholder.deleteLater()
-        self.stack.setCurrentIndex(current)
-        self._show_sub(name)
+
+        def put_in() -> None:
+            import shiboken6
+
+            if not shiboken6.isValid(self.stack):
+                return
+            index = TABS.index(name)
+            current = self.stack.currentIndex()
+            placeholder = self.stack.widget(index)
+            self.stack.insertWidget(index, self._titled(name, page))
+            self.stack.removeWidget(placeholder)
+            placeholder.deleteLater()
+            self.stack.setCurrentIndex(current)
+            self._show_sub(name)
+            self._tab_changed(current)
+            line_up_labels(page)
+
+        if self.isVisible():
+            # Made now, put in its place (titled, styled, laid out) first thing next tick: both at once were the
+            # General page's 106-131 ms and the Sound gear's 62-122 ms on the PC while live (2026-11-18).
+            self._slice_first(put_in)
+        else:
+            put_in()
         took = 1000 * (time.perf_counter() - began)
         if took >= 100:
             log.info("settings: the %s page took %.0f ms to make", name, took)
@@ -528,13 +641,25 @@ class SettingsWindow(QDialog):
         if len(self._slices) == 1:
             QTimer.singleShot(SLICE_GAP_MS, self._next_slice)
 
+    def _slice_first(self, call) -> None:
+        """Like _slice, but ahead of every part already waiting."""
+        if self._slices:
+            self._slices.insert(0, call)
+        else:
+            self._slice(call)
+
     def _next_slice(self) -> None:
         if not self._slices:
             return
         if getattr(self, "_closed", False):
             self._slices.clear()
             return
-        self._slices.pop(0)()
+        call = self._slices.pop(0)
+        try:
+            call()
+        except Exception:  # noqa: BLE001  one part going wrong never stops the parts after it (pages stay blank)
+            log.exception("settings: part of a page failed to make")
+        line_up_labels(self.stack)
         if self._slices:
             from PySide6.QtCore import QTimer
 
@@ -542,7 +667,12 @@ class SettingsWindow(QDialog):
 
     def _flush_slices(self) -> None:
         while self._slices:
-            self._slices.pop(0)()
+            call = self._slices.pop(0)
+            try:
+                call()
+            except Exception:  # noqa: BLE001
+                log.exception("settings: part of a page failed to make")
+        line_up_labels(self.stack)
 
     def soon(self, call) -> None:
         """call() once the first page is made (now, if it is)."""
@@ -562,9 +692,31 @@ class SettingsWindow(QDialog):
 
     def _show_row(self, row: int) -> None:
         if 0 <= row < len(TABS):
+            if self._fill_tab is not None:
+                # Picked before the window's first page was filled in (a busy PC can be late with it): fill in this
+                # one, not the page it opened on. Filled in later, it took the window back to General (2026-11-18).
+                self._fill_tab = TABS[row]
             self.ensure(TABS[row])
             self.stack.setCurrentIndex(row)
             self._tab_changed(row)
+            if self.isVisible() and self._stand_in(row):
+                from PySide6.QtCore import QTimer
+
+                QTimer.singleShot(PAGE_LATE_MS, self, lambda: self._make_sure_shown(row))
+
+    def _stand_in(self, row: int) -> bool:
+        widget = self.stack.widget(row)
+        return widget is not None and widget.objectName() == STAND_IN
+
+    def _make_sure_shown(self, row: int) -> None:
+        """The picked page is made but not yet in its place: its parts wait on timers that a busy UI can hold
+        back. Put everything waiting in now, so a picked page never stays blank or on the last one."""
+        if getattr(self, "_closed", False) or self.tabs.currentRow() != row or not self._stand_in(row):
+            return
+        log.warning("settings: the %s page was still waiting after %d ms; putting it in now", TABS[row], PAGE_LATE_MS)
+        self._flush_slices()
+        if self.stack.currentIndex() != row:
+            self.stack.setCurrentIndex(row)
 
     def current_tab(self) -> str:
         return TABS[self.tabs.currentRow()]
@@ -583,80 +735,187 @@ class SettingsWindow(QDialog):
     # Pages -------------------------------------------------------------------------
 
     def _general_page(self) -> QWidget:
-        look = QGroupBox("Appearance")
-        form = QFormLayout(look)
-        self.theme = QComboBox()
-        for key, label in THEMES.items():
-            self.theme.addItem(label, key)
-        self.theme.setCurrentIndex(max(0, self.theme.findData(chosen_theme())))
-        form.addRow("Theme", self.theme)
-
         q = QSettings()
         startup = QGroupBox("Startup")
         start_box = QVBoxLayout(startup)
         self.start_with_windows = QCheckBox("Start SprigCast when Windows starts")
         self.start_with_windows.setChecked(autostart.enabled())
         self.start_with_windows.setEnabled(autostart.supported())
-        self.start_with_windows.setToolTip("When Windows starts it, SprigCast always opens minimised to the taskbar")
+        self.start_with_windows.setToolTip("When Windows starts it, SprigCast always opens minimized to the taskbar")
         start_box.addWidget(self.start_with_windows)
-        self.start_minimized = QCheckBox("Start minimised")
+        self.start_minimized = QCheckBox("Start minimized")
         self.start_minimized.setChecked(q.value(autostart.START_MINIMIZED, False, type=bool))
         start_box.addWidget(self.start_minimized)
 
-        from sprigcast import __version__
-        from sprigcast.app.updates import auto_check_enabled
+        page = _page(self._this_pc_card(), startup)
 
-        updates = QGroupBox("Updates")
-        up_box = QVBoxLayout(updates)
-        self.auto_updates = QCheckBox("Check for updates automatically")
-        self.auto_updates.setChecked(auto_check_enabled())
-        self.auto_updates.setToolTip("Updates never install while you're live or recording")
-        up_box.addWidget(self.auto_updates)
-        up_row = QHBoxLayout()
-        up_row.setSpacing(12)
-        self.check_updates_button = QPushButton("Check now")
-        self.check_updates_button.setStyleSheet(theme.SMALL_PILL_STYLE)
-        self.check_updates_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.check_updates_button.setAutoDefault(False)
-        self.check_updates_button.setEnabled(self.check_updates is not None)
-        self.check_updates_button.clicked.connect(lambda: self.check_updates and self.check_updates())
-        up_row.addWidget(self.check_updates_button)
-        up_row.addWidget(_hint(f"Version {__version__}"), 1)
-        up_box.addLayout(up_row)
+        def rest() -> None:
+            """Features, Updates, Confirmations, Logs and Your data: a tick after the page (Save, or asking for one
+            of their boxes, makes them first)."""
+            import shiboken6
 
-        safety = QGroupBox("Confirmations")
-        box = QVBoxLayout(safety)
-        self.confirm_stream = QCheckBox("Ask before ending a stream")
-        self.confirm_stream.setChecked(confirm_enabled(CONFIRM_STREAM))
-        box.addWidget(self.confirm_stream)
-        self.confirm_recording = QCheckBox("Ask before stopping a recording")
-        self.confirm_recording.setChecked(confirm_enabled(CONFIRM_RECORDING))
-        box.addWidget(self.confirm_recording)
+            if not shiboken6.isValid(page):
+                return
+            from sprigcast import __version__
+            from sprigcast.app.updates import auto_check_enabled
 
-        from sprigcast.app import logbook
+            updates = QGroupBox("Updates")
+            up_box = QVBoxLayout(updates)
+            self.auto_updates = QCheckBox("Check for updates automatically")
+            self.auto_updates.setChecked(auto_check_enabled())
+            self.auto_updates.setToolTip("Updates never install while you're live or recording")
+            up_box.addWidget(self.auto_updates)
+            up_row = QHBoxLayout()
+            up_row.setSpacing(12)
+            self.check_updates_button = QPushButton("Check now")
+            self.check_updates_button.setStyleSheet(theme.SMALL_PILL_STYLE)
+            self.check_updates_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.check_updates_button.setAutoDefault(False)
+            self.check_updates_button.setEnabled(self.check_updates is not None)
+            self.check_updates_button.clicked.connect(lambda: self.check_updates and self.check_updates())
+            up_row.addWidget(self.check_updates_button)
+            up_row.addWidget(_hint(f"Version {__version__}"), 1)
+            up_box.addLayout(up_row)
 
-        logs = QGroupBox("Logs")
-        lform = QFormLayout(logs)
-        self.keep_logs = QComboBox()
-        for days in logbook.KEEP_CHOICES:
-            self.keep_logs.addItem(f"{days} days" if days else "Forever", days)
-        self.keep_logs.setCurrentIndex(max(0, self.keep_logs.findData(logbook.keep_days())))
-        lform.addRow("Keep logs for", self.keep_logs)
+            safety = QGroupBox("Going live")
+            box = QVBoxLayout(safety)
+            self.confirm_go_live = QCheckBox("Ask before going live")
+            self.confirm_go_live.setChecked(q.value(CONFIRM_GO_LIVE, False, type=bool))
+            box.addWidget(self.confirm_go_live)
+            self.confirm_stream = QCheckBox("Ask before ending the stream")
+            self.confirm_stream.setChecked(confirm_enabled(CONFIRM_STREAM))
+            box.addWidget(self.confirm_stream)
+            self.confirm_recording = QCheckBox("Ask before stopping a recording")
+            self.confirm_recording.setChecked(confirm_enabled(CONFIRM_RECORDING))
+            box.addWidget(self.confirm_recording)
+            self.keep_recording = QCheckBox("Keep recording when the stream ends")
+            self.keep_recording.setToolTip("For \"Record when I go live\" (Recording): the recording carries on")
+            self.keep_recording.setChecked(q.value(KEEP_RECORDING, False, type=bool))
+            box.addWidget(self.keep_recording)
+            self.replay_on_live = QCheckBox("Start Instant replay when I go live")
+            self.replay_on_live.setChecked(q.value(REPLAY_ON_LIVE, False, type=bool))
+            box.addWidget(self.replay_on_live)
 
-        from sprigcast.app import features
+            from sprigcast.app.preview import snap_settings
 
-        used = QGroupBox("Features")
-        used_box = QVBoxLayout(used)
-        off = features.off()
-        self.feature_ticks: dict[str, QCheckBox] = {}
-        for name, label in sorted(features.FEATURES.items(), key=lambda kv: kv[1]):
-            tick = QCheckBox(label)
-            tick.setChecked(name not in off)
-            tick.setToolTip("Off: hidden from Live and nothing of it is loaded")
-            used_box.addWidget(tick)
-            self.feature_ticks[name] = tick
+            snap_now = snap_settings()
+            snapping = QGroupBox("Snapping")
+            sform = QFormLayout(snapping)
+            self.snap_on = QCheckBox("On")
+            self.snap_on.setToolTip("Hold Ctrl while dragging to place a part without snapping")
+            self.snap_on.setChecked(snap_now["enabled"])
+            sform.addRow("Snap", self.snap_on)
+            self.snap_distance = QComboBox()
+            for px in SNAP_DISTANCES:
+                self.snap_distance.addItem(f"{px} px", float(px))
+            near = min(SNAP_DISTANCES, key=lambda px: abs(px - snap_now["distance"]))
+            self.snap_distance.setCurrentIndex(SNAP_DISTANCES.index(near))
+            sform.addRow("Distance", self.snap_distance)
+            snap_row = QHBoxLayout()
+            snap_row.setSpacing(18)
+            self.snap_to: dict[str, QCheckBox] = {}
+            for key, label in (("edges", "Edges"), ("sources", "Other parts"), ("center", "Center")):
+                tick = QCheckBox(label)
+                tick.setChecked(snap_now[key])
+                snap_row.addWidget(tick)
+                self.snap_to[key] = tick
+            snap_row.addStretch(1)
+            sform.addRow("Snap to", snap_row)
 
-        return _page(look, self._this_pc_card(), startup, used, updates, safety, logs, self._clear_data_card())
+            def snap_follow(on: bool) -> None:
+                self.snap_distance.setEnabled(on)
+                for tick in self.snap_to.values():
+                    tick.setEnabled(on)
+            self.snap_on.toggled.connect(snap_follow)
+            snap_follow(self.snap_on.isChecked())
+
+            from sprigcast.app import projector, privacy
+
+            popouts = QGroupBox("Pop-out views")
+            pbox = QVBoxLayout(popouts)
+            self.projector_hide_pointer = QCheckBox("Hide the mouse pointer")
+            self.projector_hide_pointer.setToolTip("On full-screen pop-outs")
+            self.projector_hide_pointer.setChecked(projector.hide_pointer())
+            pbox.addWidget(self.projector_hide_pointer)
+            self.projector_on_top = QCheckBox("Always on top")
+            self.projector_on_top.setToolTip("Pop-out windows stay above other windows")
+            self.projector_on_top.setChecked(projector.on_top())
+            pbox.addWidget(self.projector_on_top)
+
+            private = QGroupBox("Privacy")
+            prbox = QVBoxLayout(private)
+            self.hide_from_capture = QCheckBox("Hide SprigCast from screen capture")
+            self.hide_from_capture.setToolTip("Display captures and screen sharing leave out SprigCast's own windows."
+                                              "\nPop-out views still show.")
+            self.hide_from_capture.setChecked(privacy.hidden())
+            self.hide_from_capture.setEnabled(privacy.supported())
+            prbox.addWidget(self.hide_from_capture)
+
+            from sprigcast.app import logbook
+
+            logs = QGroupBox("Logs")
+            lform = QFormLayout(logs)
+            self.keep_logs = QComboBox()
+            for days in logbook.KEEP_CHOICES:
+                self.keep_logs.addItem(f"{days} days" if days else "Forever", days)
+            self.keep_logs.setCurrentIndex(max(0, self.keep_logs.findData(logbook.keep_days())))
+            lform.addRow("Keep logs for", self.keep_logs)
+
+            from sprigcast.app import features
+
+            used = QGroupBox("Features")
+            used_box = QVBoxLayout(used)
+            off = features.off()
+            self.feature_ticks: dict[str, QCheckBox] = {}
+            for name, label in sorted(features.FEATURES.items(), key=lambda kv: kv[1]):
+                tick = QCheckBox(label)
+                tick.setChecked(name not in off)
+                tick.setToolTip("Off: hidden from Live and nothing of it is loaded")
+                used_box.addWidget(tick)
+                self.feature_ticks[name] = tick
+
+            layout = page.layout()
+            for card in (safety, snapping, popouts, private, used, updates, logs, self._clear_data_card()):
+                layout.insertWidget(layout.count() - 1, card)  # above the stretch
+
+        if self.isVisible():
+            self._slice(rest)
+        else:
+            rest()
+        return page
+
+    def _appearance_page(self) -> QWidget:
+        """Appearance: the theme, text size and a color preset. Text size and colors show after a restart: every
+        style in the app is built from them as SprigCast starts (theme.py)."""
+        from sprigcast.app.segmented import Segmented
+
+        look = QGroupBox("Look")
+        form = QFormLayout(look)
+        form.setVerticalSpacing(12)
+        self.theme = QComboBox()
+        for key, label in THEMES.items():
+            self.theme.addItem(label, key)
+        self.theme.setCurrentIndex(max(0, self.theme.findData(chosen_theme())))
+        form.addRow("Theme", self.theme)
+        self.text_size = Segmented([(key, label) for key, (label, _scale) in theme.TEXT_SIZES.items()],
+                                   theme.chosen_text_size())
+        form.addRow("Text size", self.text_size)
+
+        colors = QGroupBox("Colors")
+        cform = QFormLayout(colors)
+        cform.setVerticalSpacing(12)
+        self.color_preset = Segmented(list(theme.COLOR_PRESETS.items()), theme.chosen_colors())
+        cform.addRow("Preset", self.color_preset)
+        self.color_preview = ColorPreview(theme.chosen_colors())
+        self.color_preset.picked.connect(self.color_preview.show_preset)
+        cform.addRow("Preview", self.color_preview)
+        return _page(look, colors)
+
+    def _apply_appearance(self) -> None:
+        settings = QSettings()
+        settings.setValue("general/theme", self.theme.currentData())
+        settings.setValue(theme.TEXT_SIZE_KEY, self.text_size.value() or "normal")
+        settings.setValue(theme.COLORS_KEY, self.color_preset.value() or "default")
 
     def _clear_data_card(self) -> QGroupBox:
         """Clear all my data: keys, sign-ins, settings and files go, then SprigCast closes (app/clear_data.py)."""
@@ -750,24 +1009,64 @@ class SettingsWindow(QDialog):
         self.stream_tabs = QTabWidget()
         self.stream_tabs.addTab(places, "Places")
         self.stream_tabs.addTab(QWidget(), "Quality")  # made a tick later (_slice), or now if it's the one asked
+        self.stream_tabs.currentChanged.connect(self._stream_tab_changed)
 
-        def quality():
-            self.stream_quality = StreamQuality(self.collection, encoder, streaming=self.streaming)
+        def quality(now: bool = False):
+            # Owned by the page from the start: made a tick before it's put in its tab, it was left behind (with
+            # its drop-downs' lists) when the window went in between (the warm-up one, on a busy PC).
+            self.stream_quality = StreamQuality(self.collection, encoder, streaming=self.streaming,
+                                                parent=self.stream_tabs)
+            self.stream_quality.hide()
             if hasattr(self.stream_quality, "set_expert"):
                 self.stream_quality.set_expert(self._expert)
+            self.stream_quality.go_to_places = lambda: self.stream_tabs.setCurrentIndex(0)
+            self.stream_quality.show_places(self.stream_page.outputs, self.collection.canvases)
+            self._show_encoder_room()
+            if now:
+                put_in()
+            else:  # made, then put in its tab (laid out and styled) a tick later: both at once were 150 ms
+                self._slice(put_in)
+
+        def put_in():
+            import shiboken6
+
+            if not shiboken6.isValid(self.stream_tabs):
+                return
             tabs = self.stream_tabs
             current = tabs.currentIndex()
             stand_in = tabs.widget(1)
             tabs.removeTab(1)
+            self.stream_quality.setHidden(False)  # (hidden while it waited to be put in)
             tabs.insertTab(1, _scrolled(self.stream_quality), "Quality")
             tabs.setCurrentIndex(current)
             stand_in.deleteLater()
             self._tab_changed(self.stack.currentIndex())
         if self._subs.get("Stream") == "Quality":
-            quality()
+            quality(now=True)
         else:
             self._slice(quality)
         return self.stream_tabs
+
+    def _stream_tab_changed(self, index: int) -> None:
+        """Quality shows what each place gets from the place list as it is now, unsaved choices too."""
+        quality = self.__dict__.get("stream_quality")
+        if index == 1 and quality is not None:
+            quality.show_places(self.stream_page.outputs, self.collection.canvases)
+            self._show_encoder_room()
+
+    def _show_encoder_room(self) -> None:
+        """The encoder's load (Garden check's last reading) on Quality's Load row; hidden when there is none."""
+        from sprigcast.app.destinations import encoder_room, room_line
+
+        main = self.parent()
+        load = (getattr(main, "last_resources", None) or {}).get("encoder")
+        sessions = main._encode_sessions() if hasattr(main, "_encode_sessions") else 0
+        line = room_line(load, sessions)
+        form = self.stream_quality.stream_form
+        if line is None or not load:
+            form.set_room(None)
+        else:
+            form.set_room(load, (encoder_room(load, sessions) or 0) > 0, line[1])
 
     def _recording_page(self, encoder: str) -> QWidget:
         self.recording_page = RecordingPage(
@@ -781,6 +1080,7 @@ class SettingsWindow(QDialog):
         for i in range(tabs.count()):  # each of its tabs scrolls on its own
             name, widget = tabs.tabText(i), tabs.widget(i)
             tabs.removeTab(i)
+            widget.setHidden(False)  # (taking a tab out hides its page: left hidden, the Recording page was blank)
             tabs.insertTab(i, _scrolled(widget), name)
         tabs.setCurrentIndex(0)
         return self.recording_tabs
@@ -927,9 +1227,20 @@ class SettingsWindow(QDialog):
 
     def _apply_general(self) -> None:
         settings = QSettings()
-        settings.setValue("general/theme", self.theme.currentData())
         settings.setValue(CONFIRM_STREAM, self.confirm_stream.isChecked())
         settings.setValue(CONFIRM_RECORDING, self.confirm_recording.isChecked())
+        settings.setValue(CONFIRM_GO_LIVE, self.confirm_go_live.isChecked())
+        settings.setValue(KEEP_RECORDING, self.keep_recording.isChecked())
+        settings.setValue(REPLAY_ON_LIVE, self.replay_on_live.isChecked())
+        settings.setValue("editing/snap", self.snap_on.isChecked())
+        settings.setValue("editing/snap_distance", self.snap_distance.currentData())
+        for key, tick in self.snap_to.items():
+            settings.setValue(f"editing/snap_{key}", tick.isChecked())
+        from sprigcast.app import projector, privacy
+
+        settings.setValue(projector.HIDE_POINTER, self.projector_hide_pointer.isChecked())
+        settings.setValue(projector.ON_TOP, self.projector_on_top.isChecked())
+        settings.setValue(privacy.HIDE_FROM_CAPTURE, self.hide_from_capture.isChecked())
         settings.setValue(autostart.START_MINIMIZED, self.start_minimized.isChecked())
         from sprigcast.app.updates import AUTO_CHECK
 
@@ -949,7 +1260,7 @@ class SettingsWindow(QDialog):
         settings.setValue(logbook.KEEP_SETTING, self.keep_logs.currentData())
         level = self.priority.currentData()
         if level != priority.chosen():
-            settings.setValue(priority.SETTING, level)
+            priority.remember(level, settings)
             priority.set_cpu_priority(level)
 
     def _apply_video(self) -> None:
@@ -979,8 +1290,11 @@ class SettingsWindow(QDialog):
             settings.remove(PENDING_VIDEO)
 
     def _show_restart_note(self) -> None:
-        waiting = bool(pending_video())
-        self.restart_note.setText("Canvas changes wait for a restart" if waiting else "")
+        canvas = bool(pending_video())
+        looks = appearance_waiting()
+        waiting = canvas or looks
+        text = "Canvas changes wait for a restart" if canvas else "Text size and colors change after a restart"
+        self.restart_note.setText(text if waiting else "")
         self.restart_note.setVisible(waiting)
         self.restart_button.setVisible(waiting and not (self.streaming or self.recording))
 
@@ -1017,6 +1331,8 @@ class SettingsWindow(QDialog):
             self.audio_page.apply_to(self.collection, recording=self.recording)
         if "General" in built:
             self._apply_general()
+        if "Appearance" in built:
+            self._apply_appearance()
         if "Video" in built and not (self.streaming or self.recording):
             self._apply_video()
         self._show_restart_note()

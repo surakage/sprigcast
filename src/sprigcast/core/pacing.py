@@ -51,6 +51,46 @@ def _on_gc(phase: str, info: dict) -> None:
                  info.get("generation", -1), ms, info.get("collected", 0))
 
 
+# Cleanup on the window's thread only ------------------------------------------------------------------------------
+# A collection runs on whichever thread happens to allocate. When one on a stream, encoder or render thread finds
+# Qt objects in a reference cycle (a closed page's widgets), PySide defers deleting them to the main thread, and
+# for some of them it then called a null deleter: the test suite crashed that way every full run (2026-11-18,
+# a hotkeys page's widgets freed on a stream link's thread), and the app could too. A collection on another
+# thread now frees nothing (DEBUG_SAVEALL): what it finds is handed to the main thread, which lets go of it
+# when it next collects, and it is freed there.
+
+_main_ident = threading.main_thread().ident
+_deferred: list[list] = []  # garbage found by other threads' collections, held until the main thread collects
+_debug_before = 0
+
+
+def _cleanup_on_main(phase: str, info: dict) -> None:
+    global _debug_before
+    if threading.get_ident() == _main_ident:
+        if phase == "start" and _deferred:
+            _deferred.clear()  # unreachable again: this collection (or the next older one) frees it here
+        return
+    if phase == "start":
+        _debug_before = gc.get_debug()
+        gc.set_debug(_debug_before | gc.DEBUG_SAVEALL)
+        return
+    gc.set_debug(_debug_before)
+    if gc.garbage:
+        _deferred.append(gc.garbage[:])
+        gc.garbage.clear()
+
+
+def collect_on_main_thread() -> None:
+    """Only the main thread frees what Python's cycle collector finds (see above). Call once, at start-up."""
+    if _cleanup_on_main not in gc.callbacks:
+        gc.callbacks.insert(0, _cleanup_on_main)
+
+
+def deferred_count() -> int:
+    """Objects other threads' collections found that the main thread hasn't let go of yet (tests)."""
+    return sum(len(batch) for batch in _deferred)
+
+
 def watch_gc() -> None:
     if _on_gc not in gc.callbacks:
         gc.callbacks.append(_on_gc)
@@ -63,9 +103,13 @@ def pause_since(t: float) -> str:
 
 
 def tame_gc() -> None:
-    """Collect once, freeze everything start-up made, and run young collections less often."""
+    """Collect the young objects, freeze everything start-up made, and run young collections less often.
+
+    Young only: a full collection here walked every object start-up made, and held the window 44-63 ms on the PC
+    just after start (2026-11-18). Start-up's own old objects are almost all kept for the whole session; any cycle
+    among them is freed by settle() at rest."""
     began = time.perf_counter()
-    gc.collect()
+    gc.collect(1)
     gc.freeze()
     _gen0, gen1, gen2 = gc.get_threshold()
     gc.set_threshold(GEN0_THRESHOLD, gen1, gen2)
@@ -73,9 +117,13 @@ def tame_gc() -> None:
              1000 * (time.perf_counter() - began))
 
 
-# Each tidy walks what was made since the last one. Every 5 minutes that was 15-73 ms on the user's PC
-# (2026-11-15), long enough to make a frame late now and then; every minute it is a fifth of that.
-TIDY_EVERY_MS = 60_000
+# Each tidy walks what was made since the last one, and frees what of it is garbage. Every 5 minutes that was 15-73
+# ms on the user's PC (2026-11-15); every minute, a fifth of that, until Move transitions: each left garbage that
+# lived past the young collections, and the minute's tidy freed 55-68 thousand objects in 65-72 ms, holding the
+# render thread 100-113 ms (PC Move soak, 2026-11-18). Every 10 seconds it is a sixth of that, inside a frame's
+# idle time. SPRIGCAST_GC_TYPES=1 logs what kinds of objects each slow tidy freed, to find where they come from.
+TIDY_EVERY_MS = 10_000
+MINUTE_MS = 60_000  # the rest of the housekeeping (threads, memory, CPU)
 
 
 def tidy() -> tuple[int, float]:
@@ -87,12 +135,28 @@ def tidy() -> tuple[int, float]:
     those objects are skipped by every later collection. Freezing only skips the cycle finder: objects
     that die later are still freed as usual, unless they are in a reference cycle, and settle() takes
     care of those when the show ends."""
+    import os
+
+    kinds = os.environ.get("SPRIGCAST_GC_TYPES")
+    if kinds:
+        before = gc.get_debug()
+        gc.set_debug(before | gc.DEBUG_SAVEALL)
     began = time.perf_counter()
     gc.collect()
-    gc.freeze()
     ms = 1000 * (time.perf_counter() - began)
+    freed = ""
+    if kinds:
+        gc.set_debug(before)
+        from collections import Counter
+
+        counts = Counter(type(o).__qualname__ for o in gc.garbage)
+        gc.garbage.clear()
+        gc.collect()  # saved, not freed: now freed for real (never frozen)
+        if ms >= SLOW_GC_MS:
+            freed = "; freed " + ", ".join(f"{n} {kind}" for kind, n in counts.most_common(12))
+    gc.freeze()
     if ms >= SLOW_GC_MS:
-        log.info("python tidy took %.0f ms (%d objects kept aside)", ms, gc.get_freeze_count())
+        log.info("python tidy took %.0f ms (%d objects kept aside)%s", ms, gc.get_freeze_count(), freed)
     return gc.get_freeze_count(), ms
 
 
@@ -238,6 +302,9 @@ def watch_memory(now: float | None = None) -> str | None:
     _memory_logged = now
     line = f"memory now: {memory_line()}; kept aside {gc.get_freeze_count():,}"
     log.info(line)
+    from sprigcast.core.memory_map import log_memory_map
+
+    log_memory_map()  # and what holds the committed memory, from a thread of its own
     return line
 
 
@@ -339,6 +406,21 @@ def watch_stalls(clock=time.perf_counter, interval: float = 0.05) -> None:
     threading.Thread(target=run, name="sprigcast-stall-watch", daemon=True).start()
 
 
+DUMP_AFTER_MIN_S = 0.2  # (the watch re-arms it every half of this, see _StallDump.arm)
+
+
+def dump_after_s(environ=None) -> float:
+    """How long Python's lock is held before the stacks are printed: DUMP_AFTER_S, or SPRIGCAST_STALL_DUMP_MS
+    (from 200 ms) for chasing shorter stalls, such as a 235 ms one that held a media source (PC, 2026-11-18)."""
+    import os
+
+    text = (environ if environ is not None else os.environ).get("SPRIGCAST_STALL_DUMP_MS", "")
+    try:
+        return max(DUMP_AFTER_MIN_S, float(text) / 1000) if text else DUMP_AFTER_S
+    except ValueError:
+        return DUMP_AFTER_S
+
+
 def stall_dumps_on(environ=None) -> bool:
     """Whether the stall watch has faulthandler print every stack during long stalls: only when asked for
     (SPRIGCAST_STALL_DUMPS=1). It reads the stacks of threads that are still running, the one holding the lock
@@ -357,6 +439,7 @@ class _StallDump:
         import tempfile
 
         self.armed_at = float("-inf")
+        self.after_s = dump_after_s()
         if not (stall_dumps_on() if on is None else on):
             self.file = None
             return
@@ -370,14 +453,14 @@ class _StallDump:
         import faulthandler
 
         now = time.monotonic()
-        if self.file is None or now - self.armed_at < DUMP_REARM_S:
+        if self.file is None or now - self.armed_at < min(DUMP_REARM_S, self.after_s / 2):
             return
         self.armed_at = now
         with _dump_lock:
             if _closing["at"] is not None:
                 return  # faulthandler's one timer is the exit guard's now (exit_guard)
             try:
-                faulthandler.dump_traceback_later(DUMP_AFTER_S, repeat=False, file=self.file)
+                faulthandler.dump_traceback_later(self.after_s, repeat=False, file=self.file)
             except (RuntimeError, ValueError, OSError):
                 self.file = None
 
@@ -698,6 +781,18 @@ def trim_working_set(keep_mb: float = TRIM_KEEP_MB, kernel32=None) -> bool:
     except Exception as exc:
         log.info("could not trim memory: %s", exc)
         return False
+
+
+def trim_working_set_later(done=None) -> None:
+    """trim_working_set on a thread of its own: Windows walking the app's pages took 60-66 ms (PC 2026-11-18),
+    the window waiting all that time when it ran there. done(trimmed) is called on that thread."""
+
+    def trim() -> None:
+        trimmed = trim_working_set()
+        if done is not None:
+            done(trimmed)
+
+    threading.Thread(target=trim, name="trim-memory", daemon=True).start()
 
 
 def private_mb() -> float:

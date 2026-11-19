@@ -32,15 +32,15 @@ from typing import Any
 
 import numpy as np
 
-from sprigcast.core import painted
+from sprigcast.core import drawn, painted
 from sprigcast.core.source import Source, register
 from sprigcast.plugin_hooks import on_air, register_before_screenshot, register_item_menu, register_on_screenshot
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "snap", "name": "Snap", "version": 5, "adds": "Source",
+PLUGIN = {"id": "snap", "name": "Snap", "version": 7, "adds": "Source",
           "about": "Screenshots as a polaroid: a camera pops up on stream, flashes and prints the screenshot.",
-          "new": "The screen freezes on the snapped moment while the polaroid prints (turn it off in the Snap's settings)."}
+          "new": "A Death count keeps moving while the screen holds still."}
 
 W, H = 800, 1000  # the Snap's box
 CAM_W, CAM_TOP = 420, 70  # the camera, drawn this wide, its picture's top this far down
@@ -435,18 +435,23 @@ class SnapSource(Source):
             if self._still == id(job):
                 return None  # the polaroid is held up: nothing moves until it leaves
             self._still = id(job)
-        return self._frame(self.paint(job, t))
+        picture = self.paint(job, t, listed=drawn.wanted())
+        return picture if isinstance(picture, drawn.Drawn) else self._frame(picture)
 
-    def paint(self, job: _Job, t: float):
-        """The Snap at t seconds into this snap, as a QImage."""
+    def paint(self, job: _Job, t: float, listed: bool = False):
+        """The Snap at t seconds into this snap, as a QImage; listed: as a list of pictures for the engine to draw
+        (core/drawn.py), nothing painted."""
         from PySide6.QtCore import QPointF, QRectF, Qt
         from PySide6.QtGui import QColor, QImage, QPainter
 
-        image = QImage(W, H, QImage.Format.Format_ARGB32_Premultiplied)
-        image.fill(Qt.GlobalColor.transparent)
-        p = QPainter(image)
-        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if listed:
+            image = p = drawn.Drawn(W, H)
+        else:
+            image = QImage(W, H, QImage.Format.Format_ARGB32_Premultiplied)
+            image.fill(Qt.GlobalColor.transparent)
+            p = QPainter(image)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         k = CAM_W / CAM_SIZE
         cam_x = (W - CAM_W) / 2
@@ -620,13 +625,16 @@ def still_items(col, scene, keep: set[str], canvas: str, seen: frozenset = froze
     return out
 
 
-def _not_shown_in_screenshots(col) -> set[str]:
+def _not_held(col) -> set[str]:
+    """What keeps moving through the freeze: Snap, what isn't in screenshots, and pop-ups that say holds_still =
+    False (Death count: frozen, two quick deaths showed nothing until the polaroid left, then the last number)."""
     from sprigcast.core.source import source_class
 
     out = set()
     for source in col.sources:
         cls = source_class(source.kind)
-        if source.kind == "snap" or (cls is not None and not getattr(cls, "in_screenshots", True)):
+        if source.kind == "snap" or (cls is not None and (not getattr(cls, "in_screenshots", True)
+                                                          or not getattr(cls, "holds_still", True))):
             out.add(source.id)
     return out
 
@@ -640,7 +648,7 @@ def before_screenshot(api, shapes: list[str]):
     hold, let_go = getattr(api.host, "hold", None), getattr(api.host, "let_go", None)
     if not snaps or hold is None or let_go is None:
         return None
-    keep = _not_shown_in_screenshots(col)
+    keep = _not_held(col)
     ids: list[str] = []
     for canvas_id in shapes:
         scene = col.active_scene(canvas_id)

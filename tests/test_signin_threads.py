@@ -198,7 +198,7 @@ def test_a_cloudflare_refusal_reads_as_words_not_a_dict(monkeypatch):
                                     "cloudflare-1xxx-errors/error-1010/", "title": "Error 1010: Access denied",
                             "status": 403, "detail": "banned browser signature"}, "status": 403,
                   "error_description": ""}
-    monkeypatch.setattr(service_signin, "post_form", lambda url, fields, who: cloudflare)
+    monkeypatch.setattr(service_signin, "post_form", lambda url, fields, who, **kw: cloudflare)
     with pytest.raises(SignInError) as err:
         service_signin._swap("youtube", "c", "v", "http://127.0.0.1:1/callback", "Google")
     text = str(err.value)

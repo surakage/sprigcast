@@ -38,7 +38,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -63,6 +62,7 @@ from PySide6.QtWidgets import (
 from sprigcast.app.modal import modal
 from sprigcast.app.open_folder import open_folder
 from sprigcast.app.labels import literal
+from sprigcast.app import card as popups
 from sprigcast.app import custom_docks, doctor, icons, safe_zones, theme
 from sprigcast.app.camera_dialog import CameraDialog
 from sprigcast.app.destinations import live_line
@@ -112,6 +112,7 @@ from sprigcast.app.library import (
 from sprigcast.app.card import colour_row
 from sprigcast.app.library import ROLE_NAME as LIB_NAME
 from sprigcast.app.library import ROLE_TAG as LIB_TAG
+from sprigcast.app.library import ROLE_UNUSED
 from sprigcast.app.live_panel import LivePanel
 from sprigcast.app.live_stage import Destination, LiveSide, LiveStage
 from sprigcast.app.palette import Command, CommandPalette
@@ -167,6 +168,7 @@ from sprigcast.sources.media import file_filter as media_file_filter, is_sound_f
 from sprigcast.sources.win32_enum import list_monitors, list_windows
 
 LEARNED_AFTER = 5  # sessions before Build's hints stop showing
+CARD_ENCODER_FULL, CARD_ENCODER_FULL_S = 85.0, 15.0  # graphics-card encoder this busy this long: warn once
 BLOOM_FLAGS = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDragEnabled
 FOLDER_FLAGS = (Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDropEnabled
                 | Qt.ItemFlag.ItemIsDragEnabled)
@@ -254,6 +256,17 @@ class _ReportSaved(QObject):
 
 
 
+class _ResizeSplitter(QSplitter):
+    """A splitter that calls on_resize() when its size changes (and on nothing else)."""
+
+    on_resize = None
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        super().resizeEvent(event)
+        if self.on_resize is not None:
+            self.on_resize()
+
+
 class GearWatch(QObject):
     """Logs mouse presses that reach the Settings gear: the PC once saw clicks on it do nothing, with nothing
     in the log to say whether they got there. One button, so it costs nothing."""
@@ -322,7 +335,7 @@ class MainWindow(QMainWindow):
         self.previews: dict[str, Preview] = {}
         self.projectors: list = []  # full-screen canvases (app/projector.py)
         self.canvas_columns: dict[str, QSplitter] = {}
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter = _ResizeSplitter(Qt.Orientation.Horizontal)
         for canvas in collection.canvases:
             preview = Preview(canvas.id, canvas.id.capitalize(), (canvas.width, canvas.height))
             preview.output_size = lambda c=canvas.id: self.collection.canvas(c).output_size()
@@ -391,7 +404,7 @@ class MainWindow(QMainWindow):
         part_layout.addWidget(self.part_uses_note)
         part_layout.addWidget(self.part_preview, 1)
         self.splitter = splitter
-        splitter.installEventFilter(self)  # Live re-shares the stage when it changes size
+        splitter.on_resize = self._splitter_resized  # Live re-shares the stage when it changes size
         # Build's shape tabs: one shape at a time, each with its own blooms (they sit at the top of the library).
         self.canvas_tabs = QTabBar()
         self.canvas_tabs.setObjectName("shapeTabs")
@@ -571,7 +584,7 @@ class MainWindow(QMainWindow):
         self.scene_tree.delegate.plus_clicked.connect(self._library_plus)
         self.library.search.textChanged.connect(lambda _text: self._refresh_scenes())
         self.scene_tree.itemSelectionChanged.connect(self._on_scene_selected)
-        self.scene_tree.itemDoubleClicked.connect(lambda *_: self._make_active())
+        # No double-click to put on air: Build never changes what's on air (user, 2026-11-19). Live does that.
         self.scene_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.scene_tree.dot_clicked.connect(self._pick_folder_colour)
         self.scene_tree.customContextMenuRequested.connect(self._scene_context_menu)
@@ -644,7 +657,7 @@ class MainWindow(QMainWindow):
             action.triggered.connect(lambda _=False, k=kind.key: self._add_app_sound(k))
 
     def _build_chat_panel(self) -> None:
-        """Chat on Live: your Twitch and YouTube chats mixed, or any chat link, in this one panel."""
+        """Chat on Live: your Twitch, YouTube and Kick chats mixed, or any chat link, in this one panel."""
         from sprigcast.app.chat_panel import KEY, ChatPanel
 
         self.chat_panel = ChatPanel(self._connect_twitch)
@@ -664,20 +677,16 @@ class MainWindow(QMainWindow):
             panel.hub.want("source", any(s.kind == "chat" for s in self.collection.sources))
 
     def _connect_twitch(self) -> None:
-        from sprigcast.app.twitch_connect import TwitchConnectDialog
+        from sprigcast.app.accounts_page import open_accounts
 
-        modal(TwitchConnectDialog(self))  # the Chat panel hears about the new account itself
+        open_accounts(self, "twitch")  # Settings → Stream, on the Twitch place; the Chat panel hears the new account
 
     def open_stream_details(self) -> None:
         """Stream details: title, category and the rest, saved straight to Twitch, YouTube and Kick."""
-        from sprigcast.app.stream_details_dialog import StreamDetailsDialog
-        from sprigcast.app.twitch_connect import TwitchConnectDialog
+        from sprigcast.app.stream_details_dialog import StreamDetailsDialog, places_for
 
-        streams = [o for o in self.collection.outputs if o.type == "stream"]
-        services = list(dict.fromkeys(o.service for o in sorted(streams, key=lambda o: not o.enabled) if o.service))
-        youtube = next((o for o in streams if o.service == "youtube" and o.key_ref), None)
-        modal(StreamDetailsDialog(self, services, youtube.key_ref if youtube else None,
-                                  connect_twitch=lambda parent: modal(TwitchConnectDialog(parent))))
+        streams = [o for o in self.collection.outputs if o.type == "stream"]  # in the order you set on Live
+        modal(StreamDetailsDialog(self, places_for(streams)))
 
     def _build_transitions_dock(self) -> None:
         from sprigcast.app.transitions_panel import TransitionsPanel
@@ -819,6 +828,10 @@ class MainWindow(QMainWindow):
         """+ Add in a bloom: its sprigs, by folder, and New sprig. Sources are added inside a sprig."""
         sprig = icons.icon("sprig", theme.ACCENT)
         folders = {f.id: f for f in self.collection.part_folders()}
+        scene = self._scene()
+        canvas_id = scene.canvas if scene is not None else self.build_canvas
+        others = [p for p in parts if not self.collection.part_on(p, canvas_id)]  # made for the other shape
+        parts = [p for p in parts if p not in others]
         for part in parts:
             if part.folder not in folders:
                 menu.addAction(sprig, literal(part.name)).triggered.connect(
@@ -829,6 +842,12 @@ class MainWindow(QMainWindow):
                 continue
             sub = menu.addMenu(_dot(folder.colour, 12), literal(folder.name))
             for part in inside:
+                sub.addAction(sprig, literal(part.name)).triggered.connect(
+                    lambda _=False, pid=part.id: self._add_part_source(pid))
+        if others:  # still there to share, out of the way
+            other = next((c for c in self.collection.canvases if c.id != canvas_id), None)
+            sub = menu.addMenu(f"From {other.id if other else 'other'} {PARTS}")
+            for part in sorted(others, key=lambda p: p.name.lower()):
                 sub.addAction(sprig, literal(part.name)).triggered.connect(
                     lambda _=False, pid=part.id: self._add_part_source(pid))
         if menu.actions():
@@ -913,7 +932,7 @@ class MainWindow(QMainWindow):
         entries = [
             ("App sound", lambda sub: self._fill_app_sound_menu(sub)),
             ("Chat", self._add_chat),
-            ("Colour…", self._add_color),
+            ("Color…", self._add_color),
             ("Desktop sound", devices("audio_output")),
             ("Game capture", games),
             ("Microphone", devices("audio_input")),
@@ -1004,7 +1023,7 @@ class MainWindow(QMainWindow):
         snap.addSeparator()
         tick("To canvas edges", "editing/snap_edges", now["edges"])
         tick("To other sources", "editing/snap_sources", now["sources"])
-        tick("To the centre", "editing/snap_center", now["center"])
+        tick("To the center", "editing/snap_center", now["center"])
         snap.addSeparator()
         reach = snap.addMenu("Sensitivity")
         for px in self.SNAP_DISTANCES:
@@ -1121,16 +1140,22 @@ class MainWindow(QMainWindow):
         scene = next((sc for sc in self.collection.scenes if sc.id == scene_id), None)
         if scene is None:
             return
+        from sprigcast.core import workers
+
+        folder = self._recordings_folder() / "Screenshots"
+
+        def take():  # on a worker, the window drawing meanwhile: waiting for the frame and the PNG took it 50-200 ms
+            image = screenshot.grab(self.engine, ["view:screenshot"]).get("view:screenshot")
+            return None if image is None else screenshot.save(image, folder, scene.name)
+
         self.engine.set_view("screenshot", scene.canvas, "bloom", scene_id)
         try:
-            image = screenshot.grab(self.engine, ["view:screenshot"]).get("view:screenshot")
+            path = workers.wait_answering(take)
         finally:
             self.engine.set_view("screenshot", None)
-        if image is None:
+        if path is None:
             self._say("Couldn't take a screenshot: nothing is drawing.")
             return
-        folder = self._recordings_folder() / "Screenshots"
-        path = screenshot.save(image, folder, scene.name)
         self._say(f"Screenshot saved to {path}")
         self._tidy_saves()
 
@@ -1138,7 +1163,7 @@ class MainWindow(QMainWindow):
         scene = next((sc for sc in self.collection.scenes if sc.id == scene_id), None)
         if scene is None:
             return
-        name, ok = QInputDialog.getText(self, "Rename", f"{cap(SHOW)} name:", text=scene.name)
+        name, ok = popups.ask_text(self, "Rename", f"{cap(SHOW)} name", scene.name, "Rename")
         if ok and name.strip() and name.strip() != scene.name:
             scene.name = name.strip()
             self._changed()
@@ -1307,7 +1332,6 @@ class MainWindow(QMainWindow):
         if under is not None and self._scene() is not None:
             scene = self._scene()
             if scene.kind == "show":
-                menu.addAction("Put on air").triggered.connect(self._make_active)
                 menu.addAction("Duplicate").triggered.connect(lambda _=False, sid=scene.id: self._copy_bloom(sid))
                 self._fill_move_menu(menu.addMenu("Move to folder"), scene)
                 if scene.canvas != self.collection.canvases[0].id:
@@ -1426,7 +1450,7 @@ class MainWindow(QMainWindow):
 
     def _rename_sound(self, source_id: str) -> None:
         config = self.collection.source(source_id)
-        name, ok = QInputDialog.getText(self, "Rename sound", "Name:", text=config.name)
+        name, ok = popups.ask_text(self, "Rename sound", "Name", config.name, "Rename")
         if ok and name.strip() and name.strip() != config.name:
             config.name = name.strip()
             self._changed()
@@ -1490,7 +1514,7 @@ class MainWindow(QMainWindow):
     def _add_folder(self, move: str | None = None, holds: str = "show") -> None:
         example = "Browser Scenes" if holds == "part" else f"Main {cap(SHOWS)}"
         title = f"New {PART} folder" if holds == "part" else "New folder"
-        name, ok = QInputDialog.getText(self, title, f"Folder name (e.g. {example}):")
+        name, ok = popups.ask_text(self, title, "Folder name", primary="Add", placeholder=example)
         if not ok or not name.strip():
             return
         folder = self.collection.add_folder(self.build_canvas, name.strip(), holds=holds)
@@ -1505,7 +1529,7 @@ class MainWindow(QMainWindow):
 
     def _rename_folder(self, folder_id: str) -> None:
         folder = self.collection.folder(folder_id)
-        name, ok = QInputDialog.getText(self, "Rename folder", "Folder name:", text=folder.name)
+        name, ok = popups.ask_text(self, "Rename folder", "Folder name", folder.name, "Rename")
         if ok and name.strip():
             folder.name = name.strip()
             self._changed()
@@ -1620,7 +1644,7 @@ class MainWindow(QMainWindow):
         if item is None:
             return
         config = self.collection.source(item.source)
-        name, ok = QInputDialog.getText(self, "Rename source", "Name:", text=config.name)
+        name, ok = popups.ask_text(self, "Rename source", "Name", config.name, "Rename")
         if ok and name.strip():
             config.name = name.strip()
             self._changed()
@@ -1862,13 +1886,11 @@ class MainWindow(QMainWindow):
         right.addWidget(scroll, 1)
 
     def _fill_bloom_tools(self) -> None:
-        """Above the canvas, on the right: Put on air, Link (vertical blooms) and Safe zones."""
+        """Above the canvas, on the right: Link (vertical blooms) and Safe zones. No Put on air: what's on air
+        is picked on Live, so editing in Build while streaming never changes the show (user, 2026-11-19)."""
         style = theme.SMALL_PILL_STYLE
         self.link_button.setText("⇄ Link")
-        self.on_air_button = QPushButton("▶ Put on air")
-        self.on_air_button.setToolTip("Show this bloom on its canvas now (and the blooms linked to it)")
-        self.on_air_button.clicked.connect(self._put_on_air)
-        for button in (self.on_air_button, self.link_button, self.safe_zone_button):
+        for button in (self.link_button, self.safe_zone_button):
             button.setStyleSheet(style)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             self.build_bar.tools.addWidget(button)
@@ -1936,9 +1958,14 @@ class MainWindow(QMainWindow):
         return None if output.twitch_account else output.id
 
     def _place_action(self, output_id: str, action: str) -> None:
-        """Live's Edit mode: remove a place, swap its canvas, or flip Twitch's bandwidth test."""
+        """Live's Edit mode: remove a place, swap its canvas, or flip Twitch's bandwidth test; and the order."""
         output = next((o for o in self.collection.outputs if o.id == output_id), None)
-        if output is None or self.streaming is not None:
+        if output is None:
+            return
+        if action in ("up", "down") or action.startswith("to:"):  # only the list's order: fine while live too
+            self._order_place(output, action)
+            return
+        if self.streaming is not None:
             return
         if action == "remove":
             self.collection.outputs.remove(output)
@@ -1956,6 +1983,31 @@ class MainWindow(QMainWindow):
             output.bandwidth_test = not output.bandwidth_test
         self.collection.save(self.scenes_path)
         self._refresh_stream_boxes()
+
+    def _order_place(self, output, action: str) -> None:
+        """Move a place up, down or to a spot in the list. Its order is the outputs' order, so Settings,
+        Stream details and the control API's places.list all show it the same way."""
+        outputs = self.collection.outputs
+        slots = [i for i, o in enumerate(outputs) if o.type == "stream"]
+        streams = [outputs[i] for i in slots]
+        at = streams.index(output)
+        if action == "up":
+            to = at - 1
+        elif action == "down":
+            to = at + 1
+        else:
+            try:
+                to = int(action[3:])
+            except ValueError:
+                return
+        to = max(0, min(len(streams) - 1, to))
+        if to == at:
+            return
+        streams.insert(to, streams.pop(at))
+        for i, o in zip(slots, streams):
+            outputs[i] = o
+        self.collection.save(self.scenes_path)
+        self._live_destinations()  # now, live or not: only the order changed
 
     def _build_live_stage(self) -> None:
         """Live mode's own screen (app/live_stage.py): no docks, the stage, bloom tiles and a side column."""
@@ -1982,7 +2034,6 @@ class MainWindow(QMainWindow):
         self.live_tiles.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.live_tiles.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
         self.live_tiles.setWidget(self.live_panel)
-        self.live_tiles.viewport().installEventFilter(self)  # re-fits the tiles' height when the width changes
         self.live_stage.tiles_slot.addWidget(self.live_tiles, 1)
         self.live_panel.transition_chip.hide()  # the Transitions card beside the blooms shows it now
         self._build_live_transitions()
@@ -1991,12 +2042,11 @@ class MainWindow(QMainWindow):
         self._thumb_seen: dict[str, str | None] = {}  # Build: the bloom each preview showed at the last look
         self.live_side.set_clip(False, self.collection.recording.replay_seconds)
 
-    def eventFilter(self, watched, event) -> bool:  # noqa: N802 (Qt naming)
-        if event.type() == QEvent.Type.Resize and watched is self.live_tiles.viewport():
-            QTimer.singleShot(0, self._fit_tiles)
-        if event.type() == QEvent.Type.Resize and watched is getattr(self, "splitter", None) and self.mode == "live":
+    def _splitter_resized(self) -> None:
+        # (A resizeEvent, not an event filter on the window: the filter saw every event of the splitter and the
+        # tiles' viewport through Python, 69 ms of a Garden check's open on the PC while live, 2026-11-18.)
+        if self.mode == "live":
             QTimer.singleShot(0, self, self._share_stage)
-        return super().eventFilter(watched, event)
 
     def _fit_tiles(self) -> None:
         """Nothing to fit any more (kept for older callers)."""
@@ -2355,6 +2405,11 @@ class MainWindow(QMainWindow):
         self.mode_clock.setStyleSheet(f"color: {theme.LIVE_TEXT if live else theme.MUTED}; padding-left: 6px;")
         self._hold_clock_width()
         QTimer.singleShot(0, self, self._fit_header)
+
+    def start_in_live(self) -> None:
+        """SprigCast opens on Live (Destinations, Go live) every time, whatever screen it closed on: after an
+        update it opened on Build with no Destinations (soak, 2026-11-19)."""
+        self._set_mode("live")
 
     def _set_mode(self, mode: str) -> None:
         if mode == self.mode:
@@ -2923,9 +2978,14 @@ class MainWindow(QMainWindow):
             watched = frozenset(k for k in watched if k not in self.previews and not k.startswith("next:"))
         if watched != self.engine.previews:
             self.engine.previews = watched
-        sizes = self._preview_pixel_sizes()
-        if sizes != self.engine.preview_sizes:
-            self.engine.preview_sizes = sizes
+        # Measured four times a second, not on every poll: it asks Qt for each preview's size and screen scale
+        # while holding Python's lock, which the render thread was seen waiting for (PC soak 2026-11-19).
+        measured = time.monotonic()
+        if measured - getattr(self, "_sizes_measured", 0.0) >= 0.25:
+            self._sizes_measured = measured
+            sizes = self._preview_pixel_sizes()
+            if sizes != self.engine.preview_sizes:
+                self.engine.preview_sizes = sizes
         for canvas_id, mailbox in list(self.engine.frames.items()):
             frame = mailbox.take()
             if frame is None:
@@ -2960,7 +3020,9 @@ class MainWindow(QMainWindow):
                 for source_id, (_peak, rms) in event.levels.items():
                     if rms > -50:  # above the hiss: something was heard
                         heard[source_id] = now
-                if self.mode == "live":
+                if theme.bursting():
+                    pass  # a pop-up opening: the meters skip a few beats (moving them was 69 ms of its build)
+                elif self.mode == "live":
                     self.live_side.set_levels(event.levels)
                 else:
                     self.sound_strips.set_levels(event.levels)
@@ -3150,6 +3212,9 @@ class MainWindow(QMainWindow):
         self.engine.stop(wait=False)  # the render thread lets go of the card on its own time (main waits)
         if self.browser_host is not None:
             self.browser_host.shutdown()
+        from sprigcast.app import plugin_helper
+
+        plugin_helper.shutdown()  # your plugins' sources end with SprigCast
         if not forgetting:
             self.updater.install_on_quit()  # a downloaded update runs once SprigCast has closed
         super().closeEvent(event)
@@ -3262,7 +3327,7 @@ class MainWindow(QMainWindow):
             row.setData(0, ROLE_ROW, "folder")
             row.setData(0, ROLE_FOLDER, folder.id)
             row.setData(0, LIB_NAME, folder.name)
-            row.setData(0, LIB_TAG, "on Live" if folder.live else str(count))
+            row.setData(0, LIB_TAG, "on Live" if folder.live else "")  # no count: open it to see
             row.setData(0, ROLE_COLOUR, folder.colour)
             row.setFlags(FOLDER_FLAGS)
             row.setToolTip(0, "Folder: click to open or fold it, drag things in, right-click to rename, "
@@ -3284,12 +3349,14 @@ class MainWindow(QMainWindow):
                 child.setData(0, ROLE_ID, scene.id)
                 child.setData(0, ROLE_ROW, "bloom")
                 child.setData(0, LIB_NAME, scene.name)
-                child.setData(0, LIB_TAG, self._link_label(scene).strip())
+                child.setData(0, LIB_TAG, "⇄" if self._link_label(scene) else "")  # the other shape's name: tooltip
                 child.setData(0, ROLE_COLOUR, folder.colour if folder is not None else None)
                 child.setData(0, ROLE_ON_AIR, scene.id == active)
                 child.setData(0, ROLE_THUMB, thumbs.get(scene.id))
                 child.setFlags(BLOOM_FLAGS)
-                child.setToolTip(0, f"{scene.name}: click to edit it" + ("  ·  on air" if scene.id == active else ""))
+                child.setToolTip(0, f"{scene.name}: click to edit it" + ("  ·  on air" if scene.id == active else "")
+                                 + (f"  ·  switches with{self._link_label(scene).replace('⇄', '')}"
+                                    if self._link_label(scene) else ""))
                 holder.addChild(child)
                 if scene.id == self.selected_scene_id:
                     child.setSelected(True)
@@ -3301,7 +3368,7 @@ class MainWindow(QMainWindow):
         self.scene_tree.addTopLevelItem(sprigs)
         selected = self._scene()
         selected_part = self.collection.main_part(selected) if selected is not None and selected.kind == "part" else None
-        for folder, parts in self.collection.grouped_parts():
+        for folder, parts in self.collection.grouped_parts_on(canvas_id):  # this shape's sprigs only
             holder = sprigs if folder is None else folder_row(sprigs, folder, len(parts))
             for part in parts:
                 uses = len(self.collection.part_uses(part.id))
@@ -3310,10 +3377,15 @@ class MainWindow(QMainWindow):
                 child.setIcon(0, icons.icon("sprig", theme.ACCENT))
                 child.setData(0, ROLE_ID, part.id)
                 child.setData(0, ROLE_ROW, "sprig")
+                kind = self.collection.sprig_kind(part, canvas_id)
+                child.setData(0, ROLE_SOURCE_KIND, kind)  # what it shows: camera, chat, game...
+                child.setData(0, ROLE_COLOUR, self._sprig_colour(part, canvas_id) if kind == "color" else None)
                 child.setData(0, LIB_NAME, part.name)
-                child.setData(0, LIB_TAG, f"in {uses}" if uses else "unused")
+                child.setData(0, LIB_TAG, "")  # no words: an unused sprig is dimmed instead
+                child.setData(0, ROLE_UNUSED, not uses)
                 child.setFlags(BLOOM_FLAGS)
-                child.setToolTip(0, f"{cap(a(PART))} ({shapes}), in {uses} {SHOW if uses == 1 else SHOWS}. Click to "
+                child.setToolTip(0, f"{cap(a(PART))} ({shapes}), " + (f"in {uses} {SHOW if uses == 1 else SHOWS}" if uses
+                                    else f"not in any {SHOW} yet") + ". Click to "
                                     f"edit it: every {SHOW} using it changes too.")
                 holder.addChild(child)
                 if part is selected_part:
@@ -3331,7 +3403,6 @@ class MainWindow(QMainWindow):
         """Above the canvas: the bloom you're editing and whether it's on air; Inside's heading names it too."""
         active = self.collection.active_scenes.get(self.build_canvas)
         selected = self._scene()
-        selected_show = selected.id if selected is not None and selected.kind == "show" else None
         if selected is None:
             self.build_bar.show_place("", f"Pick {a(SHOW)} or {a(PART)} on the left")
             self.build_stage.inside_note.setText("")
@@ -3343,11 +3414,9 @@ class MainWindow(QMainWindow):
         else:
             self.build_bar.show_place(selected.name, "on air" if selected.id == active else "not on air")
             self.build_stage.inside_note.setText(selected.name)
-        if hasattr(self, "on_air_button"):
-            self.on_air_button.setVisible(selected_show is not None and selected_show != active)
 
     def _pick_bloom(self, scene_id: str) -> None:
-        """A bloom pill: edit that bloom. It goes on air only with "Put on air" (or from Live)."""
+        """A bloom pill: edit that bloom. It never goes on air from here: Live picks what's on air."""
         self.selected_scene_id = scene_id
         self.selected_folder_id = self.collection.scene(scene_id).folder
         self.last_bloom_id = scene_id
@@ -3357,15 +3426,6 @@ class MainWindow(QMainWindow):
         self._refresh_scenes()
         self._refresh_sources()
         self._show_part_editor()
-
-    def _put_on_air(self) -> None:
-        if self.streaming is not None and confirm_enabled(CONFIRM_STREAM):
-            scene = self._scene()
-            answer = QMessageBox.question(self, "SprigCast", f"You're live. Put “{scene.name}” on air now?")
-            if answer != QMessageBox.StandardButton.Yes:
-                return
-        self._make_active()
-        self._refresh_sources()
 
     def _swap_shape(self, canvas_id: str) -> None:
         """The twin was clicked: edit that shape instead (the old one becomes the twin)."""
@@ -3419,14 +3479,37 @@ class MainWindow(QMainWindow):
         row.setData(ROLE_NAME, config.name)
         row.setData(ROLE_TAG, " · ".join(tags))  # only what needs saying: problems, hidden bits, filters
         row.setData(ROLE_SPRIG, config.kind == PART_KIND)
-        row.setData(ROLE_KIND, config.kind)
-        row.setData(ROLE_SWATCH, config.settings.get("color") if config.kind == "color" else None)
+        kind, swatch = self._kind_and_swatch(config, canvas_id)
+        row.setData(ROLE_KIND, kind)  # a sprig: what it shows (camera, chat...), so it reads at a glance
+        row.setData(ROLE_SWATCH, swatch)
         row.setData(ROLE_CHILDREN, self._sprig_children(config, canvas_id))
         detail = "" if status in ("ok", "") else f"\n{status}"
+        if hidden:
+            detail += f"\n{hidden} hidden here"
+        if "filters" in tags:
+            detail += "\nHas filters"
         row.setToolTip(f"{config.name}  ({PART if config.kind == PART_KIND else config.kind}){detail}")
 
+    def _kind_and_swatch(self, config, canvas_id: str | None) -> tuple[str, str | None]:
+        """The kind a row's icon shows, and a colour source's colour. A sprig shows what it holds."""
+        kind = config.kind
+        part = self.collection.part_of(config) if kind == PART_KIND else None
+        if part is not None:
+            kind = self.collection.sprig_kind(part, canvas_id)
+            return kind, self._sprig_colour(part, canvas_id) if kind == "color" else None
+        return kind, config.settings.get("color") if kind == "color" else None
+
+    def _sprig_colour(self, part, canvas_id: str | None) -> str | None:
+        layout = self.collection.shape_for(part, canvas_id) if canvas_id else part
+        for item in layout.items:
+            source = next((c for c in self.collection.sources if c.id == item.source), None)
+            if source is not None and source.kind == "color":
+                return source.settings.get("color")
+        return None
+
     def _sprig_children(self, config, canvas_id: str, depth: int = 0, seen: frozenset = frozenset()) -> list:
-        """(depth, name, is sprig) for what's inside a sprig, nested sprigs opened too (a few levels)."""
+        """(depth, name, is sprig, kind, colour) for what's inside a sprig, nested sprigs opened too (a few
+        levels)."""
         part = self.collection.part_of(config) if config.kind == PART_KIND else None
         if part is None or part.id in seen or depth > 2:
             return []
@@ -3434,7 +3517,7 @@ class MainWindow(QMainWindow):
         rows = []
         for inner in reversed(layout.items):
             child = self.collection.source(inner.source)
-            rows.append((depth, child.name, child.kind == PART_KIND))
+            rows.append((depth, child.name, child.kind == PART_KIND, *self._kind_and_swatch(child, canvas_id)))
             rows += self._sprig_children(child, canvas_id, depth + 1, seen | {part.id})
         return rows[:12]
 
@@ -3509,7 +3592,7 @@ class MainWindow(QMainWindow):
             self.prop_uncrop.setVisible(any(item.crop))
             self.prop_extra.setText(
                 {
-                    "color": "Colour",
+                    "color": "Color",
                     "image": "Image",
                     "display_capture": "Monitor",
                     "window_capture": "Window",
@@ -3749,10 +3832,8 @@ class MainWindow(QMainWindow):
         labels = ["Default (follows Windows)"] + [sound_label(d.name) for d in devices]
         start = names.index(current) if current in names else 0
         title = "Desktop audio" if kind == "audio_output" else "Microphone"
-        label, ok = QInputDialog.getItem(self, title, "Device:", labels, start, False)
-        if not ok:
-            return None
-        return names[labels.index(label)]
+        at = popups.ask_choice(self, title, "Device", labels, start)
+        return None if at is None else names[at]
 
     def _add_audio(self, kind: str, device: str | None = None) -> None:
         """Add a mic or desktop sound. Sound belongs to no bloom or shape: it plays everywhere, once."""
@@ -3947,7 +4028,7 @@ class MainWindow(QMainWindow):
     def _add_scene(self) -> None:
         canvas_id = self.build_canvas  # the Build tab you're on
         title = f"New {canvas_id} {SHOW}"
-        name, ok = QInputDialog.getText(self, title, "Name:")
+        name, ok = popups.ask_text(self, title, "Name", primary="Add")
         if not ok or not name.strip():
             return
         linked = None
@@ -3956,10 +4037,10 @@ class MainWindow(QMainWindow):
             link_options = ["(not linked)"] + [s.name for s in shows]
             # Suggest the main-canvas bloom with the same name, if there is one.
             guess = next((i + 1 for i, s in enumerate(shows) if s.name.lower() == name.strip().lower()), 0)
-            link, ok = QInputDialog.getItem(self, title, "Switch together with:", link_options, guess, False)
-            if not ok:
+            at = popups.ask_choice(self, title, "Switch together with", link_options, guess, "Add")
+            if at is None:
                 return
-            linked = next((s.id for s in shows if s.name == link), None)
+            linked = shows[at - 1].id if at else None
         folder = self.selected_folder_id
         if folder is not None and all(f.id != folder for f in self.collection.folders_for(canvas_id)):
             folder = None
@@ -4233,9 +4314,8 @@ class MainWindow(QMainWindow):
             return
         indices = [len(scene.items) - 1 - row for row in rows]
         first = self.collection.source(scene.items[indices[0]].source).name
-        name, ok = QInputDialog.getText(
-            self, f"Turn into {a(PART)}", f"Name the new {PART} (you can reuse it in any {SHOW}):",
-            text=first if len(rows) == 1 else "")
+        name, ok = popups.ask_text(
+            self, f"Turn into {a(PART)}", f"{cap(PART)} name", first if len(rows) == 1 else "", "Make")
         if not ok or not name.strip():
             return
         part, placement = self.collection.make_part(scene, indices, name.strip())
@@ -4429,7 +4509,7 @@ class MainWindow(QMainWindow):
         scene = self._scene()
         if scene is None:
             return
-        name, ok = QInputDialog.getText(self, "Rename scene", "Scene name:", text=scene.name)
+        name, ok = popups.ask_text(self, "Rename scene", "Scene name", scene.name, "Rename")
         if ok and name.strip():
             scene.name = name.strip()
             if scene.kind == "part":
@@ -4747,8 +4827,6 @@ class MainWindow(QMainWindow):
 
     def _fill_plugin_menu(self, menu: QMenu, source_id: str) -> None:
         """Right-click entries plugins add (Barrel roll, Hide it, Snap...)."""
-        from sprigcast import plugin_hooks
-
         entries: list[tuple[str, object]] = []
         plugin_hooks.fill_item_menu(self.api, self.collection.source(source_id), lambda label, fn: entries.append((label, fn)))
         if entries:
@@ -4774,38 +4852,46 @@ class MainWindow(QMainWindow):
         config.settings = {**config.settings, "loop": on}
         self._changed()
 
-    def _pick_monitor(self, current: int | None = None):
+    def _display_dialog(self, settings: dict) -> dict | None:
+        """Screen capture's card: which screen and the mouse pointer. None when cancelled or not on Windows."""
+        from sprigcast.app.capture_dialog import DisplayCaptureDialog
+
         monitors = list_monitors()
         if not monitors:
             QMessageBox.information(self, "SprigCast", "Display capture is only available on Windows.")
             return None
-        labels = [m.label for m in monitors]
-        start = next((i for i, m in enumerate(monitors) if m.index == current), 0)
-        label, ok = QInputDialog.getItem(self, "Display capture", "Monitor:", labels, start, False)
-        return monitors[labels.index(label)] if ok else None
+        dialog = DisplayCaptureDialog(settings, monitors, self)
+        return dialog.values() if modal(dialog) else None
 
-    def _pick_window(self):
+    def _window_dialog(self, settings: dict, has_sound: bool) -> tuple[dict, bool] | None:
+        """Window capture's card: (settings, window sound on), or None when cancelled or not on Windows."""
+        from sprigcast.app.capture_dialog import WindowCaptureDialog
+
         windows = list_windows()
-        if not windows:
+        if not windows and not settings.get("title"):
             QMessageBox.information(self, "SprigCast", "Window capture is only available on Windows.")
             return None
-        labels = [w.label for w in windows]
-        label, ok = QInputDialog.getItem(self, "Window capture", "Window:", labels, 0, False)
-        return windows[labels.index(label)] if ok else None
+        dialog = WindowCaptureDialog(settings, windows, has_sound, self, list_windows=list_windows)
+        return dialog.values() if modal(dialog) else None
 
     def _add_display(self, monitor=None) -> None:
         scene = self._scene()
         if scene is None:
             QMessageBox.information(self, "SprigCast", "Select a scene first.")
             return
-        monitor = monitor or self._pick_monitor()
-        if monitor is None:
+        settings = {"monitor": monitor.index, "cursor": True} if monitor is not None else \
+            self._display_dialog({"monitor": 1, "cursor": True})
+        if settings is None:
             return
+        if monitor is None:
+            monitor = next((m for m in list_monitors() if m.index == settings["monitor"]), None)
+            if monitor is None:
+                return
         config = SourceConfig(
             id=self.collection.new_id("display"),
             kind="display_capture",
             name=f"Monitor {monitor.index}",
-            settings={"monitor": monitor.index, "cursor": True},
+            settings=settings,
         )
         self._add_item(config)
         self._fit_item(size=(monitor.width, monitor.height))
@@ -4857,18 +4943,25 @@ class MainWindow(QMainWindow):
         if self._scene() is None:
             QMessageBox.information(self, "SprigCast", "Select a scene first.")
             return
-        window = window or self._pick_window()
-        if window is None:
-            return
-        name = ask_name(self, window_name(window.title, window.process), window.title)
-        self._add_item(
-            SourceConfig(
-                id=self.collection.new_id("window"),
-                kind="window_capture",
-                name=name,
-                settings={"title": window.title, "process": window.process, "cursor": True},
-            )
-        )
+        sound = False
+        if window is not None:
+            settings = {"title": window.title, "process": window.process, "cursor": True}
+        else:
+            picked = self._window_dialog({"cursor": True}, False)
+            if picked is None:
+                return
+            settings, sound = picked
+        title, process = str(settings["title"]), str(settings["process"])
+        name = ask_name(self, window_name(title, process), title)
+        config = SourceConfig(id=self.collection.new_id("window"), kind="window_capture", name=name,
+                              settings=settings)
+        self._add_item(config)
+        if sound:
+            from sprigcast.core.capture_sound import APP, set_capture_sound
+
+            set_capture_sound(self.collection, config, APP)
+            self._changed()
+            self._refresh_audio()
 
     def _camera_max_fps(self) -> int:
         rates = [int(round(c.fps)) for c in self.collection.canvases if c.enabled]
@@ -5015,7 +5108,7 @@ class MainWindow(QMainWindow):
             ("fit", "Fit to canvas", "Ctrl+F", self._fit_item),
             ("fill", "Fill the canvas (crop the edges)", "Ctrl+Alt+F", self._fill_item),
             ("stretch", "Stretch to fill the canvas", "Ctrl+Shift+F", self._stretch_item),
-            ("center", "Centre on the canvas", "Ctrl+E", self._center_item),
+            ("center", "Center on the canvas", "Ctrl+E", self._center_item),
             ("reset", "Reset size, crop and rotation", "Ctrl+R", self._reset_item_size),
             ("uncrop", "Remove crop", "Ctrl+Shift+R", self._reset_crop),
             ("front", "Bring to front", "Ctrl+Shift+Up", lambda: self._to_edge(True)),
@@ -5242,11 +5335,12 @@ class MainWindow(QMainWindow):
                 return
             config.settings = {**config.settings, "path": path}
         elif config.kind == "display_capture":
-            monitor = self._pick_monitor(current=int(config.settings.get("monitor", 1)))
-            if monitor is None:
+            changes = self._display_dialog(config.settings)
+            if changes is None:
                 return
-            config.settings = {**config.settings, "monitor": monitor.index}
-            config.name = f"Monitor {monitor.index}"
+            if config.name == f"Monitor {config.settings.get('monitor', 1)}":  # a name you chose stays
+                config.name = f"Monitor {changes['monitor']}"
+            config.settings = {**config.settings, **changes}
         elif config.kind == "camera":
             settings = self._camera_dialog(config.settings, config.id)
             if settings is None:
@@ -5270,17 +5364,22 @@ class MainWindow(QMainWindow):
             follow_capture(self.collection, config)
             self._refresh_audio()
         elif config.kind == "window_capture":
-            window = self._pick_window()
-            if window is None:
+            from sprigcast.core.capture_sound import APP, capture_sound, follow_capture, set_capture_sound
+
+            had_sound = capture_sound(self.collection, config.id) is not None
+            picked = self._window_dialog(config.settings, had_sound)
+            if picked is None:
                 return
+            changes, sound = picked
             old = window_name(str(config.settings.get("title", "")), str(config.settings.get("process", "")))
             old_title = str(config.settings.get("title", ""))
-            config.settings = {**config.settings, "title": window.title, "process": window.process}
+            config.settings = {**config.settings, **changes}
             if config.name in (old, old_title, old_title[:37] + "…"):  # a name you chose stays
-                config.name = window_name(window.title, window.process)
-            from sprigcast.core.capture_sound import follow_capture
-
+                config.name = window_name(str(changes["title"]), str(changes["process"]))
+            if sound != had_sound:
+                set_capture_sound(self.collection, config, APP if sound else None)
             follow_capture(self.collection, config)  # its own app sound follows the new window
+            self._refresh_audio()
         else:
             cls = source_class(config.kind)
             defaults = getattr(cls, "defaults", None) if cls is not None else None
@@ -5350,8 +5449,6 @@ class MainWindow(QMainWindow):
         the plugins' screenshot hook follow when the files are written."""
         from sprigcast.app import screenshot
 
-        from sprigcast import plugin_hooks
-
         ids = [c.id for c in self.collection.canvases if c.enabled and (not shapes or c.id in shapes)]
         folder = self._recordings_folder() / "Screenshots" if save else None
         # Plugins get ready first (Snap freezes the screen, so the picture is the moment it holds on stream).
@@ -5360,9 +5457,14 @@ class MainWindow(QMainWindow):
             screenshot.take_in_background(self.engine, ids, folder, width,
                                           lambda shots, images: self._screenshot_saved(shots, images, folder, afters))
             return []
+        from sprigcast.core import workers
+
         images: dict = {}
         try:
-            shots = screenshot.take(self.engine, ids, folder, width, as_data, images)
+            # Grabbed and made into PNGs on a worker, the window drawing and answering meanwhile: the Control
+            # API's screenshots (Streamer.bot, Stream Deck) waited for a frame and encoded on the window's thread
+            # (54 ms+ on the PC while live, 2026-11-18).
+            shots = workers.wait_answering(screenshot.take, self.engine, ids, folder, width, as_data, images)
         except Exception:
             plugin_hooks.screenshot_done(afters, [])
             raise
@@ -5375,16 +5477,16 @@ class MainWindow(QMainWindow):
         """A PNG of one source or sprig drawn on its own (apps: screenshot.take with source or bloom)."""
         from sprigcast.app import screenshot
 
+        from sprigcast.core import workers
+
         folder = self._recordings_folder() / "Screenshots" if save else None
-        shot = screenshot.take_one(self.engine, source_id, name, folder, width, as_data)
+        shot = workers.wait_answering(screenshot.take_one, self.engine, source_id, name, folder, width, as_data)
         if shot is not None and save:
             self._saved_note("Screenshot saved", Path(shot["path"]).parent)
             self._tidy_saves()
         return shot
 
     def _screenshot_saved(self, shots: list[dict], images: dict, folder, afters=()) -> None:
-        from sprigcast import plugin_hooks
-
         try:
             self._say(f"Screenshot saved to {folder}" if shots else "Couldn't take a screenshot: nothing is drawing.")
             if shots:
@@ -5501,7 +5603,7 @@ class MainWindow(QMainWindow):
             else:
                 answer = QMessageBox.question(self, "SprigCast", f"{space}\n\nRecord anyway?")
                 if answer != QMessageBox.StandardButton.Yes:
-                    return {"problem": "Cancelled."}
+                    return {"problem": "Canceled."}
         self._say("Starting the recording…")
         self._set_encoder_tracks()
         self._wake_up()
@@ -5949,6 +6051,12 @@ class MainWindow(QMainWindow):
         self._refresh_stream_boxes()
 
     def _on_live_clicked(self) -> None:
+        from sprigcast.app.settings_window import CONFIRM_GO_LIVE
+
+        if self.streaming is None and QSettings().value(CONFIRM_GO_LIVE, False, type=bool):
+            answer = QMessageBox.question(self, "SprigCast", "Go live now?")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
         if self.streaming is not None and confirm_enabled(CONFIRM_STREAM):
             answer = QMessageBox.question(self, "SprigCast", "End the stream?")
             if answer != QMessageBox.StandardButton.Yes:
@@ -6006,7 +6114,7 @@ class MainWindow(QMainWindow):
             if problem:
                 problems.append(problem)
             elif target is None:
-                return {"problem": "Cancelled."}  # the user chose not to go live
+                return {"problem": "Canceled."}  # the user chose not to go live
             else:
                 targets.append(target)
         if problems:
@@ -6020,7 +6128,7 @@ class MainWindow(QMainWindow):
                 log.info("an app asked to go live; the Stream doctor said wait: %s", " | ".join(warnings))
                 return {"warnings": warnings}
         elif not self._doctor_says_go():
-            return {"problem": "Cancelled."}
+            return {"problem": "Canceled."}
         self._say("Connecting…")
         self._wake_up()
         try:
@@ -6058,7 +6166,16 @@ class MainWindow(QMainWindow):
         self._stream_status_at = 0.0
         self._refresh_stream_status()
         self._record_with_stream()
+        self._replay_with_stream()
         return {"started": True, "warnings": warnings}
+
+    def _replay_with_stream(self) -> None:
+        """Settings → General → "Start Instant replay when I go live"."""
+        from sprigcast.app import features
+        from sprigcast.app.settings_window import REPLAY_ON_LIVE
+
+        if self.replay is None and features.on("clips") and QSettings().value(REPLAY_ON_LIVE, False, type=bool):
+            self._toggle_replay(True)
 
     def _record_with_stream(self) -> None:
         """Settings → Recording → "Record when I go live": the stream's own recording starts with it
@@ -6092,7 +6209,7 @@ class MainWindow(QMainWindow):
         kbps = output.bitrate_kbps if output.ignore_recommendations else min(output.bitrate_kbps, service.max_kbps)
         target = StreamTarget(name, canvas, server, key, kbps, output.size, output.fps,
                               output.bandwidth_test and service.bandwidth_test, output_id=output.id,
-                              auto_bitrate=output.auto_bitrate)
+                              auto_bitrate=output.auto_bitrate, max_kbps=service.max_kbps)
         if (ask or quiet) and output.enhanced and output.service == "twitch":
             return self._enhanced_target(output, target, quiet=quiet), None
         return target, None
@@ -6179,6 +6296,14 @@ class MainWindow(QMainWindow):
                 return None
         log.info("Enhanced Broadcasting: %s", config.describe())
         vertical = any(t.canvas_index > 0 for t in config.tracks)
+        if output.enhanced_vertical and not vertical:
+            # Twitch decides per channel and PC: a channel not yet allowed Dual Format, or a PC Twitch thinks can't
+            # encode both, gets horizontal qualities only.
+            why = ("Turn on a vertical canvas to send it to Twitch too." if len(canvases) < 2 else
+                   "Twitch didn't ask for the vertical canvas this time, so it goes live horizontal only.")
+            log.warning("Enhanced Broadcasting: vertical asked for but not sent (%s)", why)
+            if not quiet:
+                self.statusBar().showMessage(why, 15000)
         target.name = f"Twitch Enhanced ({len(config.tracks)} qualities{', + vertical' if vertical else ''})"
         target.enhanced, target.canvases = config, canvases
         return target
@@ -6213,8 +6338,10 @@ class MainWindow(QMainWindow):
         session.stop(wait=False)  # the encoders and connections finish on their own thread
         if getattr(self, "_recording_for_stream", False):
             self._recording_for_stream = False
-            if self.recording is not None:
-                self._stop_recording()  # it started with the stream: it ends with it
+            from sprigcast.app.settings_window import KEEP_RECORDING
+
+            if self.recording is not None and not QSettings().value(KEEP_RECORDING, False, type=bool):
+                self._stop_recording()  # it started with the stream: it ends with it (unless kept going)
         delayed = max((getattr(st, "delay_s", 0.0) for _, st in session.streamers), default=0.0)
         if delayed > 0:
             self.statusBar().showMessage(f"Stream delay: the last {delayed:g} s still go out to viewers.",
@@ -6274,8 +6401,9 @@ class MainWindow(QMainWindow):
             level, text = live_line(st)
             states[getattr(st, "output_id", st.name)] = (level, text)
             worst = max(worst, level, key=lambda lv: rank.get(lv, 0))
-        self._live_destinations({k: v[0] for k, v in states.items()},
-                                {k: v[1].split(" · ")[0] for k, v in states.items()})
+        if not theme.bursting():  # a pop-up being made: next second's (65 ms under Hotkeys on the PC)
+            self._live_destinations({k: v[0] for k, v in states.items()},
+                                    {k: v[1].split(" · ")[0] for k, v in states.items()})
         report = getattr(self, "_stream_report", None)
         if report is not None:
             try:
@@ -6317,8 +6445,9 @@ class MainWindow(QMainWindow):
         self._open_settings()
 
     def _open_settings(self, tab: str = "General", output_id: str | None = None) -> None:
-        open_now = next((w for w in QApplication.topLevelWidgets()
-                         if isinstance(w, SettingsWindow) and w.isVisible()), None)
+        # (not the off-screen warm-up one: a gear click in its 2 s did nothing, "already open")
+        open_now = next((w for w in QApplication.topLevelWidgets() if isinstance(w, SettingsWindow) and w.isVisible()
+                         and not w.testAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)), None)
         if open_now is not None:  # already open (behind another window, say): bring it forward
             log.info("settings: already open, brought forward")
             open_now.raise_()
@@ -6607,6 +6736,10 @@ class MainWindow(QMainWindow):
 
     def _after_settings(self) -> None:
         """Settings were applied: save, and bring every dock up to date."""
+        from sprigcast.app import privacy
+
+        if privacy.supported():
+            privacy.apply_to(self)  # Hide from screen capture, as just set
         clips = getattr(self, "_clips_before", None)
         if clips is not None:
             self._restart_clips_if_changed(clips)
@@ -6682,9 +6815,9 @@ class MainWindow(QMainWindow):
         self._sweep_due = True
         if self.isMinimized():
             self._sweep_if_due()
-        trimmed = pacing.trim_working_set()
-        log.info("at rest: let go of what the show held%s; memory: %s",
-                 " (and handed unused pages back to Windows)" if trimmed else "", pacing.memory_line())
+        pacing.trim_working_set_later(lambda trimmed: log.info(
+            "at rest: let go of what the show held%s; memory: %s",
+            " (and handed unused pages back to Windows)" if trimmed else "", pacing.memory_line()))
 
     REST_AFTER_QUIET_S = 10.0
 
@@ -6772,6 +6905,12 @@ class MainWindow(QMainWindow):
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._pace_poll()
+        if not getattr(self, "_privacy_set", False):
+            self._privacy_set = True
+            from sprigcast.app import privacy
+
+            if privacy.hidden():  # Settings → General → Privacy
+                privacy.apply_to(self, True)
 
     def hideEvent(self, event) -> None:
         super().hideEvent(event)
@@ -6862,10 +7001,11 @@ class MainWindow(QMainWindow):
         for canvas in self.collection.canvases:
             commands.append(Command(f"Pop out {canvas.id.capitalize()}", "Canvas",
                                     lambda cid=canvas.id: self.open_projector(cid, None)))
-        for tab, label in (("General", "General"), ("Stream/Places", "Places to stream"),
-                           ("Stream/Quality", "Stream quality"), ("Recording", "Recording"),
-                           ("Recording/Clips", "Clips"), ("Audio", "Audio devices"), ("Video", "Canvases"),
-                           ("Video/Virtual camera", "Virtual camera"), ("Hotkeys", "Hotkeys"),
+        for tab, label in (("General", "General"), ("Appearance", "Appearance"),
+                           ("Stream/Places", "Places to stream"),
+                           ("Stream/Quality", "Stream quality"), ("Audio", "Audio devices"), ("Video", "Canvases"),
+                           ("Video/Virtual camera", "Virtual camera"), ("Recording", "Recording"),
+                           ("Recording/Clips", "Clips"), ("Hotkeys", "Hotkeys"),
                            ("Connections", "Connections"), ("Plugins", "Plugin store")):
             commands.append(Command(f"Settings: {label}", "Settings", lambda t=tab: self._open_settings(t),
                                     "Ctrl+," if tab == "General" else ""))
@@ -7085,6 +7225,9 @@ class MainWindow(QMainWindow):
         """How SprigCast and the streams are doing (tiles, stream health, quick checks), and the last streams."""
         from sprigcast.app.garden_check import garden_check_popup
 
+        # Python's lock handed back quickly while it's made and shown, as modal() does for the other pop-ups: this
+        # one opens with open(), and went without (Garden check 76 ms, Last stream 57 ms on the PC, 2026-11-18).
+        theme.ui_burst()
         pop = garden_check_popup(self._garden_snapshot, self._health_records(), self, self._open_logs,
                                  "health" if tab == "health" else "now", make_lighter=self._make_encoding_lighter)
         pop.open()
@@ -7170,19 +7313,54 @@ class MainWindow(QMainWindow):
         watch = getattr(self, "_encoder_watch", None)
         if watch is None:
             watch = self._encoder_watch = EncoderWatch()
-        try:
-            streamers = self.streaming.streamers if self.streaming is not None else None
-            watch.tick(streamers, self.recording, self.replay)
-        except Exception:
-            log.exception("encoder watch")
-            return
+        streamers = self.streaming.streamers if self.streaming is not None else None
+        # Sampled and judged on a worker, read here a tick later: on the UI thread, while recording, it was 62 ms
+        # of a meter tick on the PC (2026-11-18). One at a time; a tick that finds the last still going skips.
+        job = getattr(self, "_encoder_job", None)
+        if job is None or job.done():
+            from sprigcast.core import workers
+
+            recording, replay = self.recording, self.replay
+
+            def judge() -> list[str]:
+                watch.tick(streamers, recording, replay)
+                return watch.overloaded()
+
+            self._encoder_job = workers.run(judge, name="encoder-watch")
         self._watch_flow(streamers)
-        busy = watch.overloaded()
+        busy = getattr(self, "_encoder_busy", [])
+        if job is not None and job.done():
+            try:
+                busy = self._encoder_busy = job.result()
+            except Exception:
+                log.exception("encoder watch")
         if busy and busy != getattr(self, "_overload_logged", None):
             log.warning("encoder can't keep up: %s (codec %s)", " and ".join(busy),
                         ", ".join(watch.codecs.get(k, "?") for k in busy))
             self._offer_lighter(busy)
         self._overload_logged = busy
+        self._watch_card_encoder()
+
+    def _watch_card_encoder(self) -> None:
+        """The graphics card's video encoder nearly full (85% or more for 15 s while live or recording) can't
+        take a busy moment: frames go missing. Said once a session (the 3-way multistream on 2026-11-18 ran NVENC
+        at 89-91% with six encodes and dropped frames in both recordings)."""
+        load = (getattr(self, "last_resources", None) or {}).get("encoder")
+        now = time.monotonic()
+        if load is None or load < CARD_ENCODER_FULL or (self.streaming is None and self.recording is None):
+            self._card_full_since = None
+            return
+        since = getattr(self, "_card_full_since", None)
+        if since is None:
+            self._card_full_since = now
+            return
+        if now - since < CARD_ENCODER_FULL_S or getattr(self, "_card_full_said", False):
+            return
+        self._card_full_said = True
+        log.warning("the graphics card's encoder is %.0f%% busy with %d encodes: frames may go missing", load,
+                    self._encode_sessions())
+        self._saved_note(f"Your graphics card's encoder is {load:.0f}% busy",
+                         detail="Fewer outputs or a lower frame rate frees it", kind="warn", ms=20000)
 
     def _offer_lighter(self, busy: list[str]) -> None:
         """The first overload of a session: say so right away with the one-tap fix, not only in Garden check."""
@@ -7446,6 +7624,7 @@ class MainWindow(QMainWindow):
         return made
 
     def _open_palette(self) -> CommandPalette:
+        theme.ui_burst()  # (as modal() does)
         palette = CommandPalette(self._palette_commands(), self)
         palette.open()
         return palette
@@ -7484,8 +7663,6 @@ class MainWindow(QMainWindow):
         elif action == SCREENSHOT:
             self._screenshot(background=True)
         elif action.startswith("plugin:"):
-            from sprigcast import plugin_hooks
-
             plugin_hooks.run_hotkey(self.api, action, self._hotkey_note)
         elif action.startswith(GAME_PREFIX):
             self._game_grab(action[len(GAME_PREFIX):])

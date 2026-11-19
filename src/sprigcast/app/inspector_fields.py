@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QEvent, QObject, QSettings, Qt
+from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import QDoubleSpinBox, QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from sprigcast.app import icons, theme
@@ -18,19 +18,26 @@ from sprigcast.app import icons, theme
 FIELD_H = 36
 
 
-class _Focus(QObject):
-    """Lights the pill's edge while its number has the keyboard."""
+class _NumberBox(QDoubleSpinBox):
+    """The pill's number: lights the pill's edge while it has the keyboard. Its own focus handlers, not an event
+    filter: a filter ran Python for every event of every field (the Garden check's open among them, sweep 13)."""
 
-    def __init__(self, frame: QFrame):
-        super().__init__(frame)
-        self.frame = frame
+    frame: QFrame | None = None
 
-    def eventFilter(self, _obj, event) -> bool:  # noqa: N802
-        if event.type() in (QEvent.Type.FocusIn, QEvent.Type.FocusOut):
-            self.frame.setProperty("focused", event.type() == QEvent.Type.FocusIn)
-            self.frame.style().unpolish(self.frame)
-            self.frame.style().polish(self.frame)
-        return False
+    def _light(self, on: bool) -> None:
+        frame = self.frame
+        if frame is not None:
+            frame.setProperty("focused", on)
+            frame.style().unpolish(frame)
+            frame.style().polish(frame)
+
+    def focusInEvent(self, event) -> None:  # noqa: N802
+        super().focusInEvent(event)
+        self._light(True)
+
+    def focusOutEvent(self, event) -> None:  # noqa: N802
+        super().focusOutEvent(event)
+        self._light(False)
 
 
 class NumberField(QFrame):
@@ -52,7 +59,8 @@ class NumberField(QFrame):
         self.label = QLabel(label)
         self.label.setStyleSheet(f"color: {theme.MUTED}; font-weight: 600; font-size: 12px;")
         row.addWidget(self.label)
-        self.box = QDoubleSpinBox()
+        self.box = _NumberBox()
+        self.box.frame = self
         self.box.setRange(low, high)
         self.box.setDecimals(decimals)
         self.box.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -63,7 +71,6 @@ class NumberField(QFrame):
             " font-weight: 600; }"
             "QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {"
             " subcontrol-origin: margin; width: 0px; height: 0px; border: none; }")
-        self.box.installEventFilter(_Focus(self))
         row.addWidget(self.box, 1)
         if on_change is not None:
             self.box.valueChanged.connect(on_change)

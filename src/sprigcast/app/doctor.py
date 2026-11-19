@@ -21,7 +21,6 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
-    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -425,14 +424,6 @@ QProgressBar::chunk {{ background: {theme.ACCENT}; border-radius: 2px; }}
 """
 
 
-def _shadow(widget: QWidget, blur: int = 18, dy: int = 4, alpha: int = 150) -> None:
-    effect = QGraphicsDropShadowEffect(widget)
-    effect.setBlurRadius(blur)
-    effect.setOffset(0, dy)
-    effect.setColor(QColor(0, 0, 0, alpha))
-    widget.setGraphicsEffect(effect)
-
-
 class DoctorDialog(QDialog):
     """Listens for a few seconds, then shows a verdict header and a card per finding."""
 
@@ -450,7 +441,8 @@ class DoctorDialog(QDialog):
 
         header = QFrame()
         header.setObjectName("doctorHeader")
-        _shadow(header, 24, 6)
+        # (No drop shadow: blurred in software on every paint, and the busy bar inside it repaints all the
+        # while it listens; the first paint was most of the 96 ms the doctor took to open on the PC, 2026-11-18.)
         top = QHBoxLayout(header)
         top.setContentsMargins(16, 14, 16, 14)
         top.setSpacing(14)
@@ -562,7 +554,6 @@ def _finding_card(f: Finding) -> QWidget:
     card = QFrame()
     card.setObjectName("doctorCard")
     card.setStyleSheet(f"QFrame#doctorCard {{ border-left: 4px solid {colour}; }}")
-    _shadow(card, 14, 3, 120)
     layout = QHBoxLayout(card)
     layout.setContentsMargins(14, 10, 12, 10)
     layout.setSpacing(12)

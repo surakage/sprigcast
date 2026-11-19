@@ -13,18 +13,43 @@ from sprigcast.app.health import HealthRecord, duration
 LEVEL_COLOURS = {"good": theme.ACCENT, "warning": theme.WARN, "bad": theme.BAD}
 
 
+# The page's look in one style sheet, picked by object names and a "level" property: three style sheets per tile
+# and two per place were the Last streams page's 253 ms on the PC while live (2026-11-18).
+PAGE_STYLE = (
+    f"#healthTile {{ background: {theme.RAISED}; border-radius: 16px; }}"
+    f"#healthBig {{ color: {theme.TEXT_BRIGHT}; font-size: 20px; font-weight: 700; background: transparent; }}"
+    + "".join(f'#healthBig[level="{lv}"] {{ color: {colour}; }}' for lv, colour in LEVEL_COLOURS.items())
+    + f"#healthSmall, #healthNote {{ color: {theme.MUTED}; background: transparent; }}"
+    "#healthVerdict { font-size: 15px; font-weight: 600; background: transparent; }"
+    f"#healthPlace {{ color: {theme.TEXT}; font-weight: 600; background: transparent; }}"
+)
+
+
+_STYLE: str | None = None
+
+
+def _page_style() -> str:
+    """PAGE_STYLE and the rounded drop-down's look, put together once."""
+    global _STYLE
+    if _STYLE is None:
+        from sprigcast.app.starter import combo_style
+
+        _STYLE = PAGE_STYLE + combo_style()
+    return _STYLE
+
+
 def _tile(value: str, label: str, level: str = "") -> QWidget:
     tile = QWidget()
-    tile.setObjectName("healthTile")
-    tile.setStyleSheet(f"#healthTile {{ background: {theme.RAISED}; border-radius: 16px; }}")
+    tile.setObjectName("healthTile")  # styled by the page (PAGE_STYLE)
     box = QVBoxLayout(tile)
     box.setContentsMargins(16, 12, 16, 12)
     box.setSpacing(2)
     big = QLabel(value)
-    big.setStyleSheet(f"color: {LEVEL_COLOURS.get(level, theme.TEXT_BRIGHT)}; font-size: 20px; font-weight: 700;"
-                      " background: transparent;")
+    big.setObjectName("healthBig")
+    if level:
+        big.setProperty("level", level)
     small = QLabel(label)
-    small.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+    small.setObjectName("healthSmall")
     box.addWidget(big)
     box.addWidget(small)
     return tile
@@ -32,28 +57,29 @@ def _tile(value: str, label: str, level: str = "") -> QWidget:
 
 class HealthPage(QWidget):
     def __init__(self, records: list[HealthRecord], open_logs: Callable[[], None] | None = None,
-                 parent: QWidget | None = None):
+                 parent: QWidget | None = None, fill_later: bool = False):
+        """fill_later: the verdict, tiles and places a tick after the page is made (and shown)."""
         super().__init__(parent)
         self.records = records
+        self.setStyleSheet(_page_style())
         self.setMinimumWidth(580)
         box = QVBoxLayout(self)
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(14)
         if not records:
             empty = QLabel("No streams yet. Go live and this fills in when you end.")
-            empty.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+            empty.setObjectName("healthNote")
             box.addWidget(empty)
             return
         self.pick = QComboBox()
-        for r in records:
-            self.pick.addItem(f"{r.started}  ·  {duration(r.seconds)}")
-        self.pick.setVisible(len(records) > 1)
-        from sprigcast.app.starter import combo_style
-
-        self.pick.setStyleSheet(combo_style())
+        self.pick.addItems([f"{r.started}  ·  {duration(r.seconds)}" for r in records])
         box.addWidget(self.pick)
+        # Hidden or shown only once it's in the page: shown with no parent yet, it opened as a window of its own
+        # (made, styled, then taken in again), 90-133 ms of Last streams on the PC while live (2026-11-18).
+        # (Its look is in the page's style too: one of its own was 95 ms.)
+        self.pick.setVisible(len(records) > 1)
         self.verdict = QLabel()
-        self.verdict.setStyleSheet("font-size: 15px; font-weight: 600; background: transparent;")
+        self.verdict.setObjectName("healthVerdict")
         box.addWidget(self.verdict)
         self.tiles = QGridLayout()
         self.tiles.setSpacing(10)
@@ -69,7 +95,14 @@ class HealthPage(QWidget):
             more.clicked.connect(open_logs)
             box.addWidget(more, 0, Qt.AlignmentFlag.AlignLeft)
         self.pick.currentIndexChanged.connect(self.show_record)
-        self.show_record(0)
+        if fill_later:
+            # The page shows (its drop-down and the stack's switch to it), then its tiles and lines next tick:
+            # both in one go were 81-90 ms of opening Last stream on the PC while live (2026-11-18).
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(0, self, lambda: self.show_record(self.pick.currentIndex()))
+        else:
+            self.show_record(0)
 
     def show_record(self, index: int) -> None:
         r = self.records[index]
@@ -103,9 +136,9 @@ class HealthPage(QWidget):
                 bits.append(f"bitrate dipped to {p.lowest_kbps} of {p.target_kbps} kbps")
             row = QHBoxLayout()
             name = QLabel(p.name)
-            name.setStyleSheet(f"color: {theme.TEXT}; font-weight: 600; background: transparent;")
+            name.setObjectName("healthPlace")
             note = QLabel("  ·  ".join(bits))
-            note.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+            note.setObjectName("healthNote")
             note.setWordWrap(True)
             row.addWidget(name)
             row.addSpacing(10)

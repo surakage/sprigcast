@@ -94,6 +94,46 @@ def test_a_page_drawn_on_the_card_shows_without_passing_through_memory():
         slot.close()
 
 
+def test_a_held_page_keeps_its_picture_but_never_waits():
+    """Frozen (Snap's freeze): the engine takes each new picture so the helper can draw on, and shows the old one."""
+    from sprigcast.render import native_bridge
+
+    col = _collection()
+    slot = FrameSlot.create(f"sprigcast-test-{uuid.uuid4().hex[:8]}", 64 * 48)
+    bridge = native_bridge.NativeCanvases(col, warp=True)
+    target = None
+    try:
+        target = sprigcore.PageTarget(bridge.engine.luid(), 64, 48, f"{slot.shm.name}-tex1")
+        _draw(target, (1.0, 0.0, 0.0, 1.0))
+        target.end(publish=True)
+        slot.mark_on_card(64, 48, 1)
+        assert bridge.attach_media("page", slot.shm.name)
+        bridge.sync(col, {}, lambda collection, layout: (layout, None), False)
+        bridge.watch("h", (64, 48), 0)
+        assert _shown(bridge, (255, 0, 0)) is not None
+
+        assert bridge.attach_media("page", slot.shm.name, held=True)
+        for _ in range(3):  # each one taken by the engine (or _draw would time out)...
+            _draw(target, (0.0, 0.0, 1.0, 1.0))
+            target.end(publish=True)
+            slot.mark_on_card(64, 48, 1)
+        _draw(target, (0.0, 0.0, 1.0, 1.0))
+        target.end(publish=False)
+        assert _shown(bridge, (255, 0, 0), 0.5) is not None  # ...but the frozen red one still shows
+        assert _shown(bridge, (0, 0, 255), 0.3) is None
+
+        assert bridge.attach_media("page", slot.shm.name)  # thawed: the newest shows
+        _draw(target, (0.0, 1.0, 0.0, 1.0))
+        target.end(publish=True)
+        slot.mark_on_card(64, 48, 1)
+        assert _shown(bridge, (0, 255, 0)) is not None and not bridge.failed
+    finally:
+        bridge.close()
+        if target is not None:
+            target.close()
+        slot.close()
+
+
 def test_a_texture_that_isnt_there_harms_nothing():
     from sprigcast.render import native_bridge
 

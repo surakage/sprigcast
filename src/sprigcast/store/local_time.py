@@ -29,7 +29,7 @@ from sprigcast.core.source import Source, register
 
 PLUGIN = {"id": "local_time", "name": "Local time", "version": 4, "adds": "Source",
           "about": "Your local time, and the date if you like, in a small card on stream.",
-          "new": "A Style tab: your own colours, font, text size and corners, and a custom look box."}
+          "new": "A Style tab: your own colors, font, text size and corners, and a custom look box."}
 
 KIND = "local_time"
 H = cards.H

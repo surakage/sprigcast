@@ -91,3 +91,31 @@ test("swaps a refresh token for a new access token, adding the secret, with no r
   }
   assert.equal(calls.length, 1);
 });
+
+test("serves the home page, privacy policy and terms that Google's verification links to", async () => {
+  for (const [path, words] of [["/", "Signing in with YouTube"], ["/privacy", "Limited Use"], ["/terms", "GNU"]]) {
+    const response = await worker.fetch(new Request(`https://signin.example${path}`), env());
+    assert.equal(response.status, 200, path);
+    assert.match(response.headers.get("content-type"), /^text\/html/);
+    const html = await response.text();
+    assert.ok(html.includes(words), path);
+    assert.ok(html.includes('href="/privacy"'), `${path} links the privacy policy`);
+  }
+  const privacy = await (await worker.fetch(new Request("https://signin.example/privacy"), env())).text();
+  assert.ok(privacy.includes("https://www.googleapis.com/auth/youtube"));
+  assert.ok(privacy.includes("https://www.youtube.com/t/terms"));
+  assert.ok(privacy.includes("https://policies.google.com/privacy"));
+});
+
+test("pages answer HEAD without a body and refuse POST", async () => {
+  const head = await worker.fetch(new Request("https://signin.example/privacy", { method: "HEAD" }), env());
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), "");
+  const posted = await worker.fetch(new Request("https://signin.example/", { method: "POST", body: "x" }), env());
+  assert.equal(posted.status, 405);
+});
+
+test("anything else is still not found", async () => {
+  const response = await worker.fetch(new Request("https://signin.example/nope"), env());
+  assert.equal(response.status, 404);
+});

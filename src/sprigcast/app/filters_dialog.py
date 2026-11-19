@@ -323,7 +323,7 @@ class FiltersDialog(QDialog):
         self.reset_button.clicked.connect(self._reset)
         hint = QLabel(
             "They run top to bottom. Untick one to switch it off without removing it." if self.media == "audio"
-            else "Effects run on the GPU in a fixed order: scroll, sharpen, key, colour, look, then shape."
+            else "Effects run on the GPU in a fixed order: scroll, sharpen, key, color, look, then shape."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {theme.MUTED}")
@@ -335,7 +335,7 @@ class FiltersDialog(QDialog):
         right.setSpacing(12)
         self.save_look_button = QPushButton("Save as look…")
         self.save_look_button.setStyleSheet(RAISED_PILL)
-        self.save_look_button.setToolTip("Save these colour settings as a .cube LUT you can use anywhere")
+        self.save_look_button.setToolTip("Save these color settings as a .cube LUT you can use anywhere")
         self.save_look_button.clicked.connect(self._save_look)
         self.save_look_button.hide()
         top = QHBoxLayout()

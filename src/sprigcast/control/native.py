@@ -288,10 +288,38 @@ class NativeApi:
             raise _missing(f"No bloom called {wanted!r}.", "bloom", wanted)
         return self._main_shape(scene)
 
-    def _main_shape(self, scene: Scene) -> Scene:
-        family = self.col.linked_with(scene.id)
+    def _main_shape(self, scene: Scene, families: dict[str, list[Scene]] | None = None) -> Scene:
+        family = families[scene.id] if families is not None and scene.id in families else self.col.linked_with(scene.id)
         order = {cid: i for i, cid in enumerate(self._shapes())}
         return min(family, key=lambda s: order.get(s.canvas, 99))
+
+    def _families(self) -> dict[str, list[Scene]]:
+        """Every scene's linked_with, worked out in one pass. Asked scene by scene (each a walk of every scene,
+        twice), the API's look at what changed held the window 409 ms on the PC with a big garden while an app
+        was connected (2026-11-18 pop-up sweep)."""
+        scenes = self.col.scenes
+        index = {id(s): i for i, s in enumerate(scenes)}
+        by_id: dict[str, Scene] = {}
+        for s in scenes:
+            by_id.setdefault(s.id, s)  # scene() finds the first of an id
+        partners: dict[str, list[Scene]] = {s.id: [] for s in scenes}
+        for o in scenes:
+            target = by_id.get(o.linked_to) if o.linked_to else None
+            if target is None or target is o or o.canvas == target.canvas:
+                continue
+            if o.kind == "show":
+                partners[target.id].append(o)  # in linked_with(target): o.linked_to == scene.id
+            if target.kind == "show":
+                partners[o.id].append(target)  # in linked_with(o): scene.linked_to == target.id
+        out = {}
+        for sid, scene in by_id.items():
+            seen, others = set(), []
+            for o in sorted(partners[sid], key=lambda x: index[id(x)]):
+                if id(o) not in seen and o is not scene:
+                    seen.add(id(o))
+                    others.append(o)
+            out[sid] = [scene] + others
+        return out
 
     def _in_shape(self, bloom: Scene, shape: str) -> list[Scene]:
         family = self.col.linked_with(bloom.id)
@@ -403,15 +431,16 @@ class NativeApi:
         return {"id": bloom.id, "name": bloom.name, "shapes": {s.canvas: s.id for s in family},
                 "onAir": on_air, "folder": folder.name if folder else None, "live": bool(folder and folder.live)}
 
-    def _blooms(self) -> list[Scene]:
+    def _blooms(self, families: dict[str, list[Scene]] | None = None) -> list[Scene]:
+        families = self._families() if families is None else families
         seen: set[str] = set()
         out = []
         for canvas_id in self._shapes():
             for scene in self.col.scenes_for(canvas_id):
                 if scene.id in seen:
                     continue
-                main = self._main_shape(scene)
-                seen.update(s.id for s in self.col.linked_with(scene.id))
+                main = self._main_shape(scene, families)
+                seen.update(s.id for s in families[scene.id])
                 out.append(main)
         return out
 
@@ -851,7 +880,7 @@ class NativeApi:
         source = self._source(data, "source")
         return {"id": source.id, "name": source.name, "kind": source.kind, "settings": dict(source.settings)}
 
-    @action("source.set", "Change some of a source's settings: text, a browser page's url, an image file, a colour...",
+    @action("source.set", "Change some of a source's settings: text, a browser page's url, an image file, a color...",
             source="name or id", settings="{key: value}")
     def source_set(self, data):
         source = self._source(data, "source")
@@ -985,12 +1014,28 @@ class NativeApi:
             raise ApiError("not_allowed", out)
         return {"on": True}
 
-    @action("stream.start", "Go live to every place that's switched on. If the Stream doctor would warn first, "
-            "nothing starts: doctor_warnings lists them.", force="?true: go live past the doctor's warnings")
+    @action("stream.start", "Go live to every place that's switched on; the answer lists them (places). If the "
+            "Stream doctor would warn first, nothing starts: doctor_warnings lists them. places: the ids you expect "
+            "to go live; if the places switched on differ, nothing starts (places_differ lists them).",
+            force="?true: go live past the doctor's warnings",
+            places="?list of place ids from places.list: go live only if exactly these are switched on")
     def stream_start(self, data):
         if self.host.stream_status() is not None:
             raise ApiError("busy", "Already live.")
-        return self._start(self.host.start_stream, data, "live")
+        going = [{"id": o.id, "service": o.service, "shape": o.canvas}
+                 for o in self.col.outputs if o.type == "stream" and o.enabled]
+        expected = _get(data, "places", list, optional=True)
+        if expected is not None:
+            if not all(isinstance(p, str) for p in expected):
+                raise _bad("places must be a list of place ids.")
+            if set(expected) != {p["id"] for p in going}:
+                # A place switched on earlier and forgotten would go live with the rest (PC test 2026-11-18).
+                raise ApiError("places_differ", "Not live: the places switched on aren't the ones asked for: "
+                               + (", ".join(p["service"] or p["id"] for p in going) or "none") + ".",
+                               places=going)
+        out = self._start(self.host.start_stream, data, "live")
+        out["places"] = going
+        return out
 
     @action("stream.stop", "End the stream.")
     def stream_stop(self, data):
@@ -1365,15 +1410,16 @@ class NativeApi:
 
     @staticmethod
     def _plugin_ids() -> tuple[str, ...]:
-        """The plugins that are added now (their actions are registered), for plugins.changed."""
+        """The plugins that are added now (their actions are registered), for plugins.changed. Each module looked
+        at once, not once per action (67 ms on the PC with every built-in's actions)."""
         import sys
 
         ids = set()
-        for extra in _PLUGIN_ACTIONS.values():
-            if extra.module.startswith("sprigcast_plugin_") and extra.module not in sys.modules:
+        for module in {extra.module for extra in _PLUGIN_ACTIONS.values()}:
+            if module.startswith("sprigcast_plugin_") and module not in sys.modules:
                 continue
-            head = getattr(sys.modules.get(extra.module), "PLUGIN", None) or {}
-            ids.add(str(head.get("id") or extra.module.removeprefix("sprigcast_plugin_")))
+            head = getattr(sys.modules.get(module), "PLUGIN", None) or {}
+            ids.add(str(head.get("id") or module.removeprefix("sprigcast_plugin_")))
         return tuple(sorted(ids))
 
     def _blooms_showing(self, part: Scene) -> list[str]:
@@ -1394,10 +1440,11 @@ class NativeApi:
         out: list[tuple[str, dict[str, Any]]] = []
         scenes = {s.id: s for s in self.col.scenes}
         sources = {s.id: s for s in self.col.sources}
+        families = self._families()
 
         def bloom_ref(scene_id: str) -> dict[str, Any]:
             scene = scenes.get(scene_id)
-            main = self._main_shape(scene) if scene is not None and scene.kind == "show" else scene
+            main = self._main_shape(scene, families) if scene is not None and scene.kind == "show" else scene
             return {"bloom": main.name if main else scene_id, "bloomId": main.id if main else scene_id}
 
         shelf, old = now["shelf"], last["shelf"]

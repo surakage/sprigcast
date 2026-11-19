@@ -12,92 +12,7 @@ using namespace sc;
 
 namespace {
 
-const char TRANSITION_HLSL[] = R"(
-cbuffer Transition : register(b0) {
-    float2 out_size;
-    float progress;
-    float softness;
-    float2 dir;
-    int mode;
-    int use_map;
-    float level_max;
-    float3 unused;
-};
-Texture2D old_scene : register(t0);
-Texture2D new_scene : register(t1);
-Texture2D wipe_map : register(t2);
-SamplerState smooth : register(s0);
-
-static const float3 LUMA = float3(0.2126, 0.7152, 0.0722);
-static const float LEAF_TURN = 0.785;
-static const float LEAF_SPIN = 0.5;
-static const float BLOOM_SPIN = 1.2;
-
-float4 vs_main(uint id : SV_VertexID) : SV_Position {
-    float2 p = float2((id << 1) & 2, id & 2);  // one triangle over the whole target
-    return float4(p * 2.0 - 1.0, 0.0, 1.0);
-}
-
-bool inside(float2 uv) {
-    return uv.x >= 0.0 && uv.y >= 0.0 && uv.x <= 1.0 && uv.y <= 1.0;
-}
-
-float4 at(Texture2D t, float2 uv) {
-    if (!inside(uv)) return float4(0, 0, 0, 0);
-    return t.SampleLevel(smooth, uv, 0);
-}
-
-float ease(float p) {
-    return p * p * (3.0 - 2.0 * p);
-}
-
-float leaf_level(float2 q, float angle) {
-    float c = cos(angle), s = sin(angle);
-    float2 r = float2(c * q.x + s * q.y, -s * q.x + c * q.y);
-    return abs(r.y) + length(r);
-}
-
-float bloom_level(float2 q, float spin) {
-    float a = atan2(q.y, q.x);
-    return length(q) / (0.72 + 0.28 * cos(5.0 * a + spin));
-}
-
-float4 blend(float4 a, float4 b, float amount) {
-    float4 old = a * (1.0 - amount);
-    return old + b * (1.0 - old.a);
-}
-
-float reveal(float level, float p) {
-    float s = max(softness, 0.001);
-    float edge = p * (1.0 + s);
-    return 1.0 - smoothstep(edge - s, edge, level);
-}
-
-float4 ps_main(float4 pos : SV_Position) : SV_Target {
-    float2 uv = pos.xy / out_size;
-    float4 a = old_scene.SampleLevel(smooth, uv, 0);
-    float4 b = new_scene.SampleLevel(smooth, uv, 0);
-    float p = clamp(progress, 0.0, 1.0);
-    float2 q = (uv - 0.5) * float2(out_size.x / out_size.y, 1.0);
-    if (mode == 2) {
-        float e = ease(p);
-        float2 in_uv = uv + dir * (1.0 - e);
-        return inside(in_uv) ? new_scene.SampleLevel(smooth, in_uv, 0) : at(old_scene, uv - dir * e);
-    }
-    if (mode == 3) {
-        float2 in_uv = uv + dir * (1.0 - ease(p));
-        return inside(in_uv) ? new_scene.SampleLevel(smooth, in_uv, 0) : a;
-    }
-    if (mode == 4) {
-        float level = use_map ? dot(wipe_map.SampleLevel(smooth, uv, 0).rgb, LUMA)
-                              : dot(uv, dir) + max(0.0, -(dir.x + dir.y));
-        return blend(a, b, reveal(level, p));
-    }
-    if (mode == 5) return blend(a, b, reveal(leaf_level(q, LEAF_TURN + LEAF_SPIN * p) / level_max, p));
-    if (mode == 6) return blend(a, b, reveal(bloom_level(q, BLOOM_SPIN * p) / level_max, p));
-    return blend(a, b, p);
-}
-)";
+#include "shader_transition.h"
 
 struct TransitionConstants {
     float out_size[2];
@@ -108,8 +23,14 @@ struct TransitionConstants {
     int use_map;
     float level_max;
     float unused[3];
+    float overlay_rect[4];
+    float matte_offset[2];
+    int show_overlay;
+    int cut;
+    int overlay_swizzle;
+    float unused2[3];
 };
-static_assert(sizeof(TransitionConstants) == 48, "matches the shader's constant buffer");
+static_assert(sizeof(TransitionConstants) == 96, "matches the shader's constant buffer");
 
 constexpr double LEAF_TURN = 0.785, LEAF_SPIN = 0.5, BLOOM_SPIN = 1.2;
 
@@ -142,6 +63,12 @@ float shape_reach(int mode, int width, int height, float progress) {
 }
 
 }  // namespace
+
+void sc::warm_transition_shaders() {
+    ComPtr<ID3DBlob> code;
+    compile(TRANSITION_HLSL, sizeof TRANSITION_HLSL - 1, "vs_main", "vs_4_0", code);
+    compile(TRANSITION_HLSL, sizeof TRANSITION_HLSL - 1, "ps_main", "ps_4_0", code);
+}
 
 int sc_device::prepare_transitions() {
     if (trans_vs) return SC_OK;
@@ -205,6 +132,40 @@ int sc::render_transition(sc_canvas &canvas, uint64_t from, uint64_t to, double 
     k.use_map = map ? 1 : 0;
     k.level_max = (how.mode == SC_TRANSITION_LEAF || how.mode == SC_TRANSITION_BLOOM)
                       ? shape_reach(how.mode, w, h, k.progress) : 1.0f;
+    ID3D11ShaderResourceView *clip = nullptr;
+    if (how.mode == SC_TRANSITION_STINGER) {
+        k.cut = static_cast<double>(k.progress) * how.seconds >= how.cut_seconds ? 1 : 0;
+        auto found = how.overlay ? dev.comp.sources.find(how.overlay) : dev.comp.sources.end();
+        if (found != dev.comp.sources.end() && found->second.view && !found->second.planar) {
+            const Source &src = found->second;
+            clip = src.view.Get();
+            k.overlay_swizzle = src.format == SC_FMT_BGRA || src.format == SC_FMT_PBGRA ? 1 : 0;
+            // render/compositor.py: the clip (or its picture half, beside a matte) covers the canvas, centred
+            const double tw = std::max(1, src.pic_w), th = std::max(1, src.pic_h);
+            const double half_w = how.matte == SC_STINGER_MATTE_RIGHT ? tw / 2 : tw;
+            const double half_h = how.matte == SC_STINGER_MATTE_BELOW ? th / 2 : th;
+            const double pa = half_w / std::max(1e-6, half_h), ca = static_cast<double>(w) / std::max(1, h);
+            double x = 0, y = 0, cw = 1, ch = 1;
+            if (pa > ca) {
+                cw = ca / pa;
+                x = (1 - cw) / 2;
+            } else {
+                ch = pa / ca;
+                y = (1 - ch) / 2;
+            }
+            const double sx = half_w / tw, sy = half_h / th;
+            // the picture may sit in a wider texture (rows padded): uv in the texture, not the picture
+            const double fx = static_cast<double>(src.pic_w) / std::max(1, src.data_w);
+            const double fy = static_cast<double>(src.pic_h) / std::max(1, src.data_h);
+            k.overlay_rect[0] = static_cast<float>(x * sx * fx);
+            k.overlay_rect[1] = static_cast<float>(y * sy * fy);
+            k.overlay_rect[2] = static_cast<float>(cw * sx * fx);
+            k.overlay_rect[3] = static_cast<float>(ch * sy * fy);
+            k.matte_offset[0] = how.matte == SC_STINGER_MATTE_RIGHT ? static_cast<float>(0.5 * fx) : 0.0f;
+            k.matte_offset[1] = how.matte == SC_STINGER_MATTE_BELOW ? static_cast<float>(0.5 * fy) : 0.0f;
+            k.show_overlay = (how.matte != SC_STINGER_MATTE_NONE && how.matte_only) ? 0 : 1;
+        }
+    }
     ID3D11DeviceContext *c = dev.context.Get();
     D3D11_MAPPED_SUBRESOURCE mapped;
     HRESULT hr = c->Map(dev.trans_constants.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
@@ -225,12 +186,13 @@ int sc::render_transition(sc_canvas &canvas, uint64_t from, uint64_t to, double 
     ID3D11Buffer *buffers[] = {dev.trans_constants.Get()};
     c->PSSetConstantBuffers(0, 1, buffers);
     ID3D11ShaderResourceView *views[] = {canvas.outgoing.view.Get(), canvas.incoming.view.Get(),
-                                         map ? map : canvas.outgoing.view.Get()};
-    c->PSSetShaderResources(0, 3, views);
-    ID3D11SamplerState *samplers[] = {dev.comp.wrap.Get()};
-    c->PSSetSamplers(0, 1, samplers);
+                                         map ? map : canvas.outgoing.view.Get(),
+                                         clip ? clip : canvas.outgoing.view.Get()};
+    c->PSSetShaderResources(0, 4, views);
+    ID3D11SamplerState *samplers[] = {dev.comp.wrap.Get(), dev.comp.clamp.Get()};
+    c->PSSetSamplers(0, 2, samplers);
     c->Draw(3, 0);
-    ID3D11ShaderResourceView *none[3] = {};
-    c->PSSetShaderResources(0, 3, none);
+    ID3D11ShaderResourceView *none[4] = {};
+    c->PSSetShaderResources(0, 4, none);
     return SC_OK;
 }

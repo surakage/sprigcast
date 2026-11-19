@@ -966,6 +966,26 @@ class Compositor:
                 return tex
         return None
 
+    # A small picture's texture (a PNGtuber, an emote, a logo) stays past SPARE_KEEP_S, the newest few up to
+    # SMALL_KEEP_BYTES: made again, the PNGtuber's held the wake frame 187 ms on the PC (2026-11-18, a bloom switch
+    # more than a minute after it last showed) for 1.7 MB of graphics memory.
+    SMALL_TEXTURE_BYTES = 4 * 1024 * 1024
+    SMALL_KEEP_BYTES = 16 * 1024 * 1024
+
+    def _old_spare_textures(self, now: float) -> list:
+        """The spare textures to free now: past SPARE_KEEP_S, except the newest small ones (see above)."""
+        kept = 0
+        old = []
+        for tex, since in reversed(self._spare_textures):  # newest first
+            if now - since <= self.SPARE_KEEP_S:
+                continue
+            nbytes = tex.size[0] * tex.size[1] * tex.components
+            if nbytes <= self.SMALL_TEXTURE_BYTES and kept + nbytes <= self.SMALL_KEEP_BYTES:
+                kept += nbytes
+                continue
+            old.append(tex)
+        return old
+
     def _keep_spare_texture(self, tex, now: float) -> None:
         self._spare_textures.append((tex, now))
         total = sum(t.size[0] * t.size[1] * t.components for t, _ in self._spare_textures)
@@ -1645,10 +1665,11 @@ class Compositor:
                 self._keep_spare(target, now)
             else:
                 self._to_free.append(target)  # a few each frame (free_some): an ended recording's copies too
-        textures = [entry for entry in self._spare_textures if now - entry[1] > self.SPARE_KEEP_S]
+        textures = self._old_spare_textures(now)
         if textures:
-            self._spare_textures = [e for e in self._spare_textures if now - e[1] <= self.SPARE_KEEP_S]
-            self._to_free += [tex for tex, _since in textures]
+            gone = {id(tex) for tex in textures}
+            self._spare_textures = [e for e in self._spare_textures if id(e[0]) not in gone]
+            self._to_free += textures
         old = [entry for entry in self._spare if now - entry[1] > self.SPARE_KEEP_S]
         if old:
             self._spare = [entry for entry in self._spare if now - entry[1] <= self.SPARE_KEEP_S]

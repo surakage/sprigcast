@@ -64,6 +64,9 @@ def has_sound(source: SourceConfig) -> bool:
     return False
 
 
+_CENTRE = Qt.AlignmentFlag.AlignCenter  # looked up once: each look-up of a Qt enum is Python work
+
+
 def on_track(source: SourceConfig, number: int) -> bool:
     return AUDIO_TRACKS[number - 1] in source_tracks(source)
 
@@ -291,6 +294,8 @@ class AudioPage(QWidget):
         self._rows_waiting = [(grid, row, source, tracks) for row, source in enumerate(sounds, 1)]
         for _ in range(min(self.ROWS_NOW, len(self._rows_waiting))):
             self._sound_row(*self._rows_waiting.pop(0))
+        # The rest half a row a tick: a whole row was still 57-78 ms a tick on the PC while live (2026-11-18).
+        self._rows_waiting = [(*args, half) for args in self._rows_waiting for half in (1, 2)]
         if self._rows_waiting:
             from PySide6.QtCore import QTimer
 
@@ -301,8 +306,8 @@ class AudioPage(QWidget):
         box.addWidget(_hint(f"Tracks: {legend}"))
         return group
 
-    ROWS_NOW = 4  # sound rows made with the tab; the rest a few per tick (ROWS_PER_TICK)
-    ROWS_PER_TICK = 3
+    ROWS_NOW = 2  # sound rows made with the tab; the rest a few per tick (ROWS_PER_TICK)
+    ROWS_PER_TICK = 1  # three were 136 ms a tick on the PC while live (2026-11-18): each row is ~50 calls into Qt
     ROW_GAP_MS = 15
 
     def _more_rows(self) -> None:
@@ -318,8 +323,13 @@ class AudioPage(QWidget):
 
             QTimer.singleShot(self.ROW_GAP_MS, self, self._more_rows)
 
-    def _sound_row(self, grid: QGridLayout, row: int, source: SourceConfig, tracks: int) -> None:
+    def _sound_row(self, grid: QGridLayout, row: int, source: SourceConfig, tracks: int, half: int = 0) -> None:
+        """A sound's row; half 1 or 2: its first boxes (name to sync offset) or the rest (listeners, tracks)."""
         st = source.settings
+        if half == 2:
+            volume, mono, balance, sync = self._first_halves.pop(source.id)
+            self._row_rest(grid, row, source, tracks, st, volume, mono, balance, sync)
+            return
         grid.addWidget(QLabel(source.name), row, 0)
         volume = QDoubleSpinBox()
         volume.setRange(-60.0, 12.0)
@@ -331,14 +341,14 @@ class AudioPage(QWidget):
         grid.addWidget(volume, row, 1)
         mono = QCheckBox()
         mono.setChecked(bool(st.get("mono", False)))
-        grid.addWidget(mono, row, 2, alignment=Qt.AlignmentFlag.AlignCenter)
+        grid.addWidget(mono, row, 2, alignment=_CENTRE)
         balance = QSlider(Qt.Orientation.Horizontal)
         balance.setRange(-100, 100)
         balance.setValue(round(float(st.get("balance", 0.0) or 0.0) * 100))
         balance.setFixedWidth(90)
-        balance.setToolTip("Left / right (double-click the Sound card's slider to centre)")
+        balance.setToolTip("Left / right (double-click the Sound card's slider to center)")
         balance.valueChanged.connect(lambda v, b=balance: b.setToolTip(
-            "Centre" if not v else f"{abs(v)}% {'left' if v < 0 else 'right'}"))
+            "Center" if not v else f"{abs(v)}% {'left' if v < 0 else 'right'}"))
         grid.addWidget(balance, row, 3)
         sync = QSpinBox()
         sync.setRange(0, 2000)
@@ -348,6 +358,12 @@ class AudioPage(QWidget):
         sync.setFixedWidth(100)
         sync.setToolTip("Hold this sound back to line it up with a camera that runs late")
         grid.addWidget(sync, row, 4)
+        if half == 1:
+            self.__dict__.setdefault("_first_halves", {})[source.id] = (volume, mono, balance, sync)
+            return
+        self._row_rest(grid, row, source, tracks, st, volume, mono, balance, sync)
+
+    def _row_rest(self, grid, row, source, tracks, st, volume, mono, balance, sync) -> None:
         hear = QComboBox()
         current = st.get("monitor", False)
         for text, value in self.HEAR:
@@ -357,18 +373,32 @@ class AudioPage(QWidget):
         hear.setFixedWidth(118)
         grid.addWidget(hear, row, 5)
         ticks = []
+        have = source_tracks(source)  # once a row, not once a tick (on_track asks for all of them each time)
+        names = self._track_names(tracks)
         for n in range(1, tracks + 1):
             tick = QCheckBox()
-            tick.setChecked(on_track(source, n))
-            tick.setToolTip(f"{source.name} on {self.collection.audio.track_name(n)} (track {n})")
-            grid.addWidget(tick, row, 5 + n, alignment=Qt.AlignmentFlag.AlignCenter)
+            tick.setChecked(AUDIO_TRACKS[n - 1] in have)
+            tick.setToolTip(f"{source.name} on {names[n - 1]} (track {n})")
+            grid.addWidget(tick, row, 5 + n, alignment=_CENTRE)
             ticks.append(tick)
         self.track_ticks[source.id] = ticks
         self.sound_rows[source.id] = {"volume": volume, "mono": mono, "balance": balance, "sync": sync,
                                       "hear": hear}
         ticks[0].toggled.connect(lambda _on, sid=source.id: self._row_ticks(sid))
         hear.currentIndexChanged.connect(lambda _i, sid=source.id: self._row_ticks(sid))
-        self._row_ticks(source.id)
+        only_me = current == "only"  # as _row_ticks would find it, without asking Qt back
+        first = ticks[0].isChecked() if ticks else False
+        for n, tick in enumerate(ticks, 1):
+            if only_me or (n == 2 and not first):
+                tick.setEnabled(False)
+
+    def _track_names(self, tracks: int) -> list[str]:
+        """The tracks' names, worked out once a build of the page (each row's ticks asked again)."""
+        key = (tracks, tuple(getattr(self.collection.audio, "track_names", None) or ()))
+        if getattr(self, "_names_for", None) != key:
+            self._names_for = key
+            self._names = [self.collection.audio.track_name(n) for n in range(1, tracks + 1)]
+        return self._names
 
     def _row_ticks(self, source_id: str) -> None:
         """Just me: on no track. VOD-safe is a part of track 1, so it needs track 1."""

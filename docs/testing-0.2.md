@@ -43,7 +43,7 @@ Builds a ready set of blooms from a few choices.
 and Vertical tabs. Just Chatting and Gaming have your camera, Gaming has your screen, and
 Starting soon, Be right back and Ending have the sloth art. Your old blooms are still there.
 
-**Report:** a missing bloom, a missing camera or screen, art that's cut off or off-centre, or
+**Report:** a missing bloom, a missing camera or screen, art that's cut off or off-center, or
 anything that touches the edges.
 
 ## 2. Build tabs and undo

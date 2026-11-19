@@ -405,6 +405,58 @@ def test_the_gravestone_rises_flips_the_number_and_sinks(added, tmp_path):
     assert not dc.video_frame()[..., 3].any() and not dc.busy  # back in the ground
 
 
+def test_its_clock_starts_with_its_first_picture_and_its_art_is_made_ahead(added, tmp_path):
+    """PC, 2026-11-18: the first death's stone came 3.5 s late (its art and fonts made on the render thread while
+    the trip's clock ran), so the rise and the first flip were never seen."""
+    _col, _host, dc, api = _dc_setup(added, tmp_path, 0)
+    dc.start()
+    dc._warming.join(10)
+    assert dc._plate_cache is not None and dc._numerals  # made ahead, off the render thread
+    dc.video_frame()
+    api.run("deaths.add", {})
+    before = __import__("time").monotonic()
+    assert dc.video_frame() is not None
+    job = dc._job
+    assert job.started >= before  # the clock starts once the first picture is made: the whole rise shows
+    dc.stop()
+
+
+def test_quick_deaths_each_flip_in_turn(added, tmp_path, monkeypatch):
+    """PC, 2026-11-18: a second death 1.2 s after the first showed 0 then 2; each number now flips in its turn."""
+    from types import SimpleNamespace
+
+    _col, _host, dc, api = _dc_setup(added, tmp_path, 0)
+    module = __import__("sys").modules["sprigcast_plugin_death_count"]
+    now = [1000.0]
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    dc.video_frame()
+    api.run("deaths.add", {})
+    api.run("deaths.add", {})  # before it has even risen: the same trip, flipped on in turn
+    assert len(dc._queue) == 1 and dc._queue[0].flips == [2]
+    dc.video_frame()
+    job = dc._job
+    seen = []
+    for step in range(1, 70):
+        now[0] = job.started + step * 0.05
+        if step == 24:  # 1.2 s in: a third, as the first flip is due
+            api.run("deaths.add", {})
+        dc.video_frame()
+        shown = dc._showing(job, now[0] - job.started)
+        if not seen or seen[-1] != shown:
+            seen.append(shown)
+    assert seen == [0, 1, 2, 3] and not dc._queue and dc._job is job
+    assert job.flip_at > module.FLIP_AT + 2 * module.FLIP and dc._sink_at(job) > job.flip_at + module.FLIP
+
+
+def test_a_flood_of_deaths_waits_for_at_most_a_few_flips(added, tmp_path):
+    _col, _host, dc, api = _dc_setup(added, tmp_path, 0)
+    dc.video_frame()
+    for _ in range(10):
+        api.run("deaths.add", {})
+    job = dc._queue[0]
+    assert len(dc._queue) == 1 and job.new == 1 and job.flips == [2, 3, 10]
+
+
 def test_changing_the_count_in_its_settings_pops_it_up(added, tmp_path):
     _col, _host, dc, _api = _dc_setup(added, tmp_path, 2)
     dc.update({"count": 2, "seconds": 1.0})

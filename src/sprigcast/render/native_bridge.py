@@ -24,6 +24,7 @@ import time
 import weakref
 
 from sprigcast import sprigcore
+from sprigcast.core import drawn, painted
 from sprigcast.core.scene import Scene, SceneCollection
 from sprigcast.render import native_snapshot
 from sprigcast.render.native_snapshot import SceneDraw
@@ -32,6 +33,7 @@ log = logging.getLogger(__name__)
 
 STILL_AFTER_S = 1.0  # a source that sent nothing for this long is treated as a still picture (kept for rebuilds)
 STATS_EVERY_S = 1.0
+HUNG_GIVE_UP_S = 3.0  # a frame stuck this long (after the engine's own 2 s) and Python draws everything again
 
 
 FAULT_KINDS = {1: "a C++ exception", 2: "an access violation", 3: "a lost graphics card", 4: "a frame stuck for 3 s"}
@@ -74,21 +76,33 @@ def view_key(name: str) -> str:
     return f"view:{name}"
 
 
+def engine_kind(kind: str) -> bool:
+    """Whether the native engine draws transitions of this kind (core/scene.py Transition.kind)."""
+    return kind in sprigcore.TRANSITION_MODES or (kind == "move" and sprigcore.use_native_move()) or \
+        (kind == "stinger" and sprigcore.use_native_stinger())
+
+
 def native_transition(running) -> bool:
-    """Whether the native engine draws this running transition (render/engine.py Running)."""
-    return running is not None and running.began is not None and running.stinger is None and \
-        running.settings.kind in sprigcore.TRANSITION_MODES
+    """Whether the native engine draws this running transition (render/engine.py Running): a stinger only when its
+    clip plays in the engine's own player (render/stinger.py NativeStinger), which the engine takes it from."""
+    if running is None or running.began is None or not engine_kind(running.settings.kind):
+        return False
+    if running.settings.kind == "stinger":
+        return running.stinger is not None and getattr(running.stinger, "engine_player", None) is not None
+    return running.stinger is None
 
 
 def snapshot_draws(collection: SceneCollection, state_view, outgoing: dict[str, Scene] | None = None,
-                   views: dict | None = None) -> tuple[list[SceneDraw], dict, dict[str, str | None]]:
+                   views: dict | None = None, held: dict[str, Scene] | None = None
+                   ) -> tuple[list[SceneDraw], dict, dict[str, str | None]]:
     """What the native engine draws: each enabled canvas's bloom on air and every sprig layout (the engine draws
     only those something on air places). state_view(collection, layout) gives a sprig as its Live state shows
     it: (layout, fades). Returns the scenes, the sprig placements ((source id, scene key) -> sprig key) and
     canvas id -> the scene key it shows (None: nothing on air). outgoing: canvas id -> the bloom a transition there
     changes from (drawn as from_key(canvas id)). views: name -> (canvas, scene) for each view something taps (the
     virtual camera showing a bloom, Instant replay keeping a camera): drawn as view_key(name), shown in
-    shows[view_key(name)]."""
+    shows[view_key(name)]. held: canvas id -> the bloom it keeps showing while a switch waits for a camera
+    (render/engine.py _still_waking), drawn in place of the one on air."""
     sources = {s.id: s for s in collection.sources}
     draws: list[SceneDraw] = []
     parts: dict[tuple[str, str], str] = {}
@@ -105,7 +119,7 @@ def snapshot_draws(collection: SceneCollection, state_view, outgoing: dict[str, 
     for canvas in collection.canvases:
         if not canvas.enabled:
             continue
-        scene = collection.active_scene(canvas.id)
+        scene = (held or {}).get(canvas.id) or collection.active_scene(canvas.id)
         if scene is None:
             shows[canvas.id] = None
             continue
@@ -205,11 +219,13 @@ class NativeCanvases:
         self.can_share = True  # until the engine says its device can't draw NV12 textures
         self._pools: dict[int, CardPool] = {}  # the engine's pool id -> its CardPool (the newest few)
         self._output_scale: dict[int, str] = {}
-        self._last_out: dict[tuple[str, tuple[int, int]], float] = {}  # newest frame time handed on, per output
+        self._last_out: dict[tuple[str, tuple], float] = {}  # newest frame time handed on, per (canvas, output_key)
+        self._served: dict[tuple[str, tuple[int, int]], float] = {}  # newest Python handed on, per (canvas, size)
         self._dropped: dict[tuple[int, int], int] = {}  # (canvas slot, output slot) -> frames the engine dropped
         # (canvas slot, output slot) -> (recording, its writer, (start, fps, keep)): outputs the engine hands to a
         # writer itself (link_taps)
         self._links: dict[tuple[int, int], tuple] = {}
+        self._paused: dict[tuple[int, int], tuple] = {}  # (owner, writer) unlinked for a transition Python draws
         self._link_refused = weakref.WeakSet()  # recordings whose writer an output wouldn't link to
         self.output_drops = 0
         self.lost = 0  # frames of the output take_outputs last looked at that the engine let go of
@@ -217,8 +233,14 @@ class NativeCanvases:
         self._signature = None
         self._last_upload: dict[str, float] = {}
         self._media: dict[str, object] = {}  # source id -> the engine's player its pictures come straight from
+        self._held: set[str] = set()  # browser pages whose pictures the engine takes but doesn't show (a freeze)
+        # source id -> art key -> (its engine id, cacheKey, bytes, the list it was last used in)
+        self._arts: dict[str, dict[str, tuple[str, int, int, int]]] = {}
+        self._lists = 0
         self._stats_at = 0.0
         self._rebuilds = 0
+        self._hung_since: float | None = None  # when a stuck frame was first seen (no frame finished since)
+        self._hung_ticks = -1
         self._faults = planned_faults(os.environ.get("SPRIGCAST_ENGINE_FAULT"))  # crash gate test on a PC
         self._began: float | None = None
         if self._faults:
@@ -226,6 +248,7 @@ class NativeCanvases:
         log.info("native engine: drawing the previews (%s)", "software" if warp else "graphics card")
         self._card_told = False
         self._tell_card()
+        drawn.ENGINE = True  # store plugins may hand over lists of pictures (core/drawn.py)
 
     def _tell_card(self) -> None:
         """Browser pages are drawn on the engine's card (sources/browser.use_card), once it has a device."""
@@ -243,9 +266,11 @@ class NativeCanvases:
             return
         if luid is not None:
             self._card_told = True
+            from sprigcast.app import capture_helper
             from sprigcast.sources import browser
 
             browser.use_card(luid)
+            capture_helper.HELPER.use_card(luid)  # captures run on the same card, in the capture helper
 
     # ---- what goes in ------------------------------------------------------------------------------------------
 
@@ -264,7 +289,9 @@ class NativeCanvases:
     def fail(self, why: str) -> None:
         if not self.failed:
             self.failed = True
+            drawn.ENGINE = False
             log.error("native engine: %s; the Python compositor draws the previews again", why)
+            sprigcore.note_engine_failed(why)  # the window says the old engine is in use (app/main.py)
             self._unlink_all()
 
     def upload(self, source_id: str, frame, channel_order: str, size) -> None:
@@ -274,21 +301,48 @@ class NativeCanvases:
         last = self._last_upload.get(source_id)
         self._last_upload[source_id] = now
         keep = last is None or now - last > STILL_AFTER_S
+        if source_id in self._arts:  # a picture again (the show is over): its list's art can go
+            self._forget_arts(source_id)
         self._guard("upload", self.engine.upload, source_id, frame, channel_order, size, keep=keep)
 
-    def attach_media(self, source_id: str, player) -> bool:
-        """``player`` (a sprigcore.MediaPlayer, the name of a browser page's shared memory block, or None) is where
-        the engine takes this source's pictures from, each frame, by itself. True while it does: the render thread
-        then sends it none."""
+    def attach_media(self, source_id: str, player, held: bool = False) -> bool:
+        """``player`` (a sprigcore.MediaPlayer, the name of a browser page's or a capture helper feed's shared
+        memory block, a sprigcore.CaptureTarget, or None) is where the engine takes this source's pictures from,
+        each frame, by itself. True while it does: the render thread then sends it none. ``held``: a page's block or a capture
+        frozen (Snap's freeze): the engine keeps its picture but still takes the new ones, which would otherwise
+        wait for it (and make a page's texture again every few seconds: PC, 2026-11-18; a capture would have to
+        start over)."""
         if self.failed:
             return False
+        if not self._card_told and player is not None:
+            self._tell_card()
+        capture = isinstance(player, sprigcore.CaptureTarget)
+        held = bool(held) and (isinstance(player, str) or capture)
+        if held != (source_id in self._held):
+            if held:
+                self._held.add(source_id)
+            else:
+                self._held.discard(source_id)
+            if capture:
+                self._guard("hold", self.engine.hold_capture, source_id, held)
+            elif isinstance(player, str) or not held:
+                self._guard("hold", self.engine.hold_shared, source_id, held)
         had = self._media.get(source_id)
-        if had is player or (isinstance(player, str) and had == player):
+        feed = isinstance(player, str) and hasattr(player, "link")  # the capture helper's (app/capture_helper.py)
+        if had is player or ((isinstance(player, str) or capture) and had == player):
+            if (capture or feed) and not player.linked:
+                player.link(self.engine, source_id)
             return player is not None
-        if isinstance(had, str):
+        if isinstance(had, sprigcore.CaptureTarget):
+            had.link(None)
+            if not capture:  # a capture let go (a new one replaces it in the engine)
+                self._guard("capture", self.engine.attach_capture, source_id, None)
+        elif isinstance(had, str):
+            if hasattr(had, "link"):
+                had.link(None)
             if not isinstance(player, str):  # a block let go (a new one would replace it)
                 self._guard("shared", self.engine.attach_shared, source_id, None)
-        elif had is not None and (player is None or isinstance(player, str)):  # a player let go
+        elif had is not None and (player is None or isinstance(player, str) or capture):  # a player let go
             self._guard("media", self.engine.attach_media, source_id, None)
         if player is None:
             self._media.pop(source_id, None)
@@ -296,23 +350,74 @@ class NativeCanvases:
         if isinstance(player, str):
             self._tell_card()
         self._media[source_id] = player
-        if isinstance(player, str):
-            self._guard("shared", self.engine.attach_shared, source_id, player)
+        if capture:
+            self._guard("capture", self.engine.attach_capture, source_id, player)
+            if not self.failed:
+                player.link(self.engine, source_id)
+        elif isinstance(player, str):
+            self._guard("shared", self.engine.attach_shared, source_id, str(player))
+            if feed and not self.failed:
+                player.link(self.engine, source_id)
         else:
             self._guard("media", self.engine.attach_media, source_id, player)
         return not self.failed
 
+    SPARE_ARTS = 16  # pictures a drawn source keeps on the card beyond those its newest list uses...
+    SPARE_BYTES = 48 << 20  # ...and at most this much of them (the oldest used go first)
+
+    def draw_list(self, source_id: str, picture: drawn.Drawn) -> None:
+        """A source's picture as a list of pictures (core/drawn.py): new art goes to the card once (kept, so it
+        comes back after a rebuild), then only where each picture goes."""
+        if self.failed:
+            return
+        self._last_upload.pop(source_id, None)
+        self._lists += 1
+        turn = self._lists
+        arts = self._arts.setdefault(source_id, {})
+        items, used = [], set()
+        for art_key, image, x, y, w, h, rotation, crop, opacity in picture.items():
+            known = arts.get(art_key)
+            stamp = image.cacheKey()
+            if known is None or known[1] != stamp:
+                art_id = known[0] if known is not None else f"{source_id}/art/{art_key}"
+                frame = painted.Frame()(image)
+                self._guard("art", self.engine.upload, art_id, frame, "pBGRA", None, keep=True)
+                if self.failed:
+                    return
+                known = (art_id, stamp, frame.nbytes, turn)
+            arts[art_key] = (*known[:3], turn)
+            used.add(art_key)
+            items.append((known[0], x, y, w, h, rotation, crop, opacity, image.width(), image.height()))
+        spare = sorted((k for k in arts if k not in used), key=lambda k: arts[k][3], reverse=True)  # newest first
+        kept, held = 0, 0
+        for art_key in spare:
+            kept, held = kept + 1, held + arts[art_key][2]
+            if kept > self.SPARE_ARTS or held > self.SPARE_BYTES:
+                self._guard("art", self.engine.forget, arts.pop(art_key)[0])
+        self._guard("draws", self.engine.draws, source_id, picture.width, picture.height, items)
+
+    def _forget_arts(self, source_id: str) -> None:
+        for art_id, *_rest in self._arts.pop(source_id, {}).values():
+            self._guard("forget", self.engine.forget, art_id)
+
     def forget_gone(self, source_ids) -> None:
-        for gone in (set(self._last_upload) | set(self._media)) - set(source_ids):
+        for gone in (set(self._last_upload) | set(self._media) | set(self._arts)) - set(source_ids):
             self._last_upload.pop(gone, None)
-            self._media.pop(gone, None)
+            had = self._media.pop(gone, None)
+            if isinstance(had, sprigcore.CaptureTarget) or (isinstance(had, str) and hasattr(had, "link")):
+                had.link(None)
+            self._held.discard(gone)
+            self._forget_arts(gone)
             self._guard("forget", self.engine.forget, gone)
 
     def sync(self, collection: SceneCollection, effects: dict, state_view, fading: bool,
-             transitions: dict | None = None, wipe_picture=None, views: dict | None = None) -> None:
+             transitions: dict | None = None, wipe_picture=None, views: dict | None = None,
+             held: dict | None = None, move_pieces=None) -> None:
         """Hand over a new snapshot when what's on air, the filters, a sprig's state or a transition changed
         (every frame while a sprig's state fades). transitions: canvas id -> render/engine.py Running;
-        wipe_picture(path) gives a wipe image as a grey RGB array."""
+        wipe_picture(path) gives a wipe image as a grey RGB array. held: canvas id -> the bloom it keeps showing
+        while a switch waits (see snapshot_draws): the engine keeps drawing it, so its outputs go on.
+        move_pieces(running, canvas): a Move's two blooms as render/move.py pieces (old, new), when one starts."""
         if self.failed:
             return
         running = {cid: r for cid, r in (transitions or {}).items() if native_transition(r)}
@@ -332,12 +437,13 @@ class NativeCanvases:
                                   for name, (canvas, scene) in views.items())),
                      tuple((c.id, c.enabled, c.width, c.height, collection.active_scenes.get(c.id))
                            for c in collection.canvases),
-                     tuple(sorted((cid, id(r)) for cid, r in running.items())))
+                     tuple(sorted((cid, id(r)) for cid, r in running.items())),
+                     tuple(sorted((cid, id(scene)) for cid, scene in (held or {}).items())))
         if signature == self._signature and not fading:
             return
         self._signature = signature
         draws, parts, shows = snapshot_draws(collection, state_view,
-                                             {cid: r.outgoing for cid, r in running.items()}, views)
+                                             {cid: r.outgoing for cid, r in running.items()}, views, held)
         built = native_snapshot.build(draws, effects, parts)
         self._guard("snapshot", native_snapshot.hand_over, self.engine, built, self.resources)
         for canvas in collection.canvases:
@@ -352,7 +458,8 @@ class NativeCanvases:
             if self._shown.get(slot, "") != key:
                 self._shown[slot] = key
                 self._guard("show", self.engine.show, slot, key)
-            self._hand_transition(slot, canvas.id, running.get(canvas.id), wipe_picture)
+            self._hand_transition(slot, canvas, running.get(canvas.id), wipe_picture,
+                                  lambda r, c=canvas: self._move_spec(collection, effects, move_pieces, r, c))
         for name, (canvas, _scene) in views.items():
             key = view_key(name)
             slot = self._slots[key]
@@ -364,14 +471,22 @@ class NativeCanvases:
                 self._shown[slot] = key
                 self._guard("show", self.engine.show, slot, key)
 
-    def _hand_transition(self, slot: int, canvas_id: str, running, wipe_picture) -> None:
+    def _hand_transition(self, slot: int, canvas, running, wipe_picture, move_spec=None) -> None:
         """Start (or stop) the canvas's transition in the engine when Python's changed."""
+        canvas_id = canvas.id
         sent = id(running) if running is not None else None
         if self._sent_transitions.get(slot) == sent:
             return
         self._sent_transitions[slot] = sent
         if running is None:
             self._guard("transition", self.engine.transition, slot, None, None)
+            return
+        if running.settings.kind == "move":
+            spec = move_spec(running) if move_spec is not None else None
+            if spec is None:  # nothing to lay out: the engine cuts to the new bloom
+                self._guard("transition", self.engine.transition, slot, None, None)
+                return
+            self._guard("move", self.engine.move, slot, from_key(canvas_id), float(running.duration), spec)
             return
         wipe = running.wipe_map or None
         if wipe and wipe not in self._wipe_maps and wipe_picture is not None:
@@ -382,7 +497,9 @@ class NativeCanvases:
                 rgba = np.concatenate([picture, np.full(picture.shape[:2] + (1,), 255, np.uint8)], axis=-1)
                 self._guard("wipe image", self.engine.set_mask, f"wipe:{wipe}", rgba, True)
                 self._wipe_maps.add(wipe)
-        spec = sprigcore.transition_spec(running.settings, f"wipe:{wipe}" if wipe in self._wipe_maps else None)
+        player = running.stinger
+        spec = sprigcore.transition_spec(running.settings, f"wipe:{wipe}" if wipe in self._wipe_maps else None,
+                                         player.id if player is not None else None)
         spec.seconds = max(0.001, float(running.duration))
         self._guard("transition", self.engine.transition, slot, from_key(canvas_id), spec)
 
@@ -396,14 +513,45 @@ class NativeCanvases:
                 slot = self._slots[canvas_id] = free[0]
         return slot
 
+    @staticmethod
+    def _move_spec(collection: SceneCollection, effects: dict, move_pieces, running, canvas):
+        """A Move's pieces as the engine takes them (sprigcore.move_spec): sprigs drawn whole by their sprig's
+        drawing in the snapshot (part_key), every source with its filters. None without a way to lay it out."""
+        if move_pieces is None:
+            return None
+        from sprigcast.render import move
+
+        old, new = move_pieces(running, canvas)
+        sources = {s.id: s for s in collection.sources}
+        made: dict[int, object] = {}
+
+        def piece(p):
+            source = sources.get(p.source)
+            part = collection.part_of(source) if source is not None else None
+            part_id = part_key(collection.shape_for(part, p.canvas).id) if part is not None else None
+            fx = effects.get(p.source)
+            fx_struct = None
+            if fx is not None and fx != native_snapshot.NO_EFFECTS:
+                fx_struct = made.get(id(fx))
+                if fx_struct is None:
+                    fx_struct = made[id(fx)] = native_snapshot.effects_struct(fx)
+            return p.source, part_id, p.quad, p.opacity, fx_struct
+
+        t = running.settings
+        return sprigcore.move_spec([piece(p) for p in old], [piece(p) for p in new], move.pair(old, new),
+                                   t.easing, t.unmatched)
+
     # ---- what comes out ----------------------------------------------------------------------------------------
 
     def handles(self, extra: dict) -> bool:
         """Whether this frame's transition arguments (render/engine.py _transition_step) are ones the native
         engine draws itself."""
         transition = extra.get("transition")
-        return transition is not None and transition.kind in sprigcore.TRANSITION_MODES and \
-            "overlay" not in extra and "move" not in extra
+        if transition is None or not engine_kind(transition.kind):
+            return False
+        if transition.kind == "stinger":
+            return bool(extra.get("engine_stinger"))  # its clip plays in the engine's own player
+        return "overlay" not in extra
 
     def draws(self, canvas_id: str) -> bool:
         """True when this canvas's preview comes from the native engine."""
@@ -433,10 +581,16 @@ class NativeCanvases:
 
     # ---- recordings and streams ---------------------------------------------------------------------------------
 
-    def output_key(self, size: tuple[int, int] | None, on_card: bool) -> tuple | None:
+    def output_key(self, size: tuple[int, int] | None, on_card: bool, owner: int | None = None) -> tuple | None:
         """What names an output the native engine makes: its NV12 size and whether its frames stay on the
-        card (asked for and possible). None: a full-size RGBA tap, which only Python's compositor makes."""
-        return None if size is None else (tuple(size), bool(on_card and self.can_share))
+        card (asked for and possible), and for a recording or stream through the engine's own writer, id() of it
+        (owner): it gets an output of its own, so the engine hands it every frame itself, on the card too, even
+        when another one takes the same size (render/engine.py _output_keys). None: a full-size RGBA tap, which
+        only Python's compositor makes."""
+        if size is None:
+            return None
+        key = (tuple(size), bool(on_card and self.can_share))
+        return key if owner is None else (*key, owner)
 
     def serves(self, canvas_id: str, keys) -> bool:
         """Whether the native engine can make every one of these outputs (output_key): NV12 only, at most
@@ -461,14 +615,33 @@ class NativeCanvases:
             out = current.pop(key)
             self._unlink(slot, out)
             self._dropped.pop((slot, out), None)
-            if not any(k[0] == key[0] for k in current):
-                self._last_out.pop((canvas_id, key[0]), None)
+            self._last_out.pop((canvas_id, key), None)
             self._guard("output", self.engine.set_output, slot, out, 0, 0)
         free = [o for o in range(sprigcore.ENGINE_OUTPUTS) if o not in current.values()]
         for key in want:
             if key not in current and free:
                 out = current[key] = free.pop(0)
                 self._guard("output", self.engine.set_output, slot, out, key[0][0], key[0][1], scale, key[1])
+
+    def pause_outputs(self, canvas_id: str, keys, scale: str = "bilinear") -> None:
+        """Python draws this canvas's outputs for a moment (a Move or stinger transition): the engine's outputs
+        stay, with their texture pools, but their recordings are unlinked (they take Python's frames meanwhile)
+        and the engine's frames are let go. Dropped and made again for each transition, every transition made
+        new pools, and a writer on the card keeps each texture it was handed (PC soak 2026-11-18). Once the
+        engine draws the canvas again, set_outputs with the same keys changes nothing and the links come back
+        on the same textures."""
+        self.set_outputs(canvas_id, keys, scale)
+        slot = self._slots.get(canvas_id)
+        if slot is None or self.failed:
+            return
+        for out in list(self._outputs.get(slot, {}).values()):
+            entry = self._links.get((slot, out))
+            if entry is not None:
+                self._paused[(slot, out)] = entry[:2]
+                self._unlink(slot, out)
+        for key in list(self._outputs.get(slot, {})):
+            self.take_outputs(canvas_id, key)  # let go of (CardFrames give their textures back when dropped)
+        self.lost = 0
 
     def reset_outputs(self) -> bool:
         """Let go of every output; the render thread names them again next tick (render/engine.py
@@ -481,8 +654,9 @@ class NativeCanvases:
         now = time.perf_counter()
         made = []  # what each output had made, to tell a feed that stopped from one whose frames weren't taken
         for canvas_id, slot in self._slots.items():
-            for (size, on_card), out in self._outputs.get(slot, {}).items():
-                last = self._last_out.get((canvas_id, size))
+            for key, out in self._outputs.get(slot, {}).items():
+                size, on_card = key[0], key[1]
+                last = self._last_out.get((canvas_id, key))
                 made.append(f"{canvas_id} {size[0]}x{size[1]}{' on the card' if on_card else ''}: last frame "
                             f"{f'{now - last:.1f} s ago' if last else 'never'}, "
                             f"{self._dropped.get((slot, out), 0)} missed by the engine")
@@ -492,6 +666,7 @@ class NativeCanvases:
         for canvas_id in list(self._slots):
             self.set_outputs(canvas_id, ())
         self._last_out.clear()
+        self._served.clear()
         return True
 
     def take_outputs(self, canvas_id: str, key: tuple) -> list:
@@ -502,10 +677,10 @@ class NativeCanvases:
         out = self._outputs.get(slot, {}).get(key) if slot is not None else None
         if out is None or self.failed:
             return []
-        size, on_card = key
+        size, on_card = key[0], key[1]
         frames = []
         before = self.output_drops
-        last = self._last_out.get((canvas_id, size), 0.0)
+        last = max(self._last_out.get((canvas_id, key), 0.0), self._served.get((canvas_id, size), 0.0))
         for _ in range(sprigcore.ENGINE_OUTPUTS * 2):  # the queue holds a few; never loop for ever
             if on_card:
                 got = self._guard("output frame", self.engine.take_texture, slot, out)
@@ -532,7 +707,7 @@ class NativeCanvases:
             if drawn > last:
                 frames.append(frame)
                 last = drawn
-        self._last_out[(canvas_id, size)] = last
+        self._last_out[(canvas_id, key)] = last
         self.lost = self.output_drops - before  # what the engine let go of since the last call, for the outputs' counts
         return frames
 
@@ -580,9 +755,15 @@ class NativeCanvases:
                  if w is not None and (not on_card or (getattr(w, "on_card", False) and _wants_card(o)))]
             chosen = next(((o, w) for o, w in wanting if entry is not None and o is entry[0]), None) or \
                 next(iter(wanting), None)
-            if entry is not None and (chosen is None or chosen[0] is not entry[0] or chosen[1] is not entry[1]):
+            camera = None if chosen is not None or on_card else self._camera_for(owners)
+            changed = entry is not None and (chosen is None or chosen[0] is not entry[0] or chosen[1] is not entry[1])
+            if changed and (camera is None or camera[0] is not entry[0] or camera[1] != entry[1]):
                 self._unlink(slot, out)
                 entry = None
+            if camera is not None:
+                if self._link_camera(canvas_id, slot, out, entry, camera, len(owners) > 1):
+                    linked.add(id(camera[0]))
+                continue
             if chosen is None:
                 continue
             owner, writer = chosen
@@ -601,14 +782,65 @@ class NativeCanvases:
                     log.warning("native engine: %s can't take frames from the engine itself (%s); they go through "
                                 "Python", getattr(getattr(owner, "path", None), "stem", "a recording"), exc)
                     continue
+                again = self._paused.pop((slot, out), None) == (owner, writer)  # back after a transition
                 if entry is None:
-                    log.info("native engine: %s %dx%d frames go straight to %s's writer%s", canvas_id, key[0][0],
-                             key[0][1], getattr(getattr(owner, "path", None), "stem", "a recording"),
-                             " on the card" if on_card else "")
+                    log.log(logging.DEBUG if again else logging.INFO,
+                            "native engine: %s %dx%d frames go straight to %s's writer%s", canvas_id, key[0][0],
+                            key[0][1], getattr(getattr(owner, "path", None), "stem", "a recording"),
+                            " on the card" if on_card else "")
                 owner.linked = True
                 self._links[(slot, out)] = (owner, writer, settings)
             linked.add(id(owner))
         return linked
+
+    def _camera_for(self, owners):
+        """(owner, (block name, width, height)) of the virtual camera among an output's takers, if it can be fed
+        by the engine itself (VirtualCamera.link_camera)."""
+        for o in owners:
+            ask = getattr(o, "link_camera", None)
+            if o is None or ask is None or self._refused(o):
+                continue
+            try:
+                where = ask()
+            except Exception:  # asked again next tick
+                log.exception("native engine: asking the virtual camera where to write failed")
+                continue
+            if where:
+                return o, tuple(where)
+        return None
+
+    def _link_camera(self, canvas_id: str, slot: int, out: int, entry, camera, keep: bool) -> bool:
+        """The engine writes this output's frames into the virtual camera's block itself (no Python per frame)."""
+        owner, where = camera
+        settings = ("camera", keep)
+        if entry is not None and entry[2] == settings:
+            return True
+        try:
+            self.engine.link_camera(slot, out, where[0], where[1], where[2], keep=keep)
+        except Exception as exc:  # noqa: BLE001 - the camera takes its frames through Python
+            self._refuse(owner)
+            log.warning("native engine: the virtual camera can't take frames from the engine itself (%s); they go "
+                        "through Python", exc)
+            return False
+        again = self._paused.pop((slot, out), None) == (owner, where)  # back after a transition
+        if entry is None:
+            log.log(logging.DEBUG if again else logging.INFO,
+                    "native engine: %s frames go straight to the virtual camera (%dx%d)", canvas_id, where[1],
+                    where[2])
+        owner.linked = True
+        self._links[(slot, out)] = (owner, where, settings)
+        return True
+
+    def camera_frames(self, owner) -> int:
+        """Frames the engine wrote into the virtual camera's block for this owner's links."""
+        total = 0
+        for (slot, out), (o, _where, settings) in list(self._links.items()):
+            if o is owner and settings and settings[0] == "camera":
+                try:
+                    total += self.engine.camera_frames(slot, out)
+                except Exception as exc:  # noqa: BLE001 - only a count
+                    log.debug("native engine: the camera's frame count: %s", exc)
+        return total
 
     def _refused(self, owner) -> bool:
         try:
@@ -633,10 +865,11 @@ class NativeCanvases:
             last, _linked = self.engine.unlink_output(slot, out)
         except Exception:  # the writer still knows
             log.exception("native engine: unlinking an output failed")
-        try:
-            last = max(last, int(writer.stats().last_pts))
-        except Exception as exc:  # noqa: BLE001 - closed: nothing more is written to it anyway
-            log.debug("native engine: the unlinked writer's numbers are gone (%s)", exc)
+        if hasattr(writer, "stats"):  # not the virtual camera's block
+            try:
+                last = max(last, int(writer.stats().last_pts))
+            except Exception as exc:  # noqa: BLE001 - closed: nothing more is written to it anyway
+                log.debug("native engine: the unlinked writer's numbers are gone (%s)", exc)
         try:
             owner.unlinked(last)
         except Exception:
@@ -645,6 +878,9 @@ class NativeCanvases:
     def _unlink_all(self) -> None:
         for slot, out in list(self._links):
             self._unlink(slot, out)
+        for had in self._media.values():  # captures read their pictures from the engine no more
+            if isinstance(had, sprigcore.CaptureTarget) or (isinstance(had, str) and hasattr(had, "link")):
+                had.link(None)
 
     def _count_drops(self, slot: int, out: int, dropped: int) -> None:
         gone = dropped - self._dropped.get((slot, out), 0)
@@ -680,8 +916,8 @@ class NativeCanvases:
     def served(self, canvas_id: str, size: tuple[int, int], drawn: float) -> None:
         """Python's compositor handed on a frame of this output drawn at `drawn`: a native frame from before
         then would go backwards, so it's let go."""
-        key = (canvas_id, size)
-        self._last_out[key] = max(self._last_out.get(key, 0.0), drawn)
+        key = (canvas_id, tuple(size))
+        self._served[key] = max(self._served.get(key, 0.0), drawn)
 
     def check(self, now: float) -> None:
         """About once a second: the engine's health. A faulted engine turns this off."""
@@ -706,10 +942,20 @@ class NativeCanvases:
             self.output_drops = 0
         if stats["faulted"]:
             self.fail("it stopped after repeated faults")
-        elif stats["hung"]:
-            log.warning("native engine: a frame is stuck")
+        elif stats["hung"] and stats.get("ticks", 0) == self._hung_ticks:
+            self._hung_since = now if self._hung_since is None else self._hung_since
+            if now - self._hung_since >= HUNG_GIVE_UP_S:
+                # A frame that never ends (a call into Windows that never came back: PC test 2026-11-18). The
+                # engine can't be stopped from here; Python draws everything again and the engine is left alone.
+                self.fail(f"a frame has been stuck for {now - self._hung_since:.0f} s")
+            else:
+                log.warning("native engine: a frame is stuck")
+        else:
+            self._hung_since = None
+        self._hung_ticks = stats.get("ticks", 0)
 
     def close(self) -> None:
+        drawn.ENGINE = False
         self._unlink_all()
         try:
             self.engine.close()

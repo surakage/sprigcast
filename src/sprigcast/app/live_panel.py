@@ -185,9 +185,35 @@ class BloomTile(QPushButton):
     def _key_width(self) -> int:
         if not self.key or 0 < self.width() < 150:
             return 0  # a narrow tile gives its name the room: the key still works, and its tooltip says it
-        small = QFont(self.font())
-        small.setPixelSize(11)
-        return QFontMetrics(small).horizontalAdvance(self.key) + 14 + 6
+        if getattr(self, "_key_for", None) != self.key:  # measured once per key (it was on every paint)
+            small = QFont(self.font())
+            small.setPixelSize(11)
+            self._key_for, self._key_w = self.key, QFontMetrics(small).horizontalAdvance(self.key) + 14 + 6
+        return self._key_w
+
+    def _small_font(self) -> QFont:
+        small = getattr(self, "_small", None)
+        if small is None:
+            small = self._small = QFont(self.font())
+            small.setPixelSize(11)
+        return small
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        if event.type() == event.Type.FontChange:
+            self._key_for = self._shown_for = self._small = self._look = None  # measure and draw again in it
+        super().changeEvent(event)
+
+    def _shown_text(self, width: float) -> str:
+        """The name as drawn in `width`: on one or two lines, ending in "…" if it doesn't fit. Worked out once per
+        name, width and key: every tile measured its text on every paint, and a pop-up opening over the window
+        repaints them all (309 ms with the Settings gear while live on the PC, 2026-11-18)."""
+        key = (self.text(), int(width), self.wrap)
+        if getattr(self, "_shown_for", None) != key:
+            lines = self._lines(width)
+            if len(lines) == 1:
+                lines = [QFontMetrics(self.font()).elidedText(lines[0], Qt.TextElideMode.ElideRight, int(width))]
+            self._shown_for, self._shown = key, "\n".join(lines)
+        return self._shown
 
     def enterEvent(self, event) -> None:  # noqa: N802
         super().enterEvent(event)
@@ -203,11 +229,29 @@ class BloomTile(QPushButton):
         super().hideEvent(event)
 
     def paintEvent(self, event) -> None:  # noqa: N802
+        """Drawn once into a picture per look (size, hover, on air, name, key, colour) and then only copied: a
+        pop-up opening over the window, or the screen waking, repaints every tile (496 ms with the Settings gear
+        during a monitor wake while live on the PC, 2026-11-18)."""
+        ratio = self.devicePixelRatioF()
+        enabled = self.isEnabled()
+        hover = enabled and self.underMouse()
+        look = (self.width(), self.height(), ratio, hover, self.isChecked(), enabled, self.text(), self.key,
+                self.colour, self.wrap, theme.looks_applied)
+        if getattr(self, "_look", None) != look:
+            picture = QPixmap(round(self.width() * ratio), round(self.height() * ratio))
+            picture.setDevicePixelRatio(ratio)
+            picture.fill(Qt.GlobalColor.transparent)
+            self._draw(picture, hover)
+            self._look, self._picture = look, picture
         p = QPainter(self)
+        p.drawPixmap(0, 0, self._picture)
+        p.end()
+
+    def _draw(self, device, hover: bool) -> None:
+        p = QPainter(device)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         outer = QRectF(self.rect()).adjusted(1, 1, -1, -1)
         radius = min(outer.height(), self.HEIGHT - 2) / 2  # a two-line tile keeps the pill's round ends
-        hover = self.underMouse() and self.isEnabled()
         theme.paint_button(p, outer, radius, hover)
         p.setPen(Qt.PenStyle.NoPen)
         on_air = self.isChecked()
@@ -220,8 +264,7 @@ class BloomTile(QPushButton):
         p.setFont(self.font())
         key_w = self._key_width()
         if key_w:
-            small = QFont(self.font())
-            small.setPixelSize(11)
+            small = self._small_font()
             chip = QRectF(outer.right() - 10 - (key_w - 6), outer.center().y() - 10, key_w - 6, 20)
             p.save()
             p.setPen(Qt.PenStyle.NoPen)
@@ -232,10 +275,8 @@ class BloomTile(QPushButton):
             p.drawText(chip, Qt.AlignmentFlag.AlignCenter, self.key)
             p.restore()
         text_rect = QRectF(32, 0, self._text_width(), self.height())
-        lines = self._lines(text_rect.width())
-        if len(lines) == 1:
-            lines = [QFontMetrics(self.font()).elidedText(lines[0], Qt.TextElideMode.ElideRight, int(text_rect.width()))]
-        p.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, "\n".join(lines))
+        p.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                   self._shown_text(text_rect.width()))
         if on_air:
             p.setPen(QPen(QColor(theme.LIVE), 2))
             p.setBrush(Qt.BrushStyle.NoBrush)

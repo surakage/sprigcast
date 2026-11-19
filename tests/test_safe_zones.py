@@ -15,3 +15,16 @@ def test_all_platforms_merges_into_three_boxes_and_leaves_a_clear_middle():
     assert top[4] == 220 and bottom[2] == 1500 and side[1] == 920
     x, y, w, h = safe_zones.clear_area(safe_zones.ALL, 1080, 1920)
     assert (x, y, w, h) == (160, 220, 760, 1280)
+
+
+def test_twitch_vertical_keeps_its_top_bar_and_chat_clear():
+    assert "Twitch" in safe_zones.CHOICES
+    top, chat = safe_zones.zones("Twitch", 1080, 1920)
+    assert top[1:] == (0.0, 0.0, 1080.0, 150.0)
+    assert chat[2] == 1500.0 and chat[2] + chat[4] == 1920.0
+    assert safe_zones.clear_area("Twitch", 1080, 1920) == (0.0, 150.0, 1080.0, 1350.0)
+
+
+def test_platform_choices_are_a_to_z():
+    names = safe_zones.CHOICES[2:]
+    assert names == sorted(names)

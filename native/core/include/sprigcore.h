@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 20
+#define SC_INTERFACE_VERSION 33
 
 enum {
     SC_OK = 0,
@@ -201,6 +201,12 @@ typedef struct sc_snapshot {
 
 SC_API int sc_source_upload(sc_device *device, uint64_t id, const uint8_t *data, const sc_upload *how);
 SC_API int sc_source_forget(sc_device *device, uint64_t id);
+/* Source `id` is drawn from a list of other sources' pictures (a store plugin's animation: the art uploaded once
+ * as sources of their own, then only where each goes, frame by frame): `items` (as in a snapshot, bottom first;
+ * `part` and `effects` are ignored) drawn onto a see-through width x height picture, which is then the source's
+ * picture wherever it shows. The list is copied and drawn once, before the next canvas that needs it. A picture
+ * uploaded for `id` replaces the list; count < 0 drops it. */
+SC_API int sc_source_draws(sc_device *device, uint64_t id, int width, int height, const sc_item *items, int count);
 /* A colour look: n x n x n RGB floats, red fastest (core/looks.py). */
 SC_API int sc_look_set(sc_device *device, uint64_t id, const float *table, int n);
 /* A shape picture: RGBA. luma = 1 when it has no transparency (white keeps, black cuts). */
@@ -221,7 +227,9 @@ enum {
     SC_TRANSITION_WIPE = 4,
     SC_TRANSITION_LEAF = 5,
     SC_TRANSITION_BLOOM = 6,
+    SC_TRANSITION_STINGER = 8,  /* a clip played over the change (7 is the Move, below) */
 };
+enum { SC_STINGER_MATTE_NONE = 0, SC_STINGER_MATTE_RIGHT = 1, SC_STINGER_MATTE_BELOW = 2 };
 
 typedef struct sc_transition {
     int mode;              /* SC_TRANSITION_* */
@@ -230,11 +238,50 @@ typedef struct sc_transition {
     float softness;        /* wipe, leaf and bloom edge, 0 .. 1 */
     int reserved;
     uint64_t wipe_map;     /* wipe: a picture set with sc_mask_set, dark parts change first; 0 = a straight edge */
+    uint64_t overlay;      /* stinger: the source showing the clip (a player attached with sc_engine_source_media);
+                              0 or no picture yet: it just cuts at cut_seconds */
+    float cut_seconds;     /* stinger: when the scenes change under the clip */
+    int matte;             /* stinger: SC_STINGER_MATTE_*: a black and white half that says where the new scene shows */
+    int matte_only;        /* stinger: draw only the matte's change, not the clip */
+    int reserved2;
 } sc_transition;
 
 /* Draws the change from scene `from` to scene `to` onto the canvas at `progress` (0 .. 1). */
 SC_API int sc_canvas_render_transition(sc_canvas *canvas, uint64_t from, uint64_t to, double time,
                                        const sc_transition *how, float progress);
+
+/* The Move transition (render/move.py): what is in both blooms glides from where it was to where it goes. Python
+ * lays both blooms out as pieces and pairs them once; the engine works out every frame's quads (move.cpp) and draws
+ * them straight onto the canvas. */
+enum { SC_TRANSITION_MOVE = 7 };
+enum { SC_MOVE_SMOOTH = 0, SC_MOVE_EASE_OUT = 1, SC_MOVE_EASE_IN = 2, SC_MOVE_LINEAR = 3, SC_MOVE_SPRING = 4 };
+enum { SC_MOVE_FADE = 0, SC_MOVE_SCALE = 1, SC_MOVE_SLIDE = 2 };  /* what is in only one of the two blooms */
+
+typedef struct sc_move_piece {
+    uint64_t source;       /* the picture, as sc_item.source */
+    uint64_t part;         /* nonzero: a sprig's drawing (a snapshot scene), as sc_item.part */
+    float quad[4][4];      /* x, y (canvas pixels), u, v: top-left, top-right, bottom-left, bottom-right */
+    float opacity;
+    int effects;           /* index into the move's effects, -1 = none */
+    int paired;            /* a piece of the new bloom: the old piece it moves from (each at most once), -1 = none */
+    int reserved;
+} sc_move_piece;
+
+typedef struct sc_move {
+    const sc_move_piece *pieces;  /* the old bloom's pieces, then the new one's, each bottom first */
+    int old_count, new_count;
+    const sc_effects *effects;
+    int effects_count;
+    int easing;            /* SC_MOVE_SMOOTH .. SC_MOVE_SPRING (core/scene.py MOVE_EASINGS order) */
+    int unmatched;         /* SC_MOVE_FADE, _SCALE or _SLIDE */
+} sc_move;
+
+/* Draws a Move onto the canvas at `progress` (0 .. 1). Sprigs drawn whole come from the snapshot. */
+SC_API int sc_canvas_render_move(sc_canvas *canvas, const sc_move *move, double time, float progress);
+/* The pieces a Move draws at `progress` on a canvas width x height, bottom first, as sc_move_pieces (paired -1):
+ * their count, at most old_count + 2 x new_count, or an error when `capacity` is fewer. */
+SC_API int sc_move_frame(const sc_move *move, float progress, int width, int height, sc_move_piece *out,
+                         int capacity);
 
 /* How an output smaller than its canvas is scaled (Settings → Video): render/compositor.py SCALE_MODES. */
 enum {
@@ -333,6 +380,53 @@ SC_API int sc_engine_source_media(sc_engine *engine, uint64_t id, struct sc_medi
  * pictures never pass through Python. name = NULL (or empty) goes back to sc_engine_source_upload (the source keeps
  * the picture it has); sc_engine_source_forget detaches it too. */
 SC_API int sc_engine_source_shared(sc_engine *engine, uint64_t id, const wchar_t *name);
+/* Source `id`'s shared pictures (sc_engine_source_shared) held still (held = 1, a freeze) or shown again (0): while
+ * held the engine still takes each new picture, so the writer never waits on it, but the source keeps the one it
+ * has. Detaching the block forgets the hold. */
+SC_API int sc_engine_source_shared_hold(sc_engine *engine, uint64_t id, int held);
+/* Source `id` shows a window or a display, captured with Windows Graphics Capture on the engine's own device: every
+ * frame the engine copies the newest picture on the card, so a screen's pictures never pass through memory or
+ * Python. `window` is an HWND or `monitor` an HMONITOR (the other 0); both 0 stops the capture (the source keeps the
+ * picture it has), and sc_engine_source_forget stops it too. flags: SC_SCREEN_*. interval_ms: at most one picture
+ * this often (0 = every one Windows draws). The same values again keep the capture running; new ones start it over.
+ * The capture starts on the frame thread: sc_engine_capture_state says how it went. */
+enum {
+    SC_SCREEN_CURSOR = 1,  /* the mouse pointer drawn in */
+    SC_SCREEN_BORDER = 2,  /* Windows' yellow border kept (it can't be turned off before Windows 11) */
+    SC_SCREEN_OPAQUE = 4   /* alpha ignored: a game's picture is solid */
+};
+enum {
+    SC_SCREEN_NONE = 0,     /* not asked for */
+    SC_SCREEN_STARTING = 1, /* asked for, no picture yet */
+    SC_SCREEN_RUNNING = 2,  /* pictures coming */
+    SC_SCREEN_ENDED = 3,    /* the window closed or the display went: ask again (a new target) */
+    SC_SCREEN_REFUSED = 4   /* this PC can't capture in the engine: capture another way */
+};
+SC_API int sc_engine_source_capture(sc_engine *engine, uint64_t id, uint64_t window, uint64_t monitor, int flags,
+                                    int interval_ms);
+/* A capture held still (held = 1, a freeze) or shown again (0): while held the engine still takes Windows'
+ * pictures but the source keeps the one it has. Stopping the capture forgets the hold. */
+SC_API int sc_engine_source_capture_hold(sc_engine *engine, uint64_t id, int held);
+/* How source `id`'s capture is doing: state SC_SCREEN_*, the size of its pictures (0 before the first) and how
+ * many it has shown. Any pointer may be NULL. */
+SC_API int sc_engine_capture_state(sc_engine *engine, uint64_t id, int *state, int *width, int *height,
+                                   uint64_t *frames);
+/* Source `id`'s captured picture as BGRA rows (`stride` bytes apart), for a frame Python draws itself. Its size goes
+ * to width and height; bgra = NULL asks for the size only. SC_ERR_ARGUMENT when there is no picture yet or it is
+ * bigger than max_width x max_height (then width and height say what it needs, and nothing is logged).
+ * SC_ERR_TIMEOUT when a frame that never ends holds the engine (0.5 s at most). */
+SC_API int sc_engine_capture_read(sc_engine *engine, uint64_t id, uint8_t *bgra, int stride, int max_width,
+                                  int max_height, int *width, int *height);
+/* Source `id` shows what audio visualizer `visual` draws (sc_visual_open): every frame the engine takes its newest
+ * drawing itself, so neither the sound nor the pictures pass through Python. visual = NULL goes back to
+ * sc_engine_source_upload (the source keeps the picture it has); sc_engine_source_media and
+ * sc_engine_source_forget detach it too. The engine keeps the drawings alive as long as it is attached. */
+struct sc_visual;
+SC_API int sc_engine_source_visual(sc_engine *engine, uint64_t id, struct sc_visual *visual);
+/* As sc_source_draws, for the engine: the newest list is drawn from the next frame on (and again after a rebuild,
+ * with the pictures it uses uploaded with SC_UPLOAD_KEEP). A picture uploaded for `id` replaces it. */
+SC_API int sc_engine_source_draws(sc_engine *engine, uint64_t id, int width, int height, const sc_item *items,
+                                  int count);
 /* A browser page drawn on the card by the browser helper (page_texture.cpp): the helper makes a device on the
  * engine's card (its LUID, from sc_d3d_device_luid) and a texture shared as "<block>-tex<n>" with a keyed mutex
  * (key 0: the helper may draw, between sc_page_target_begin and _end; key 1: a picture waits for the engine). In the
@@ -353,6 +447,17 @@ SC_API int sc_page_target_fill(sc_page_target *target, const float *rgba);
 /* publish = 1: the engine may take the picture (key 1); 0: drawn only to be read back, the helper keeps it. */
 SC_API int sc_page_target_end(sc_page_target *target, int publish);
 SC_API void sc_page_target_destroy(sc_page_target *target);
+/* A capture run for another process (capture_feed.cpp): the capture helper program captures a window or a display
+ * (one of the two; flags SC_SCREEN_*, interval_ms as sc_engine_source_capture) on a device of its own on the card
+ * with that LUID, and shares each picture with the engine: `block` names a small block of shared memory this makes,
+ * which the engine is given with sc_engine_source_shared. Returns at once; sc_capture_feed_state says how it is
+ * doing (SC_SCREEN_STARTING, _RUNNING with the pictures' size and count, _ENDED: the window closed or the display
+ * went, _REFUSED: it can't be captured here). Destroying it ends the capture. */
+typedef struct sc_capture_feed sc_capture_feed;
+SC_API int sc_capture_feed_create(uint32_t luid_low, int32_t luid_high, uint64_t window, uint64_t monitor, int flags,
+                                  int interval_ms, const wchar_t *block, sc_capture_feed **out);
+SC_API int sc_capture_feed_state(sc_capture_feed *feed, int *state, int *width, int *height, uint64_t *frames);
+SC_API void sc_capture_feed_destroy(sc_capture_feed *feed);
 SC_API int sc_engine_look_set(sc_engine *engine, uint64_t id, const float *table, int n);
 SC_API int sc_engine_mask_set(sc_engine *engine, uint64_t id, const uint8_t *rgba, int width, int height, int luma);
 SC_API int sc_engine_snapshot_set(sc_engine *engine, const sc_snapshot *snapshot);
@@ -371,6 +476,9 @@ SC_API int sc_engine_canvas_read(sc_engine *engine, int index, uint8_t *out, int
  * by the engine from its next frame. from = 0 (or how = NULL) stops one that is running. A transition whose
  * `from` scene is no longer in the snapshot ends at once. */
 SC_API int sc_engine_canvas_transition(sc_engine *engine, int index, uint64_t from, const sc_transition *how);
+/* Starts a Move (sc_move, copied) on canvas `index` from scene `from` to the scene it shows, `seconds` long, timed
+ * as sc_engine_canvas_transition. Stopped by sc_engine_canvas_transition with from = 0. */
+SC_API int sc_engine_canvas_move(sc_engine *engine, int index, uint64_t from, float seconds, const sc_move *move);
 /* Pictures of a canvas for Python's screens: each frame (at most `max_fps` a second, 0 = every frame) the engine
  * draws canvas `index` shrunk to width x height as premultiplied RGBA, the way SprigCast's previews take it, and
  * copies it back without waiting on the graphics card, so it arrives a frame or two later. 0 x 0 stops. */
@@ -433,6 +541,14 @@ SC_API int sc_engine_output_link(sc_engine *engine, int index, int slot, const s
  * frame number the writer took (-1: none), so whoever feeds it next goes on from there. *linked (optional): 1 if
  * the output was still linked. */
 SC_API int sc_engine_output_unlink(sc_engine *engine, int index, int slot, int64_t *last_pts, int *linked);
+/* Links an output to the virtual camera instead (interface 22): the frame thread writes each finished frame into
+ * the camera's shared block `name` (output/virtualcam.py's layout), in the middle of a width x height frame with black
+ * around it when the output is smaller. The engine maps the block itself and unmaps it when the link ends
+ * (sc_engine_output_unlink, another link, a new output size), so Python may close its own view at any time. keep: as
+ * for a writer. sc_engine_output_camera_frames: the frames written since it was linked (0: not linked). */
+SC_API int sc_engine_output_link_camera(sc_engine *engine, int index, int slot, const wchar_t *name, int width,
+                                        int height, int keep);
+SC_API int sc_engine_output_camera_frames(sc_engine *engine, int index, int slot, uint64_t *frames);
 /* IUnknown::Release on a pointer one of the calls above gave. */
 SC_API void sc_com_release(void *unknown);
 /* Checks of the crash gates (tests only), done by the frame thread on its next frame: kind 1 throws a C++
@@ -522,6 +638,9 @@ typedef struct sc_media_picture {
 SC_API int sc_media_ffmpeg_load(const char *avutil, const char *avcodec, const char *avformat, const char *swscale,
                                 const char *swresample);
 SC_API int sc_media_ffmpeg_ready(void);
+/* Loads FFmpeg's input devices (libavdevice, of the same FFmpeg, UTF-8 path) so a player can show a camera
+ * (sc_media_set_device). After sc_media_ffmpeg_load; again does nothing. */
+SC_API int sc_media_ffmpeg_load_devices(const char *avdevice);
 
 /* ---- Writing a recording or stream (writer.cpp) -----------------------------------------------------------
  * A file or stream written by a thread of the engine's own with SprigCast's FFmpeg (load it first with
@@ -548,6 +667,14 @@ typedef struct sc_writer_config {
      * device from an output linked to it (sc_engine_output_link on an SC_OUTPUT_SHARE output); pictures from
      * memory (sc_writer_video) are copied up to the card first. NULL: pictures in memory only. */
     void *d3d11_device;
+    /* 1: encode only. The only file written is a small NUT file at `target`, finished once the writer runs: the
+     * streams with their codec headers as the encoders made them (a placeholder byte each, for demuxers to open it;
+     * for the caller's own muxers to copy). Every encoded packet is taken with sc_writer_packet_take, in the order
+     * made (a stream, clips, files written from the same packets). A video encoder started again after a failure
+     * (stats.recoveries) puts its codec headers in its keyframes. Keyframes start every keyframe_frames frames of
+     * the frame numbers (the first picture at or past each multiple), so writers fed at their own rates key at the
+     * same instants. */
+    int packets;
 } sc_writer_config;
 enum { SC_WRITER_OPENING = 0, SC_WRITER_RUNNING = 1, SC_WRITER_FINISHED = 2, SC_WRITER_FAILED = 3 };
 /* sc_writer_video / sc_writer_audio results besides SC_OK. LATE: the writer already took a later frame number (two
@@ -572,6 +699,22 @@ SC_API int sc_writer_audio(sc_writer *writer, int track, const float *stereo, in
 SC_API int sc_writer_finish(sc_writer *writer);
 SC_API int sc_writer_wait(sc_writer *writer, int timeout_ms);
 SC_API int sc_writer_stats_get(sc_writer *writer, sc_writer_stats *out);
+/* Packets mode (sc_writer_config.packets): one encoded packet. track 0 is the video, 1.. the sound tracks; pts and
+ * dts count in tb_num / tb_den seconds. */
+typedef struct sc_writer_packet {
+    int track, keyframe;
+    int64_t pts, dts;
+    int tb_num, tb_den;
+    int size;
+} sc_writer_packet;
+/* The oldest packet not taken yet: 1 (its bytes copied to `data`), 0 (none waiting), or SC_ERR_ARGUMENT with
+ * info->size set when `capacity` is too small (it stays first). A writer whose packets aren't taken fails once
+ * 4096 wait (about a minute). */
+SC_API int sc_writer_packet_take(sc_writer *writer, sc_writer_packet *info, uint8_t *data, int capacity);
+/* The video bitrate from the next picture on (a stream steering itself); max_kbps / buffer_kbits 0 = unchanged. */
+SC_API int sc_writer_set_bitrate(sc_writer *writer, int kbps, int max_kbps, int buffer_kbits);
+/* The next picture is a keyframe (a recording starting from these packets, a viewer joining). */
+SC_API int sc_writer_keyframe(sc_writer *writer);
 SC_API void sc_writer_destroy(sc_writer *writer);
 
 /* A player with no file. `playing` = 0 makes it wait for play (a sound file), 1 plays as soon as it has one. */
@@ -591,6 +734,14 @@ SC_API int sc_media_set_decode(sc_media *media, int hardware);
 /* Another file (UTF-8 path; "" = none) from its start. video: 1 when it should have a picture (told by its
  * name until the file is open). playing: as sc_media_create. */
 SC_API int sc_media_set_file(sc_media *media, const char *path, int video, int playing);
+/* A camera instead of a file: opened through FFmpeg's input device `format` ("dshow"), trying each of `choices` in
+ * turn, one a line: the device's input name, then a tab and its options as "key=value:key=value" (may be empty).
+ * Its newest picture is always the one shown (no clock, no end, never a backlog), at most `fps` a second (0 = all
+ * it sends; extra MJPEG and raw pictures are skipped before decoding). Unplugged or busy, it is opened again every
+ * 2 s; sc_media_info's status says so. mirror: flipped left to right. sc_media_set_picture limits its size and
+ * sc_media_set_shrink makes it smaller, as for files. Needs sc_media_ffmpeg_load_devices. */
+SC_API int sc_media_set_device(sc_media *media, const char *format, const char *choices, int fps, int mirror);
+SC_API int sc_media_set_mirror(sc_media *media, int mirror);
 SC_API int sc_media_control(sc_media *media, int what, double value);
 /* Shown at most `shrink` of its size anywhere (1, 1/2, 1/4): the next pictures are made that small. */
 SC_API int sc_media_set_shrink(sc_media *media, float shrink);
@@ -606,6 +757,149 @@ SC_API int sc_media_read_audio(sc_media *media, float *out, int count, int aslee
 /* A check of the crash gate (tests only): the decoder thread faults at its next step. kind 1 throws a C++
  * exception, kind 2 writes through a null pointer. */
 SC_API int sc_media_debug_fault(sc_media *media, int kind);
+
+/* The sound mixer (mixer.cpp, docs/native-engine.md "Sound"): one 48 kHz stereo mix, SC_MIXER_BLOCK samples at a
+ * time, on a thread of its own paced by the clock (or by sc_mixer_tick for checks). Never waits on Python. */
+typedef struct sc_mixer sc_mixer;
+#define SC_MIXER_BLOCK 1024
+#define SC_MIXER_TRACKS 8
+enum { SC_TRACK_STREAM = 0, SC_TRACK_RECORDING, SC_TRACK_VOD, SC_TRACK_VOICE, SC_TRACK_CLIPS, SC_TRACK_TRACK4,
+       SC_TRACK_TRACK5, SC_TRACK_CLEAN };
+#define SC_MIXER_MONITOR (-1)      /* a tap entry: the monitor mix (sounds with monitor on) */
+#define SC_MIXER_SOURCE_TAP 1000   /* a tap entry SC_MIXER_SOURCE_TAP + id: that sound, after its volume */
+#define SC_MIXER_MASTER 0          /* sc_mixer_levels: the stream track; level = the ducking gain now */
+typedef struct sc_mixer_source_settings {
+    float gain;      /* volume, 1 = as it is */
+    int mono;        /* both sides as one */
+    float balance;   /* -1 left .. 0 centre .. 1 right */
+    int delay_ms;    /* sync offset, 0 .. 2000 */
+    uint32_t tracks; /* bit (1 << SC_TRACK_*) per track it goes to */
+    int monitor;     /* also in the monitor mix */
+    int voice;       /* leads ducking, and is never ducked */
+    int bloom_out;   /* sound per bloom: none of its blooms is on air (fades out over 0.25 s) */
+} sc_mixer_source_settings;
+typedef struct sc_mixer_ducking {
+    int enabled;
+    float amount_db, threshold_db, attack_ms, release_ms, hold_ms;
+} sc_mixer_ducking;
+typedef struct sc_mixer_level {
+    float peak_db, rms_db; /* the loudest since last asked, and the last block's (after volume and ducking) */
+    float level;           /* a sound: its last peak before ducking, after volume (a Ducking filter follows it) */
+    uint64_t underruns;    /* a pushed sound: times it ran dry */
+} sc_mixer_level;
+/* clocked = 1: its own thread mixes a block every 1024 / 48000 s. 0: only sc_mixer_tick mixes (checks). */
+SC_API int sc_mixer_create(int clocked, sc_mixer **out);
+SC_API void sc_mixer_destroy(sc_mixer *mixer);
+SC_API int sc_mixer_source_add(sc_mixer *mixer, const sc_mixer_source_settings *settings, int *id);
+SC_API int sc_mixer_source_set(sc_mixer *mixer, int id, const sc_mixer_source_settings *settings);
+SC_API int sc_mixer_source_remove(sc_mixer *mixer, int id);
+/* Samples (interleaved stereo floats) a sound made: queued (at most 200 ms), played from once a block is ahead. */
+SC_API int sc_mixer_source_push(sc_mixer *mixer, int id, const float *stereo, int frames);
+/* The sound reads straight from an engine player (NULL: pushed again). Once this returns the mixer no longer
+ * reads the old player: unlink before sc_media_destroy. asleep: as sc_media_read_audio. */
+SC_API int sc_mixer_source_media(sc_mixer *mixer, int id, sc_media *media, int asleep);
+/* A sound's built-in filters (core/filters.py), run in order on its samples before mono, balance and delay. The same
+ * filters again with new numbers keep their state. */
+enum { SC_FILTER_GAIN = 1, SC_FILTER_NOISE_GATE, SC_FILTER_COMPRESSOR, SC_FILTER_LIMITER, SC_FILTER_INVERT,
+       SC_FILTER_DUCKING };
+typedef struct sc_mixer_filter {
+    int kind;     /* SC_FILTER_* */
+    int follow;   /* ducking: the sound it ducks under (0: none) */
+    float p[6];   /* its settings in filters.py's field order (see mixer.cpp Filter) */
+} sc_mixer_filter;
+SC_API int sc_mixer_source_filters(sc_mixer *mixer, int id, const sc_mixer_filter *filters, int count);
+SC_API int sc_mixer_set_ducking(sc_mixer *mixer, const sc_mixer_ducking *ducking);
+/* An output's queue of finished blocks: each holds `count` entries (SC_TRACK_*, SC_MIXER_MONITOR or
+ * SC_MIXER_SOURCE_TAP + id) one after another, SC_MIXER_BLOCK * 2 floats each. At most 64 wait; then the oldest
+ * goes and is counted. */
+SC_API int sc_mixer_tap_add(sc_mixer *mixer, const int *what, int count, int *id);
+SC_API int sc_mixer_tap_remove(sc_mixer *mixer, int id);
+/* The oldest waiting block of a tap into `out` (`capacity` floats): returns 1, or 0 when none waits. *index: its
+ * number (blocks mixed before it); *dropped: blocks this tap lost so far. */
+SC_API int sc_mixer_tap_take(sc_mixer *mixer, int id, float *out, int capacity, int64_t *index, uint64_t *dropped);
+/* An unclocked mixer mixes `count` blocks now. */
+SC_API int sc_mixer_tick(sc_mixer *mixer, int count);
+/* Waits up to timeout_ms for a block numbered after `after` (blocks mixed > after): 1 when there is one, 0 on
+ * timeout. *now: blocks mixed so far. */
+SC_API int sc_mixer_wait(sc_mixer *mixer, int64_t after, int timeout_ms, int64_t *now);
+SC_API int sc_mixer_levels(sc_mixer *mixer, int id, sc_mixer_level *out);
+
+/* Sound capture (capture.cpp): a microphone or desktop sound read with WASAPI on a thread of its own and pushed
+ * straight into a mixer's sound (as sc_mixer_source_push), at 48 kHz stereo. It finds its device again by itself
+ * (every 2 s) and follows the Windows default. Close it before the mixer or the mixer's sound goes.
+ * device: the friendly name (as PortAudio lists it, without " [Loopback]"); NULL or "" = the Windows default;
+ * "sprigcast-test-tone" = a 440 Hz tone with no sound card (checks). loopback: desktop sound (an output device;
+ * a recording device of that name is read as one). */
+typedef struct sc_capture sc_capture;
+enum { SC_CAPTURE_STARTING = 0, SC_CAPTURE_CAPTURING, SC_CAPTURE_NOT_FOUND, SC_CAPTURE_LOST, SC_CAPTURE_FAILED };
+typedef struct sc_capture_stats {
+    int state;            /* SC_CAPTURE_* */
+    int channels, rate;   /* what the device gives */
+    uint64_t frames;      /* 48 kHz frames pushed so far */
+    uint64_t gaps;        /* times Windows said samples were lost */
+    wchar_t device[128];  /* the device read now, by name */
+    char error[256];      /* why it isn't capturing, in words */
+} sc_capture_stats;
+SC_API int sc_capture_open(sc_mixer *mixer, int source, const wchar_t *device, int loopback, sc_capture **out);
+SC_API int sc_capture_stats_get(sc_capture *capture, sc_capture_stats *out);
+SC_API void sc_capture_close(sc_capture *capture);
+
+/* Sound playback (playback.cpp): one of a mixer's mixes (a track, or the monitor mix) played on a playback device
+ * with WASAPI on a thread of its own, so monitoring never passes through Python. At most 120 ms is buffered: older
+ * sound is dropped so it never drifts behind. It finds its device again by itself (every 2 s) and follows the
+ * Windows default. Close it before the mixer.
+ * what: SC_MIXER_MONITOR or a track (SC_TRACK_*). device: the friendly name; NULL or "" = the Windows default;
+ * "sprigcast-test-sink" = plays nowhere, in real time (checks). States are SC_CAPTURE_*'s (CAPTURING: playing). */
+typedef struct sc_playback sc_playback;
+typedef struct sc_playback_stats {
+    int state;            /* SC_CAPTURE_* (SC_CAPTURE_CAPTURING = playing) */
+    int channels, rate;   /* what the device plays */
+    uint64_t frames;      /* device frames played so far */
+    uint64_t underruns;   /* times it ran out and played silence */
+    uint64_t dropped;     /* 48 kHz frames dropped to stay within 120 ms */
+    wchar_t device[128];  /* the device's name */
+    char error[256];      /* why it isn't playing, if it isn't */
+} sc_playback_stats;
+SC_API int sc_playback_open(sc_mixer *mixer, int what, const wchar_t *device, sc_playback **out);
+SC_API int sc_playback_stats_get(sc_playback *playback, sc_playback_stats *out);
+SC_API void sc_playback_close(sc_playback *playback);
+
+/* Audio visualizer (visual.cpp, the store plugin store/audio_visualizer.py drawn in the engine): bars, a wave, a
+ * circle or a line that move with one of a mixer's sounds. A thread of its own takes the sound from a mixer tap,
+ * runs a 2048-sample FFT and draws a SC_VISUAL_WIDTH x SC_VISUAL_HEIGHT premultiplied BGRA picture (SC_FMT_PBGRA)
+ * at most 30 times a second; once silence has been drawn nothing more is drawn until there is sound again. The
+ * same numbers and pixels as audio_visualizer.py's Analyser and Painter. Close it before the mixer.
+ * mixer: where it hears (NULL: only sc_visual_push). what: a track (SC_TRACK_*), or SC_MIXER_SOURCE_TAP + a sound
+ * (that sound after its volume); < 0 hears nothing. clocked = 0: no thread, only sc_visual_step draws (checks). */
+typedef struct sc_visual sc_visual;
+#define SC_VISUAL_WIDTH 1280
+#define SC_VISUAL_HEIGHT 400
+enum { SC_VISUAL_BARS = 0, SC_VISUAL_WAVE, SC_VISUAL_CIRCLE, SC_VISUAL_LINE };
+typedef struct sc_visual_look {
+    int style;            /* SC_VISUAL_* */
+    int bars;             /* 8..128 */
+    double smoothing;     /* 0..0.95 */
+    double sensitivity;   /* 0.05..10 */
+    int mirror;           /* bass in the middle, the same both ways */
+    double color[4];      /* r, g, b, a from 0 to 1 */
+    double peak[4];       /* the colour the tips light up toward */
+} sc_visual_look;
+SC_API int sc_visual_open(sc_mixer *mixer, int what, int clocked, sc_visual **out);
+SC_API int sc_visual_listen(sc_visual *visual, int what);
+SC_API int sc_visual_set_look(sc_visual *visual, const sc_visual_look *look);
+/* A block of `frames` stereo samples it hears (with no mixer, or for checks). */
+SC_API int sc_visual_push(sc_visual *visual, const float *stereo, int frames);
+/* Checks: one step of dt seconds, and its drawing: 1 drawn, 0 silence already drawn (nothing drawn). */
+SC_API int sc_visual_step(sc_visual *visual, double dt);
+/* Checks: the band heights (0..1) and the wave (-1..1, 256 values) now. Returns how many bands. */
+SC_API int sc_visual_values(sc_visual *visual, float *bands, int bands_room, float *wave, int wave_room);
+/* Checks: draws these values (already mirrored, if wanted) with the look now into out (SC_VISUAL_WIDTH * 4 a row). */
+SC_API int sc_visual_draw(sc_visual *visual, const float *bands, int count, const float *wave, int wave_count,
+                          uint8_t *out);
+/* The newest drawing if it isn't the one *seen names (then *seen is its number): 1 copied into out
+ * (SC_VISUAL_WIDTH * 4 a row), 0 nothing new; SC_ERR_INTERNAL once its thread has faulted. */
+SC_API int sc_visual_frame(sc_visual *visual, uint64_t *seen, uint8_t *out);
+SC_API void sc_visual_close(sc_visual *visual);
 
 #ifdef __cplusplus
 }

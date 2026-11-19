@@ -44,11 +44,12 @@ ROLE_ID = Qt.ItemDataRole.UserRole  # a bloom's or sprig's scene id
 ROLE_FOLDER = Qt.ItemDataRole.UserRole + 1  # a folder's id; "" on the Blooms heading, PART_ROOT on Sprigs
 ROLE_ROW = Qt.ItemDataRole.UserRole + 30  # "heading", "folder", "bloom" or "sprig"
 ROLE_NAME = Qt.ItemDataRole.UserRole + 31  # the name alone
-ROLE_TAG = Qt.ItemDataRole.UserRole + 32  # quiet text on the right: "on Live", "4", "in 3"
+ROLE_UNUSED = Qt.ItemDataRole.UserRole + 38  # a sprig no bloom uses yet: drawn dimmed
+ROLE_TAG = Qt.ItemDataRole.UserRole + 32  # on the right: "on Live" (an icon), "⇄"
 ROLE_COLOUR = Qt.ItemDataRole.UserRole + 33  # folder dot, or a bloom's swatch before it has a picture
 ROLE_ON_AIR = Qt.ItemDataRole.UserRole + 34  # a bloom on air gets a pink dot
 ROLE_THUMB = Qt.ItemDataRole.UserRole + 35  # a bloom's last on-air picture (QImage)
-ROLE_SOURCE_KIND = Qt.ItemDataRole.UserRole + 37  # sound rows: the source's kind, for its icon
+ROLE_SOURCE_KIND = Qt.ItemDataRole.UserRole + 37  # sound rows: the source's kind; sprigs: what they show
 ROLE_NOTE = Qt.ItemDataRole.UserRole + 36  # headings: the quiet words after the title
 PART_ROOT = "~sprigs"
 SOUND_ROOT = "~sound"  # the Sound heading: mics, desktop sound and pages with sound, shared by both shapes
@@ -152,9 +153,12 @@ class LibraryDelegate(QStyledItemDelegate):
             x += 26
             if selected:
                 font.setWeight(QFont.Weight.Bold)
-        else:  # sprig
-            icons.paint_icon(p, QRectF(x, mid - 8, 16, 16), "sprig", theme.ACCENT)
-            x += 20
+        else:  # sprig: an icon for what it shows (camera, chat, game...), in sprig green
+            from sprigcast.app.build_stage import paint_kind_icon
+
+            paint_kind_icon(p, QRectF(x - 2, mid - 10, 20, 20), index.data(ROLE_SOURCE_KIND) or "scene",
+                            index.data(ROLE_COLOUR), selected=selected, sprig=True)
+            x += 26
             if selected:
                 font.setWeight(QFont.Weight.Bold)
         right = r.right() - 10
@@ -163,15 +167,20 @@ class LibraryDelegate(QStyledItemDelegate):
             p.setBrush(QColor(theme.LIVE))
             p.drawEllipse(QRectF(right - 8, mid - 4, 8, 8))
             right -= 16
-        if tag:
+        if tag == "on Live":  # a folder shown on Live: its mark, not words
+            icons.paint_icon(p, QRectF(right - 14, mid - 7, 14, 14), "broadcast", theme.ACCENT, 1.5)
+            right -= 22
+        elif tag:
             small = QFont(option.font)
             small.setPixelSize(11)
             metrics = QFontMetrics(small)
             width = metrics.horizontalAdvance(tag)
             p.setFont(small)
-            p.setPen(QColor(theme.ACCENT if tag == "on Live" else theme.MUTED))
+            p.setPen(QColor(theme.MUTED))
             p.drawText(QRectF(right - width, r.y(), width, r.height()), Qt.AlignmentFlag.AlignVCenter, tag)
             right -= width + 10
+        if index.data(ROLE_UNUSED) and not selected:
+            text_colour = QColor(theme.MUTED)
         p.setFont(font)
         p.setPen(text_colour)
         metrics = QFontMetrics(font)
@@ -263,6 +272,10 @@ class LibraryTree(QTreeWidget):
             "#library::item, #library::item:hover, #library::item:selected { background: transparent; }"
             "#library::branch { background: transparent; image: none; border: none; }")
         self.itemClicked.connect(self._toggle_folder)
+
+    def event(self, event) -> bool:  # noqa: D102
+        handled = theme.view_activation(self, event)  # no repaint when a pop-up takes the focus
+        return super().event(event) if handled is None else handled
 
     def _toggle_folder(self, item: QTreeWidgetItem, _column: int) -> None:
         """One click opens or folds a folder (there's no arrow to aim for)."""

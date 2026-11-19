@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from PySide6.QtCore import QEvent, QRectF, QSize, Qt
+from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -168,41 +168,77 @@ class BarGroup(QFrame):
         return button
 
 
+_POLISHED = Qt.WidgetAttribute.WA_WState_Polished
+ADD_MENU_READY_MS = 4000  # after the Live screen is made: the + Add menu made ready (Destinations._ready_add_menu)
+
+
 class Elided(QLabel):
     """A one-line label that ends in "…" when it hasn't room (the whole text is in its tooltip)."""
 
     def __init__(self, text: str = ""):
         super().__init__()
         self._full = ""
+        self._hint = self._draft = None
+        self._hint_look = 0
+        self._fitted = None  # (text, width) last fitted
+        self._shown = None  # the words on screen (the whole text, or cut short with "…")
+        self._polished = False  # (once styled, always)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.setMinimumWidth(30)
         self.setText(text)
 
     def setText(self, text: str) -> None:  # noqa: N802
+        if text != self._full:
+            self._hint = self._draft = None
         self._full = text
-        self.setToolTip(text)
-        self._fit()
+        self._fit()  # (sets the tooltip too)
 
     def text(self) -> str:
         return self._full
 
     def resizeEvent(self, event) -> None:  # noqa: N802
-        super().resizeEvent(event)
-        self._fit()
+        # (QLabel has no resizeEvent of its own: QWidget's does nothing, so it isn't called.)
+        self._fit(event.size().width())
 
-    def _fit(self) -> None:
-        shown = self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, max(10, self.width()))
-        super().setText(shown)
-        self.setToolTip(self._full if shown != self._full else "")
+    def _fit(self, width: int | None = None) -> None:
+        """What fits in its width. Only when the text or width changed: a pop-up opening lays its labels out a few
+        times over, and fitting each every time was 93 ms of the Garden check's open on the PC (2026-11-18). A
+        text known to fit (its measured width) is shown whole with no call into Qt: the Hotkeys page's rows,
+        each fitted on every resize, were 52 ms of its open while live (2026-11-18)."""
+        width = max(10, self.width() if width is None else width)
+        if not self._polished:
+            self._polished = self.testAttribute(_POLISHED)
+        key = (self._full, width, self._polished, theme.looks_applied)  # (styled: its font is set)
+        if self._fitted == key:
+            return
+        self._fitted = key
+        hint = self._hint if self._hint is not None and self._hint_look == theme.looks_applied else None
+        if hint is not None and width >= hint.width() - 4:
+            shown = self._full
+        else:
+            shown = self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, width)
+        if shown != self._shown:
+            self._shown = shown
+            super().setText(shown)
+            self.setToolTip(self._full if shown != self._full else "")
 
     def sizeHint(self) -> QSize:  # noqa: N802
-        # Asked many times per layout pass (each from C++, through Python): worked out once per text and font.
-        # Measured each time, a Garden check's rows held the window 78 ms on the PC while live (2026-11-18).
-        key = (self._full, self.font().key())
-        if getattr(self, "_hint_key", None) != key:
-            self._hint_key = key
-            self._hint = QSize(self.fontMetrics().horizontalAdvance(self._full) + 4, super().sizeHint().height())
-        return self._hint
+        # Asked many times per layout pass (each from C++, through Python): worked out once per text, once the
+        # label has its style (and font), and then answered with no call into Qt at all. Measured each time, a
+        # Garden check's rows held the window 78 ms on the PC while live; asking for the font's key each time was
+        # still 97 ms, and a Python changeEvent to notice new fonts 150 ms (2026-11-18). A new theme (the one
+        # way its font changes later) measures again.
+        if self._hint is not None and self._hint_look == theme.looks_applied:
+            return self._hint
+        polished = self.testAttribute(_POLISHED)
+        if not polished and self._draft is not None:
+            return self._draft  # not styled yet (its font may still change): measured once meanwhile
+        hint = QSize(self.fontMetrics().horizontalAdvance(self._full) + 4, super().sizeHint().height())
+        if polished:
+            self._hint, self._hint_look = hint, theme.looks_applied
+        else:
+            self._draft = hint
+        return hint
 
 
 class GardenCheck(QPushButton):
@@ -333,6 +369,8 @@ class Destination:
     service: str = ""  # twitch, youtube, kick, tiktok, x or custom: picks the little tile
 
 
+PLACE_MIME = "application/x-sprigcast-place"  # a destination being dragged to a new spot in the list
+
 # Each place's tile: two letters on the platform's own colour.
 PLATFORM_TILES = {
     "twitch": ("Tw", "#9146ff", "#ffffff"), "youtube": ("Yt", "#ff2d48", "#ffffff"),
@@ -348,8 +386,17 @@ def _sentence(note: str) -> str:
 
 SERVICE_CHOICES = (("twitch", "Twitch"), ("youtube", "YouTube"), ("kick", "Kick"), ("tiktok", "TikTok"),
                    ("x", "X"), ("custom", "Custom RTMP"))
-CHIP_STYLE = theme.button_style(10, "2px 10px", extra="min-height: 16px; font-size: 11px;")
-REMOVE_CHIP_STYLE = CHIP_STYLE + f"QPushButton {{ color: {theme.BAD}; }}"
+# Edit mode's tools: every one the same 30 x 28 rounded button with one icon, evenly spaced.
+TOOL_STYLE = theme.button_style(9, "0px", extra="min-width: 30px; max-width: 30px; min-height: 26px; max-height: 26px;")
+SURE_STYLE = theme.button_style(9, "0px 10px", extra="min-height: 26px; max-height: 26px; font-size: 11px;") + (
+    f"QPushButton {{ background: {theme.BAD}; color: #ffffff; border-color: {theme.BAD}; }}")
+
+
+def tool_icon(name: str) -> QIcon:
+    """An Edit tool's icon, faint when the tool can't be used (Move up on the first place)."""
+    made = QIcon(icons.icon(name, theme.TEXT, 16))
+    made.addPixmap(icons.pixmap(name, theme.EDGE_STRONG, 16), QIcon.Mode.Disabled)
+    return made
 
 
 def side_card() -> QFrame:
@@ -366,6 +413,20 @@ def side_card() -> QFrame:
 PLACES_HEIGHT = 4 * 44 + 3 * 8  # four destinations; more scroll inside the card
 
 
+class _ToldLayout(QVBoxLayout):
+    """A one-widget layout that calls told() when what's inside it changes size (rows came or went)."""
+
+    def __init__(self, widget: QWidget, told: Callable[[], None]):
+        super().__init__(widget)
+        self._told = told
+
+    def invalidate(self) -> None:
+        super().invalidate()
+        told = getattr(self, "_told", None)  # (invalidated once while it's made, before it has one)
+        if told is not None:
+            told()
+
+
 class FitScroll(QScrollArea):
     """Scrolls its widget only when the column is too short: as tall as the content when there is room,
     down to SHORTEST when there isn't. Never scrolls sideways."""
@@ -375,45 +436,157 @@ class FitScroll(QScrollArea):
     def __init__(self, widget: QWidget, cap: int | None = None):
         super().__init__()
         self.cap = cap  # never taller than this either: past it, the content scrolls
+        self.cap_rows: tuple[QVBoxLayout, int] | None = None  # or: this many rows of this layout
+        self._wheel = 0  # a touchpad's part notches, until they add up to one row
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         self.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
-        self.setWidget(widget)
-        widget.installEventFilter(self)
+        # Told when the rows change by a layout around them (its invalidate), not an event filter: a filter on
+        # the scroll area heard every event of its rows through Python (Qt's own scroll area filter too, once
+        # overridden), 63 ms of a Garden check's open on the PC while live (2026-11-18).
+        self._fit_due = False
+        self._content = widget  # (measured itself: the layout around it keeps an old answer while it's hidden)
+        holder = QWidget()
+        around = _ToldLayout(holder, self._fit_soon)
+        around.setContentsMargins(0, 0, 0, 0)
+        around.addWidget(widget)
+        self.setWidget(holder)
         self._fit()
 
+    def _fit_soon(self) -> None:
+        if not self._fit_due:
+            self._fit_due = True
+            QTimer.singleShot(0, self, self._fit_now)
+
+    def _fit_now(self) -> None:
+        self._fit_due = False
+        self._fit()
+
+    def _cap(self) -> int | None:
+        if self.cap_rows is None:
+            return self.cap
+        rows, count = self.cap_rows
+        heights = [rows.itemAt(i).sizeHint().height() for i in range(min(count, rows.count()))]
+        return sum(heights) + rows.spacing() * max(0, len(heights) - 1) if heights else self.cap
+
     def _fit(self) -> None:
-        height = self.widget().sizeHint().height()
-        if self.cap is not None:
-            height = min(height, self.cap)
+        height = self._content.sizeHint().height()
+        cap = self._cap()
+        if cap is not None:
+            height = min(height, cap)
         self.setMaximumHeight(max(1, height))  # never taller than the content
         self.updateGeometry()
         self._bar()
 
     def _bar(self) -> None:
         # The bar only when the rows really don't fit, so it never sits over them for a moment.
-        fits = self.height() >= self.widget().sizeHint().height()
+        fits = self.height() >= self._content.sizeHint().height()
+        if self.viewportMargins().bottom():
+            self.setViewportMargins(0, 0, 0, 0)  # (an older build hid a part row behind a blank band)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff if fits
                                         else Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+
+    def row_tops(self) -> list[int]:
+        """With cap_rows: where each row starts, the stops the wheel moves between."""
+        if self.cap_rows is None:
+            return []
+        rows, _count = self.cap_rows
+        tops, at = [], 0
+        for i in range(rows.count()):
+            tops.append(at)
+            at += rows.itemAt(i).sizeHint().height() + rows.spacing()
+        return tops
+
+    def wheelEvent(self, event) -> None:  # noqa: N802
+        """With cap_rows, one wheel notch moves one whole row, so a short list always starts at a row's top
+        and every row is drawn and clickable (PC test 2026-11-18: a blank band hid Edit's second row)."""
+        bar = self.verticalScrollBar()
+        tops = self.row_tops()
+        if not tops or bar.maximum() <= 0:
+            super().wheelEvent(event)
+            return
+        self._wheel += event.angleDelta().y()
+        notches = int(self._wheel / 120)
+        if not notches:
+            event.accept()
+            return
+        self._wheel -= notches * 120
+        stops = sorted({min(top, bar.maximum()) for top in tops} | {bar.maximum()})
+        now = min(range(len(stops)), key=lambda i: abs(stops[i] - bar.value()))
+        bar.setValue(stops[max(0, min(len(stops) - 1, now - notches))])
+        event.accept()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         self._bar()
         super().resizeEvent(event)
 
-    def eventFilter(self, watched, event) -> bool:  # noqa: N802
-        if watched is self.widget() and event.type() == QEvent.Type.LayoutRequest:
-            self._fit()  # rows came or went: ask the column for a new height
-        return super().eventFilter(watched, event)
-
     def sizeHint(self) -> QSize:  # noqa: N802
-        hint = self.widget().sizeHint()
-        return QSize(hint.width(), hint.height() if self.cap is None else min(hint.height(), self.cap))
+        hint = self._content.sizeHint()
+        cap = self._cap()
+        return QSize(hint.width(), hint.height() if cap is None else min(hint.height(), cap))
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
         shortest = self.SHORTEST if self.cap is None else 40  # a capped list may shrink and scroll
-        return QSize(0, min(shortest, self.widget().sizeHint().height()))
+        return QSize(0, min(shortest, self._content.sizeHint().height()))
+
+
+class _PlaceDrag:
+    """A place's row: a press and a pull starts dragging it (LiveSide._place_mouse). Its own mouse handlers, not an
+    event filter: a filter ran Python for every event of every row, the Garden check's open among them (its
+    window's deactivation reaches each row: 54 ms frames on the PC, sweep 13, 2026-11-19)."""
+
+    owner = None
+
+    def _told(self, event) -> bool:
+        owner = self.owner
+        return owner is not None and owner._place_mouse(self, event)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        self._told(event)
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if not self._told(event):
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self._told(event)
+        super().mouseReleaseEvent(event)
+
+
+class _PlaceButton(_PlaceDrag, QPushButton):
+    pass
+
+
+class _PlaceBox(_PlaceDrag, QWidget):
+    pass
+
+
+class _PlacesBox(QWidget):
+    """The list of places: a dragged place drops here (LiveSide._places_drop), with its own drag handlers."""
+
+    owner = None
+
+    def _told(self, event) -> bool:
+        return self.owner is not None and self.owner._places_drag(event)
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802
+        if not self._told(event):
+            super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        if not self._told(event):
+            super().dragMoveEvent(event)
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802
+        if not self._told(event):
+            super().dragLeaveEvent(event)
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        if not self._told(event):
+            super().dropEvent(event)
 
 
 class LiveSide(QWidget):
@@ -430,7 +603,8 @@ class LiveSide(QWidget):
                  on_camera: Callable[[], None] | None = None,
                  on_camera_settings: Callable[[], None] | None = None):
         """on_destination(id): open Settings on a place (None: the first, "new:<service>": add one).
-        on_place(id, action): Edit mode's quick changes: "remove", "shape", "test"."""
+        on_place(id, action): Edit mode's quick changes: "remove", "shape", "test"; and the order: "up",
+        "down", or "to:N" (dragged to position N)."""
         super().__init__()
         self.on_destination = on_destination
         self.on_toggle = on_toggle or (lambda _id, _on: None)
@@ -531,6 +705,7 @@ class LiveSide(QWidget):
         for key, label in SERVICE_CHOICES:
             self.add_menu.addAction(label).triggered.connect(lambda _=False, k=key: on_destination(f"new:{k}"))
         self.add_place.clicked.connect(self._show_add_menu)
+        QTimer.singleShot(ADD_MENU_READY_MS, self, self._ready_add_menu)  # (once the window has settled)
         top.addWidget(self.add_place)
         self.details = QPushButton("Details")
         self.details.setStyleSheet(theme.LINK_STYLE)
@@ -545,7 +720,16 @@ class LiveSide(QWidget):
         self.manage.clicked.connect(lambda: self.set_editing(not self.editing))
         top.addWidget(self.manage)
         where.addLayout(top)
-        places_box = QWidget()
+        places_box = _PlacesBox()
+        # Drag a place up or down the list to set its order (Edit mode has Move up and Move down too).
+        places_box.setAcceptDrops(True)
+        places_box.owner = self
+        self.places_box = places_box
+        self.drop_line = QFrame(places_box)  # where a dragged place lands
+        self.drop_line.setStyleSheet(f"background: {theme.ACCENT}; border-radius: 1px;")
+        self.drop_line.setFixedHeight(2)
+        self.drop_line.hide()
+        self._drag: tuple[str, object] | None = None  # (place id, where the press was)
         self.places = QVBoxLayout(places_box)
         self.places.setContentsMargins(0, 0, 0, 0)
         self.places.setSpacing(8)
@@ -675,7 +859,23 @@ class LiveSide(QWidget):
     # Destinations ---------------------------------------------------------------------------
 
     def _show_add_menu(self) -> None:
-        self.add_menu.exec(self.add_place.mapToGlobal(self.add_place.rect().bottomLeft()))
+        # popup, not exec: no second event loop inside the click. Made ready ahead (_ready_add_menu) too: its first
+        # open made, styled and measured it then and there, 67 ms on the PC while live (2026-11-18).
+        self._ready_add_menu()
+        self.add_menu.popup(self.add_place.mapToGlobal(self.add_place.rect().bottomLeft()))
+
+    def _ready_add_menu(self) -> None:
+        """The + Add menu styled, measured and given its window, once, before it's first wanted."""
+        import shiboken6
+
+        if getattr(self, "_add_menu_ready", False) or not shiboken6.isValid(self.add_menu):
+            return
+        self._add_menu_ready = True
+        self.add_menu.ensurePolished()
+        self.add_menu.adjustSize()
+        # create(), not winId(): winId() marks it native, which makes its parent and the parent's other
+        # children native too, and a native parent window warned "must be a top level window" (PC soak 2026-11-18).
+        self.add_menu.create()
 
     def set_editing(self, on: bool) -> None:
         """Edit mode: each place gets Remove, its shape and (Twitch) test mode, without leaving Live."""
@@ -707,6 +907,8 @@ class LiveSide(QWidget):
                 row = self._place_row(place)
                 self.places.addWidget(row)
                 row.show()  # now, so the list measures its rows straight away
+            # Edit rows are taller: room for three, and the wheel moves a whole row at a time.
+            self.places_scroll.cap_rows = (self.places, 3 if self.editing else 4) if places else None
             self.places_scroll._fit()
         from sprigcast.app.destinations import HEALTH_COLORS
 
@@ -740,7 +942,9 @@ class LiveSide(QWidget):
             tools = self.place_tools.get(place.id)
             if tools:
                 tall = place.canvas == "vertical"
-                tools["shape"].setText("Vertical" if tall else "Horizontal")
+                tools["shape"].setIcon(tool_icon("portrait" if tall else "landscape"))
+                tools["shape"].setToolTip(("Vertical" if tall else "Horizontal") + " canvas: click to swap")
+                tools["shape"].setProperty("shape", "vertical" if tall else "horizontal")
                 if "test" in tools:
                     tools["test"].blockSignals(True)
                     tools["test"].setChecked(bool(place.test))
@@ -748,7 +952,7 @@ class LiveSide(QWidget):
 
     def _place_row(self, place: Destination) -> QWidget:
         if not self.editing:
-            box = QPushButton()
+            box = _PlaceButton()
             # The row's height in the style sheet too: the app's QPushButton min-height would win at polish.
             box.setStyleSheet("QPushButton { background: transparent; border: none; padding: 0; text-align: left;"
                               " min-height: 44px; max-height: 44px; }")
@@ -756,7 +960,8 @@ class LiveSide(QWidget):
             box.setToolTip("Open this place's settings")
             box.clicked.connect(lambda _=False, pid=place.id: self.on_destination(pid))
         else:
-            box = QWidget()
+            box = _PlaceBox()
+        box.owner = self  # a press and a pull starts dragging it (_PlaceDrag)
         outer = QVBoxLayout(box)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(6)
@@ -791,42 +996,129 @@ class LiveSide(QWidget):
         if not self.editing:
             box.setFixedHeight(44)  # a QPushButton sizes to its text, not its layout: give it the row's height
         self.place_rows[place.id] = (tile, name, note, switch)
+        box.setProperty("place_id", place.id)
         if self.editing:
             tools_row = QHBoxLayout()
-            tools_row.setContentsMargins(0, 2, 0, 4)
+            tools_row.setContentsMargins(44, 0, 0, 2)  # under the name, so the tools read as this place's
             tools_row.setSpacing(6)
             tools: dict[str, QPushButton] = {}
 
-            def chip(key: str, text: str, tip: str, style: str = CHIP_STYLE) -> QPushButton:
-                b = QPushButton(text)
-                b.setStyleSheet(style)
+            def tool(key: str, icon_name: str, tip: str) -> QPushButton:
+                b = QPushButton()
+                b.setStyleSheet(TOOL_STYLE)
                 b.setCursor(Qt.CursorShape.PointingHandCursor)
                 b.setToolTip(tip)
+                b.setIcon(tool_icon(icon_name))
+                b.setIconSize(QSize(16, 16))
                 tools[key] = b
                 tools_row.addWidget(b)
                 return b
 
-            chip("shape", "", "Which canvas this place gets: click to swap").clicked.connect(
-                lambda _=False, pid=place.id: self.on_place(pid, "shape"))
+            tool("shape", "landscape", "").clicked.connect(lambda _=False, pid=place.id: self.on_place(pid, "shape"))
             if place.test is not None:
-                test = chip("test", "Test", "Bandwidth test: send to Twitch without going live")
+                test = tool("test", "upload", "Bandwidth test: send to Twitch without going live")
                 test.setCheckable(True)
                 test.toggled.connect(lambda _on, pid=place.id: self.on_place(pid, "test"))
-            gear = chip("settings", "", "Key, bitrate and everything else")
-            gear.setIcon(icons.icon("gear", size=14))
-            gear.clicked.connect(
-                lambda _=False, pid=place.id: self.on_destination(pid))
+            order = [p.id for p in self._places]
+            at = order.index(place.id) if place.id in order else 0
+            for key, icon_name, tip, step in (("up", "chevron-up", "Move up", -1), ("down", "chevron-down", "Move down", 1)):
+                move = tool(key, icon_name, tip)
+                move.setEnabled(0 <= at + step < len(order))
+                move.clicked.connect(lambda _=False, pid=place.id, k=key: self.on_place(pid, k))
             tools_row.addStretch(1)
-            remove = chip("remove", "Remove", "Remove this place (click twice)", REMOVE_CHIP_STYLE)
+            tool("settings", "gear", "Key, bitrate and everything else").clicked.connect(
+                lambda _=False, pid=place.id: self.on_destination(pid))
+            remove = tool("remove", "trash", "Remove this place")
             remove.clicked.connect(lambda _=False, pid=place.id, b=remove: self._remove_clicked(pid, b))
             outer.addLayout(tools_row)
             self.place_tools[place.id] = tools
         return box
 
+    # Dragging places into order ---------------------------------------------------------------
+
+    def _places_drag(self, event) -> bool:
+        """A drag over the list of places (_PlacesBox): True when it was a place's, handled here."""
+        kind = event.type()
+        if kind in (QEvent.Type.DragEnter, QEvent.Type.DragMove) and event.mimeData().hasFormat(PLACE_MIME):
+            event.acceptProposedAction()
+            self._show_drop(self.drop_index(event.position().y()))
+            return True
+        if kind == QEvent.Type.DragLeave:
+            self.drop_line.hide()
+            return True
+        if kind == QEvent.Type.Drop and event.mimeData().hasFormat(PLACE_MIME):
+            self.drop_line.hide()
+            place_id = bytes(event.mimeData().data(PLACE_MIME)).decode()
+            self.move_place(place_id, self.drop_index(event.position().y()))
+            event.acceptProposedAction()
+            return True
+        return False
+
+    def _place_mouse(self, row: QWidget, event) -> bool:
+        """A mouse event on a place's row (_PlaceDrag): True when it started a drag (the row then ignores it)."""
+        kind = event.type()
+        place_id = row.property("place_id")
+        if place_id and len(self._places) > 1:
+            if kind == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                self._drag = (place_id, event.position().toPoint())
+            elif kind == QEvent.Type.MouseMove and self._drag and event.buttons() & Qt.MouseButton.LeftButton:
+                from PySide6.QtWidgets import QApplication
+
+                if (event.position().toPoint() - self._drag[1]).manhattanLength() >= QApplication.startDragDistance():
+                    self._start_drag(row, self._drag[0])
+                    return True
+            elif kind == QEvent.Type.MouseButtonRelease:
+                self._drag = None
+        return False
+
+    def _start_drag(self, row: QWidget, place_id: str) -> None:
+        from PySide6.QtCore import QMimeData
+        from PySide6.QtGui import QDrag
+
+        self._drag = None
+        data = QMimeData()
+        data.setData(PLACE_MIME, place_id.encode())
+        drag = QDrag(row)
+        drag.setMimeData(data)
+        drag.setPixmap(row.grab())
+        drag.setHotSpot(row.mapFromGlobal(row.cursor().pos()))
+        drag.exec(Qt.DropAction.MoveAction)
+        if isinstance(row, QPushButton):
+            row.setDown(False)  # the press went to the drag: no click, and the row isn't left pressed
+
+    def drop_index(self, y: float) -> int:
+        """Where a place dropped at height y goes: 0 is the top of the list."""
+        rows = [self.places.itemAt(i).widget() for i in range(self.places.count())]
+        rows = [r for r in rows if r is not None and r.property("place_id")]
+        return sum(1 for r in rows if y > r.geometry().center().y())
+
+    def _show_drop(self, index: int) -> None:
+        rows = [self.places.itemAt(i).widget() for i in range(self.places.count())]
+        rows = [r for r in rows if r is not None and r.property("place_id")]
+        if not rows:
+            return
+        gap = self.places.spacing() // 2 + 1
+        y = rows[index].geometry().top() - gap if index < len(rows) else rows[-1].geometry().bottom() + gap
+        self.drop_line.setGeometry(0, max(0, y), self.places_box.width(), 2)
+        self.drop_line.show()
+        self.drop_line.raise_()
+
+    def move_place(self, place_id: str, index: int) -> None:
+        """Put a place at `index` in the list (counted before it's taken out)."""
+        order = [p.id for p in self._places]
+        if place_id not in order:
+            return
+        at = order.index(place_id)
+        to = index - 1 if index > at else index
+        if to != at:
+            self.on_place(place_id, f"to:{to}")
+
     def _remove_clicked(self, place_id: str, button: QPushButton) -> None:
-        """First click asks ("Sure?"), the second removes."""
-        if button.text() != "Sure?":
-            button.setText("Sure?")
+        """First click asks (the bin turns red: "Remove?"), the second removes."""
+        if button.text() != "Remove?":
+            button.setIcon(QIcon())
+            button.setText("Remove?")
+            button.setStyleSheet(SURE_STYLE)
             return
         self.on_place(place_id, "remove")
 

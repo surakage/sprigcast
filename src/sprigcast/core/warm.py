@@ -36,7 +36,10 @@ MODULES = [
     "sprigcast.app.getting_started", "sprigcast.app.media_dialog", "sprigcast.app.game_dialog",
     "sprigcast.app.camera_popup", "sprigcast.app.web_page_dialog", "sprigcast.app.browser_quick",
     "sprigcast.app.source_record_box", "sprigcast.app.signin_dialog", "sprigcast.app.settings_file",
-    "sprigcast.app.projector",
+    "sprigcast.app.projector", "sprigcast.app.stream_details_dialog",
+    # The 10-minute memory line's map (core/pacing.py watch_memory): its first load on the window's thread held the
+    # window 268 ms on the PC (2026-11-19 camera test).
+    "sprigcast.core.memory_map",
 ]
 WINDOWS_ONLY = ["sprigcast.output.nvenc_d3d11"]
 
@@ -59,6 +62,15 @@ def warm(modules: list[str] | None = None, pause_s: float = 0.02) -> list[str]:
     if loaded:
         log.info("warm-up: loaded %d modules in %.0f ms", len(loaded), 1000 * (time.perf_counter() - began))
     return loaded
+
+
+def keep_aside() -> None:
+    """Freeze what the warm-up imported (modules, classes, functions: kept for the whole session) without a
+    collection: the next collections skip it instead of walking it (a full one over it held the window 44 ms
+    on the PC just after start, 2026-11-18). Freezing is quick; what isn't kept after all is freed at rest."""
+    import gc
+
+    gc.freeze()
 
 
 def warm_encoders(recording=None, stream=None) -> None:

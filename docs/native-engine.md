@@ -28,9 +28,11 @@ frame.
   ctypes (which lets go of the GIL for each call). Every function returns `SC_OK` or an error code, with
   `sc_last_error()` saying what went wrong. No C++ exception crosses it. Bump `SC_INTERFACE_VERSION` and
   `sprigcore.INTERFACE_VERSION` together when it changes.
-- **The app always works.** Each part that moves has an old and a new path. `SPRIGCAST_ENGINE=native` picks the
-  engine; anything else, a missing DLL or an older one, means the Python engine. The Python path for a part is
-  deleted only after the native one passes its PC tests.
+- **The app always works.** Each part that moves has an old and a new path. The native engine is the default on
+  Windows with a graphics driver (with only the software renderer, the Python engine draws); `SPRIGCAST_ENGINE=python`, safe mode (asked for after SprigCast didn't close properly, or
+  `--safe-mode`), a missing DLL or an older one means the Python engine for that start. While it runs, a faulted
+  or stuck engine hands drawing back to Python by itself. The Python path for a part is deleted only after the
+  native one passes its PC tests.
 - **Old PCs first.** Direct3D 11 at feature level 10.0 or better, no runtime to install (static C runtime), and
   every part checked on the AMD E2-7110 and the 2013 all-in-one as well as the main PC.
 - **Safety nets.** Warnings are errors, every check also runs under AddressSanitizer in CI, Release builds keep a
@@ -50,6 +52,11 @@ uv run pytest tests/test_sprigcore.py
 with `tests/native_golden/`, today's compositor's drawing of the same cases. If a change to
 `render/compositor.py` is meant, remake those pictures with `python tests/native_cases.py` and change the engine's
 shader (`native/core/src/shader_compositor.h`) to match.
+
+Every shader lives in its own `native/core/src/shader_*.h` and is compiled when the engine is built
+(`native/core/tools/shader_bake.cpp` writes `baked_shaders.h`), so nothing is compiled while SprigCast runs: one
+compiled at run time held a frame 3.4 s on the CI runner. A shader whose source no longer matches what was baked
+is compiled at run time, off the frame thread where it can be (`warm_shaders`).
 
 The checks draw with Windows' software renderer (WARP), so they give the same answer on every PC and in CI
 (`.github/workflows/core.yml`). The installer build puts the DLL in `sprigcast\engine\`.
@@ -80,7 +87,12 @@ moment); `2@60` is an access violation; `4@60` a stuck frame (the log says so, t
 `1@60x7` faults seven times running, so the engine stops and the log says the Python compositor draws again.
 Recordings and streams should carry on through all of them.
 
-## In the app (`SPRIGCAST_ENGINE=native`)
+To try SprigCast.exe's own crash guard, which catches what nothing else does, start it with
+`SPRIGCAST_CRASH_TEST=30` (an unguarded access violation on a thread of its own, 30 s in) or
+`SPRIGCAST_CRASH_TEST=30,main` (on the window's thread). Expect a crash.log entry, a .dmp in the Logs folder
+(its thread named `crash-test` for the first), the run ending within 15 s, and "closed unexpectedly" on the next start.
+
+## In the app (the native engine)
 
 render/native_bridge.py: the render thread hands every new source picture to the native engine too, and a
 snapshot of what is on air (blooms and every sprig layout, as their Live state shows them) whenever that or the
@@ -114,7 +126,18 @@ Views something records (the virtual camera, Instant replay keeping a camera) ar
 the bloom on air rides on that canvas's outputs (the same picture, transitions included), any other view is
 drawn in a free canvas slot of its own (`view:<name>`, after the canvases; when none is free, Python draws it).
 
-Python's compositor still draws stinger and move transitions, Build's edited bloom, the Part editor, screenshots,
+Move transitions are the engine's too (`sc_engine_canvas_move`, `move.cpp`): when one starts, Python lays both
+blooms out as pieces (`render/move.py` flatten) and pairs them, and the bridge hands them over once, each with its
+sprig's drawing or its filters. The engine then works out every frame on its own clock with the same arithmetic as
+`move.frame` (`tests/test_native_move.py` checks them against each other) and draws the quads straight onto the
+canvas. `SPRIGCAST_NO_NATIVE_MOVE=1` leaves them to Python.
+
+Stinger transitions are the engine's too (`SC_TRANSITION_STINGER`): the clip's player is attached to the engine
+under the clip's id, so the frame thread takes each picture straight from it and draws it over the change, cover
+fitted to the canvas and swapping blooms at the cut point. A track matte clip shows its picture half and swaps
+through its matte half, as Python's compositor does. `SPRIGCAST_NO_NATIVE_STINGER=1` leaves them to Python.
+
+Python's compositor still draws Build's edited bloom, the Part editor, screenshots,
 source record, full-size RGBA taps (a projector showing a view) and a canvas's outputs while it draws one of those (a frame older than one already handed on is never sent). If the native engine stops
 (faulted), Python's compositor draws the previews and outputs again by itself.
 
@@ -137,13 +160,14 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   player (`sc_engine_source_media`): each frame the frame thread takes the picture due from the player itself and
   sends it to the card, so pictures go from the decoder thread to the screen without touching Python or its lock,
   at the engine's own frame times. Python's render thread asks for a picture only on ticks where its own
-  compositor still draws something (a screenshot, a stinger, Build's edited bloom); each taker remembers the
+  compositor still draws something (a screenshot, Build's edited bloom); each taker remembers the
   picture it took last, so whoever starts looking gets the one on screen at once. A sleeping or frozen source is
   detached and keeps the picture it has. The engine holds the player for as long as it is attached, so a source
   closing its player first is safe.
 - **Stinger clips.** A stinger transition's clip is played by the same player (`render/stinger.py`
   `NativeStinger`): asked for RGBA pictures with straight alpha, shrunk to fit the canvas while decoding
-  (`sc_media_set_picture`), which is what the transition draws. It waits paused with its first pictures decoded
+  (`sc_media_set_picture`), which is what the transition draws. The engine takes those pictures from the player
+  itself; Python only starts the clip's clock. It waits paused with its first pictures decoded
   and starts its clock with the transition's first frame, so picture and sound stay in step. A clip that can't be
   played, or faults the decoder, falls back to a fade as before.
 - **Instant replay.** The replay itself plays through the same player (`store/instant_replay.py`
@@ -174,6 +198,9 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   `engine_tick` only notes the first paint and the sound status). A picture overwritten while it was copied is
   taken again the next frame; a device rebuild takes the newest again. Pages drawn in SprigCast's own process
   (`SPRIGCAST_BROWSER_IN_PROCESS`) go through Python as before.
+  A frozen page (Snap's freeze) keeps its block, held (`sc_engine_source_shared_hold`, interface 29): the frame
+  thread still takes each picture so the helper never waits on it, but the source keeps its frozen one. Letting
+  the block go instead left a page on the card waiting, and it made its texture again every 3 s (PC, 2026-11-18).
 - **Browser pages on the card (`native/core/src/page_texture.cpp`, `app/browser_quick.py`).** With the native
   engine, SprigCast starts the helper with the engine's card (`SPRIGCAST_BROWSER_CARD`, its LUID from
   `sc_d3d_device_luid`; `NativeCanvases` tells `sources/browser.use_card`, and a helper already running starts
@@ -238,21 +265,170 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   Once per writer: a second failure ends the file cleanly (`recoveries`). Writing errors (disk full) never
   restart anything. `SPRIGCAST_WRITER_FAULT=20` (or `10,30`) fails the encoder at those pictures for tests;
   `tests/test_native_writer.py` runs it, also under AddressSanitizer locally.
-- Next: a replay buffer of the stream's size sharing the stream's encoder, streams with reconnects, and Instant
-  replay's buffer.
+- **Shared encoders on the writer: packets mode (step 5, interface 21).** Recordings that share a canvas's
+  encoder with clips, clips themselves, Instant replay's buffer and every stream (`output/shared.py`
+  `CanvasEncoder`, `output/shared_stream.py` `SharedStreamEncoder`, `output/replay.py` `ReplayBuffer`) are encoded
+  by a writer in packets mode (`sc_writer_config.packets`): it encodes on its own thread, writes only a small NUT
+  file with the streams and their codec headers as the encoders made them (a placeholder byte a stream so a
+  demuxer opens it; read once for the templates that clip files and stream muxers copy), and hands every packet
+  back (`sc_writer_packet_take`). Python keeps them for clips, writes the recording file and sends the streams
+  exactly as it did PyAV's packets, so reconnects, delay, backlog skipping and clips borrowing the stream's encoder
+  are unchanged. A keyframe asked for (a link joining, a file starting) goes to the next picture
+  (`sc_writer_keyframe`); a stream's auto-pilot steers the bitrate (`sc_writer_set_bitrate`). Linking works as for
+  recordings (memory or the card), so a stream's frames don't pass through Python either. With the native engine
+  a lone stream gets a shared encoder too (`output/stream.py` `engine_encodes_streams`). If the video encoder fails
+  once, the new one puts its codec headers in its keyframes, so the streams' muxers go on. `SPRIGCAST_NO_PACKET_WRITER=1`
+  keeps these encoders in PyAV (and a lone stream on its own `Streamer`). Tests: `tests/test_packet_writer.py`
+  runs the shared-encoder and stream tests on the writer.
+- **The virtual camera fed by the engine (step 6, interface 22).** While an app watches SprigCast Camera, the
+  render thread links the camera's output to its shared block (`sc_engine_output_link_camera`,
+  `render/native_bridge.py` `link_taps`, `output/virtualcam.py` `VirtualCamera.link_camera`): the frame thread
+  writes every frame into the block itself, in the middle of the size the app asked for with black around it, with
+  the block's count odd while writing. The engine maps the block by name itself and unmaps it when the link ends,
+  so the camera closing or Python letting go of its own view can never leave the engine writing into freed memory.
+  A recording or stream sharing that output keeps it, and the camera then takes Python's frames as before.
+  `SPRIGCAST_NO_LINK=1` turns it off with the other links.
+- **Enhanced Broadcasting's qualities on writers (step 7).** With the native engine each quality of a Twitch
+  Enhanced Broadcasting stream is a packets-mode writer (`output/enhanced_stream.py` `_TrackEncoder`): the engine
+  makes its frames at that quality's size and links them to it, so no picture is converted or encoded in Python.
+  In packets mode a writer keys the first picture at or past every keyint of the frame numbers, so all qualities
+  key at the same instants (Twitch needs that). Python tags each keyframe with the broadcast metrics, puts the
+  packets on the connection's clock (a reconnect starts from the next keyframe), lets them go while the network
+  can't keep up and sends them; the sound is encoded as before. `SPRIGCAST_NO_PACKET_WRITER=1` keeps the old way.
+- Phase 4 is code-complete; next is the PC test of phases 1-4 on a build.
+
+## Phase 5: sound (`native/core/src/mixer.cpp`, `capture.cpp`)
+
+- **Mixer** (`sc_mixer_*`): one 48 kHz stereo mix, a block of 1024 samples at a time, on a clocked thread of the
+  engine's own. It does the same mix as `audio/mixer.py`: mono, balance, delay, the fade of a sound per bloom,
+  volume, ducking, the eight tracks, the clean track and the monitor mix. `audio/native_mixer.py` (`NativeMixer`)
+  takes the same calls as Python's `Mixer`; `make_mixer` picks it with the switch on and logs "sound: mixed by the
+  engine". Video and sound files go straight from their engine player into the mix. `SPRIGCAST_NO_NATIVE_MIXER=1`
+  keeps Python's mixer.
+- **Capture** (`sc_capture_*`): a microphone or desktop sound with no Python-only filters, and no plugin listening to it, is
+  read with WASAPI on a thread of its own and pushed straight into the mix. Windows converts the sound to 48 kHz
+  stereo itself; if a driver refuses, the engine converts it. The capture finds its device again every 2 s, and a
+  "Default" sound follows the Windows default. The device is matched by the name PortAudio lists. If the engine
+  can't find the device within 4 s, Python captures it instead. `SPRIGCAST_NO_NATIVE_CAPTURE=1` keeps Python's
+  capture. The device name `sprigcast-test-tone` makes a tone without a sound card, for checks
+  (`tests/test_native_capture.py`, `core_tests.cpp`).
+- **Filters** (`sc_mixer_source_filters`): gain, noise gate, compressor, limiter, invert polarity and ducking run
+  in the engine, before mono, balance and delay, with the same numbers as `core/filters.py`
+  (`tests/test_native_filters.py` checks them block by block). A chain with any other filter (the FFmpeg ones),
+  or a sound a plugin listens to, keeps its whole chain in Python. New settings keep each filter's state.
+  `SPRIGCAST_NO_NATIVE_FILTERS=1` runs every chain in Python.
+- **Playback** (`sc_playback_*`, `playback.cpp`): monitoring, and "Sound out" (the stream mix on a device such as a
+  virtual cable), are played by a WASAPI thread of the engine's straight from the mix (`EngineMonitor` in
+  `audio/native_mixer.py`, made by `make_monitor`). At most 120 ms waits, so it never drifts behind; when it runs
+  dry the device gets silence until 20 ms is waiting again. It finds its device again every 2 s and follows the
+  Windows default. If the engine can't open it, Python's `Monitor` plays it. `sprigcast-test-sink` plays nowhere,
+  for checks (`tests/test_native_playback.py`, `core_tests.cpp`). `SPRIGCAST_NO_NATIVE_MONITOR=1` plays from Python.
+
+## Phase 6: plugins drawn in the engine (`native/core/src/visual.cpp`)
+
+- **Audio visualizer** (`sc_visual_*`): the store plugin's Analyser and Painter (`store/audio_visualizer.py`) in
+  C++. A thread of its own hears one of the mixer's sounds through a tap (the stream track for "Everything", or one
+  sound after its volume), runs the 2048-sample FFT and draws the 1280 x 400 picture at most 30 times a second; once
+  silence has been drawn it draws nothing until there is sound again. The engine's frame thread takes the newest
+  drawing itself (`sc_engine_source_visual`, through `Engine.attach_media`), so neither the sound nor the pictures
+  pass through Python, and a sound a visualizer hears keeps its filters in the engine. The numbers follow NumPy's
+  float32 and float64 steps: bands and wave match Python's within 1e-5, and bars, wave and line match pixel for
+  pixel (`tests/test_native_visualizer.py`). `NativeMixer.visual` makes one and points it at its sound on every
+  block (again when the sound comes back); it closes before the mixer. If its thread faults, or the engine can't
+  make one, Python hears and draws it again. `SPRIGCAST_NO_NATIVE_VISUALIZER=1` draws it in Python.
+- **Animations as lists of pictures** (`sc_engine_source_draws`, `core/drawn.py`): Snap's polaroid and the Death
+  count's gravestone were painted with a QPainter every frame they moved (Snap's on the render thread, holding
+  Python's lock all the while). With the native engine their `paint` draws into a `Drawn` instead: the same
+  QPainter calls (save, translate, rotate, scale, opacity, clip, pictures, boxes, discs), but nothing is painted.
+  Each picture (the art) goes to the card once, kept so it comes back after a rebuild; then each frame only says
+  where each one goes (`Drawn.items`: its box, turn about its middle, crop and opacity, as snapshot items). The
+  engine draws the list into the source's own picture once per new list, before any canvas uses it. Python's
+  compositor gets the list painted (`Drawn.picture`), the same pixels the plugin painted before
+  (`tests/test_native_drawn.py`). A picture uploaded for the source (the show is over) replaces the list and lets
+  its art go; a source keeps at most 16 spare pictures (48 MB) beyond those its newest list uses.
+  `Drawn` keeps its transform as six numbers (crossing into Qt for every point cost more than painting).
+- **Now playing** (`store/now_playing.frame_listed`): the card's still part and its words are pictures made once
+  per song; a sliding line is cut into thin upright slices on whole pixels, each with the opacity of the fade at
+  the room's edges (the painted card faded them with a composition mask); the sound bars are two pieces of one
+  rounded-bar picture each; only the time bar and times are painted, into a picture of their own size, when they
+  change (a second's clock, half a pixel of bar). While it fades in or out it's painted as before
+  (`tests/test_native_now_playing.py`).
+- **PNGtuber** (`store/pngtuber.PngtuberSource._listed`): each frame of its pictures is art sent once; the bounce
+  is only where it's drawn. A fade between pictures of the same shape (mouth, eyes) sends just the box where they
+  differ, blended, with the rest of the picture drawn as four crops of the art around it; a fade between
+  different shapes sends the blended box they cover together (`tests/test_native_pngtuber.py`).
+
+## Phase 7: capture inside the engine (`native/core/src/capture_wgc.cpp`)
+
+- **Display, window and game capture** (`sc_engine_source_capture`): Windows Graphics Capture with its frame pool
+  made on the engine's own device. Each frame the frame thread takes the newest picture (`TryGetNextFrame`, so no
+  thread of Windows' calls into the engine; older ones go straight back) and copies it on the card into the
+  source's B8G8R8A8 texture. No picture of the screen passes through memory or Python. The cursor, Windows'
+  yellow border and a game's solid picture are flags; at most one picture per frame interval is copied (and
+  Windows 11 24H2 is asked for no more). A window that changes size gets a pool of the new size.
+- `sources/capture.py`'s supervisor still finds the target (the window by title and process, the full-screen
+  game, the display by number) and hands the engine a `sprigcore.CaptureTarget`; the render thread attaches it like
+  a player. `sc_engine_capture_state` says starting, running (with the picture's size), ended (the window closed:
+  the supervisor finds it again, with a new serial) or refused (this PC can't: the `windows-capture` package
+  captures it, as without the engine). A capture nothing takes up within 5 s (the engine isn't drawing) goes back
+  to the package too.
+- Starting and closing a capture call Windows' capture service in another process, and such a call can hang for
+  good (a window closing just as its capture started: PC test 2026-11-18). Both run on a thread of their own
+  (`start_capture`, `CaptureRetire` in `capture_wgc.cpp`); the frame thread only takes pictures. A capture not
+  started within 5 s is refused, so the package captures it.
+  A capture whose source goes to sleep is parked, not closed, for as long as the source exists: one picture a
+  second, and the same capture goes on when the source wakes. Each capture Windows starts leaves about one
+  picture of graphics memory behind for good (PC 2026-11-19), so starting one per bloom switch is avoided.
+- **Capture helper** (`capture_feed.cpp`): every capture Windows starts keeps about one picture of
+  graphics memory until the program that started it ends (PC 2026-11-19, the same in OBS), so captures run
+  in a small helper program that can be ended while nothing is captured. First piece: `sc_capture_feed_*` runs a
+  capture on a device of its own on the engine's card and shares each picture as a browser page is shared (a
+  keyed-mutex texture `<block>-tex<n>` in B8G8R8A8, a 64-byte header in shared memory whose fifth number says
+  `SHARED_STRAIGHT`/`SHARED_OPAQUE`); the engine takes it with `sc_engine_source_shared`. Second piece: the program,
+  `SprigCastCapture.exe` (`tools/capture_helper.cpp`, shipped next to `sprigcore.dll`), takes `start`/`stop`/`quit`
+  lines on its standard input and says each capture's state on its output; the end of its input ends it. Third
+  piece: `app/capture_helper.py` starts it for `sources/capture.py`, whose `engine_player` is then the feed (the
+  block's name: the bridge attaches it as a page's block and links it for read-backs). A source asleep stops its
+  capture there; with none left the helper ends 2 s later (a bloom switch stops one capture and starts the next)
+  and Windows frees what its captures kept. The helper dying ends its feeds: each source asks again, which starts
+  a new helper, and keeps its picture meanwhile. When the helper can't (not there, didn't start, refused), the
+  engine captures itself as before, parked while asleep. `SPRIGCAST_CAPTURE_IN_ENGINE=1` turns the helper off.
+  Measured on the PC (2026-11-19, one 640x360 window): the helper holds about 50 MB of memory and 14 MB of
+  graphics memory while it captures, SprigCast's graphics memory stays flat over ten switches, the picture shows
+  about 0.3 s after a switch back, and a helper ended from outside is replaced in 1.2 s. The user chose to keep
+  it.
+- A frame stuck anyway: Python's calls that wait for the frame (`sc_engine_capture_read`, `sc_engine_canvas_read`)
+  give up after 0.5 s, and once no frame has finished for 3 s after the watchdog's report, the bridge turns the
+  engine off and Python's compositor draws everything again.
+- A freeze keeps the capture running, held: Windows' pictures are still taken, the source keeps its own. A device
+  rebuild starts each capture again on the new device.
+- Frames Python draws itself (a screenshot, the Python engine) read the picture back (`sc_engine_capture_read`), as the package
+  copied every picture before.
+- `SPRIGCAST_NO_NATIVE_CAPTURE_VIDEO=1` captures in Python.
+- **Cameras** (`sc_media_set_device`): the engine's media player opens the camera through FFmpeg's input devices
+  (`dshow`, from PyAV's libavdevice, `sc_media_ffmpeg_load_devices`), trying the modes `sources/camera.py` chose
+  from the camera's own list, best first. It always shows the newest picture (no clock, no backlog), skips the
+  extra MJPEG pictures of a camera faster than asked before decoding, sends 4:2:2 as 4:2:0 planes, mirrors in the
+  decoder thread, and opens an unplugged or busy camera again every 2 s. The camera source hands the player to
+  the render thread like a video's; frames Python draws read it back. A player that can't be made, or faults,
+  hands the camera back to Python's reader. `SPRIGCAST_NO_NATIVE_CAMERA=1` reads cameras in Python.
 
 ## Phases
 
 Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai/artifact/3zTFrUsXtNhCzszAczL7r7
 
+The move is complete (2026-11-19): the engine is the default on Windows (#619), and two 60-minute soaks on the
+user's PC, streaming and recording with a bloom switch every 15 s, sent every frame (0 skipped of 213,857 and of
+217,067). "Behind the switch" below means `SPRIGCAST_ENGINE`, which now defaults to the engine.
+
 | Phase | What moves | State |
 | --- | --- | --- |
 | 1 | Groundwork: build, checks, Python link, engine switch, first canvas | Done |
-| 2 | Frozen scene snapshot; Direct3D 11 compositor and previews, feeding NVENC, AMF and QSV on the graphics card | In progress: compositor, snapshot, transitions and NV12 drawn like today's (pixel-checked); behind the switch the engine's own frame loop draws previews and makes recording and stream frames. NVENC takes the engine's frames on the card. Next: the PC test with the switch on |
-| 3 | Media and GIF decode and reformatting, browser pages as shared textures | In progress: the engine plays video, GIF and sound files itself behind the switch (`sc_media_*`, below). and its compositor takes their pictures straight from the player. Stinger clips and instant replays play through it too, and it decodes on the graphics card when asked. Pictures from the card's decoder stay on the card; browser pages go from the helper's memory straight to the engine |
-| 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | |
-| 5 | Sound: devices, mixer, filters, sync | |
-| 6 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | |
-| 7 | Capture and camera inside the engine | |
-| 8 | Old Python engine and its packages removed | |
-| 9 | Only if needed: Control API into the engine, screens to Qt C++ | |
+| 2 | Frozen scene snapshot; Direct3D 11 compositor and previews, feeding NVENC, AMF and QSV on the graphics card | Done: compositor, snapshot, transitions and NV12 drawn like today's (pixel-checked); behind the switch the engine's own frame loop draws previews and makes recording and stream frames. NVENC takes the engine's frames on the card. Next: the PC test with the switch on |
+| 3 | Media and GIF decode and reformatting, browser pages as shared textures | Done: the engine plays video, GIF and sound files itself behind the switch (`sc_media_*`, below). and its compositor takes their pictures straight from the player. Stinger clips and instant replays play through it too, and it decodes on the graphics card when asked. Pictures from the card's decoder stay on the card; browser pages go from the helper's memory straight to the engine |
+| 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | Done (writer, packets mode, links, virtual camera); PC-tested |
+| 5 | Sound: devices, mixer, filters, sync | Done: the mixer, device capture, built-in filters and monitor/Sound out playback; PC-tested |
+| 6 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | Done: the audio visualizer is heard and drawn in the engine; Snap's, Death count's, Now playing's and PNGtuber's animations are drawn by the engine from lists of pictures; your own plugins' sources draw in the plugin helper process (`app/plugin_helper.py`) and reach the engine through shared memory |
+| 7 | Capture and camera inside the engine | Done: cameras in the engine; display, window and game capture in the capture helper (the engine itself when the helper can't); PC-tested |
+| 8 | Old Python engine kept only for PCs without a graphics card | Decided by the user 2026-11-19: the old engine stays so older systems (software renderer only) can run SprigCast. On a PC whose graphics card could run the new engine, the window warns when the old one draws (`app/engine_warning.py`: safe mode, `SPRIGCAST_ENGINE=python`, `sprigcore.dll` missing, or the engine stopped) |
+| 9 | Only if needed: Control API into the engine, screens to Qt C++ | On hold |

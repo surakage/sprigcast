@@ -8,9 +8,9 @@ This module is the only place Python talks to the DLL. ctypes lets go of the GIL
 the engine never calls back into Python: its log lines wait in a queue that :func:`drain_log` moves into
 SprigCast's own log.
 
-Which engine runs is chosen per start with ``SPRIGCAST_ENGINE`` (``python``, the default, or ``native``). Parts
-that have moved check :func:`use_native`; a missing or older DLL always means the Python engine, so the app keeps
-working whatever happens to the DLL.
+Which engine runs is chosen per start: the native one on Windows, unless ``SPRIGCAST_ENGINE=python`` asks for the
+old one or safe mode starts (:func:`use_python_engine`). Parts that have moved check :func:`use_native`; a missing
+or older DLL always means the Python engine, so the app keeps working whatever happens to the DLL.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 20  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 33  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -34,6 +34,9 @@ ERRORS = {-1: "bad argument", -2: "graphics device", -3: "shader", -4: "out of m
           -6: "faulted", -7: "graphics card lost", -8: "timed out"}
 FAULTED, DEVICE_LOST, TIMEOUT = -6, -7, -8  # FAULTED, DEVICE_LOST: the device is shut off (crash gate)
 UPLOAD_KEEP = 1
+# Screen capture in the engine (sc_engine_source_capture): flags, then how a capture is doing.
+SCREEN_CURSOR, SCREEN_BORDER, SCREEN_OPAQUE = 1, 2, 4
+SCREEN_NONE, SCREEN_STARTING, SCREEN_RUNNING, SCREEN_ENDED, SCREEN_REFUSED = 0, 1, 2, 3, 4
 ENGINE_CANVASES = 4
 ENGINE_OUTPUTS = 4  # NV12 outputs per canvas (SC_ENGINE_OUTPUTS)
 OUTPUT_SHARE = 1  # an output whose frames stay on the card as NV12 textures (SC_OUTPUT_SHARE)
@@ -112,6 +115,30 @@ class Item(ctypes.Structure):
     ]
 
 
+CENTER = 4  # core/scene.py ALIGNS.index("center")
+
+
+def draw_items(items):
+    """[(picture source id, x, y, width, height, rotation, (left, top, right, bottom) crop, opacity, picture width,
+    picture height), ...] (core/drawn.py Drawn.items, with the art's source id and size) as the engine's items:
+    each picture's box at x, y (top left, unturned), turned about its middle. None: (None, -1), the list dropped."""
+    if items is None:
+        return None, -1
+    array = (Item * max(1, len(items)))()
+    for i, (source, x, y, w, h, rotation, crop, opacity, pw, ph) in enumerate(items):
+        it = array[i]
+        it.source = key(source)
+        it.x, it.y = float(x), float(y)
+        cw, ch = max(1, pw - crop[0] - crop[2]), max(1, ph - crop[1] - crop[3])
+        it.scale, it.scale_y = float(w) / cw, float(h) / ch
+        it.rotation = float(rotation)
+        it.align = CENTER
+        it.crop[:] = [int(c) for c in crop]
+        it.fade = float(opacity)
+        it.effects = -1
+    return array, len(items)
+
+
 class SceneEntry(ctypes.Structure):
     _fields_ = [("id", ctypes.c_uint64), ("width", ctypes.c_int), ("height", ctypes.c_int),
                 ("first_item", ctypes.c_int), ("item_count", ctypes.c_int)]
@@ -125,11 +152,101 @@ class TransitionSpec(ctypes.Structure):
     """include/sprigcore.h sc_transition."""
 
     _fields_ = [("mode", ctypes.c_int), ("seconds", ctypes.c_float), ("direction", ctypes.c_float * 2),
-                ("softness", ctypes.c_float), ("reserved", ctypes.c_int), ("wipe_map", ctypes.c_uint64)]
+                ("softness", ctypes.c_float), ("reserved", ctypes.c_int), ("wipe_map", ctypes.c_uint64),
+                ("overlay", ctypes.c_uint64), ("cut_seconds", ctypes.c_float), ("matte", ctypes.c_int),
+                ("matte_only", ctypes.c_int), ("reserved2", ctypes.c_int)]
 
 
-def transition_spec(transition, wipe_map: str | None = None) -> TransitionSpec | None:
-    """core/scene.py Transition as the engine takes it, or None for a kind it doesn't draw (cut, stinger, move)."""
+MOVE_EASINGS = ("smooth", "ease_out", "ease_in", "linear", "spring")  # SC_MOVE_*: core/scene.py MOVE_EASINGS
+MOVE_UNMATCHED = ("fade", "scale", "slide")
+
+
+class MovePiece(ctypes.Structure):
+    """include/sprigcore.h sc_move_piece: one thing a Move draws (render/move.py Piece)."""
+
+    _fields_ = [("source", ctypes.c_uint64), ("part", ctypes.c_uint64), ("quad", (ctypes.c_float * 4) * 4),
+                ("opacity", ctypes.c_float), ("effects", ctypes.c_int), ("paired", ctypes.c_int),
+                ("reserved", ctypes.c_int)]
+
+
+class MoveSpec(ctypes.Structure):
+    """include/sprigcore.h sc_move. Keeps the arrays it points into (``keep``) while it lives."""
+
+    _fields_ = [("pieces", ctypes.POINTER(MovePiece)), ("old_count", ctypes.c_int), ("new_count", ctypes.c_int),
+                ("effects", ctypes.POINTER(Effects)), ("effects_count", ctypes.c_int), ("easing", ctypes.c_int),
+                ("unmatched", ctypes.c_int)]
+
+
+def move_spec(old, new, pairs: dict[int, int], easing: str, unmatched: str) -> MoveSpec:
+    """A Move as the engine takes it. old, new: (source id, part key or None, quad, opacity, Effects or None) for
+    each piece of the bloom it leaves and the one it goes to, bottom first; pairs: new index -> old index
+    (render/move.py pair)."""
+    pieces = (MovePiece * max(1, len(old) + len(new)))()
+    effects: list = []
+    index: dict[int, int] = {}  # id(Effects) -> its place: one copy for a source in both blooms
+    for i, (source, part, quad, opacity, fx) in enumerate([*old, *new]):
+        p = pieces[i]
+        p.source = key(source)
+        p.part = key(part) if part else 0
+        for c, corner in enumerate(quad):
+            for n in range(4):
+                p.quad[c][n] = float(corner[n])
+        p.opacity = float(opacity)
+        p.effects = -1
+        if fx is not None:
+            if id(fx) not in index:
+                index[id(fx)] = len(effects)
+                effects.append(fx)
+            p.effects = index[id(fx)]
+        p.paired = -1
+    for j, i in pairs.items():
+        pieces[len(old) + j].paired = int(i)
+    fx_array = (Effects * max(1, len(effects)))(*effects)
+    spec = MoveSpec(pieces, len(old), len(new), fx_array, len(effects),
+                    MOVE_EASINGS.index(easing) if easing in MOVE_EASINGS else 0,
+                    MOVE_UNMATCHED.index(unmatched) if unmatched in MOVE_UNMATCHED else 0)
+    spec.keep = (pieces, fx_array)
+    return spec
+
+
+def move_frame(spec: MoveSpec, progress: float, width: int, height: int) -> list[tuple]:
+    """What the engine draws for a Move at ``progress`` (move.cpp, the same as render/move.py frame): (source key,
+    part key, quad, opacity, effects index) for each piece, bottom first. Tests only."""
+    room = spec.old_count + 2 * spec.new_count
+    out = (MovePiece * max(1, room))()
+    count = _need().sc_move_frame(ctypes.byref(spec), float(progress), int(width), int(height), out, room)
+    _check(min(count, 0))
+    return [(p.source, p.part, [tuple(p.quad[c]) for c in range(4)], p.opacity, p.effects) for p in out[:count]]
+
+
+def use_native_move() -> bool:
+    """True when the engine draws Move transitions itself; SPRIGCAST_NO_NATIVE_MOVE=1 leaves them to Python."""
+    return not os.environ.get("SPRIGCAST_NO_NATIVE_MOVE")
+
+
+STINGER_MODE = 8  # SC_TRANSITION_STINGER
+STINGER_MATTES = ("none", "right", "below")  # SC_STINGER_MATTE_*
+
+
+def use_native_stinger() -> bool:
+    """True when the engine draws stinger transitions itself (their clip played by the engine's own player);
+    SPRIGCAST_NO_NATIVE_STINGER=1 leaves them to Python."""
+    return not os.environ.get("SPRIGCAST_NO_NATIVE_STINGER")
+
+
+def transition_spec(transition, wipe_map: str | None = None, overlay: str | None = None) -> TransitionSpec | None:
+    """core/scene.py Transition as the engine takes it, or None for a kind it doesn't draw this way (cut, move).
+    overlay: a stinger's clip, the source id its player is attached under (None: it just cuts)."""
+    if transition.kind == "stinger":
+        spec = TransitionSpec()
+        spec.mode = STINGER_MODE
+        spec.seconds = 1.0  # the clip's length: the caller sets it
+        sting = transition.stinger
+        spec.overlay = key(overlay) if overlay else 0
+        spec.cut_seconds = max(0.0, sting.cut_ms / 1000)
+        spec.matte = STINGER_MATTES.index(sting.matte) if sting.matte in STINGER_MATTES else 0
+        spec.matte_only = int(bool(sting.matte_only))
+        return spec
     mode = TRANSITION_MODES.get(transition.kind)
     if mode is None:
         return None
@@ -214,6 +331,7 @@ def _lib():
         "sc_canvas_read_bgra": (c_int, [vp, vp, c_int]),
         "sc_source_upload": (c_int, [vp, ctypes.c_uint64, vp, ctypes.POINTER(Upload)]),
         "sc_source_forget": (c_int, [vp, ctypes.c_uint64]),
+        "sc_source_draws": (c_int, [vp, ctypes.c_uint64, c_int, c_int, ctypes.POINTER(Item), c_int]),
         "sc_look_set": (c_int, [vp, ctypes.c_uint64, vp, c_int]),
         "sc_mask_set": (c_int, [vp, ctypes.c_uint64, vp, c_int, c_int, c_int]),
         "sc_snapshot_set": (c_int, [vp, ctypes.POINTER(Snapshot)]),
@@ -222,6 +340,9 @@ def _lib():
         "sc_canvas_render_transition": (c_int, [vp, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_double,
                                                 ctypes.POINTER(TransitionSpec), c_float]),
         "sc_engine_canvas_transition": (c_int, [vp, c_int, ctypes.c_uint64, ctypes.POINTER(TransitionSpec)]),
+        "sc_engine_canvas_move": (c_int, [vp, c_int, ctypes.c_uint64, c_float, ctypes.POINTER(MoveSpec)]),
+        "sc_canvas_render_move": (c_int, [vp, ctypes.POINTER(MoveSpec), ctypes.c_double, c_float]),
+        "sc_move_frame": (c_int, [ctypes.POINTER(MoveSpec), c_float, c_int, c_int, ctypes.POINTER(MovePiece), c_int]),
         "sc_engine_create": (c_int, [c_int, c_int, out]),
         "sc_engine_destroy": (None, [vp]),
         "sc_engine_set_rate": (c_int, [vp, c_int, c_int]),
@@ -229,8 +350,17 @@ def _lib():
         "sc_engine_canvas_show": (c_int, [vp, c_int, ctypes.c_uint64]),
         "sc_engine_source_upload": (c_int, [vp, ctypes.c_uint64, vp, ctypes.POINTER(Upload), c_int]),
         "sc_engine_source_forget": (c_int, [vp, ctypes.c_uint64]),
+        "sc_engine_source_draws": (c_int, [vp, ctypes.c_uint64, c_int, c_int, ctypes.POINTER(Item), c_int]),
         "sc_engine_source_media": (c_int, [vp, ctypes.c_uint64, vp]),
         "sc_engine_source_shared": (c_int, [vp, ctypes.c_uint64, ctypes.c_wchar_p]),
+        "sc_engine_source_shared_hold": (c_int, [vp, ctypes.c_uint64, c_int]),
+        "sc_engine_source_visual": (c_int, [vp, ctypes.c_uint64, vp]),
+        "sc_engine_source_capture": (c_int, [vp, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64, c_int, c_int]),
+        "sc_engine_source_capture_hold": (c_int, [vp, ctypes.c_uint64, c_int]),
+        "sc_engine_capture_state": (c_int, [vp, ctypes.c_uint64, ctypes.POINTER(c_int), ctypes.POINTER(c_int),
+                                            ctypes.POINTER(c_int), ctypes.POINTER(ctypes.c_uint64)]),
+        "sc_engine_capture_read": (c_int, [vp, ctypes.c_uint64, vp, c_int, c_int, c_int, ctypes.POINTER(c_int),
+                                           ctypes.POINTER(c_int)]),
         "sc_d3d_device_luid": (c_int, [vp, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_int32)]),
         "sc_page_target_create": (c_int, [ctypes.c_uint32, ctypes.c_int32, vp, c_int, c_int, ctypes.c_wchar_p, out]),
         "sc_page_target_handles": (c_int, [vp, out, out, out]),
@@ -260,6 +390,8 @@ def _lib():
         "sc_com_release": (None, [vp]),
         "sc_engine_output_link": (c_int, [vp, c_int, c_int, ctypes.POINTER(OutputLink)]),
         "sc_engine_output_unlink": (c_int, [vp, c_int, c_int, ctypes.POINTER(ctypes.c_int64), ctypes.POINTER(c_int)]),
+        "sc_engine_output_link_camera": (c_int, [vp, c_int, c_int, ctypes.c_wchar_p, c_int, c_int, c_int]),
+        "sc_engine_output_camera_frames": (c_int, [vp, c_int, c_int, ctypes.POINTER(ctypes.c_uint64)]),
         "sc_engine_output_take": (c_int, [vp, c_int, c_int, vp, ctypes.c_size_t, ctypes.POINTER(c_int),
                                           ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_uint64)]),
     }
@@ -284,9 +416,82 @@ def available() -> bool:
     return _lib() is not None
 
 
+_python_only = False  # safe mode: the old engine for this start (app/safe_mode.py)
+
+
 def engine_choice() -> str:
-    """"native" or "python", as SPRIGCAST_ENGINE asks (anything else means python)."""
-    return "native" if os.environ.get("SPRIGCAST_ENGINE", "").strip().lower() == "native" else "python"
+    """"native" or "python": as SPRIGCAST_ENGINE asks, else native on Windows (where the engine is built) and
+    python elsewhere. Safe mode always means python."""
+    if _python_only:
+        return "python"
+    asked = os.environ.get("SPRIGCAST_ENGINE", "").strip().lower()
+    if asked in ("native", "python"):
+        return asked
+    if sys.platform != "win32":
+        return "python"
+    return "python" if software_only() else "native"
+
+
+def why_python() -> str:
+    """Why engine_choice() said python, for the log."""
+    if _python_only:
+        return "safe mode"
+    if os.environ.get("SPRIGCAST_ENGINE", "").strip().lower() == "python":
+        return "SPRIGCAST_ENGINE=python"
+    if sys.platform == "win32" and software_only():
+        return "no graphics driver here, only a software renderer"
+    return "the engine is built for Windows only"
+
+
+_engine_failed = ""  # why the engine stopped drawing during this run (render/native_bridge.py fail)
+
+
+def note_engine_failed(why: str) -> None:
+    global _engine_failed
+    _engine_failed = _engine_failed or str(why) or "it stopped"
+
+
+def old_engine_warning() -> str:
+    """Why the old (Python) engine draws on a PC whose graphics card could run the new one, in a few words for
+    the window's warning; "" when the new engine draws, or when this PC has no graphics card for it (the old
+    engine is kept for those, user 2026-11-19, and nothing is said there)."""
+    if sys.platform != "win32" or software_only():
+        return ""
+    if _python_only:
+        return "Safe mode"
+    if os.environ.get("SPRIGCAST_ENGINE", "").strip().lower() == "python":
+        return "Turned off"
+    if not available():
+        return "Engine file missing"
+    return "Engine stopped" if _engine_failed else ""
+
+
+_software: list[bool] = []  # worked out once: whether Windows has only a software renderer
+
+
+def software_only() -> bool:
+    """True when every graphics card Windows lists is a software renderer (the Microsoft Basic Render Driver: no
+    graphics driver, as on a build machine or a fresh install). The engine draws there on the CPU and falls far
+    behind (CI saw single frames take 5-47 s), so by default the old engine draws instead; SPRIGCAST_ENGINE=native
+    still asks for the engine."""
+    if not _software:
+        found = adapters() if sys.platform == "win32" else []
+        _software.append(bool(found) and all(_is_software(card) for card in found))
+        if _software[0]:
+            log.info("native engine: only a software renderer here (%s); the Python engine draws",
+                     ", ".join(card["name"] for card in found))
+    return _software[0]
+
+
+def _is_software(card: dict) -> bool:
+    return bool(card.get("software")) or (card.get("vendor_id") == 0x1414 and card.get("device_id") == 0x8C)
+
+
+def use_python_engine() -> None:
+    """The old (Python) engine for the rest of this start, whatever SPRIGCAST_ENGINE says: safe mode, before any
+    part has started."""
+    global _python_only
+    _python_only = True
 
 
 def use_native() -> bool:
@@ -362,6 +567,60 @@ def _upload_args(frame, channel_order: str, size):
     return pixels, how
 
 
+class CaptureTarget:
+    """A window (an HWND) or a display (an HMONITOR) for the engine to capture (Engine.attach_capture), made by
+    sources/capture.py. Two are equal when they ask for the same capture: a new ``serial`` starts it over (a window
+    that closed, found again). The render thread links it to the engine, so the source can ask how it is doing and
+    read its picture for the frames Python draws itself."""
+
+    holds = True  # a freeze keeps it running, held (render/engine.py), so it needn't start again afterwards
+
+    def __init__(self, window: int = 0, monitor: int = 0, flags: int = 0, interval_ms: int = 0, serial: int = 0):
+        self.window, self.monitor = int(window or 0), int(monitor or 0)
+        self.flags, self.interval_ms, self.serial = int(flags), max(0, min(10000, int(interval_ms))), int(serial)
+        self._link: tuple[Engine, str] | None = None
+
+    def _values(self) -> tuple[int, int, int, int, int]:
+        return self.window, self.monitor, self.flags, self.interval_ms, self.serial
+
+    def __eq__(self, other) -> bool:
+        return isinstance(other, CaptureTarget) and self._values() == other._values()
+
+    def __hash__(self) -> int:
+        return hash(self._values())
+
+    def __repr__(self) -> str:
+        what = f"window {self.window:#x}" if self.window else f"display {self.monitor:#x}"
+        return f"CaptureTarget({what}, flags {self.flags}, every {self.interval_ms} ms, #{self.serial})"
+
+    def link(self, engine: Engine | None, source_id: str = "") -> None:
+        self._link = (engine, source_id) if engine is not None else None
+
+    @property
+    def linked(self) -> bool:
+        return self._link is not None
+
+    def state(self) -> tuple[int, int, int, int]:
+        """(SCREEN_*, width, height, pictures shown); SCREEN_NONE while no engine has it."""
+        link = self._link
+        if link is None:
+            return SCREEN_NONE, 0, 0, 0
+        try:
+            return link[0].capture_state(link[1])
+        except NativeError:
+            return SCREEN_NONE, 0, 0, 0
+
+    def read(self):
+        """The newest picture as BGRA rows, or None (no engine, or no picture yet)."""
+        link = self._link
+        if link is None:
+            return None
+        try:
+            return link[0].capture_read(link[1])
+        except NativeError:
+            return None
+
+
 class Device:
     """A Direct3D 11 device. ``warp=True`` is Windows' software renderer (tests)."""
 
@@ -394,6 +653,11 @@ class Device:
 
     def forget(self, source_id: str) -> None:
         _check(_need().sc_source_forget(self.handle, key(source_id)))
+
+    def draws(self, source_id: str, width: int, height: int, items) -> None:
+        """Source ``source_id`` drawn from a list of pictures (:func:`draw_items`); None drops the list."""
+        array, count = draw_items(items)
+        _check(_need().sc_source_draws(self.handle, key(source_id), int(width), int(height), array, count))
 
     def set_look(self, name: str, table) -> None:
         """A colour look: n x n x n x 3 floats, red fastest (core/looks.py)."""
@@ -611,6 +875,11 @@ class Engine:
     def forget(self, source_id: str) -> None:
         _check(_need().sc_engine_source_forget(self.handle, key(source_id)))
 
+    def draws(self, source_id: str, width: int, height: int, items) -> None:
+        """As :meth:`Device.draws`, drawn from the next frame on (and again after a rebuild)."""
+        array, count = draw_items(items)
+        _check(_need().sc_engine_source_draws(self.handle, key(source_id), int(width), int(height), array, count))
+
     def attach_media(self, source_id: str, player: "MediaPlayer | None") -> None:
         """Source ``source_id`` shows what ``player`` plays: the frame thread takes each picture from the player
         itself, so a video's pictures never pass through Python. None goes back to :meth:`upload` (the source
@@ -618,6 +887,13 @@ class Engine:
         lib = _need()
         if player is None:
             _check(lib.sc_engine_source_media(self.handle, key(source_id), None))
+        elif isinstance(player, SoundVisual):  # an audio visualizer: the engine takes its drawings the same way
+            try:
+                _check(player._call(lambda visual: lib.sc_engine_source_visual(self.handle, key(source_id), visual)))
+            except NativeError:
+                if not player.closed:
+                    raise
+                _check(lib.sc_engine_source_media(self.handle, key(source_id), None))  # closed with its mixer
         else:
             _check(player._call(lambda media: lib.sc_engine_source_media(self.handle, key(source_id), media)))
 
@@ -626,6 +902,59 @@ class Engine:
         by app/browser_helper.py FrameSlot): the frame thread copies each new one onto the card itself. None goes
         back to :meth:`upload` (the source keeps the picture it has)."""
         _check(_need().sc_engine_source_shared(self.handle, key(source_id), name or None))
+
+    def hold_shared(self, source_id: str, held: bool) -> None:
+        """Hold a shared source's picture still (a freeze) while the engine keeps taking the page's pictures, so the
+        page never waits for it; False shows them again."""
+        _check(_need().sc_engine_source_shared_hold(self.handle, key(source_id), int(bool(held))))
+
+    def attach_capture(self, source_id: str, target: CaptureTarget | None) -> None:
+        """Source ``source_id`` shows a window or display captured on the engine's own device (Windows Graphics
+        Capture): the frame thread copies each new picture on the card. None stops the capture (the source keeps
+        the picture it has)."""
+        if target is None:
+            _check(_need().sc_engine_source_capture(self.handle, key(source_id), 0, 0, 0, 0))
+        else:
+            _check(_need().sc_engine_source_capture(self.handle, key(source_id), int(target.window),
+                                                    int(target.monitor), int(target.flags), int(target.interval_ms)))
+
+    def hold_capture(self, source_id: str, held: bool) -> None:
+        """Hold a capture's picture still (a freeze) while the engine keeps taking Windows' pictures."""
+        _check(_need().sc_engine_source_capture_hold(self.handle, key(source_id), int(bool(held))))
+
+    def capture_state(self, source_id: str) -> tuple[int, int, int, int]:
+        """(state SCREEN_*, width, height, pictures shown) of a source's capture."""
+        state, width, height, frames = ctypes.c_int(), ctypes.c_int(), ctypes.c_int(), ctypes.c_uint64()
+        _check(_need().sc_engine_capture_state(self.handle, key(source_id), ctypes.byref(state), ctypes.byref(width),
+                                               ctypes.byref(height), ctypes.byref(frames)))
+        return state.value, width.value, height.value, frames.value
+
+    def capture_read(self, source_id: str, into=None):
+        """A source's captured picture as an (h, w, 4) BGRA array (``into`` reused when it is that size), or None
+        when there is none yet: for a frame Python draws itself."""
+        import numpy as np
+
+        lib = _need()
+        width, height = ctypes.c_int(), ctypes.c_int()
+        if into is not None and into.ndim == 3 and into.shape[2] == 4 and into.flags.c_contiguous:
+            code = lib.sc_engine_capture_read(self.handle, key(source_id), into.ctypes.data, into.shape[1] * 4,
+                                              into.shape[1], into.shape[0], ctypes.byref(width), ctypes.byref(height))
+            if code == SC_OK:
+                return into if (height.value, width.value) == into.shape[:2] else into[:height.value, :width.value]
+        else:
+            code = lib.sc_engine_capture_read(self.handle, key(source_id), None, 0, 0, 0, ctypes.byref(width),
+                                              ctypes.byref(height))
+        if code not in (SC_OK, -1):
+            _check(code)
+        if width.value < 1 or height.value < 1:
+            return None
+        frame = np.empty((height.value, width.value, 4), dtype=np.uint8)
+        code = lib.sc_engine_capture_read(self.handle, key(source_id), frame.ctypes.data, width.value * 4,
+                                          width.value, height.value, ctypes.byref(width), ctypes.byref(height))
+        if code == -1:
+            return None  # it changed size in between: the next frame reads it
+        _check(code)
+        return frame
 
     def set_look(self, name: str, table) -> None:
         import numpy as np
@@ -679,6 +1008,12 @@ class Engine:
             _check(_need().sc_engine_canvas_transition(self.handle, index, 0, None))
         else:
             _check(_need().sc_engine_canvas_transition(self.handle, index, key(previous), ctypes.byref(spec)))
+
+    def move(self, index: int, previous: str, seconds: float, spec: MoveSpec) -> None:
+        """Starts a Move (move_spec) on canvas ``index`` from scene ``previous`` to the one it shows, ``seconds``
+        long, timed as transition(). transition(index, None, None) stops it."""
+        _check(_need().sc_engine_canvas_move(self.handle, index, key(previous), max(0.001, float(seconds)),
+                                             ctypes.byref(spec)))
 
     def watch(self, index: int, width: int, height: int, max_fps: int = 0) -> None:
         """Have the engine copy canvas ``index`` back shrunk to width x height (premultiplied RGBA, as previews
@@ -762,6 +1097,20 @@ class Engine:
             _check(_need().sc_engine_output_unlink(self._handle, index, slot, ctypes.byref(last), ctypes.byref(linked)))
         return last.value, bool(linked.value)
 
+    def link_camera(self, index: int, slot: int, name: str, width: int, height: int, keep: bool = False) -> None:
+        """Write every frame of a plain output into the virtual camera's shared block ``name`` (a width x height
+        frame; a smaller output goes in the middle), on the engine's own thread. The engine maps the block itself and
+        unmaps it when unlink_output (or another link) ends this one. Raises NativeError when it can't."""
+        _check(_need().sc_engine_output_link_camera(self.handle, index, slot, name, int(width), int(height),
+                                                    1 if keep else 0))
+
+    def camera_frames(self, index: int, slot: int) -> int:
+        """Frames the engine wrote into the camera's block since linking it (0: no camera link there)."""
+        frames = ctypes.c_uint64(0)
+        if self._handle:
+            _check(_need().sc_engine_output_camera_frames(self._handle, index, slot, ctypes.byref(frames)))
+        return frames.value
+
     def debug_fault(self, kind: int) -> None:
         """Crash gate checks (tests only): 1 exception, 2 access violation, 3 lost card, 4 a 3 s stuck frame."""
         _check(_need().sc_engine_debug_fault(self.handle, kind))
@@ -839,7 +1188,15 @@ class WriterConfig(ctypes.Structure):
                 ("fps_num", ctypes.c_int), ("fps_den", ctypes.c_int), ("video_kbps", ctypes.c_int),
                 ("keyframe_frames", ctypes.c_int), ("audio_tracks", ctypes.c_int), ("audio_kbps", ctypes.c_int),
                 ("queue_frames", ctypes.c_int), ("format_options", ctypes.c_char_p),
-                ("track_titles", ctypes.c_char_p), ("b_frames", ctypes.c_int), ("d3d11_device", ctypes.c_void_p)]
+                ("track_titles", ctypes.c_char_p), ("b_frames", ctypes.c_int), ("d3d11_device", ctypes.c_void_p),
+                ("packets", ctypes.c_int)]
+
+
+class WriterPacket(ctypes.Structure):
+    """include/sprigcore.h sc_writer_packet."""
+
+    _fields_ = [("track", ctypes.c_int), ("keyframe", ctypes.c_int), ("pts", ctypes.c_int64), ("dts", ctypes.c_int64),
+                ("tb_num", ctypes.c_int), ("tb_den", ctypes.c_int), ("size", ctypes.c_int)]
 
 
 class WriterStats(ctypes.Structure):
@@ -864,6 +1221,65 @@ WRITER_STATES = ("opening", "running", "finished", "failed")
 WRITER_DROPPED, WRITER_REFUSED, WRITER_LATE = 1, 2, 3
 
 
+MIXER_BLOCK = 1024  # SC_MIXER_BLOCK
+MIXER_TRACKS = ("stream", "recording", "vod", "voice", "clips", "track4", "track5", "clean")  # SC_TRACK_* order
+MIXER_MONITOR = -1  # SC_MIXER_MONITOR
+MIXER_SOURCE_TAP = 1000  # SC_MIXER_SOURCE_TAP
+MIXER_MASTER = 0  # SC_MIXER_MASTER
+
+
+class MixerSourceSettings(ctypes.Structure):
+    _fields_ = [("gain", ctypes.c_float), ("mono", ctypes.c_int), ("balance", ctypes.c_float),
+                ("delay_ms", ctypes.c_int), ("tracks", ctypes.c_uint32), ("monitor", ctypes.c_int),
+                ("voice", ctypes.c_int), ("bloom_out", ctypes.c_int)]
+
+
+class MixerDucking(ctypes.Structure):
+    _fields_ = [("enabled", ctypes.c_int), ("amount_db", ctypes.c_float), ("threshold_db", ctypes.c_float),
+                ("attack_ms", ctypes.c_float), ("release_ms", ctypes.c_float), ("hold_ms", ctypes.c_float)]
+
+
+class MixerLevel(ctypes.Structure):
+    _fields_ = [("peak_db", ctypes.c_float), ("rms_db", ctypes.c_float), ("level", ctypes.c_float),
+                ("underruns", ctypes.c_uint64)]
+
+
+FILTER_GAIN, FILTER_NOISE_GATE, FILTER_COMPRESSOR, FILTER_LIMITER, FILTER_INVERT, FILTER_DUCKING = range(1, 7)
+
+
+class MixerFilter(ctypes.Structure):
+    _fields_ = [("kind", ctypes.c_int), ("follow", ctypes.c_int), ("p", ctypes.c_float * 6)]
+
+
+CAPTURE_STATES = ("starting", "capturing", "not found", "lost", "failed")  # SC_CAPTURE_*
+CAPTURE_TEST_TONE = "sprigcast-test-tone"
+
+
+class CaptureStats(ctypes.Structure):
+    _fields_ = [("state", ctypes.c_int), ("channels", ctypes.c_int), ("rate", ctypes.c_int),
+                ("frames", ctypes.c_uint64), ("gaps", ctypes.c_uint64), ("device", ctypes.c_wchar * 128),
+                ("error", ctypes.c_char * 256)]
+
+
+class VisualLook(ctypes.Structure):
+    _fields_ = [("style", ctypes.c_int), ("bars", ctypes.c_int), ("smoothing", ctypes.c_double),
+                ("sensitivity", ctypes.c_double), ("mirror", ctypes.c_int), ("color", ctypes.c_double * 4),
+                ("peak", ctypes.c_double * 4)]
+
+
+VISUAL_SIZE = (1280, 400)  # include/sprigcore.h SC_VISUAL_WIDTH, SC_VISUAL_HEIGHT
+VISUAL_STYLES = ("bars", "wave", "circle", "line")  # SC_VISUAL_* in order
+
+
+class PlaybackStats(ctypes.Structure):
+    _fields_ = [("state", ctypes.c_int), ("channels", ctypes.c_int), ("rate", ctypes.c_int),
+                ("frames", ctypes.c_uint64), ("underruns", ctypes.c_uint64), ("dropped", ctypes.c_uint64),
+                ("device", ctypes.c_wchar * 128), ("error", ctypes.c_char * 256)]
+
+
+PLAYBACK_TEST_SINK = "sprigcast-test-sink"
+
+
 def _media_sigs() -> dict:
     c_int, vp = ctypes.c_int, ctypes.c_void_p
     text = ctypes.c_char_p
@@ -874,6 +1290,9 @@ def _media_sigs() -> dict:
         "sc_media_destroy": (None, [vp]),
         "sc_media_set_options": (c_int, [vp, ctypes.POINTER(MediaOptions)]),
         "sc_media_set_file": (c_int, [vp, text, c_int, c_int]),
+        "sc_media_ffmpeg_load_devices": (c_int, [text]),
+        "sc_media_set_device": (c_int, [vp, text, text, c_int, c_int]),
+        "sc_media_set_mirror": (c_int, [vp, c_int]),
         "sc_media_control": (c_int, [vp, c_int, ctypes.c_double]),
         "sc_media_set_shrink": (c_int, [vp, ctypes.c_float]),
         "sc_media_info_get": (c_int, [vp, ctypes.POINTER(MediaInfo)]),
@@ -891,6 +1310,40 @@ def _media_sigs() -> dict:
         "sc_writer_wait": (c_int, [vp, c_int]),
         "sc_writer_stats_get": (c_int, [vp, ctypes.POINTER(WriterStats)]),
         "sc_writer_destroy": (None, [vp]),
+        "sc_writer_packet_take": (c_int, [vp, ctypes.POINTER(WriterPacket), vp, c_int]),
+        "sc_writer_set_bitrate": (c_int, [vp, c_int, c_int, c_int]),
+        "sc_writer_keyframe": (c_int, [vp]),
+        "sc_mixer_create": (c_int, [c_int, ctypes.POINTER(vp)]),
+        "sc_mixer_destroy": (None, [vp]),
+        "sc_mixer_source_add": (c_int, [vp, ctypes.POINTER(MixerSourceSettings), ctypes.POINTER(c_int)]),
+        "sc_mixer_source_set": (c_int, [vp, c_int, ctypes.POINTER(MixerSourceSettings)]),
+        "sc_mixer_source_remove": (c_int, [vp, c_int]),
+        "sc_mixer_source_push": (c_int, [vp, c_int, vp, c_int]),
+        "sc_mixer_source_media": (c_int, [vp, c_int, vp, c_int]),
+        "sc_mixer_set_ducking": (c_int, [vp, ctypes.POINTER(MixerDucking)]),
+        "sc_mixer_tap_add": (c_int, [vp, ctypes.POINTER(c_int), c_int, ctypes.POINTER(c_int)]),
+        "sc_mixer_tap_remove": (c_int, [vp, c_int]),
+        "sc_mixer_tap_take": (c_int, [vp, c_int, vp, c_int, ctypes.POINTER(ctypes.c_int64),
+                                      ctypes.POINTER(ctypes.c_uint64)]),
+        "sc_mixer_tick": (c_int, [vp, c_int]),
+        "sc_mixer_wait": (c_int, [vp, ctypes.c_int64, c_int, ctypes.POINTER(ctypes.c_int64)]),
+        "sc_mixer_levels": (c_int, [vp, c_int, ctypes.POINTER(MixerLevel)]),
+        "sc_mixer_source_filters": (c_int, [vp, c_int, ctypes.POINTER(MixerFilter), c_int]),
+        "sc_capture_open": (c_int, [vp, c_int, ctypes.c_wchar_p, c_int, ctypes.POINTER(vp)]),
+        "sc_capture_stats_get": (c_int, [vp, ctypes.POINTER(CaptureStats)]),
+        "sc_capture_close": (None, [vp]),
+        "sc_playback_open": (c_int, [vp, c_int, ctypes.c_wchar_p, ctypes.POINTER(vp)]),
+        "sc_playback_stats_get": (c_int, [vp, ctypes.POINTER(PlaybackStats)]),
+        "sc_playback_close": (None, [vp]),
+        "sc_visual_open": (c_int, [vp, c_int, c_int, ctypes.POINTER(vp)]),
+        "sc_visual_listen": (c_int, [vp, c_int]),
+        "sc_visual_set_look": (c_int, [vp, ctypes.POINTER(VisualLook)]),
+        "sc_visual_push": (c_int, [vp, vp, c_int]),
+        "sc_visual_step": (c_int, [vp, ctypes.c_double]),
+        "sc_visual_values": (c_int, [vp, vp, c_int, vp, c_int]),
+        "sc_visual_draw": (c_int, [vp, vp, c_int, vp, c_int, vp]),
+        "sc_visual_frame": (c_int, [vp, ctypes.POINTER(ctypes.c_uint64), vp]),
+        "sc_visual_close": (None, [vp]),
     }
 
 
@@ -924,19 +1377,47 @@ def ffmpeg_libraries() -> list[str] | None:
         import av
     except Exception:  # noqa: BLE001 (no PyAV: the Python player can't play either)
         return None
+    found = [_ffmpeg_file(av, name) for name in FFMPEG_LIBRARIES]
+    return None if None in found else found
+
+
+def _ffmpeg_file(av, name: str) -> str | None:
     package = Path(av.__file__).resolve().parent
-    folders = [package.parent / "av.libs", package, package.parent]
-    found = []
-    for name in FFMPEG_LIBRARIES:
-        for folder in folders:
-            hits = sorted(str(p) for pattern in (f"{name}-*.dll", f"lib{name}-*.so*", f"lib{name}.*.dylib")
-                          for p in folder.glob(pattern))
-            if hits:
-                found.append(hits[0])
-                break
-        else:
-            return None
-    return found
+    for folder in (package.parent / "av.libs", package, package.parent):
+        hits = sorted(str(p) for pattern in (f"{name}-*.dll", f"lib{name}-*.so*", f"lib{name}.*.dylib")
+                      for p in folder.glob(pattern))
+        if hits:
+            return hits[0]
+    return None
+
+
+@functools.cache
+def camera_ready() -> bool:
+    """True once the engine's player can open cameras: FFmpeg's input devices (PyAV's libavdevice) loaded."""
+    if not media_ready():
+        return False
+    try:
+        import av
+    except Exception:  # noqa: BLE001
+        return False
+    path = _ffmpeg_file(av, "avdevice")
+    if path is None:
+        log.warning("native camera: PyAV's libavdevice wasn't found; cameras are read in Python")
+        return False
+    lib = _media_lib()
+    code = lib.sc_media_ffmpeg_load_devices(path.encode("utf-8"))
+    if code != SC_OK:
+        log.warning("native camera: %s; cameras are read in Python",
+                    lib.sc_last_error().decode("utf-8", "replace") or ERRORS.get(code, code))
+    drain_log()
+    return code == SC_OK
+
+
+def use_native_camera() -> bool:
+    """True when cameras are read by the engine's own player (SPRIGCAST_ENGINE=native, on Windows);
+    SPRIGCAST_NO_NATIVE_CAMERA=1 keeps reading them in Python."""
+    return (sys.platform == "win32" and engine_choice() == "native" and not os.environ.get(
+        "SPRIGCAST_NO_NATIVE_CAMERA") and camera_ready())
 
 
 @functools.cache
@@ -958,6 +1439,13 @@ def media_ready() -> bool:
                     lib.sc_last_error().decode("utf-8", "replace") or ERRORS.get(code, code))
     drain_log()
     return code == SC_OK
+
+
+def use_native_capture() -> bool:
+    """True when windows and displays are captured by the engine itself (SPRIGCAST_ENGINE=native, on Windows);
+    SPRIGCAST_NO_NATIVE_CAPTURE_VIDEO=1 keeps the capture in Python (windows-capture)."""
+    return (sys.platform == "win32" and engine_choice() == "native" and not os.environ.get(
+        "SPRIGCAST_NO_NATIVE_CAPTURE_VIDEO") and available())
 
 
 def use_native_media() -> bool:
@@ -1006,6 +1494,20 @@ class MediaPlayer:
 
     def set_file(self, path: str, video: bool, playing: bool) -> None:
         _check(self._call(self._lib.sc_media_set_file, str(path).encode("utf-8"), int(video), int(playing)))
+
+    def set_device(self, format_name: str, choices, fps: int = 0, mirror: bool = False) -> None:
+        """A camera instead of a file (sc_media_set_device): ``choices`` are (input name, options) to try in turn,
+        best first, options as {"video_size": "1280x720", ...} or "key=value:key=value"."""
+        lines = []
+        for name, options in choices:
+            if isinstance(options, dict):
+                options = ":".join(f"{k}={v}" for k, v in options.items())
+            lines.append(f"{name}\t{options}" if options else str(name))
+        _check(self._call(self._lib.sc_media_set_device, format_name.encode("utf-8"), "\n".join(lines).encode("utf-8"),
+                          max(0, int(fps)), int(bool(mirror))))
+
+    def set_mirror(self, mirror: bool) -> None:
+        self._call(self._lib.sc_media_set_mirror, int(bool(mirror)))
 
     def control(self, what: int, value: float = 0.0) -> None:
         _check(self._call(self._lib.sc_media_control, what, float(value)))
@@ -1062,10 +1564,20 @@ class MediaPlayer:
         """A crash gate check (tests only): the decoder thread faults at its next step."""
         self._call(self._lib.sc_media_debug_fault, kind)
 
+    def before_close(self, fn) -> None:
+        """Call fn() just before the player is freed (the engine's sound mixer stops reading it first)."""
+        self._closers = [*getattr(self, "_closers", ()), fn]
+
     def close(self) -> None:
         with self._lock:
             handle, self._handle = self._handle, ctypes.c_void_p()
         if handle:
+            for fn in getattr(self, "_closers", ()):
+                try:
+                    fn()
+                except Exception:  # noqa: BLE001 (the mixer is gone already: nothing reads the player)
+                    log.exception("native media: letting the sound mixer go of a player failed")
+            self._closers = []
             self._lib.sc_media_destroy(handle)
             drain_log()
 
@@ -1086,8 +1598,10 @@ class Writer:
                  video_kbps: int = 6000, keyframe_frames: int = 60, video_options: dict[str, str] | None = None,
                  audio_tracks: int = 1, audio_kbps: int = 160, container: str | None = None, queue_frames: int = 8,
                  container_options: dict[str, str] | None = None, track_titles: list[str] | None = None,
-                 b_frames: int = 0, device: int | None = None):
-        """``device``: the engine's ID3D11Device (Engine.device()) for a hardware encoder (h264_nvenc, ...) that
+                 b_frames: int = 0, device: int | None = None, packets: bool = False):
+        """packets: encode only (sc_writer_config.packets): ``target`` gets a small NUT file with the streams,
+        finished once the writer runs (open it for codec templates); the packets are taken with take_packet.
+        ``device``: the engine's ID3D11Device (Engine.device()) for a hardware encoder (h264_nvenc, ...) that
         takes the engine's pictures on the card from a linked share output; pictures from memory go up first."""
         if not media_ready():
             raise NativeError(-2, "the engine's writer isn't available")
@@ -1101,13 +1615,16 @@ class Writer:
                                     int(height), int(num), int(den), int(video_kbps), int(keyframe_frames),
                                     int(audio_tracks), int(audio_kbps), int(queue_frames),
                                     muxing.encode() if muxing else None, titles.encode() if titles else None,
-                                    max(0, min(4, int(b_frames))), device or None)
+                                    max(0, min(4, int(b_frames))), device or None, 1 if packets else 0)
         handle = ctypes.c_void_p()
         _check(self._lib.sc_writer_open(ctypes.byref(self._config), ctypes.byref(handle)))
         self._handle = handle
         self._lock = __import__("threading").Lock()
         self.width, self.height, self.tracks = int(width), int(height), int(audio_tracks)
         self.on_card = bool(device)
+        self.packets = bool(packets)
+        self._packet = WriterPacket()
+        self._buffer = (ctypes.c_uint8 * (1 << 20))()
 
     def _call(self, fn, *args) -> int:
         with self._lock:
@@ -1149,6 +1666,30 @@ class Writer:
                 raise NativeError(-1, "the writer is closed")
             return self._handle.value
 
+    def take_packet(self):
+        """Packets mode: the oldest encoded packet as (track, keyframe, pts, dts, (tb_num, tb_den), bytes), track 0
+        the video and 1.. the sound; None when none is waiting."""
+        info = self._packet
+        while True:
+            code = self._call(self._lib.sc_writer_packet_take, ctypes.byref(info), self._buffer, len(self._buffer))
+            if code == 1:
+                return (info.track, bool(info.keyframe), info.pts, info.dts, (info.tb_num, info.tb_den),
+                        ctypes.string_at(self._buffer, info.size))
+            if code == 0:
+                return None
+            if code == -1 and info.size > len(self._buffer):  # SC_ERR_ARGUMENT: no room
+                self._buffer = (ctypes.c_uint8 * (info.size * 2))()  # a big keyframe: room for it, then again
+                continue
+            _check(code)
+
+    def set_bitrate(self, kbps: int, max_kbps: int = 0, buffer_kbits: int = 0) -> None:
+        """The video bitrate from the next picture on (a stream steering itself)."""
+        _check(self._call(self._lib.sc_writer_set_bitrate, int(kbps), int(max_kbps or 0), int(buffer_kbits or 0)))
+
+    def keyframe(self) -> None:
+        """The next picture is a keyframe."""
+        _check(self._call(self._lib.sc_writer_keyframe))
+
     def audio(self, block, track: int = 0) -> int:
         """Queue sound for ``track``: (n, 2) float32, 48 kHz, following the last block."""
         import numpy as np
@@ -1187,4 +1728,329 @@ class Writer:
         try:
             self.close()
         except Exception:  # noqa: BLE001 (interpreter shutting down)
+            pass
+
+
+class SoundCapture:
+    """A microphone or desktop sound the engine reads itself (include/sprigcore.h sc_capture): WASAPI on a thread of
+    its own, pushed straight into one sound of a SoundMixer. Made by SoundMixer.capture; closed before the mixer."""
+
+    def __init__(self, lib, handle: ctypes.c_void_p, mixer: SoundMixer):
+        self._lib, self._handle, self._mixer = lib, handle, mixer
+        self._stats = CaptureStats()
+        self._lock = __import__("threading").Lock()
+
+    def stats(self) -> dict:
+        """{"state": "capturing" ..., "device", "error", "frames", "gaps", "channels", "rate"}."""
+        with self._lock:
+            if not self._handle:
+                return {"state": "closed", "device": "", "error": "", "frames": 0, "gaps": 0, "channels": 0,
+                        "rate": 0}
+            _check(self._lib.sc_capture_stats_get(self._handle, ctypes.byref(self._stats)))
+            st = self._stats
+            state = CAPTURE_STATES[st.state] if 0 <= st.state < len(CAPTURE_STATES) else "failed"
+            return {"state": state, "device": st.device, "error": st.error.decode("utf-8", "replace"),
+                    "frames": int(st.frames), "gaps": int(st.gaps), "channels": st.channels, "rate": st.rate}
+
+    def close(self) -> None:
+        with self._lock:
+            handle, self._handle = self._handle, None
+        if handle:
+            self._close_handle(handle)
+        mixer = self._mixer
+        if mixer is not None:
+            captures = mixer.__dict__.get("_captures", [])
+            if self in captures:
+                captures.remove(self)
+
+    def _close_handle(self, handle) -> None:
+        self._lib.sc_capture_close(handle)  # joins its thread: no push after this
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 (never from a destructor)
+            pass
+
+
+class SoundPlayback(SoundCapture):
+    """One of a SoundMixer's mixes played on a playback device by the engine (include/sprigcore.h sc_playback):
+    WASAPI on a thread of its own. Made by SoundMixer.play; closed before the mixer."""
+
+    def __init__(self, lib, handle: ctypes.c_void_p, mixer: SoundMixer):
+        super().__init__(lib, handle, mixer)
+        self._stats = PlaybackStats()
+
+    def stats(self) -> dict:
+        """{"state": "playing" ..., "device", "error", "frames", "underruns", "dropped", "channels", "rate"}."""
+        with self._lock:
+            if not self._handle:
+                return {"state": "closed", "device": "", "error": "", "frames": 0, "underruns": 0, "dropped": 0,
+                        "channels": 0, "rate": 0}
+            _check(self._lib.sc_playback_stats_get(self._handle, ctypes.byref(self._stats)))
+            st = self._stats
+            state = CAPTURE_STATES[st.state] if 0 <= st.state < len(CAPTURE_STATES) else "failed"
+            return {"state": "playing" if state == "capturing" else state, "device": st.device,
+                    "error": st.error.decode("utf-8", "replace"), "frames": int(st.frames),
+                    "underruns": int(st.underruns), "dropped": int(st.dropped), "channels": st.channels,
+                    "rate": st.rate}
+
+    def _close_handle(self, handle) -> None:
+        self._lib.sc_playback_close(handle)  # joins its thread and removes its tap
+
+
+class SoundVisual:
+    """An audio visualizer drawn by the engine (include/sprigcore.h sc_visual, store/audio_visualizer.py's look):
+    a thread of its own hears one of a mixer's sounds and draws it at most 30 times a second, and the engine's frame
+    thread takes the drawings itself (Engine.attach_media). Made by SoundMixer.visual (closed before the mixer), or
+    with no mixer for checks (then it hears only :meth:`push`, and draws only on :meth:`step` unless clocked)."""
+
+    def __init__(self, mixer: SoundMixer | None = None, what: int = -1, clocked: bool = True, lib=None):
+        lib = lib or (mixer._lib if mixer is not None else _media_lib())
+        if lib is None:
+            raise NativeError(-5, "the native engine isn't available")
+        self._lib, self._mixer = lib, mixer
+        self._lock = __import__("threading").Lock()
+        handle = ctypes.c_void_p()
+        _check(lib.sc_visual_open(mixer._handle if mixer is not None else None, int(what), int(bool(clocked)),
+                                  ctypes.byref(handle)))
+        self._handle = handle
+        self._seen = ctypes.c_uint64(0)
+        self.what = int(what)
+
+    def _call(self, fn) -> int:
+        with self._lock:
+            if not self._handle:
+                raise NativeError(-1, "the visualizer is closed")
+            return fn(self._handle)
+
+    def listen(self, what: int) -> None:
+        """Hear another of the mixer's sounds (a track, or MIXER_SOURCE_TAP + a sound; < 0: nothing)."""
+        if what != self.what:
+            _check(self._call(lambda h: self._lib.sc_visual_listen(h, int(what))))
+            self.what = int(what)
+
+    def set_look(self, style: str, bars: int, smoothing: float, sensitivity: float, mirror: bool,
+                 color: tuple, peak: tuple) -> None:
+        look = VisualLook(VISUAL_STYLES.index(style) if style in VISUAL_STYLES else 0, int(bars), float(smoothing),
+                          float(sensitivity), int(bool(mirror)), (ctypes.c_double * 4)(*color),
+                          (ctypes.c_double * 4)(*peak))
+        _check(self._call(lambda h: self._lib.sc_visual_set_look(h, ctypes.byref(look))))
+
+    def push(self, block) -> None:
+        import numpy as np
+
+        data = np.ascontiguousarray(block, dtype=np.float32)
+        _check(self._call(lambda h: self._lib.sc_visual_push(h, data.ctypes.data, int(data.shape[0]))))
+
+    def step(self, dt: float) -> bool:
+        got = self._call(lambda h: self._lib.sc_visual_step(h, float(dt)))
+        _check(min(got, 0))
+        return got == 1
+
+    def values(self):
+        import numpy as np
+
+        bands, wave = np.zeros(128, np.float32), np.zeros(256, np.float32)
+        got = self._call(lambda h: self._lib.sc_visual_values(h, bands.ctypes.data, 128, wave.ctypes.data, 256))
+        _check(min(got, 0))
+        return bands[:got].copy(), wave
+
+    def draw(self, bands, wave):
+        import numpy as np
+
+        b = np.ascontiguousarray(bands, dtype=np.float32)
+        w = np.ascontiguousarray(wave, dtype=np.float32)
+        out = np.empty((VISUAL_SIZE[1], VISUAL_SIZE[0], 4), np.uint8)
+        _check(self._call(lambda h: self._lib.sc_visual_draw(h, b.ctypes.data, len(b), w.ctypes.data, len(w),
+                                                               out.ctypes.data)))
+        return out
+
+    def frame(self, out) -> bool:
+        """Copies its newest drawing into out ((400, 1280, 4) uint8, pBGRA) if there is a new one."""
+        got = self._call(lambda h: self._lib.sc_visual_frame(h, ctypes.byref(self._seen), out.ctypes.data))
+        _check(min(got, 0))
+        return got == 1
+
+    @property
+    def closed(self) -> bool:
+        return not self._handle
+
+    def close(self) -> None:
+        with self._lock:
+            handle, self._handle = self._handle, None
+        if handle:
+            self._lib.sc_visual_close(handle)  # joins its thread and removes its tap
+        mixer = self._mixer
+        if mixer is not None:
+            captures = mixer.__dict__.get("_captures", [])
+            if self in captures:
+                captures.remove(self)
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 (never from a destructor)
+            pass
+
+
+class SoundMixer:
+    """The engine's sound mixer (include/sprigcore.h sc_mixer): one 48 kHz stereo mix of every sound, mixed on a
+    thread of the engine's own (clocked) so it never waits on Python. audio/native_mixer.py drives it like
+    audio/mixer.py's Mixer. Every method is safe from any thread."""
+
+    def __init__(self, clocked: bool = True):
+        lib = _media_lib()
+        if lib is None:
+            raise NativeError(-5, "the native engine isn't available")
+        self._lib = lib
+        handle = ctypes.c_void_p()
+        _check(lib.sc_mixer_create(int(clocked), ctypes.byref(handle)))
+        self._handle = handle
+        self._lock = __import__("threading").Lock()
+        self._level = MixerLevel()
+
+    def _call(self, fn, *args) -> int:
+        handle = self._handle
+        if not handle:
+            raise NativeError(-1, "the mixer is closed")
+        return fn(handle, *args)
+
+    @staticmethod
+    def _settings(gain=1.0, mono=False, balance=0.0, delay_ms=0, tracks=(), monitor=False, voice=False,
+                  bloom_out=False) -> MixerSourceSettings:
+        mask = 0
+        for name in tracks:
+            if name in MIXER_TRACKS:
+                mask |= 1 << MIXER_TRACKS.index(name)
+        return MixerSourceSettings(float(gain), int(bool(mono)), float(balance), int(delay_ms), mask,
+                                   int(bool(monitor)), int(bool(voice)), int(bool(bloom_out)))
+
+    def add_source(self, **settings) -> int:
+        out = ctypes.c_int()
+        _check(self._call(self._lib.sc_mixer_source_add, ctypes.byref(self._settings(**settings)), ctypes.byref(out)))
+        return out.value
+
+    def set_source(self, source: int, **settings) -> None:
+        _check(self._call(self._lib.sc_mixer_source_set, int(source), ctypes.byref(self._settings(**settings))))
+
+    def remove_source(self, source: int) -> None:
+        _check(self._call(self._lib.sc_mixer_source_remove, int(source)))
+
+    def push(self, source: int, block) -> None:
+        """Samples a sound made: float32 (n, 2) at 48 kHz."""
+        import numpy as np
+
+        data = np.ascontiguousarray(block, dtype=np.float32)
+        _check(self._call(self._lib.sc_mixer_source_push, int(source), data.ctypes.data, int(data.shape[0])))
+
+    def set_filters(self, source: int, filters: list[tuple[int, int, tuple[float, ...]]]) -> None:
+        """A sound's built-in filters in order: (FILTER_*, the sound it follows or 0, its numbers)."""
+        array = (MixerFilter * max(1, len(filters)))()
+        for i, (kind, follow, numbers) in enumerate(filters):
+            array[i].kind, array[i].follow = int(kind), int(follow)
+            for k, value in enumerate(list(numbers)[:6]):
+                array[i].p[k] = float(value)
+        _check(self._call(self._lib.sc_mixer_source_filters, int(source), array, len(filters)))
+
+    def link_media(self, source: int, player: MediaPlayer | None, asleep: bool = False) -> None:
+        """The sound reads straight from an engine player (None: pushed again)."""
+        if player is None:
+            _check(self._call(self._lib.sc_mixer_source_media, int(source), None, 0))
+            return
+        with player._lock:  # against close(): it swaps the handle under this lock, then unlinks, then frees
+            if not player._handle:
+                raise NativeError(-1, "the player is closed")
+            _check(self._call(self._lib.sc_mixer_source_media, int(source), player._handle, int(bool(asleep))))
+
+    def set_ducking(self, enabled: bool, amount_db: float, threshold_db: float, attack_ms: float,
+                    release_ms: float, hold_ms: float) -> None:
+        d = MixerDucking(int(bool(enabled)), float(amount_db), float(threshold_db), float(attack_ms),
+                         float(release_ms), float(hold_ms))
+        _check(self._call(self._lib.sc_mixer_set_ducking, ctypes.byref(d)))
+
+    def add_tap(self, what: list[int]) -> int:
+        entries = (ctypes.c_int * len(what))(*what)
+        out = ctypes.c_int()
+        _check(self._call(self._lib.sc_mixer_tap_add, entries, len(what), ctypes.byref(out)))
+        return out.value
+
+    def remove_tap(self, tap: int) -> None:
+        _check(self._call(self._lib.sc_mixer_tap_remove, int(tap)))
+
+    def take(self, tap: int, entries: int):
+        """The oldest waiting block of a tap: (index, float32 array (entries, BLOCK, 2), dropped so far) or None."""
+        import numpy as np
+
+        out = np.empty((entries, MIXER_BLOCK, 2), np.float32)
+        index, dropped = ctypes.c_int64(), ctypes.c_uint64()
+        got = self._call(self._lib.sc_mixer_tap_take, int(tap), out.ctypes.data, out.size, ctypes.byref(index),
+                         ctypes.byref(dropped))
+        _check(min(got, 0))
+        return (index.value, out, dropped.value) if got == 1 else None
+
+    def tick(self, count: int = 1) -> None:
+        _check(self._call(self._lib.sc_mixer_tick, int(count)))
+
+    def wait(self, after: int, timeout_ms: int) -> int:
+        """Blocks mixed so far, once more than `after` (or the timeout passed). Python's lock is let go meanwhile."""
+        now = ctypes.c_int64()
+        _check(min(0, self._call(self._lib.sc_mixer_wait, ctypes.c_int64(after), int(timeout_ms), ctypes.byref(now))))
+        return now.value
+
+    def levels(self, source: int) -> tuple[float, float, float, int]:
+        """(peak dB since last asked, last block's RMS dB, level, underruns); MIXER_MASTER: the stream track,
+        with level = the ducking gain."""
+        with self._lock:
+            _check(self._call(self._lib.sc_mixer_levels, int(source), ctypes.byref(self._level)))
+            lv = self._level
+            return lv.peak_db, lv.rms_db, lv.level, int(lv.underruns)
+
+    def capture(self, source: int, device: str = "", loopback: bool = False) -> SoundCapture:
+        """Read a microphone or desktop sound (by name; "" = the Windows default) straight into this sound."""
+        with self._lock:
+            handle = self._handle
+            if not handle:
+                raise NativeError(-1, "the mixer is closed")
+            out = ctypes.c_void_p()
+            _check(self._lib.sc_capture_open(handle, int(source), device or "", int(bool(loopback)),
+                                             ctypes.byref(out)))
+            made = SoundCapture(self._lib, out, self)
+            self.__dict__.setdefault("_captures", []).append(made)
+            return made
+
+    def play(self, what: int, device: str = "") -> SoundPlayback:
+        """Play a mix (MIXER_MONITOR or a track's index) on a playback device (by name; "" = the Windows default)."""
+        with self._lock:
+            handle = self._handle
+            if not handle:
+                raise NativeError(-1, "the mixer is closed")
+            out = ctypes.c_void_p()
+            _check(self._lib.sc_playback_open(handle, int(what), device or "", ctypes.byref(out)))
+            made = SoundPlayback(self._lib, out, self)
+            self.__dict__.setdefault("_captures", []).append(made)  # closed before the mixer, as captures are
+            return made
+
+    def visual(self, what: int) -> SoundVisual:
+        """An audio visualizer hearing `what` (a track's index, or MIXER_SOURCE_TAP + a sound; < 0: nothing)."""
+        with self._lock:
+            if not self._handle:
+                raise NativeError(-1, "the mixer is closed")
+            made = SoundVisual(self, what)
+            self.__dict__.setdefault("_captures", []).append(made)  # closed before the mixer, as captures are
+            return made
+
+    def close(self) -> None:
+        with self._lock:
+            captures, self.__dict__["_captures"] = self.__dict__.get("_captures", []), []
+        for c in captures:  # they push into this mixer: they end first
+            c.close()
+        handle, self._handle = self._handle, None
+        if handle:
+            self._lib.sc_mixer_destroy(handle)
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 (never from a destructor)
             pass

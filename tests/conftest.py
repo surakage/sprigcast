@@ -9,11 +9,31 @@ import pytest
 # Browser pages are drawn in SprigCast itself in tests (the helper process has tests of its own, which start
 # one on purpose): a window test with a browser source doesn't start Chromium in another process.
 os.environ.setdefault("SPRIGCAST_BROWSER_IN_PROCESS", "1")
+# The native engine is the app's default on Windows. Tests use the Python engine unless they ask for the native one
+# (or check the default itself, tests/test_sprigcore.py).
+os.environ.setdefault("SPRIGCAST_ENGINE", "python")
+# Plugin sources run in SprigCast in tests, unless a test starts the plugin helper itself (test_plugin_helper.py).
+os.environ.setdefault("SPRIGCAST_PLUGINS_IN_PROCESS", "1")
+# The capture helper is another program too: tests capture in the engine, tests/test_capture_helper.py aside.
+os.environ.setdefault("SPRIGCAST_CAPTURE_IN_ENGINE", "1")
 if sys.platform == "win32":
     os.environ.setdefault("QT_QPA_FONTDIR", os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"))
 
 
 def pytest_configure(config):
+    _collect_on_main_thread()
+    _settings_in_a_folder()
+
+
+def _collect_on_main_thread():
+    """As the app does (core/pacing.py): a collection on a test's stream or encoder thread used to free a closed
+    page's widgets there, and the whole run crashed (Fatal Python error, 2026-11-18)."""
+    from sprigcast.core import pacing
+
+    pacing.collect_on_main_thread()
+
+
+def _settings_in_a_folder():
     """Settings written by tests go to .ini files in a temporary folder, never the registry. On the PC, tests
     had left HKCU\\Software\\SprigCastTests and SprigCastAddMenuTest behind (2026-11-17), and a test that forgot
     to change the app's name would have written into the user's real SprigCast settings."""
@@ -63,6 +83,17 @@ def _frames_faster_than_real_time(monkeypatch):
     from sprigcast.output import recorder
 
     monkeypatch.setattr(recorder.Recorder, "opening_queue", recorder.VIDEO_QUEUE)
+
+
+@pytest.fixture(autouse=True)
+def _no_engine_lists_left_on():
+    """A native bridge a test made and never closed would leave store plugins handing over lists of pictures
+    (core/drawn.py ENGINE) in the next test."""
+    from sprigcast.core import drawn
+
+    drawn.ENGINE = False
+    yield
+    drawn.ENGINE = False
 
 
 @pytest.fixture(autouse=True)

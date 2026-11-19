@@ -45,6 +45,7 @@ using sc::ffm::av_text;
 using sc::ffm::ff;
 using sc::ffm::ff_lock;
 using sc::ffm::ff_ready;
+std::atomic<bool> devices_ready{false};  // libavdevice loaded and registered (cameras: sc_media_set_device)
 using sc::ffm::find_symbol;
 using sc::ffm::FFmpeg;
 using sc::ffm::open_library;
@@ -238,6 +239,13 @@ struct Core : std::enable_shared_from_this<Core> {
 
     // settings
     std::string path;
+    // A camera (sc_media_set_device): opened through an FFmpeg input device, its newest picture always shown,
+    // no clock and no end; unplugged, it is opened again every 2 s.
+    bool live = false;
+    std::string device_format;
+    std::vector<std::pair<std::string, std::string>> device_choices;  // (input name, "key=value:..." options)
+    double live_gap = 0;           // packets closer than this are skipped (a camera faster than wanted)
+    std::atomic<bool> mirror{false};
     bool loop = false, clear_on_end = false, restart_on_show = true;
     float speed_setting = 1.0f;
 
@@ -337,6 +345,17 @@ struct Core : std::enable_shared_from_this<Core> {
             on_screen = nullptr;
             on_screen_blank = true;
             ++screen_serial;
+            return;
+        }
+        if (live) {  // a camera: the newest picture, as soon as it's decoded
+            if (!frames.empty()) {
+                on_screen = frames.back().second;
+                on_screen_blank = false;
+                ++screen_serial;
+                has_shown = true;
+                frames.clear();
+                wake.notify_all();
+            }
             return;
         }
         if (state != SC_MEDIA_PLAYING && has_shown) return;
@@ -613,6 +632,21 @@ bool Core::play_once(Held &held, uint64_t serial) {
         return decode(file, gen, serial, from, at_speed, held);
     } catch (const Error &e) {
         held.release();  // broken partway: open it fresh next time
+        bool camera;
+        {
+            std::lock_guard<std::mutex> hold(lock);
+            camera = live;
+            if (camera) {
+                status = (std::string(status == "ok" ? "camera disconnected, retrying: " : "camera not available, "
+                                                                                          "retrying: ") + e.what())
+                             .substr(0, 80);
+            }
+        }
+        if (camera) {  // unplugged or busy: opened again in a moment, as Python's feed did
+            sc::log_line(SC_LOG_INFO, std::string("media: a camera couldn't be read: ") + e.what());
+            wait_for_change(gen, serial, 2.0);
+            return false;
+        }
         sc::log_line(SC_LOG_WARNING, "media: " + file + " could not be played: " + e.what());
         bool started;
         {
@@ -651,7 +685,38 @@ void Core::probe(const std::string &file) {
 }
 
 void Core::open(Held &held, const std::string &file) {
-    int r = ff.avformat_open_input(&held.fmt, file.c_str(), nullptr, nullptr);
+    int r = 0;
+    bool camera;
+    std::string format;
+    std::vector<std::pair<std::string, std::string>> choices;
+    {
+        std::lock_guard<std::mutex> hold(lock);
+        camera = live;
+        format = device_format;
+        choices = device_choices;
+    }
+    if (camera) {  // each name and mode in turn, best first (sources/camera.py chooses them)
+        const AVInputFormat *input = ff.av_find_input_format(format.c_str());
+        if (!input) throw Error("this FFmpeg can't open " + format + " devices");
+        r = AVERROR(ENODEV);
+        for (const auto &[name, options] : choices) {
+            AVDictionary *opts = nullptr;
+            if (!options.empty()) ff.av_dict_parse_string(&opts, options.c_str(), "=", ":", 0);
+            ff.av_dict_set(&opts, "rtbufsize", "16M", 0);
+            r = ff.avformat_open_input(&held.fmt, name.c_str(), input, &opts);
+            ff.av_dict_free(&opts);
+            if (r >= 0) {
+                sc::log_line(SC_LOG_INFO, "media: a camera opened with " + (options.empty() ? std::string("its own mode")
+                                                                                            : options));
+                std::lock_guard<std::mutex> hold(lock);
+                status = "ok";
+                break;
+            }
+            held.fmt = nullptr;
+        }
+    } else {
+        r = ff.avformat_open_input(&held.fmt, file.c_str(), nullptr, nullptr);
+    }
     if (r < 0) {
         held.fmt = nullptr;
         throw Error(av_text(r));
@@ -665,7 +730,7 @@ void Core::open(Held &held, const std::string &file) {
         // A sound file's cover picture is not a video.
         if (type == AVMEDIA_TYPE_VIDEO && held.vi < 0 && !(s->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
             held.vi = static_cast<int>(i);
-        } else if (type == AVMEDIA_TYPE_AUDIO && held.ai < 0) {
+        } else if (type == AVMEDIA_TYPE_AUDIO && held.ai < 0 && !camera) {
             held.ai = static_cast<int>(i);
         } else {
             s->discard = AVDISCARD_ALL;
@@ -686,10 +751,11 @@ void Core::open(Held &held, const std::string &file) {
         if (e >= 0) {
             ctx->pkt_timebase = s->time_base;
             if (video) {
-                ctx->thread_count = decode_threads(s->codecpar->width, s->codecpar->height);
+                // A camera's MJPEG: one thread decodes 1080p60 in a few ms, and each more holds its own frames.
+                ctx->thread_count = camera ? 1 : decode_threads(s->codecpar->width, s->codecpar->height);
                 ctx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
                 AVHWDeviceType type = AV_HWDEVICE_TYPE_NONE;
-                AVBufferRef *device = hardware.load() ? hw_device_ref(type) : nullptr;
+                AVBufferRef *device = hardware.load() && !camera ? hw_device_ref(type) : nullptr;
                 AVPixelFormat hw_format = AV_PIX_FMT_NONE;
                 for (int i = 0; device; ++i) {  // libvpx (see-through WebM) has none: it stays on the CPU
                     const AVCodecHWConfig *config = ff.avcodec_get_hw_config(codec, i);
@@ -751,7 +817,11 @@ bool Core::rewind(Held &held) {
 
 bool Core::push_frame(double t, PicturePtr picture, uint64_t gen, uint64_t serial) {
     std::unique_lock<std::mutex> hold(lock);
-    wake.wait(hold, [&] { return !current(gen, serial) || frames.size() < AHEAD_FRAMES; });
+    if (live) {  // a camera never waits for the screen: an older picture nobody took is dropped
+        while (frames.size() >= 2) frames.pop_front();
+    } else {
+        wake.wait(hold, [&] { return !current(gen, serial) || frames.size() < AHEAD_FRAMES; });
+    }
     if (!current(gen, serial)) return false;
     picture_bytes = std::max<uint64_t>(picture_bytes, picture->data.size());
     frames.emplace_back(t, std::move(picture));
@@ -838,7 +908,8 @@ void colours_of(const AVFrame *f, Picture &pic) {
     case AVCOL_SPC_BT2020_CL: pic.matrix = 2020; break;
     default: pic.matrix = 601; break;
     }
-    pic.full = f->color_range == AVCOL_RANGE_JPEG || f->format == AV_PIX_FMT_YUVJ420P;
+    pic.full = f->color_range == AVCOL_RANGE_JPEG || f->format == AV_PIX_FMT_YUVJ420P ||
+               f->format == AV_PIX_FMT_YUVJ422P || f->format == AV_PIX_FMT_YUVJ444P;
 }
 
 PicturePtr Core::card_picture(const AVFrame *f) const {
@@ -898,7 +969,29 @@ PicturePtr card_to_memory(const Picture &on_card) {
     return pic;
 }
 
-PicturePtr make_picture(Held &held, const AVFrame *f, int ow, int oh, bool smaller, int as) {
+// Left to right, in place: a mirrored camera (RGBA or BGRA pixels, or packed I420 planes).
+void mirror_rows(Picture &pic) {
+    auto flip = [](uint8_t *row, int count, int size) {
+        for (int a = 0, b = count - 1; a < b; ++a, --b)
+            for (int i = 0; i < size; ++i) std::swap(row[a * size + i], row[b * size + i]);
+    };
+    uint8_t *data = pic.data.data();
+    if (pic.format != SC_FMT_I420 && pic.format != SC_FMT_I420A) {
+        for (int y = 0; y < pic.height; ++y) flip(data + static_cast<size_t>(y) * pic.stride, pic.width, 4);
+        return;
+    }
+    const int w = pic.width, cw = w / 2;
+    const int h = pic.format == SC_FMT_I420A ? pic.height * 2 / 5 : pic.height * 2 / 3;  // height = h + h/2 (+ h)
+    for (int y = 0; y < h; ++y) flip(data + static_cast<size_t>(y) * w, w, 1);
+    for (int y = h; y < h + h / 2; ++y) {
+        flip(data + static_cast<size_t>(y) * w, cw, 1);
+        flip(data + static_cast<size_t>(y) * w + cw, cw, 1);
+    }
+    for (int y = h + h / 2; y < pic.height; ++y) flip(data + static_cast<size_t>(y) * w, w, 1);
+}
+
+PicturePtr make_picture(Held &held, const AVFrame *f, int ow, int oh, bool smaller, int as, bool camera = false,
+                        bool mirrored = false) {
     auto pic = std::make_shared<Picture>();
     int kind = 0;
     AVPixelFormat to = AV_PIX_FMT_RGBA;
@@ -909,7 +1002,22 @@ PicturePtr make_picture(Held &held, const AVFrame *f, int ow, int oh, bool small
     case AV_PIX_FMT_YUVA420P: kind = 2; to = AV_PIX_FMT_YUVA420P; break;
     default: break;
     }
+    // A camera's 4:2:2 (MJPEG's yuvj422p, raw YUY2) goes to the card as 4:2:0 planes, as Python's feed sent it:
+    // half the bytes of RGBA, and the card makes the colour.
+    if (camera && !kind) {
+        switch (f->format) {
+        case AV_PIX_FMT_YUVJ422P: case AV_PIX_FMT_YUVJ444P: kind = 1; to = AV_PIX_FMT_YUVJ420P; break;
+        case AV_PIX_FMT_YUV422P: case AV_PIX_FMT_YUYV422: case AV_PIX_FMT_UYVY422: case AV_PIX_FMT_YUV444P:
+            kind = 1;
+            to = AV_PIX_FMT_YUV420P;
+            break;
+        default: break;
+        }
+    }
     if (as) kind = 0;
+    if (kind && (ow % 2 || oh % 2)) kind = 0;  // 4:2:0 needs even sizes
+    const bool direct = f->format == AV_PIX_FMT_YUV420P || f->format == AV_PIX_FMT_YUVJ420P ||
+                        f->format == AV_PIX_FMT_NV12 || f->format == AV_PIX_FMT_YUVA420P;
     if (!kind) {
         int strides[4];
         scale(held, f, ow, oh, as == 2 ? AV_PIX_FMT_BGRA : AV_PIX_FMT_RGBA, smaller, strides);
@@ -919,6 +1027,7 @@ PicturePtr make_picture(Held &held, const AVFrame *f, int ow, int oh, bool small
         pic->stride = ow * 4;
         pic->data.resize(static_cast<size_t>(ow) * 4 * oh);
         copy_rows(pic->data.data(), ow * 4, held.planes[0].data(), strides[0], ow * 4, oh);
+        if (mirrored) mirror_rows(*pic);
         return pic;
     }
     const int cw = ow / 2, ch = oh / 2;
@@ -929,7 +1038,7 @@ PicturePtr make_picture(Held &held, const AVFrame *f, int ow, int oh, bool small
     uint8_t *y = pic->data.data();
     uint8_t *uv = y + static_cast<size_t>(ow) * oh;
     uint8_t *a = uv + static_cast<size_t>(ow) * ch;
-    if (f->width == ow && f->height == oh) {
+    if (f->width == ow && f->height == oh && direct) {
         copy_rows(y, ow, f->data[0], f->linesize[0], ow, oh);
         if (f->format == AV_PIX_FMT_NV12) {  // U and V share one plane, UVUV...
             for (int row = 0; row < ch; ++row) {
@@ -954,6 +1063,7 @@ PicturePtr make_picture(Held &held, const AVFrame *f, int ow, int oh, bool small
         if (kind == 2) copy_rows(a, ow, held.planes[3].data(), strides[3], ow, oh);
     }
     colours_of(f, *pic);
+    if (mirrored) mirror_rows(*pic);
     return pic;
 }
 
@@ -990,7 +1100,14 @@ std::shared_ptr<std::vector<float>> resample(Resampler &rs, const AVFrame *f) {
 
 // Decode until the end, a jump or sleep. True when it played out (or is a file waiting for play).
 bool Core::decode(const std::string &file, uint64_t gen, uint64_t serial, double from, float at_speed, Held &held) {
+    bool camera;
+    double gap;
     {
+        std::lock_guard<std::mutex> hold(lock);
+        camera = live;
+        gap = live_gap;
+    }
+    if (!camera) {
         std::error_code ec;
         const std::u8string text(reinterpret_cast<const char8_t *>(file.data()), file.size());
         if (!std::filesystem::exists(std::filesystem::path(text), ec)) throw Error("file not found");
@@ -1002,6 +1119,7 @@ bool Core::decode(const std::string &file, uint64_t gen, uint64_t serial, double
     }
     if (held.key != key) held.release();
     held.key = key;
+    if (camera) key = "camera\n" + key;
     double offset = 0;  // added to each pass's times when looping, so the timeline keeps running
     Resampler rs;       // one per play: a loop's next pass carries on with it
     rs.out_rate = std::max(8000, static_cast<int>(std::lround(RATE / static_cast<double>(at_speed))));
@@ -1076,7 +1194,7 @@ bool Core::decode(const std::string &file, uint64_t gen, uint64_t serial, double
         kept.clear();
         kept_bytes = 0;
         kept_shrink = shrink.load();
-        keeping = !sound && video && skip_to <= 0.0 && want_loop && length > 0.05;
+        keeping = !camera && !sound && video && skip_to <= 0.0 && want_loop && length > 0.05;
         if (skip_to > 0.5) {
             const AVStream *target = video ? video : sound;
             const int64_t ts = static_cast<int64_t>((skip_to + origin) / av_q2d(target->time_base));
@@ -1145,7 +1263,8 @@ bool Core::decode(const std::string &file, uint64_t gen, uint64_t serial, double
                 const float shrink_now = shrink.load();  // a new size shows from the next picture on
                 int ow, oh;
                 shrunk(size_w, size_h, shrink_now, ow, oh);
-                PicturePtr picture = make_picture(held, f, ow, oh, ow < f->width || oh < f->height, as);
+                PicturePtr picture = make_picture(held, f, ow, oh, ow < f->width || oh < f->height, as, camera,
+                                                  camera && mirror.load());
                 ff.av_frame_unref(f);
                 {
                     std::lock_guard<std::mutex> hold(lock);
@@ -1199,6 +1318,12 @@ bool Core::decode(const std::string &file, uint64_t gen, uint64_t serial, double
             }
         };
 
+        // A camera faster than the rate asked for (a Facecam's 120 for 60): MJPEG and raw pictures stand alone, so
+        // the extra ones are skipped before they're decoded.
+        const bool skippable = camera && gap > 0 && held.vdec &&
+                               (held.vdec->codec_id == AV_CODEC_ID_MJPEG || held.vdec->codec_id == AV_CODEC_ID_RAWVIDEO ||
+                                held.vdec->codec_id == AV_CODEC_ID_WRAPPED_AVFRAME);
+        double last_packet = 0;
         for (;;) {
             {
                 std::lock_guard<std::mutex> hold(lock);
@@ -1210,8 +1335,17 @@ bool Core::decode(const std::string &file, uint64_t gen, uint64_t serial, double
                 std::this_thread::sleep_for(std::chrono::milliseconds(2));
                 continue;
             }
+            if (r == AVERROR_EOF && camera) throw Error("the camera stopped sending pictures");
             if (r == AVERROR_EOF) break;
             if (r < 0) throw Error(av_text(r));
+            if (skippable && held.pkt->stream_index == held.vi && held.pkt->size) {
+                const double now = now_s();
+                if (now - last_packet < gap) {
+                    ff.av_packet_unref(held.pkt);
+                    continue;
+                }
+                last_packet = now;
+            }
             bool go = true;
             if (held.pkt->stream_index == held.vi) {
                 go = pictures(held.pkt);
@@ -1369,6 +1503,70 @@ SC_API int sc_media_ffmpeg_load(const char *avutil, const char *avcodec, const c
 }
 
 SC_API int sc_media_ffmpeg_ready(void) { return ff_ready.load() ? 1 : 0; }
+
+SC_API int sc_media_ffmpeg_load_devices(const char *avdevice) {
+    return sc::guarded("sc_media_ffmpeg_load_devices", [&]() -> int {
+        std::lock_guard<std::mutex> hold(ff_lock);
+        if (!ff_ready.load()) return sc::fail(SC_ERR_ARGUMENT, "media: FFmpeg isn't loaded yet");
+        if (devices_ready.load()) return SC_OK;
+        if (!avdevice || !*avdevice) return sc::fail(SC_ERR_ARGUMENT, "media: no libavdevice path");
+        void *library = open_library(avdevice);
+        if (!library) return sc::fail(SC_ERR_DEVICE, std::string("media: couldn't load ") + avdevice);
+        using Version = unsigned (*)(void);
+        using Register = void (*)(void);
+        auto version = reinterpret_cast<Version>(find_symbol(library, "avdevice_version"));
+        auto register_all = reinterpret_cast<Register>(find_symbol(library, "avdevice_register_all"));
+        if (!version || !register_all) return sc::fail(SC_ERR_DEVICE, "media: libavdevice has no avdevice_register_all");
+        register_all();
+        devices_ready.store(true);
+        sc::log_line(SC_LOG_INFO, "media: FFmpeg's devices loaded (libavdevice " + std::to_string(version() >> 16) +
+                                      ")");
+        return SC_OK;
+    });
+}
+
+SC_API int sc_media_set_device(sc_media *media, const char *format, const char *choices, int fps, int mirror) {
+    return sc::guarded("sc_media_set_device", [&]() -> int {
+        if (!media || !format || !*format || !choices || !*choices || fps < 0 || fps > 1000)
+            return sc::fail(SC_ERR_ARGUMENT, "sc_media_set_device: no device format or choices");
+        if (!devices_ready.load()) return sc::fail(SC_ERR_DEVICE, "sc_media_set_device: FFmpeg's devices aren't loaded");
+        std::vector<std::pair<std::string, std::string>> parsed;
+        const std::string text(choices);
+        for (size_t at = 0; at <= text.size();) {
+            size_t end = text.find('\n', at);
+            if (end == std::string::npos) end = text.size();
+            const std::string line = text.substr(at, end - at);
+            const size_t tab = line.find('\t');
+            if (!line.empty()) parsed.emplace_back(line.substr(0, tab), tab == std::string::npos ? "" : line.substr(tab + 1));
+            at = end + 1;
+        }
+        if (parsed.empty()) return sc::fail(SC_ERR_ARGUMENT, "sc_media_set_device: no choices");
+        Core &c = *media->core;
+        c.mirror.store(mirror != 0);
+        {
+            std::lock_guard<std::mutex> hold(c.lock);
+            c.live = true;
+            c.device_format = format;
+            c.device_choices = std::move(parsed);
+            c.live_gap = fps > 0 ? 0.95 / fps : 0.0;
+            c.path = c.device_choices.front().first;
+            c.has_video = true;
+            c.duration = 0;
+            c.width = c.height = 0;
+            c.loop = false;
+            c.status = "starting";
+            c.jump(0, SC_MEDIA_PLAYING);
+        }
+        c.start(false);  // a camera is read from now on (a file waits for play)
+        return SC_OK;
+    });
+}
+
+SC_API int sc_media_set_mirror(sc_media *media, int mirror) {
+    if (!media) return SC_ERR_ARGUMENT;
+    media->core->mirror.store(mirror != 0);
+    return SC_OK;
+}
 
 SC_API int sc_media_create(int playing, sc_media **out) {
     return sc::guarded("sc_media_create", [&]() -> int {

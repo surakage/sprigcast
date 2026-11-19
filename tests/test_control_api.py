@@ -487,3 +487,43 @@ def test_an_app_connecting_after_settings_closed_doesnt_touch_the_closed_page():
     gc.collect()
     server.on_clients_changed(2)  # nothing to update, and no error
     QSettings().clear()
+
+
+def test_stream_status_counts_frames_once_for_several_places():
+    """Two places sending the same pictures: one output's frames, not twice them (PC run, 2026-11-18)."""
+    from types import SimpleNamespace
+
+    from sprigcast.app.control_server import WindowHost
+
+    a = SimpleNamespace(frames=18186, dropped=0, bytes_out=100)
+    b = SimpleNamespace(frames=18180, dropped=3, bytes_out=50)
+    session = SimpleNamespace(streamers=[("x", a), ("y", b), ("y", b)], elapsed=302.0)
+    host = WindowHost.__new__(WindowHost)
+    host.w = SimpleNamespace(streaming=session)
+    status = host.stream_status()
+    assert status["frames"] == 18186 and status["skipped"] == 3 and status["bytes"] == 150
+
+
+def test_stream_start_lists_the_places_and_can_insist_on_them():
+    """A place switched on earlier and forgotten went live with a test (PC 2026-11-18): the answer lists every
+    place going live, and places: [...] refuses to start when they differ."""
+    from types import SimpleNamespace
+
+    from sprigcast.control.native import ApiError, NativeApi
+
+    outputs = [SimpleNamespace(id="tw", type="stream", enabled=True, service="twitch", canvas="horizontal"),
+               SimpleNamespace(id="yt", type="stream", enabled=True, service="youtube", canvas="horizontal"),
+               SimpleNamespace(id="kk", type="stream", enabled=False, service="kick", canvas="vertical")]
+    started = []
+    api = NativeApi.__new__(NativeApi)
+    api.host = SimpleNamespace(stream_status=lambda: None, start_stream=lambda force=False: started.append(1),
+                               collection=SimpleNamespace(outputs=outputs))
+    try:
+        api.stream_start({"places": ["tw"]})
+    except ApiError as exc:
+        assert exc.code == "places_differ" and [p["id"] for p in exc.extra["places"]] == ["tw", "yt"]
+    else:
+        raise AssertionError("went live to a place not asked for")
+    assert started == []
+    out = api.stream_start({"places": ["yt", "tw"]})
+    assert out["on"] and [p["id"] for p in out["places"]] == ["tw", "yt"] and started == [1]

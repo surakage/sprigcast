@@ -19,7 +19,7 @@ a Live screen for running the show, a Build screen for making blooms, chat, a co
 
 Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it needs to come back.
 
-- TikTok chat (#431). Kick chat, VST3 sound filters and the Background remover store plugin (#430). The Live captions
+- TikTok chat (#431). Kick chat (since rebuilt on the official API, see Chat), VST3 sound filters and the Background remover store plugin (#430). The Live captions
   store plugin, and with it the onnxruntime library (about 25 MB of the download, 70 MB installed). Elgato Wave Link
   sync (Wave Link's channels still work as sound devices). The Auto clip store plugin, which wasn't reliable enough
   (a looping video's sound kept suggesting clips). A Background remover, Live captions or Auto clip someone had added
@@ -154,6 +154,165 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   during a menu: Windows handles that error and carries on, but the crash note then read every running
   thread's stack and died reading the render thread's. Crash notes on Windows now hold the crashing thread's stack
   only, and the stall watch's every-thread dump is off unless SPRIGCAST_STALL_DUMPS=1.
+- Now playing (v6) with the new engine: the card is handed over as a list of pictures (cover card, words,
+  sliding words in thin slices for the fade, bars), so no whole card is painted and copied to the graphics card 30
+  times a second; only the small time strip is painted when it changes. Lists of pictures are several times cheaper to
+  make too.
+- New engine: graphics memory grew about 10 MB a minute with bloom switches (PC soak 2026-11-18). A switch that
+  waits for a camera gave its outputs back to Python and made them again after, with new textures each time, and
+  the recording's encoder on the graphics card keeps every texture it was handed. The engine now keeps drawing the
+  bloom being held, so recordings, streams and the replay buffer keep their outputs through a switch.
+  Transitions drawn by Python keep them too: the recording takes Python's frames for the
+  transition, then goes back to the engine's same textures.
+- New engine: closing a captured window just as its capture started could leave the engine's frame stuck for good
+  (a call into Windows' capture service that never came back), and nothing was drawn after that (PC test
+  2026-11-18). Captures now start and close on a thread of their own, so a stuck call holds up only other
+  captures, and a capture Windows hasn't started in 5 s is captured the old way. If a frame is ever stuck anyway,
+  Python draws everything again after 3 s instead of freezing, and its calls into the engine wait half a second at
+  most. A capture waking up no longer fills the log with "no room for the picture".
+- New engine: a bloom switch on one canvas no longer makes the other canvas's frames late (PC soak 2026-11-19:
+  about 24 late frames a minute, in bursts on each vertical-only switch). While a switch waited for a picture,
+  Python drew every sprig and copied every source of every canvas again; now only the sources it waits for are
+  copied. Sources waking are spread over ticks (about 4 ms of waking a tick), and the window measures its
+  previews four times a second, not on every poll.
+- New engine capture: a display, window or game capture whose bloom leaves the screen is parked, not closed: it
+  takes one picture a second and goes on at once when the bloom comes back, for as long as SprigCast is open
+  (no time limit: a capture started again after a long break would lose the memory again). Every capture
+  Windows starts left about one picture of graphics memory behind for good (PC 2026-11-19: +8.4 MB per wake at
+  1080p, the same on the old engine with windows-capture, so not something closing it better could fix; 5.5 MB a
+  minute over the 80-minute soak). Coming back is also instant now, with no wait for Windows to start. Not
+  confirmed on the PC yet.
+- New engine capture: graphics memory grew about 16 MB each time a display capture woke (PC soak 2026-11-19,
+  5.5 MB a minute over 80 minutes; 16 MB is one capture's pool of 2 pictures). A capture going to sleep now hands
+  every picture Windows drew back before it closes its pool, and the log says each capture's start and close with
+  how many are still open, so a capture left open shows at once. Not confirmed on the PC yet.
+- New engine: switching to a bloom with a display, window or game capture no longer reads the capture back from
+  the card and copies it to Python's compositor while the switch waits for its first picture (PC soak 2026-11-19:
+  display capture 22 to 130 ms on the switch frame, a 191 ms frame). The engine says when it has shown a picture.
+- New engine: on a PC with no graphics driver (only Windows' software renderer, the Microsoft Basic Render
+  Driver) the old engine draws, as the new one fell 5-47 s behind per frame there; `SPRIGCAST_ENGINE=native` still
+  asks for it. Copies back from the card (previews, outputs) wait for an event query, never in Map, and a stuck
+  frame's log line names the step it was on. (#625)
+- Your own plugins' sources (a .py you wrote in the plugins folder) are drawn in a helper process: a plugin that
+  raises, hangs or crashes can't freeze or close SprigCast any more. Its pictures go to the engine through shared
+  memory, like a browser page's; a crashed helper starts again by itself with the same sources. Hotkeys, menus
+  and Settings of the plugin work as before. Store plugins stay in SprigCast. SPRIGCAST_PLUGINS_IN_PROCESS=1 runs
+  them all in SprigCast as before.
+- New engine: its shaders are compiled when SprigCast is built and ship inside the engine, so nothing is compiled
+  while it runs. Compiling one still held a frame 3.4 s on the CI start-up check, even ahead of time on a
+  thread of its own (the frame needing it waited).
+- New engine: shaders are compiled on a thread of their own as the engine starts, instead of on the frame
+  thread the first time each is needed. On the software renderer one held a frame 2.3 s (CI start-up check),
+  and slow PCs are not much quicker. A shader that is slow to compile says so in the log.
+- New engine capture: a call into Windows that hangs no longer holds up every later capture. After 3 s the
+  captures go on on a new thread, so one slow start only moves that one source to the old capture, and it tries
+  the engine again a minute later. A window or game that closes and opens again is found within a quarter of a
+  second instead of waiting 2 s (PC test 2026-11-19).
+- Cameras read by the engine now say in the log when one is unplugged and when it comes back (PC test
+  2026-11-19). The memory map behind the 10-minute memory line loads in the warm-up, not on the window's
+  thread (its first load held the window 268 ms).
+- New engine on by default: SprigCast now starts with the C++ engine on Windows. The old Python engine still
+  starts when the engine's file is missing or doesn't match, in safe mode (offered after SprigCast didn't close
+  properly), or with SPRIGCAST_ENGINE=python; a faulted or stuck engine still hands drawing back to Python by itself.
+- New engine: stinger transitions are drawn by the engine. The clip's player hands its pictures straight to the
+  engine, which draws them over the change and swaps blooms at the cut point (track matte clips too), so a
+  stinger no longer hands the canvas and its recordings back to Python. SPRIGCAST_NO_NATIVE_STINGER=1 draws them
+  in Python as before.
+- New engine: Move transitions are drawn by the engine. Python lays both blooms out once when the Move starts,
+  and the engine works out every frame itself on its own clock (the same arithmetic, checked against Python on
+  thousands of frames), so a Move no longer hands the canvas and its recordings back to Python, and a busy
+  Python can't make it stutter. SPRIGCAST_NO_NATIVE_MOVE=1 draws them in Python as before.
+- New engine: cameras are read by the engine's own player on a thread of its own: decoding, shrinking and
+  mirroring happen there and the picture goes straight to the engine, never through Python. An unplugged camera
+  comes back by itself as before; SPRIGCAST_NO_NATIVE_CAMERA=1 reads cameras the old way.
+- A late frame of about 100 ms every few minutes with Move transitions (PC soak 2026-11-18): Python's minute
+  cleanup freed 55-68 thousand objects each time, 65-72 ms holding everything else. It now runs every 10 seconds,
+  each a sixth as long and inside a frame's idle time. SPRIGCAST_GC_TYPES=1 logs what each slow one freed.
+- New engine: display, window and game capture happen inside the engine. Windows hands each picture over on
+  the engine's own graphics device and it's copied there, so no screen picture is copied into memory, through
+  Python, and back (about 500 MB a second for a 1080p60 game). If the engine can't capture on a PC, the old
+  capture takes over by itself; SPRIGCAST_NO_NATIVE_CAPTURE_VIDEO=1 always uses the old one.
+- Now playing (v7): Cover glow's sound dots didn't move (PC test 2026-11-18). Its wide row had dots half the row
+  tall, and a bar stayed a dot until the music passed that height. Bars are now at most 0.3 of the row wide and
+  grow up from their dot with the level, so every style moves with quiet music too.
+- Death count (v8) and Snap (v7): a death while a Snap polaroid was up waited, frozen with the rest of the screen,
+  until the polaroid left, then jumped to its last number with no rise (PC test 2026-11-18). Snap's freeze now
+  leaves Death count moving, so each death rises and flips in turn.
+- PNGtuber: an app setting Mic (listen_to) to a sound's id or name without "sound:" was kept but quietly heard as
+  Auto. It's now matched to that sound, and anything unknown is refused, saying which sounds there are.
+- PNGtuber (v4) with the new engine: each of its pictures goes to the graphics card once, then a bounce or a held
+  mouth only says where it goes; a mouth or blink fade sends just the part that changes.
+- A crash in native code can no longer hang SprigCast: SprigCast.exe writes the crash dump itself, in plain C on a
+  thread made at start, and ends the run if it isn't written within 15 s (a Python callback writing it from the
+  crashing thread left the window Not Responding for 25 minutes). A fault Windows survives (one in a window's
+  paint) is dumped once and the run goes on. The crash report names the last fault, not COM's own handled
+  "0x8001010d" notes before it, and the Slide show's Qt fallback keeps its picture alive while Qt reads it.
+- Crash dumps name each thread (Windows): every thread SprigCast starts tells Windows its name, and adds "(ending)"
+  once its work is done. The 12:21 crash on 2026-11-18 was in a thread Python was tearing down, and the dump
+  couldn't say which one.
+- `SPRIGCAST_CRASH_TEST=<seconds>[,main]` crashes SprigCast on purpose, to test the crash guard on a PC.
+- The safe-mode question after a crash no longer adds a "0x8001010d" note to crash.log while it waits.
+- Pop-ups open lighter (sweep 13): the Live screen's place rows, the number fields and the previews no longer run
+  Python for every event they get (the window losing focus to a pop-up reached each of them), and the Garden
+  check shows its rows in one layout pass.
+- The Garden check, Last stream and the command palette hand Python's lock back quickly while they open, as the
+  other pop-ups do (57-76 ms), and the Plugin store makes its cards two a tick, handing it back quickly too
+  (147 ms over its fill).
+- A media source copies each new picture before taking the lock the canvas reads it under, and one long frame
+  (a stall elsewhere) no longer has a source drawn every 4th frame for most of a second afterwards (237 ms on the
+  PC). SPRIGCAST_STALL_DUMP_MS (from 200 ms) prints every thread's stack for shorter stalls when chasing one.
+- Chat's ⋯ menu is kept and made ready ahead instead of made in the click (151 ms). Drop-downs and number boxes
+  keep the wheel rule in their own wheel handling instead of an event filter each, and the Live lists fit their
+  height from their layout instead of a filter, so opening a pop-up no longer sends every one of them through
+  Python (51-63 ms). Panels → Web panels checks Qt WebEngine is there without importing it (51 ms).
+- Death count (v7) makes its stone, numbers and mound ahead, off the render thread, and starts a trip's clock with
+  its first picture: the first death's stone came 3.5 s late on the PC, rise and flip unseen. Quick deaths each
+  flip in turn (0, 1, 2 instead of 0 then 2); a flood waits for at most three flips.
+- A browser page in a bloom Snap freezes no longer remakes its texture every 3 s: with the new engine, a frozen
+  page's pictures are still taken (the page never waits) but its frozen picture stays on screen.
+- Pop-up cards (Garden check, Last stream, Get started, Starter kit and the rest) draw their soft shadow once per
+  size instead of blurring the whole card on every repaint, and the Stream doctor lost its two blurred shadows
+  (96 ms). The encoder overload check runs on a worker instead of the window's thread every meter tick (62 ms),
+  Last stream fills its tiles a tick after it shows (81-90 ms), and the main window no longer watches every event
+  of the stage splitter and an empty tiles area (69 ms).
+- Last streams no longer opens its drop-down as a window of its own for a moment (90-133 ms). The Garden check
+  fills its rows a tick after it opens (75-101 ms), a Settings page is put in its place a tick after it's made and
+  General's lower cards come a tick later still (62-131 ms), the + Add menu is made ready ahead (67 ms), and labels
+  that already fit skip measuring when a window resizes (Hotkeys, 52 ms).
+- Settings → General remembers the process priority instead of reading it again each time (93 ms), the Last streams
+  drop-down shares its page's style (95 ms), and a plugin hotkey no longer imports anything when pressed.
+- Bloom tiles draw themselves once per look and then only copy that picture: a pop-up opening, or the screen
+  waking, repainted every tile (496 ms during a monitor wake). While a pop-up is being made the preview waits
+  for the next frame and the Live places list for the next second. The Sound gear's rows come half a row a tick,
+  the Plugin store's cards a few a tick, and one-line labels fit their text only when it or their width changes.
+- The Plugin store reads its list and what's installed on a worker before making its cards (113-167 ms). Last streams
+  shares one style sheet and, opened on its own, doesn't fill the Garden check's "now" view too (150-253 ms).
+  One-line labels no longer run Python on every style or font change, the Garden check's chips are lighter, and
+  the sound meters skip a few beats while a pop-up is being made.
+- Pop-ups over Build mode no longer repaint the Library and Inside lists (101-156 ms each time). The Sound gear's
+  drop-downs and number boxes are set up with almost no work as they're made, the rest a moment later (243 ms),
+  and its sound rows come one a tick. Settings → General no longer reads the registry for "Start SprigCast when
+  Windows starts", the Garden check's one-line labels measure themselves once, and the Stream page's last few
+  style sheets joined its page style.
+- The first half-minute after start has fewer hitches: the Stream settings page shares one style sheet instead
+  of 30-odd (245 ms of its warm-up), its Quality tab is made and put in place a tick apart, handing unused memory
+  back to Windows runs off the window's thread (60-66 ms), and start-up's objects are set aside without a full
+  look through all of them (44-63 ms).
+- Opening or closing a pop-up no longer repaints the whole window behind it: its colours stay the same when it
+  loses the focus (Windows' own palette changed them, and every bloom tile and panel painted again: 76-214 ms of
+  opening Settings, the Plugin store, Web panels or Paths > New while live). The Plugin store's rows share one style
+  sheet instead of six each (333 ms), Hotkeys' action names are one line each (a wrapped name was measured again on
+  every step of rows) and number boxes draw their chevrons once.
+- Pop-ups no longer pause while an app is connected to the Control API: it works out which blooms belong
+  together in one pass instead of once per bloom (409 ms on the PC while live). The Sound gear's rows set up
+  their drop-downs and track ticks without asking Qt back for each one (300 ms). Garden check and Last streams
+  change their rows in place while live instead of making them again every second (110-160 ms). A PNGtuber's
+  picture keeps its spot on the graphics card while it sleeps, so its bloom comes back without a 187 ms hitch.
+- Bloom tiles measure their name and key once, not on every paint: a pop-up opening over the window repaints them all
+  (309 ms under the Settings gear while live). Hotkeys are made four rows at a time (a card was 60-80 ms), and the
+  Garden check's rows and chips share one style sheet (140 ms).
+- Control API screenshots (Streamer.bot, Stream Deck) and a bloom tile's Save screenshot wait for the frame and make
+  the PNG on a worker; the window keeps drawing and answering meanwhile.
 - More from the second live sweep: the Audio page's sound rows are made a few per tick (263 ms); the control pictures
   are written once per run, not checked on disk at every open (137 ms on Last streams); one-line labels work out
   their size once per text (Garden check); the Plugin store shows first and fills after (94 ms); Missing files (and
@@ -351,6 +510,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 - One Chat panel that mixes Twitch, YouTube and Kick from just channel names (#144, #148, #150).
 - Show chat on your stream, and reply on Twitch (#181).
 - Fixed YouTube live lookup and Kick's chat key (#185).
+- Kick chat is back, rebuilt on Kick's official API: SprigCast's small relay (integrations/kick-chat) takes Kick's
+  signed chat webhooks and passes them to the app. Nobody signs in, and the app never talks to kick.com itself.
+  It needs the relay deployed once (see its README).
 
 ### Gardens and paths
 

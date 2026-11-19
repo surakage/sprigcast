@@ -1,4 +1,5 @@
-"""Safe mode: one start with plugins and web panels off, after SprigCast didn't close properly.
+"""Safe mode: one start with plugins and web panels off and the old (Python) engine, after SprigCast didn't close
+properly.
 
 A plugin or web panel that crashes SprigCast while it starts would otherwise do it again on every start.
 After an unexpected close the next start asks first (not when it starts minimized with Windows). Starting
@@ -40,11 +41,14 @@ def ask() -> bool:
 
     box = QMessageBox(QMessageBox.Icon.Question, "SprigCast",
                       "SprigCast didn't close properly last time.\n\n"
-                      "Start in safe mode? Plugins and web panels stay off until the next start.")
+                      "Start in safe mode? Plugins and web panels stay off and the old engine runs until the next start.")
     safe = box.addButton("Safe mode", QMessageBox.ButtonRole.AcceptRole)
     normal = box.addButton("Start normally", QMessageBox.ButtonRole.RejectRole)
     box.setDefaultButton(normal)
-    box.exec()
+    from sprigcast.app.logbook import crash_notes_paused
+
+    with crash_notes_paused():  # COM's own handled 0x8001010d notes while it waits (see there)
+        box.exec()
     chosen = box.clickedButton() is safe
     box.deleteLater()
     return chosen

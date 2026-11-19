@@ -3,8 +3,8 @@
 A drop-down or number box takes the wheel only once you've clicked into it (it has the keyboard). Before,
 scrolling down Settings → Stream → Quality could flip the encoder to x264 without a click.
 
-Each drop-down and number box gets the filter itself just after it's made (theme.fit_widgets, guard). It used
-to be one filter on the whole app, which ran Python for every event of every widget: while streaming and
+The rule lives in the boxes' own wheelEvent (_wheel_rule); each one made gets its focus set just after it's made
+(theme.fit_widgets, guard). It used to be one filter on the whole app, then a filter per box, which ran Python for every event of every widget: while streaming and
 recording, other threads hold Python's lock, so each of those ~36,000 calls waited its turn and opening
 Settings froze the window for seconds (PC test, 2026-11-17).
 """
@@ -38,6 +38,24 @@ def number_room(box: QAbstractSpinBox) -> None:
 
 _guard: WheelGuard | None = None
 _pending: list[QWidget] = []
+_BOXES = (QComboBox, QAbstractSpinBox)
+_STRONG = Qt.FocusPolicy.StrongFocus
+_WHEEL = Qt.FocusPolicy.WheelFocus
+_LEFT_ROOM: tuple[int, int, int, int] | None = None
+
+
+def _left_room() -> tuple[int, int, int, int]:
+    """number_room's margins for a left-aligned box, worked out once."""
+    global _LEFT_ROOM
+    if _LEFT_ROOM is None:
+        from sprigcast.app.theme import NUMBER_PAD
+
+        _LEFT_ROOM = (NUMBER_PAD, 0, 4, 0)
+    return _LEFT_ROOM
+
+
+SETTLE_STEP = 24  # boxes settled a tick
+SETTLE_GAP_MS = 15
 SETTLE_MS = 250  # the filter goes on once a pop-up's widgets are made and shown
 
 
@@ -45,7 +63,33 @@ def _the_guard() -> WheelGuard:
     global _guard
     if _guard is None:
         _guard = WheelGuard(QApplication.instance())
+        _wheel_rule()
     return _guard
+
+
+_ruled = False
+
+
+def _wheel_rule() -> None:
+    """Every drop-down and number box: no wheel until it has the keyboard, in their wheelEvent itself.
+
+    Each box used to get an event filter (WheelGuard), and a filter hears every event of its box through Python:
+    opening any pop-up sent each box in the window behind it its window-activation events, each waiting for
+    Python's lock while live (Last stream 51 ms on the PC, 2026-11-18). The wheelEvent runs only for a wheel."""
+    global _ruled
+    if _ruled:
+        return
+    _ruled = True
+    for cls in _BOXES:
+        plain = cls.wheelEvent
+
+        def wheel(self, event, _plain=plain) -> None:
+            if not self.hasFocus():
+                event.ignore()  # not taken: Qt passes it on to the page behind
+                return
+            _plain(self, event)
+
+        cls.wheelEvent = wheel
 
 
 def guard(widget: QWidget) -> None:
@@ -54,13 +98,28 @@ def guard(widget: QWidget) -> None:
     The filter itself goes on a moment later, for all the boxes made meanwhile at once: on from the start, it
     ran Python for each of the ~900 events of Settings → Stream's boxes being made and shown, each waiting for
     Python's lock while the render thread ran (PC 2026-11-18). Nobody scrolls a pop-up in its first 250 ms."""
-    if not isinstance(widget, (QComboBox, QAbstractSpinBox)) or widget.property(GUARDED):
+    if not isinstance(widget, _BOXES) or getattr(widget, "_guard_due", False) or widget.property(GUARDED):
         return
-    widget.setProperty(GUARDED, True)
-    if widget.focusPolicy() == Qt.FocusPolicy.WheelFocus:
-        widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # (and again once settled: set later by its maker)
+    _fresh(widget)
+
+
+def guard_new(widget: QWidget) -> None:
+    """guard() for a box just made (theme.fit_widgets hooks __init__): nothing is asked of it first. Its focus
+    is Qt's WheelFocus and its text left-aligned, so both are set straight away: asking each new box (and
+    turning Qt's answers into Python enums) was 170 ms of opening the Sound gear while live on the PC (2026-11-18,
+    three boxes a sound)."""
+    _fresh(widget)
+
+
+def _fresh(widget: QWidget) -> None:
+    """As few calls into Qt as can be: while live each one may wait its turn for Python's lock (the Sound gear's
+    rows, three boxes each, were 107-136 ms of it on the PC, 2026-11-18). The focus and the filter go on with
+    the rest a moment later (settle); only a number box's text room is now, so its number doesn't jump."""
+    widget._guard_due = True  # Python's own note: no call into Qt
     if isinstance(widget, QAbstractSpinBox):
-        number_room(widget)
+        edit = widget.lineEdit()
+        if edit is not None:
+            edit.setTextMargins(*_left_room())  # number_room for a left-aligned box (setAlignment calls it again)
     _pending.append(widget)
     if len(_pending) == 1:
         from PySide6.QtCore import QTimer
@@ -68,21 +127,26 @@ def guard(widget: QWidget) -> None:
         QTimer.singleShot(SETTLE_MS, settle)
 
 
-def settle() -> None:
-    """Put the filter on every box made since the last time (and keep the wheel from focusing them)."""
+def settle(step: int | None = SETTLE_STEP) -> None:
+    """Keep the wheel from focusing the boxes made since the last time, `step` of them now and the rest a tick
+    later; None: all of them now."""
     import shiboken6
 
-    boxes = _pending[:]
-    _pending.clear()
-    the_guard = _the_guard()
+    boxes = _pending[:step]
+    del _pending[:step]
+    if _pending:  # a big page's boxes a few at a time, the window answering in between
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(SETTLE_GAP_MS, settle)
+    _the_guard()
     for widget in boxes:
         if not shiboken6.isValid(widget):
             continue  # a pop-up closed meanwhile
-        if widget.focusPolicy() == Qt.FocusPolicy.WheelFocus:
+        if widget.focusPolicy() == _WHEEL:
             # Qt gives a WheelFocus widget the focus before any filter sees the wheel, so a scroll could still
             # change a stream's Resolution (PC test, 2026-11-17).
-            widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        widget.installEventFilter(the_guard)
+            widget.setFocusPolicy(_STRONG)
+        widget.setProperty(GUARDED, True)  # (the wheel itself: _wheel_rule)
 
 
 def install(app: QApplication) -> WheelGuard:

@@ -216,6 +216,9 @@ def run() -> None:
     QCoreApplication.setOrganizationName("Slothbloom")
     _announce_running()
     _quiet_start_log()
+    from sprigcast.core import thread_names
+
+    thread_names.install()  # crash dumps name the thread (Windows)
     if sys.stderr is not None:
         from sprigcast.app.logbook import crash_dumps_all_threads
 
@@ -234,10 +237,12 @@ def run() -> None:
     crash_dump.install(logbook.log_dir())  # a native crash leaves a small dump beside crash.log (Windows)
     from sprigcast import sprigcore
 
-    if sprigcore.engine_choice() == "native":  # the C++ engine is loaded only when asked for (docs/native-engine.md)
-        logging.info("native engine asked for: %s, cards %s",
+    if sprigcore.engine_choice() == "native":  # the default on Windows (docs/native-engine.md)
+        logging.info("native engine: %s, cards %s",
                      "loaded" if sprigcore.available() else "not available, using the Python engine",
                      [c["name"] for c in sprigcore.adapters()])
+    else:
+        logging.info("Python engine (%s)", sprigcore.why_python())
     import_av()
     package = inside_package()
     if package:
@@ -254,7 +259,7 @@ def run() -> None:
     from sprigcast.app import custom_docks
 
     if custom_docks.load():
-        custom_docks.web_engine_available()  # imports Qt WebEngine before the QApplication
+        custom_docks.import_web_engine()  # Qt WebEngine imported before the QApplication
     from sprigcast.app.theme import use_light_font_engine
 
     use_light_font_engine()  # 16 MB less than Qt's default on Windows
@@ -288,6 +293,9 @@ def run() -> None:
     from sprigcast.app import autostart, safe_mode
 
     safe = safe_mode.choose(sys.argv, crashed, autostart.start_minimized(sys.argv), safe_mode.ask)
+    if safe and sprigcore.engine_choice() == "native":
+        sprigcore.use_python_engine()  # nothing has started yet: this start draws, captures and mixes the old way
+        logging.warning("safe mode: the Python engine for this start")
 
     from sprigcast.app import priority
     from sprigcast.app.theme import apply_theme
@@ -358,6 +366,7 @@ def run() -> None:
     except OSError as exc:
         logging.warning("could not save the path: %s", exc)
     window = MainWindow(collection, scenes_path, plugins_dir, shelf=shelf)
+    window.start_in_live()  # always opens on Live, not the screen it closed on
     try:
         from sprigcast.app.leftovers import clean_up_recordings
 
@@ -394,6 +403,7 @@ def run() -> None:
 
     from sprigcast.core import pacing
 
+    pacing.collect_on_main_thread()  # Qt objects in cycles are never freed on another thread (crashed tests)
     pacing.watch_gc()  # logs slow garbage collections (they made the late frames in long streams)
     beat_ms, watch_s = pacing.watch_window()  # SPRIGCAST_UI_STALL_MS=50: every window stall from 50 ms, with where
     pacing.watch_stalls(interval=watch_s)  # names the thread whenever something holds everything up for 200 ms
@@ -403,10 +413,12 @@ def run() -> None:
     beat.timeout.connect(pacing.ui_beat)
     beat.start(beat_ms)
     QTimer.singleShot(8000, pacing.tame_gc)  # once start-up is done: freeze what it made
-    tidy = QTimer(window)  # then a small collection every minute instead of a long one every ten
+    collect = QTimer(window)  # then a small collection every few seconds instead of a long one every ten minutes
+    collect.timeout.connect(lambda: pacing.housekeeping("tidy", pacing.tidy))
+    collect.start(pacing.TIDY_EVERY_MS)
+    tidy = QTimer(window)  # and the minute's housekeeping
     # Each piece waits for the end of a frame and they run seconds apart (see pacing.housekeeping): together, at
     # once, they made a late frame on the same second of the minute on the PC (2026-11-17).
-    tidy.timeout.connect(lambda: pacing.housekeeping("tidy", pacing.tidy))
     tidy.timeout.connect(lambda: QTimer.singleShot(  # which threads come and go, for the next long test
         20_000, lambda: pacing.housekeeping("thread count", pacing.watch_threads)))
     tidy.timeout.connect(lambda: QTimer.singleShot(  # and where memory goes, every 10 minutes
@@ -414,7 +426,7 @@ def run() -> None:
     tidy.timeout.connect(lambda: QTimer.singleShot(  # and which threads use the CPU, every 5 minutes
         50_000, lambda: threading.Thread(target=pacing.watch_cpu, name="CPU by thread", daemon=True).start()))
     # (on its own thread: naming ~100 native threads held the window 340 ms on the PC, 2026-11-17)
-    tidy.start(pacing.TIDY_EVERY_MS)
+    tidy.start(pacing.MINUTE_MS)
     from sprigcast.core import warm, workers
 
     def _warm_art():  # the sloth pictures pop-ups show (app/empty.py)
@@ -424,16 +436,23 @@ def run() -> None:
 
     def warm_up():  # see core/warm.py
         encoders = (window.collection.recording.encoder.model_copy(), window.collection.stream_encoder.model_copy())
-        workers.run(lambda: (warm.warm(), warm.warm_encoders(*encoders), _warm_art()), name="warm-up")
+        workers.run(lambda: (warm.warm(), warm.warm_encoders(*encoders), _warm_art(), warm.keep_aside()),
+                    name="warm-up")
 
     QTimer.singleShot(warm.WARM_AFTER_MS, warm_up)
     QTimer.singleShot(warm.WARM_AFTER_MS + 3_000, window.warm_settings)  # Settings opens faster the first time
     workers.run(warm.warm_keyring, name="warm-keyring")  # now: a stream key or chat sign-in may want it soon
-    QTimer.singleShot(20_000, pacing.trim_working_set)  # start-up's one-time pages (imports, shaders) go back
+    QTimer.singleShot(20_000, pacing.trim_working_set_later)  # start-up's one-time pages (imports, shaders) go back
+    from sprigcast.app import engine_warning
+
+    engine_warning.install(window)  # says when the old engine draws on a PC that could run the new one
     if plugins.failed:
         names = ", ".join(plugins.failed)
         window.statusBar().showMessage(f"Some plugins failed to load: {names} (details in the console)", 20000)
     pacing.use_exit_guard()  # closing can't hang for ever (pacing.exit_guard)
+    from sprigcast.core import crash_test
+
+    crash_test.schedule(QTimer.singleShot)  # SPRIGCAST_CRASH_TEST: crash on purpose, for testing the crash guard
     code = app.exec()
     window.engine.finish_stopping()  # the window is gone: now wait for drawing and sound to stop
     if app.property("sprigcast_restart"):  # Settings' Restart now

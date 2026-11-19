@@ -74,6 +74,14 @@ def test_plain_progress_and_napping_sloth(tmp_path):
     assert clicked == [1] and empty.label.text() == "Nothing here yet"
     sloth = NappingSloth(0.5)
     assert (sloth.width(), sloth.height()) == (75, 48)
+    import time
+
+    from sprigcast.app import empty as empty_mod
+
+    sloth.grab()  # the first paint asks a worker to decode the picture (not the UI thread: PC 2026-11-18, 92 ms)
+    end = time.monotonic() + 5
+    while "napping" not in empty_mod._images and time.monotonic() < end:
+        time.sleep(0.01)
     image = sloth.grab().toImage()
     from sprigcast.app.empty import sloth_art
 

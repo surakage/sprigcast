@@ -2,8 +2,13 @@
 // build, the link to Python, the log queue, graphics cards and devices, and a first canvas that pictures can be
 // drawn on and read back, which the pixel tests use to compare the engine with what SprigCast draws today.
 #include "internal.h"
+#include "shader_hash.h"
+#ifdef SPRIGCORE_BAKED
+#include "baked_shaders.h"
+#endif
 
 #include <algorithm>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -29,26 +34,91 @@ int fail_hr(int code, const char *what, HRESULT hr) {
 }
 
 // Compiled shaders, kept for the life of the process: a new device (a rebuild after a fault, a second engine)
-// skips compiling again, which takes over a second on the software renderer and on slow PCs.
+// skips compiling again, which takes over a second on the software renderer and on slow PCs. A shader another
+// thread is compiling right now (warm_shaders, at the engine's start) is waited for, not compiled twice.
+// Bytecode baked when the engine was built (tools/shader_bake.cpp), for a shader whose source is unchanged since.
+bool baked(const char *source, size_t size, const char *entry, const char *profile, ComPtr<ID3DBlob> &out) {
+#ifdef SPRIGCORE_BAKED
+    const uint64_t hash = shader_hash(source, size);
+    for (const BakedShader &b : BAKED_SHADERS) {
+        if (b.hash != hash || b.size != size || std::strcmp(b.entry, entry) != 0 || std::strcmp(b.profile, profile) != 0)
+            continue;
+        ComPtr<ID3DBlob> blob;
+        if (FAILED(D3DCreateBlob(b.code_size, &blob))) return false;
+        std::memcpy(blob->GetBufferPointer(), b.code, b.code_size);
+        out = blob;
+        return true;
+    }
+#else
+    (void)source, (void)size, (void)entry, (void)profile, (void)out;
+#endif
+    return false;
+}
+
 HRESULT compile(const char *source, size_t size, const char *entry, const char *profile, ComPtr<ID3DBlob> &out) {
+    if (baked(source, size, entry, profile, out)) return S_OK;  // nothing to compile: no frame ever waits for one
+    struct Entry {
+        bool done = false;
+        ComPtr<ID3DBlob> blob;
+    };
     static std::mutex cache_lock;
-    static std::map<std::string, ComPtr<ID3DBlob>> cache;
+    static std::condition_variable cache_done;
+    static std::map<std::string, Entry> cache;
     const std::string key = std::to_string(reinterpret_cast<uintptr_t>(source)) + ":" + std::to_string(size) + ":" +
                             entry + ":" + profile;
     {
-        std::lock_guard<std::mutex> lock(cache_lock);
-        auto found = cache.find(key);
-        if (found != cache.end()) {
-            out = found->second;
-            return S_OK;
+        std::unique_lock<std::mutex> lock(cache_lock);
+        for (;;) {
+            auto found = cache.find(key);
+            if (found == cache.end()) {
+                cache[key];  // this thread compiles it; others wait for it
+                break;
+            }
+            if (found->second.done) {
+                out = found->second.blob;
+                return S_OK;
+            }
+            cache_done.wait(lock);  // being compiled (or failed and gone: then this thread tries)
         }
     }
-    HRESULT hr = compile_now(source, size, entry, profile, out);
-    if (SUCCEEDED(hr)) {
-        std::lock_guard<std::mutex> lock(cache_lock);
-        cache[key] = out;
+    HRESULT hr = E_FAIL;
+    LARGE_INTEGER t0, t1, freq;
+    QueryPerformanceCounter(&t0);
+    try {
+        hr = compile_now(source, size, entry, profile, out);
+    } catch (...) {
+        hr = E_FAIL;
     }
+    QueryPerformanceCounter(&t1);
+    QueryPerformanceFrequency(&freq);
+    const double ms = 1000.0 * static_cast<double>(t1.QuadPart - t0.QuadPart) / static_cast<double>(freq.QuadPart);
+    if (ms >= 100.0) {  // which shader is slow to make on this PC (a frame waits for it if it isn't ready)
+        char line[128];
+        std::snprintf(line, sizeof line, "shader: %s %s (%zu bytes of source) took %.0f ms to compile", profile, entry,
+                      size, ms);
+        log_line(SC_LOG_INFO, line);
+    }
+    {
+        std::lock_guard<std::mutex> lock(cache_lock);
+        if (SUCCEEDED(hr)) {
+            cache[key].blob = out;
+            cache[key].done = true;
+        } else {
+            cache.erase(key);
+        }
+    }
+    cache_done.notify_all();
     return hr;
+}
+
+void warm_shaders() {
+    // In the order a frame first needs them: drawing, the compositor, a planar picture's repack, outputs, then
+    // transitions.
+    warm_drawing_shaders();
+    warm_compositor_shaders();
+    warm_repack_shaders();
+    warm_nv12_shaders();
+    warm_transition_shaders();
 }
 
 HRESULT compile_now(const char *source, size_t size, const char *entry, const char *profile, ComPtr<ID3DBlob> &out) {
@@ -89,24 +159,7 @@ HRESULT adapter_at(int index, ComPtr<IDXGIAdapter1> &out) {
 // ---- the drawing shader -------------------------------------------------------------------------------------
 
 // One quad per draw, made from the vertex number: no vertex buffer. `rect` is where it lands, in clip space.
-const char SHADER[] = R"(
-cbuffer Draw : register(b0) { float4 rect; float opacity; float3 unused; };
-Texture2D picture : register(t0);
-SamplerState smooth : register(s0);
-struct Out { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
-Out vs_main(uint id : SV_VertexID) {
-    float2 uv = float2(id & 1, id >> 1);
-    Out o;
-    o.uv = uv;
-    o.pos = float4(rect.xy + uv * rect.zw, 0, 1);
-    return o;
-}
-float4 ps_main(Out i) : SV_Target {
-    float4 c = picture.Sample(smooth, i.uv);
-    c.a *= opacity;
-    return c;
-}
-)";
+#include "shader_draw.h"
 
 struct DrawConstants {
     float rect[4];
@@ -115,6 +168,12 @@ struct DrawConstants {
 };
 
 }  // namespace
+
+void sc::warm_drawing_shaders() {
+    ComPtr<ID3DBlob> code;
+    compile(SHADER, sizeof SHADER - 1, "vs_main", "vs_4_0", code);
+    compile(SHADER, sizeof SHADER - 1, "ps_main", "ps_4_0", code);
+}
 
 int sc_device::prepare_drawing() {
     if (vs) return SC_OK;

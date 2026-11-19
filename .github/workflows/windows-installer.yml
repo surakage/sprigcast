@@ -65,6 +65,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Nunito.ttf is missing from the installed copy" }
       - name: Start SprigCast for 30 seconds with a video playing
         shell: pwsh
+        timeout-minutes: 12  # two runs; smoke.py fails itself after 180 s each with the log tail; this only backs it up
         run: |
           # The whole app, started the way a person starts it (packaging/smoke.py): it must stay open, draw,
           # play a video and log no errors. Catches what only breaks when everything starts at once.
@@ -77,6 +78,14 @@ jobs:
           try {
             & "$home_\python.exe" packaging\smoke.py 30 (Resolve-Path "$home_\SprigCast.exe").Path
             $code = $LASTEXITCODE
+            if ($code -eq 0) {
+              # Again with the new engine, which this runner (no graphics driver) wouldn't pick by itself, on
+              # small canvases: catches an engine change that makes the frame wait or hang.
+              $env:SPRIGCAST_ENGINE = "native"; $env:SMOKE_LIGHT = "1"
+              & "$home_\python.exe" packaging\smoke.py 30 (Resolve-Path "$home_\SprigCast.exe").Path
+              $code = $LASTEXITCODE
+              Remove-Item Env:SPRIGCAST_ENGINE, Env:SMOKE_LIGHT
+            }
           } finally {
             Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith((Resolve-Path $home_).Path) } | Stop-Process -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2

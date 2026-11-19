@@ -46,3 +46,40 @@ def test_a_real_crash_writes_a_dump_on_windows(tmp_path):
     subprocess.run([sys.executable, "-c", code], env=env, timeout=60, capture_output=True)
     dumps = list(tmp_path.glob("crash *.dmp"))
     assert len(dumps) == 1 and dumps[0].read_bytes()[:4] == b"MDMP"
+
+
+def test_the_crash_report_names_the_last_real_fault_not_com_noise():
+    """PC 2026-11-18: crash.log held COM's own "code 0x8001010d" lines (handled by COM itself) before the access
+    violation that ended the run; the report named the first one."""
+    from sprigcast.app.crash_report import SECTION, read_crash_log
+
+    log = (f"{SECTION} 0.2.0 pid 77 started 2026-11-18 12:00:00\n"
+           "Windows fatal exception: code 0x8001010d\n\n"
+           'Current thread 0x0001 (most recent call first):\n  File "C:\\\\a\\\\qt.py", line 5 in exec\n\n'
+           "Windows fatal exception: access violation\n\n"
+           'Thread 0x2d80 (most recent call first):\n  File "C:\\\\a\\\\slide_show.py", line 88 in wake\n\n'
+           "Windows fatal exception: code 0x8001010d\n\n")
+    found = read_crash_log(log, 77)
+    assert found.cause == "access violation" and found.where == "slide_show.py, line 88 in wake"
+
+
+def test_outside_sprigcast_exe_the_launcher_guard_isnt_used(tmp_path):
+    assert crash_dump._launcher_guard(str(tmp_path / "x.dmp")) is False  # python.exe (tests): the Python way
+
+
+def test_crash_notes_pause_on_windows_and_come_back(monkeypatch):
+    import faulthandler
+
+    from sprigcast.app import logbook
+
+    calls = []
+    monkeypatch.setattr(faulthandler, "is_enabled", lambda: True)
+    monkeypatch.setattr(faulthandler, "disable", lambda: calls.append("off"))
+    monkeypatch.setattr(faulthandler, "enable", lambda **kw: calls.append("on"))
+    with logbook.crash_notes_paused(platform="win32") as paused:
+        assert paused and calls == ["off"]
+    assert calls == ["off", "on"]
+    calls.clear()
+    with logbook.crash_notes_paused(platform="linux") as paused:
+        assert not paused
+    assert calls == []

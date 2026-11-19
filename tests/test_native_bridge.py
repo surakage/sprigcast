@@ -66,17 +66,22 @@ def test_a_transitions_outgoing_bloom_is_in_the_snapshot():
     assert shows["h"] == "canvas:h"
 
 
-def test_which_transitions_the_native_engine_draws():
+def test_which_transitions_the_native_engine_draws(monkeypatch):
     from sprigcast.core.scene import Transition
     from sprigcast.render.engine import Running
 
     def running(kind, began=1.0, stinger=None):
         return Running(None, began, 0.3, Transition(kind=kind), stinger=stinger)
 
-    for kind in ("fade", "slide", "swipe", "wipe", "leaf", "bloom"):
+    for kind in ("fade", "slide", "swipe", "wipe", "leaf", "bloom", "move"):
         assert native_bridge.native_transition(running(kind))
-    assert not native_bridge.native_transition(running("move"))
-    assert not native_bridge.native_transition(running("stinger", stinger=object()))
+    monkeypatch.setenv("SPRIGCAST_NO_NATIVE_MOVE", "1")
+    assert not native_bridge.native_transition(running("move"))  # left to Python, as before
+    assert not native_bridge.native_transition(running("stinger", stinger=object()))  # a clip Python decodes
+    clip = SimpleNamespace(id="stinger:x", engine_player=object())
+    assert native_bridge.native_transition(running("stinger", stinger=clip))  # its clip plays in the engine
+    monkeypatch.setenv("SPRIGCAST_NO_NATIVE_STINGER", "1")
+    assert not native_bridge.native_transition(running("stinger", stinger=clip))
     assert not native_bridge.native_transition(running("fade", began=None))  # waiting for a camera
     spec = sprigcore.transition_spec(Transition(kind="wipe", direction="up", softness=2.0, duration_ms=500), "w")
     assert (spec.mode, round(spec.seconds, 3), tuple(spec.direction), spec.softness) == (4, 0.5, (0.0, -1.0), 1.0)
@@ -124,7 +129,7 @@ class FakeNative:
     def upload(self, source_id, frame, order, size):
         self.uploads.append(source_id)
 
-    def attach_media(self, source_id, player):
+    def attach_media(self, source_id, player, held=False):
         if player is not None:
             self.attached[source_id] = player
         else:
@@ -134,10 +139,13 @@ class FakeNative:
     def forget_gone(self, ids):
         pass
 
-    def sync(self, collection, effects, state_view, fading, transitions=None, wipe_picture=None, views=None):
+    def sync(self, collection, effects, state_view, fading, transitions=None, wipe_picture=None, views=None,
+             held=None, move_pieces=None):
         self.synced += 1
+        self.move_pieces = move_pieces
         self.transitions = dict(transitions or {})
         self.views = dict(views or {})
+        self.held = dict(held or {})
 
     def handles(self, extra):
         return native_bridge.NativeCanvases.handles(self, extra)
@@ -165,6 +173,10 @@ class FakeNative:
 
     def set_outputs(self, canvas_id, keys, scale="bilinear"):
         self.outputs[canvas_id] = (sorted(set(keys)), scale)
+
+    def pause_outputs(self, canvas_id, keys, scale="bilinear"):
+        self.set_outputs(canvas_id, keys, scale)
+        self.paused = getattr(self, "paused", 0) + 1
 
     def take_outputs(self, canvas_id, key):
         self.clock += 1.0  # one frame a tick, each drawn later than the last
@@ -275,7 +287,39 @@ def test_an_encoder_on_the_card_gets_the_native_engines_textures():
     assert card.frames and all(f.fmt == "nv12" for f in card.frames)
 
 
-def test_outputs_go_back_to_python_while_it_draws_the_canvas():
+def test_a_switch_waiting_for_a_camera_keeps_the_engines_outputs(monkeypatch):
+    """While a switch waits for a camera the engine draws the bloom held and its outputs go on. Dropped and made
+    again each switch, every switch made new texture pools, and the writer on the card keeps each texture it was
+    handed: graphics memory grew ~10 MB a minute with a switch every 15 s (PC soak 2026-11-18)."""
+    engine, fake = _engine(), FakeCompositor()
+    engine.add_frame_tap("h", lambda f: None, nv12_size=(64, 36))
+    _run(engine, fake, seconds=0.1)
+    kept = engine._native.outputs["h"]
+    assert kept[0]
+    old = engine._collection.scenes[0]
+    engine._waking["h"] = (old, 1e9, set())
+    monkeypatch.setattr(engine, "_switch_waits", lambda compositor, canvas_id, now: True)
+    seen = []
+    for i in range(30):
+        engine._tick(fake, 20.0 + i / 60)
+        seen.append(engine._native.outputs["h"])
+    assert all(o == kept for o in seen)  # never dropped while it waits
+    assert engine._native.held == {"h": old}  # the engine draws the bloom held
+    monkeypatch.setattr(engine, "_switch_waits", lambda compositor, canvas_id, now: False)
+    _run(engine, fake, seconds=0.1)
+    assert engine._native.outputs["h"] == kept and engine._native.held == {}
+
+
+def test_the_bloom_held_is_drawn_in_place_of_the_one_on_air():
+    col = SceneCollection(canvases=[Canvas(id="h", width=64, height=36)],
+                          scenes=[Scene(id="a", name="A", canvas="h"), Scene(id="b", name="B", canvas="h")],
+                          active_scenes={"h": "b"})
+    draws, _parts, shows = native_bridge.snapshot_draws(col, _plain_state, held={"h": col.scenes[0]})
+    assert [d.scene.id for d in draws] == ["a"] and shows["h"] == native_bridge.canvas_key("h")
+
+
+def test_outputs_go_back_to_python_while_it_draws_the_canvas(monkeypatch):
+    monkeypatch.setenv("SPRIGCAST_NO_NATIVE_MOVE", "1")
     engine, fake = _engine(), FakeCompositor()
     got = []
     engine.add_frame_tap("h", got.append, nv12_size=(64, 36))
@@ -285,7 +329,9 @@ def test_outputs_go_back_to_python_while_it_draws_the_canvas():
     fake.read_nv12 = lambda canvas_id, size: b"p"
     _run(engine, fake, seconds=0.25)
     assert got and all(f.data == b"p" for f in got)
-    assert engine._native.outputs["h"] == ([], "bicubic") and ("h", (64, 36)) in engine._native.python_served
+    # kept (not stopped and made again) while Python draws it: the engine's frames are let go meanwhile
+    assert engine._native.outputs["h"] == ([((64, 36), False)], "bicubic") and engine._native.paused > 0
+    assert ("h", (64, 36)) in engine._native.python_served
 
 
 def test_more_output_sizes_than_the_native_engine_has_room_for_stay_with_python():
@@ -498,6 +544,57 @@ def test_a_video_the_engine_plays_never_passes_through_python():
     assert not video.asleep and video.asked == before + 1
 
 
+def test_a_switch_waiting_on_one_source_leaves_the_engines_videos_alone(monkeypatch):
+    """While a switch waited for a picture, every source was copied for Python's compositor again, on every
+    canvas: a vertical-only switch cost the streamed horizontal canvas a read-back of its background video each
+    frame (PC soak 2026-11-19). Only the sources the switch waits for are copied."""
+    engine, fake = _engine(), FakeCompositor()
+    engine.previews = frozenset({"h"})
+    video = engine._sources["clip"] = EngineVideo()
+    awaited = engine._sources["cam"] = EngineVideo()
+    engine._collection.scenes[0].items += [SceneItem(source="clip"), SceneItem(source="cam")]
+    _run(engine, fake, seconds=0.2)
+    engine._waking["h"] = (engine._collection.scenes[0], 1e9, {"cam"})
+    monkeypatch.setattr(engine, "_switch_waits", lambda compositor, canvas_id, now: True)
+    asked, ticked, cam_asked = video.asked, video.ticked, awaited.asked
+    for i in range(10):
+        engine._tick(fake, 20.0 + i / 60)
+    assert video.asked == asked and video.ticked == ticked + 10  # stays with the engine
+    assert awaited.asked == cam_asked + 10  # Python's compositor gets the one it waits for
+
+
+class EngineCapture(EngineVideo):
+    """Stands in for a capture the engine does itself: it says when the engine has shown a picture of it."""
+
+    kind, shows = "display_capture", False
+
+    @property
+    def engine_shows(self):
+        return self.shows
+
+
+def test_a_switch_waiting_on_an_engine_capture_never_reads_it_back():
+    """A switch waiting for a capture had its picture read back from the card and copied to Python's compositor
+    every tick, only to learn it had one (PC soak 2026-11-19: display capture 22 to 130 ms on a switch frame).
+    The engine's own count of pictures shown ends the wait."""
+    engine, fake = _engine(), FakeCompositor()
+    engine.previews = frozenset({"h"})
+    screen = engine._sources["screen"] = EngineCapture()
+    engine._collection.scenes[0].items.append(SceneItem(source="screen"))
+    _run(engine, fake, seconds=0.2)
+    fake.textures = {}
+    engine._waking["h"] = (engine._collection.scenes[0], 1e9, {"screen"})
+    asked, ticked = screen.asked, screen.ticked
+    for i in range(5):
+        engine._tick(fake, 20.0 + i / 60)
+    assert screen.asked == asked and screen.ticked == ticked + 5  # waited for, and still not read back
+    assert "h" in engine._waking and engine._switch_waits(fake, "h", 21.0)
+    screen.shows = True
+    assert not engine._switch_waits(fake, "h", 21.0)
+    engine._tick(fake, 21.0)
+    assert "h" not in engine._waking and screen.asked == asked
+
+
 def test_the_bridge_tells_the_engine_once_which_player_a_source_shows(monkeypatch):
     calls = []
 
@@ -545,6 +642,37 @@ def test_a_browser_page_is_attached_by_its_shared_block_and_let_go_the_right_way
                          ("media", "page", None), ("shared", "page", "sprigcast-2-1"), ("shared", "page", None)]
 
 
+def test_a_frozen_page_is_held_not_let_go(monkeypatch):
+    """Snap's freeze (PC, 2026-11-18): letting go of a page's block left the page waiting for the engine, and it
+    made its texture again every 3 s. Frozen, the block stays and is held; thawed, it shows again."""
+    calls = []
+
+    class Holding(FakeEngine):
+        def attach_shared(self, source_id, name):
+            calls.append(("shared", source_id, name))
+
+        def hold_shared(self, source_id, held):
+            calls.append(("hold", source_id, held))
+
+        def forget(self, source_id):
+            calls.append(("forget", source_id))
+
+    monkeypatch.setattr(sprigcore, "Engine", Holding)
+    bridge = native_bridge.NativeCanvases(_collection())
+    assert bridge.attach_media("page", "sprigcast-1-1")
+    assert bridge.attach_media("page", "sprigcast-1-1", held=True) and bridge.attach_media("page", "sprigcast-1-1",
+                                                                                           held=True)
+    assert bridge.attach_media("page", "sprigcast-1-1")
+    assert calls == [("shared", "page", "sprigcast-1-1"), ("hold", "page", True), ("hold", "page", False)]
+    calls.clear()
+    assert bridge.attach_media("page", "sprigcast-1-1", held=True)
+    bridge.forget_gone([])
+    assert "page" not in bridge._held
+    calls.clear()
+    assert not bridge.attach_media("clip", None, held=True)  # nothing to hold: a player is simply let go
+    assert calls == []
+
+
 def test_a_failed_native_engine_hands_the_previews_back_to_python():
     engine, fake = _engine(), FakeCompositor()
     engine.previews = frozenset({"h"})
@@ -575,7 +703,21 @@ def test_a_fade_stays_in_the_native_engine():
     assert "h" in engine._native.transitions
 
 
-def test_a_move_transition_is_drawn_by_python():
+def test_a_move_transition_is_drawn_by_the_native_engine():
+    engine, fake = _engine(), FakeCompositor()
+    engine.previews = frozenset({"h"})
+    _switch(engine, "move")
+    engine._transitions["h"].began = 10.0
+    _run(engine, fake, seconds=0.25)
+    assert fake.rendered == []  # Python draws nothing: the engine works out every frame itself
+    assert "h" in engine._native.transitions
+    canvas = engine._collection.canvases[0]
+    old, new = engine._native.move_pieces(engine._native.transitions["h"], canvas)
+    assert isinstance(old, list) and isinstance(new, list)
+
+
+def test_a_move_transition_is_drawn_by_python_when_asked(monkeypatch):
+    monkeypatch.setenv("SPRIGCAST_NO_NATIVE_MOVE", "1")
     engine, fake = _engine(), FakeCompositor()
     engine.previews = frozenset({"h"})
     _switch(engine, "move")
@@ -583,6 +725,151 @@ def test_a_move_transition_is_drawn_by_python():
     _run(engine, fake, seconds=0.25)
     assert fake.rendered.count("h") >= 7
     assert engine.frames["h"].take().data == b"x"
+
+
+class _EngineClip:
+    """Stands in for render/stinger.py NativeStinger: a clip in the engine's own player."""
+
+    def __init__(self):
+        import threading
+
+        self.id, self.duration, self.error, self.channel_order = "stinger:x", 1.0, None, "BGRA"
+        self.ready = threading.Event()
+        self.ready.set()
+        self.engine_player, self.played, self.closed = object(), 0, False
+
+    def play(self):
+        self.played += 1
+
+    def frame_at(self, t):
+        raise AssertionError("Python read a picture of a clip the engine draws")
+
+    def close(self):
+        self.closed = True
+
+
+def _stinger_switch(engine, monkeypatch, clip, matte="none"):
+    from sprigcast.core.scene import Stinger, Transition
+
+    monkeypatch.setattr(engine, "_new_stinger", lambda path, transition, collection: clip)
+    monkeypatch.setattr(engine.mixer, "add_extra", lambda player: None)
+    monkeypatch.setattr(engine.mixer, "remove_extra", lambda player: None)
+    new = engine._collection.model_copy(deep=True)
+    new.scenes.append(Scene(id="c", name="C", canvas="h"))
+    new.active_scenes["h"] = "c"
+    new.transition = Transition(kind="stinger", duration_ms=500,
+                                stinger=Stinger(path="clip.webm", cut_ms=400, matte=matte))
+    old, engine._collection = engine._collection, new
+    engine._start_transitions(old, new)
+
+
+def test_a_stinger_is_drawn_by_the_native_engine_from_its_player(monkeypatch):
+    engine, fake = _engine(), FakeCompositor()
+    engine.previews = frozenset({"h"})
+    clip = _EngineClip()
+    _stinger_switch(engine, monkeypatch, clip)
+    _run(engine, fake, seconds=0.5)
+    assert fake.rendered == []  # Python draws nothing and reads no picture: the engine plays the clip itself
+    assert clip.played > 0 and "h" in engine._native.transitions
+    assert engine._native.attached.get("stinger:x") is clip.engine_player
+    fake.end_transition = fake.forget = lambda key: None
+    for i in range(40):  # over (the clip is a second long): it is let go
+        engine._tick(fake, 10.5 + i / 60)
+    assert clip.closed and "h" not in engine._transitions
+
+
+def test_a_stinger_is_drawn_by_python_when_asked(monkeypatch):
+    monkeypatch.setenv("SPRIGCAST_NO_NATIVE_STINGER", "1")
+    engine, fake = _engine(), FakeCompositor()
+    engine.previews = frozenset({"h"})
+    clip = _EngineClip()
+    clip.frame_at = lambda t: None
+    _stinger_switch(engine, monkeypatch, clip)
+    _run(engine, fake, seconds=0.25)
+    assert fake.rendered.count("h") >= 7 and "stinger:x" not in engine._native.attached
+
+
+def test_a_stinger_hands_the_engine_its_clip_cut_and_matte(monkeypatch):
+    from sprigcast.core.scene import Stinger, Transition
+    from sprigcast.render.engine import Running
+
+    calls = []
+
+    class Stinging(FakeEngine):
+        def transition(self, index, previous, spec):
+            calls.append((index, previous, spec))
+
+        def __getattr__(self, name):
+            return lambda *a, **k: None
+
+    monkeypatch.setattr(sprigcore, "Engine", Stinging)
+    monkeypatch.setattr(native_bridge.native_snapshot, "hand_over", lambda *a, **k: None)
+    col = _collection()
+    bridge = native_bridge.NativeCanvases(col)
+    clip = _EngineClip()
+    settings = Transition(kind="stinger", duration_ms=500,
+                          stinger=Stinger(path="clip.webm", cut_ms=400, matte="right", matte_only=True))
+    running = Running(Scene(id="old", name="Old", canvas="h"), 1.0, 1.5, settings, stinger=clip)
+    bridge.sync(col, {}, _plain_state, False, {"h": running})
+    (_index, previous, spec), = calls
+    assert previous == "from:h" and spec.mode == sprigcore.STINGER_MODE and round(spec.seconds, 3) == 1.5
+    assert spec.overlay == sprigcore.key("stinger:x") and round(spec.cut_seconds, 3) == 0.4
+    assert sprigcore.STINGER_MATTES[spec.matte] == "right" and spec.matte_only == 1
+
+
+def test_a_move_hands_the_engine_its_pieces_once(monkeypatch):
+    """The bridge lays a Move out once, when it starts: every piece with its sprig's drawing or its filters, and
+    which old piece each new one moves from (render/move.py pair)."""
+    from sprigcast.core.filters import VideoEffects
+    from sprigcast.core.scene import Transition
+    from sprigcast.render import move
+    from sprigcast.render.engine import Running
+
+    calls = []
+
+    class Moving(FakeEngine):
+        def move(self, index, previous, seconds, spec):
+            calls.append((index, previous, seconds, spec))
+
+        def transition(self, index, previous, spec):
+            calls.append((index, previous, spec))
+
+        def __getattr__(self, name):  # the rest of the engine: nothing to check here
+            return lambda *a, **k: None
+
+    monkeypatch.setattr(sprigcore, "Engine", Moving)
+    monkeypatch.setattr(native_bridge.native_snapshot, "hand_over", lambda *a, **k: None)
+    col = _collection()
+    bridge = native_bridge.NativeCanvases(col)
+    quad = [(0, 0, 0, 0), (8, 0, 1, 0), (0, 8, 0, 1), (8, 8, 1, 1)]
+    old = [move.Piece("cam", "cam frame", "cam", "h", quad), move.Piece("red", "red", "red", "h", quad, 0.5)]
+    new = [move.Piece("red", "red", "red", "h", quad)]
+    running = Running(Scene(id="old", name="Old", canvas="h"), 1.0, 0.4,
+                      Transition(kind="move", easing="spring", unmatched="slide"))
+    asked = []
+
+    def pieces(r, canvas):
+        asked.append((r, canvas.id))
+        return old, new
+
+    red = VideoEffects(brightness=0.25)
+    for _ in range(3):
+        bridge.sync(col, {"red": red}, _plain_state, False, {"h": running}, move_pieces=pieces)
+    assert asked == [(running, "h")]  # laid out once
+    moves = [c for c in calls if len(c) == 4]
+    assert len(moves) == 1
+    _index, previous, seconds, spec = moves[0]
+    assert previous == "from:h" and seconds == 0.4
+    assert (spec.old_count, spec.new_count, spec.effects_count) == (2, 1, 1)
+    assert sprigcore.MOVE_EASINGS[spec.easing] == "spring" and sprigcore.MOVE_UNMATCHED[spec.unmatched] == "slide"
+    cam, red_old, red_new = spec.pieces[0], spec.pieces[1], spec.pieces[2]
+    assert cam.part == sprigcore.key("part:p-cam") and cam.effects == -1  # a sprig drawn whole
+    assert red_old.part == 0 and red_old.source == sprigcore.key("red") and abs(red_old.opacity - 0.5) < 1e-6
+    assert red_old.effects == red_new.effects == 0 and abs(spec.effects[0].brightness - 0.25) < 1e-6
+    assert red_new.paired == 1 and cam.paired == -1
+    assert [tuple(red_new.quad[i]) for i in range(4)] == [tuple(map(float, q)) for q in quad]
+    bridge.sync(col, {"red": red}, _plain_state, False, {}, move_pieces=pieces)
+    assert calls[-1][1:] == (None, None)  # over: stopped
 
 
 def test_preview_pictures_are_the_size_shown():
@@ -650,6 +937,30 @@ def test_an_output_keeps_its_slot_and_its_frames_never_go_backwards(monkeypatch)
     bridge.engine.hung = 0
     assert bridge.reset_outputs()  # a feed that stopped: every output starts over, nothing remembered
     assert bridge.engine.set[-1] == (0, 0, 0, 0) and bridge._outputs[0] == {} and bridge._last_out == {}
+
+
+def test_a_python_drawn_transition_keeps_the_outputs_and_their_textures(monkeypatch):
+    """A Move or stinger transition: the recording is unlinked and its frames come from Python meanwhile, but the
+    engine's output stays (its texture pool too) and its frames are let go. Dropped and made again each time,
+    each transition made a new pool the writer on the card kept (PC soak 2026-11-18)."""
+    monkeypatch.setattr(sprigcore, "Engine", FakeEngine)
+    monkeypatch.setattr(sprigcore, "com_release", lambda pointer: None)
+    bridge = native_bridge.NativeCanvases(_collection())
+    bridge._slots["h"] = 0
+    card = bridge.output_key((64, 36), True)
+    bridge.set_outputs("h", [card])
+    unlinked = []
+    owner = SimpleNamespace(unlinked=unlinked.append)
+    bridge.engine.unlink_output = lambda slot, out: (41, True)
+    bridge._links[(0, 0)] = (owner, object(), ("settings",))
+    bridge.engine.queue = [(1, (0xA, 7, 2, 5.0), 0), (1, (0xB, 7, 3, 6.0), 0)]
+    bridge.pause_outputs("h", [card])
+    assert bridge.engine.set == [(0, 0, 64, 36, "card")]  # never stopped and made again: the same textures
+    assert unlinked == [41] and (0, 0) not in bridge._links  # the recording takes Python's frames meanwhile
+    assert bridge._paused[(0, 0)][0] is owner  # linked again afterwards without saying so again in the log
+    assert sorted(bridge.engine.back) == [(0, 0, 7, 2), (0, 0, 7, 3)] and bridge.lost == 0  # let go
+    bridge.set_outputs("h", [card])  # the engine draws it again: nothing changes
+    assert bridge.engine.set == [(0, 0, 64, 36, "card")]
 
 
 def test_frames_on_the_card_go_back_to_the_engine_when_let_go(monkeypatch):
@@ -867,3 +1178,29 @@ def test_thread_times_come_without_psutil_on_windows():
     assert threading.get_native_id() in times and all(t >= 0 for t in times.values())
     whole, threads = CpuWatch().busiest()
     assert whole >= 0 and isinstance(threads, list)
+
+
+def test_a_frame_stuck_for_good_hands_drawing_back_to_python(monkeypatch):
+    """A frame that never ends (a call into Windows that never came back, PC test 2026-11-18): after the engine's
+    own 2 s and 3 s more, Python draws everything again rather than showing nothing."""
+
+    class Stuck(FakeEngine):
+        ticks = 100
+
+        def stats(self):
+            return {"rebuilds": 0, "faulted": 0, "hung": self.hung, "ticks": self.ticks}
+
+    monkeypatch.setattr(sprigcore, "Engine", Stuck)
+    bridge = native_bridge.NativeCanvases(_collection())
+    bridge.check(10.0)  # running
+    bridge.engine.hung = 1
+    bridge.engine.ticks = 101  # a slow frame that then finished: never given up on
+    for second in range(11, 16):
+        bridge.engine.ticks += 1
+        bridge.check(float(second))
+    assert not bridge.failed
+    for second in range(16, 19):  # no frame finishes any more
+        bridge.check(float(second))
+    assert not bridge.failed
+    bridge.check(19.0)
+    assert bridge.failed

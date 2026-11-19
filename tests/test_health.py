@@ -122,6 +122,7 @@ def test_live_shows_the_banner_and_the_garden_check_opens_the_last_stream(app, t
         pop = w.findChildren(type(pop))[-1]
         garden = pop.garden
         assert garden.stack.currentIndex() == 0  # now: tiles, stream health and checks
+        app.processEvents()  # (filled a tick after it opens)
         assert garden.values["cpu"].text() == "4.6%" and garden.values["ram"].text() == "209 MB"
         assert garden.values["recording"].text() == "Off" and garden.values["upload"].text() == "Not live"
         labels = [garden.checks.itemAt(i).widget().text() for i in range(garden.checks.count())]
@@ -195,7 +196,8 @@ def test_stream_health_rows_keep_name_and_detail_apart(app):
     snap = GardenSnapshot(rows=[("Twitch · horizontal", long, "warning", "bumpy"), ("Kick", "6000 kbps", "good", "steady")])
     pop = garden_check_popup(lambda: snap, [], None)
     pop.show()
-    app.processEvents()
+    app.processEvents()  # filled a tick after it opens
+    app.processEvents()  # and its rows shown and laid out together on the next
     rows = pop.findChildren(QFrame, "healthRow")
     assert len(rows) == 2
     for row in rows:
@@ -228,3 +230,23 @@ def test_garden_check_reuses_rows_and_goes_away_when_closed(app):
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     assert not [c for c in parent.children() if type(c).__name__ == "PopUp"]
     parent.deleteLater()
+
+
+def test_garden_rows_change_in_place_while_live(app):
+    """Live, a place's line says its kbps each second: the row's words change, the row isn't made again, and a tile's
+    colour is a property the page's style picks (no style sheet of its own)."""
+    from sprigcast.app.garden_check import GardenCheckPage, GardenSnapshot
+
+    snaps = [GardenSnapshot(cpu=5.0, ram_mb=200, rows=[("Twitch", "Main · 6000 kbps", "good", "Good")])]
+    page = GardenCheckPage(lambda: snaps[-1], [])
+    row = page.rows.itemAt(0).widget()
+    dot, title, info, state = row.parts
+    snaps.append(GardenSnapshot(cpu=6.0, ram_mb=200, dropped=3,
+                                rows=[("Twitch", "Main · 5800 kbps", "warning", "Slow")]))
+    page.refresh()
+    assert page.rows.itemAt(0).widget() is row and info.text() == "Main · 5800 kbps" and state.text() == "Slow"
+    assert state.property("level") == "warning" and dot.property("level") == "warning"
+    assert page.values["dropped"].property("tone") == "warn" and page.values["dropped"].styleSheet() == ""
+    snaps.append(GardenSnapshot(rows=[]))
+    page.refresh()
+    assert page.rows.count() == 1 and page.rows.itemAt(0).widget().text() == "No places to stream yet."

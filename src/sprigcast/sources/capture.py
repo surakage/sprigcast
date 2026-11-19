@@ -1,8 +1,18 @@
-"""Display and window capture through Windows Graphics Capture (the `windows-capture` package).
+"""Display and window capture through Windows Graphics Capture.
 
 Each source runs a small supervisor thread. It starts a capture session, and if the session ends
 (the window closed, the game restarted, the display changed) it tries again every two seconds,
 so a source recovers on its own without the user touching anything.
+
+With the native engine (SPRIGCAST_ENGINE=native, docs/native-engine.md "Capture") the engine captures on its own
+graphics device and copies each picture on the card: the supervisor only finds the target and watches how it goes,
+and no picture passes through Python. When the engine can't (an older Windows, the engine stopped) it falls back to
+the `windows-capture` package, as without the engine. SPRIGCAST_NO_NATIVE_CAPTURE_VIDEO=1 always uses the package.
+
+The engine's captures run in the capture helper (app/capture_helper.py, docs/native-engine.md "Capture helper") when
+it is there: Windows keeps about one picture of graphics memory per capture started until the program that started
+it ends, and the helper can be ended. So a source asleep ends its capture there, and the helper ends once nothing
+is captured. When the helper can't, the engine captures itself (SPRIGCAST_CAPTURE_IN_ENGINE=1 always).
 """
 
 from __future__ import annotations
@@ -14,12 +24,19 @@ from typing import Any
 
 import numpy as np
 
+from sprigcast import sprigcore
+from sprigcast.app import capture_helper
 from sprigcast.core.mailbox import FrameRing
 from sprigcast.core.source import Source, register
 
 log = logging.getLogger(__name__)
 
 RETRY_SECONDS = 2.0
+QUICK_RETRY_SECONDS = 0.25  # just after a target closed: looked for again this often, QUICK_TRIES times
+QUICK_TRIES = 8  # (a game or window that reopens came back 2.4 s later, waiting the full RETRY_SECONDS: PC 2026-11-19)
+ENGINE_AGAIN_SECONDS = 60.0  # a source the engine refused tries the engine again after this (one slow start)
+LINK_SECONDS = 5.0  # an engine capture nothing took up in this long: the engine isn't drawing, capture in Python
+CARD_SECONDS = 3.0  # a new source waits this long for the engine to say which card it is on (the helper needs it)
 _PACING_OK: bool | None = None  # does this Windows take minimum_update_interval? None until a capture tried
 
 
@@ -55,6 +72,13 @@ class _CaptureSource(Source):
         self._restart = threading.Event()
         self._thread: threading.Thread | None = None
         self.status = "starting"
+        self._engine_target: sprigcore.CaptureTarget | None = None  # the engine captures it (render thread links it)
+        self._engine_refused = False  # the engine couldn't: the package captures it (ENGINE_AGAIN_SECONDS)
+        self._engine_refused_at = 0.0
+        self._feed: capture_helper.Feed | None = None  # the capture helper captures it (the engine takes its block)
+        self._helper_refused = False  # the helper couldn't: the engine captures it itself (ENGINE_AGAIN_SECONDS)
+        self._helper_refused_at = 0.0
+        self._serial = 0
 
     # Subclasses say what to capture. Return None when the target is not available right now.
     def _target(self) -> dict[str, Any] | None:
@@ -116,7 +140,35 @@ class _CaptureSource(Source):
         return True
 
     def video_frame(self) -> np.ndarray | None:
+        target = self._engine_target or self._feed
+        if target is not None and target.linked:  # captured by the engine: read back for a frame Python draws
+            return target.read()
         return self._frames.take()
+
+    @property
+    def engine_player(self) -> sprigcore.CaptureTarget | capture_helper.Feed | None:
+        """What the engine captures for this source, or the capture helper's feed it takes the pictures from
+        (render/engine.py hands it over): the render thread then only calls :meth:`engine_tick`."""
+        target = self._engine_target
+        if target is not None:
+            return target
+        feed = self._feed
+        return feed if feed is not None and feed.told else None
+
+    def engine_tick(self) -> None:
+        """Render thread, on a tick the engine showed the picture itself: nothing to do (the supervisor keeps the
+        status and size)."""
+
+    @property
+    def engine_shows(self) -> bool:
+        """The engine captures it and has shown a picture of it since it (re)started. A bloom switch waiting for
+        this source goes by this, so no picture has to be read back from the card for Python's compositor just to
+        end the wait (PC soak 2026-11-19: that read-back and copy held a switch frame 22 to 130 ms)."""
+        target = self._engine_target or self._feed
+        if target is None or not target.linked:
+            return False
+        state, width, _height, shown = target.state()
+        return state == sprigcore.SCREEN_RUNNING and width > 0 and shown > 0
 
     # The renderer sets this to the fastest canvas's frame rate: more pictures than that are never shown.
     canvas_fps = 60
@@ -137,22 +189,143 @@ class _CaptureSource(Source):
         self._size = (int(frame.width), int(frame.height))
         self._frames.put(frame.frame_buffer)
 
+    def _engine_flags(self) -> int:
+        flags = sprigcore.SCREEN_CURSOR if self.settings.get("cursor", True) else 0
+        if self.settings.get("border", False) is not False:
+            flags |= sprigcore.SCREEN_BORDER
+        if self.channel_order == "BGRX":
+            flags |= sprigcore.SCREEN_OPAQUE
+        return flags
+
+    def _engine_interval_ms(self) -> int:
+        """At most one picture this often: the canvas's rate, or fps_limit when it is lower."""
+        limit = float(self.settings.get("fps_limit", 0) or 0)
+        fps = min(limit, float(self.canvas_fps)) if limit > 0 else float(self.canvas_fps)
+        return max(1, int(1000 / fps)) if fps > 0 else 0
+
+    def _in_engine(self, target: dict[str, Any], stop: threading.Event) -> str:
+        """Capture ``target`` in the engine until it ends: "ended" (the window closed: find it again), "refused"
+        (the engine can't: use the package) or "stopped" (stop, restart or a new target)."""
+        window = int(target.get("window_hwnd") or 0)
+        monitor = 0 if window else _monitor_handle(int(target.get("monitor_index", 1)))
+        if not window and not monitor:
+            self.status = "waiting for target"
+            return "ended"
+        self._serial += 1
+        made = sprigcore.CaptureTarget(window=window, monitor=monitor, flags=self._engine_flags(),
+                                       interval_ms=self._engine_interval_ms(), serial=self._serial)
+        self._engine_target = made
+        began = time.monotonic()
+        try:
+            while not (stop.is_set() or self._restart.is_set() or self._should_retarget()):
+                state, width, height, _frames = made.state()
+                if state == sprigcore.SCREEN_RUNNING:
+                    if self.status != "capturing" and not self.status.startswith("capturing "):
+                        self.status = "capturing"
+                    if width > 0 and height > 0:
+                        self._size = (width, height)
+                elif state == sprigcore.SCREEN_ENDED:
+                    return "ended"
+                elif state == sprigcore.SCREEN_REFUSED:
+                    log.info("%s: the engine can't capture here; windows-capture does", self.id)
+                    return "refused"
+                elif state == sprigcore.SCREEN_NONE and not made.linked and time.monotonic() - began > LINK_SECONDS:
+                    log.info("%s: the engine isn't drawing; windows-capture captures it", self.id)
+                    return "refused"
+                self._restart.wait(0.2)
+            return "stopped"
+        finally:
+            self._engine_target = None
+
+    def _use_helper(self, began: float) -> bool:
+        """This capture goes to the capture helper. A source just started waits a moment for the engine to say
+        which card it draws on (False meanwhile is never returned: it waits here, on the supervisor's thread)."""
+        helper = capture_helper.HELPER
+        if self._helper_refused and time.monotonic() - self._helper_refused_at >= ENGINE_AGAIN_SECONDS:
+            self._helper_refused = False
+        if self._helper_refused or not helper.wanted():
+            return False
+        while helper.card is None and time.monotonic() - began < CARD_SECONDS and not self._restart.is_set():
+            self._restart.wait(0.05)
+        return helper.usable()
+
+    def _in_helper(self, target: dict[str, Any], stop: threading.Event) -> str:
+        """Capture ``target`` in the capture helper until it ends: "ended" (the window closed, or the helper went:
+        find it again), "refused" (the helper can't: the engine captures), "unlinked" (the engine isn't drawing:
+        the package captures) or "stopped" (stop, restart or a new target)."""
+        window = int(target.get("window_hwnd") or 0)
+        monitor = 0 if window else _monitor_handle(int(target.get("monitor_index", 1)))
+        if not window and not monitor:
+            self.status = "waiting for target"
+            return "ended"
+        feed = capture_helper.HELPER.start(window, monitor, self._engine_flags(), self._engine_interval_ms())
+        if feed is None:
+            return "refused"
+        self._feed = feed
+        began = time.monotonic()
+        try:
+            while not (stop.is_set() or self._restart.is_set() or self._should_retarget()):
+                state, width, height, _frames = feed.state()
+                if state == sprigcore.SCREEN_RUNNING:
+                    if self.status != "capturing" and not self.status.startswith("capturing "):
+                        self.status = "capturing"
+                    if width > 0 and height > 0:
+                        self._size = (width, height)
+                elif state == sprigcore.SCREEN_ENDED:
+                    return "ended"
+                elif state == sprigcore.SCREEN_REFUSED:
+                    log.info("%s: the capture helper can't capture here; the engine does", self.id)
+                    return "refused"
+                if not feed.linked and time.monotonic() - began > LINK_SECONDS:
+                    if state == sprigcore.SCREEN_NONE:
+                        log.info("%s: the capture helper didn't answer; the engine captures it", self.id)
+                        return "refused"
+                    log.info("%s: the engine isn't drawing; windows-capture captures it", self.id)
+                    return "unlinked"
+                self._restart.wait(0.05 if state in (sprigcore.SCREEN_NONE, sprigcore.SCREEN_STARTING) else 0.2)
+            return "stopped"
+        finally:
+            self._feed = None
+            capture_helper.HELPER.stop(feed)
+
     def _supervise(self, stop: threading.Event | None = None) -> None:
         stop = stop or self._stop
-        try:
-            windows_capture_cls = _load_backend()
-        except RuntimeError as exc:
-            self.status = str(exc)
-            log.warning("%s: %s", self.id, exc)
-            return
-
+        began = time.monotonic()
+        windows_capture_cls = None
+        quick = 0  # quick looks left after a target closed
         while not stop.is_set():
             self._restart.clear()
             target = self._target()
             if target is None:
                 self.status = "waiting for target"
-                self._restart.wait(RETRY_SECONDS)
+                self._restart.wait(QUICK_RETRY_SECONDS if quick > 0 else RETRY_SECONDS)
+                quick = max(0, quick - 1)
                 continue
+            if self._engine_refused and time.monotonic() - self._engine_refused_at >= ENGINE_AGAIN_SECONDS:
+                self._engine_refused = False  # one slow start doesn't keep this source off the engine for good
+            if not self._engine_refused and sprigcore.use_native_capture():
+                helped = self._use_helper(began)
+                outcome = self._in_helper(target, stop) if helped else self._in_engine(target, stop)
+                if helped and outcome == "refused":
+                    self._helper_refused, self._helper_refused_at = True, time.monotonic()
+                elif outcome in ("refused", "unlinked"):
+                    self._engine_refused, self._engine_refused_at = True, time.monotonic()
+                elif outcome == "ended" and not (stop.is_set() or self._restart.is_set()):
+                    if self.status == "capturing" or self.status.startswith("capturing "):
+                        self.status = "target closed, retrying"
+                        quick = QUICK_TRIES
+                    self._restart.wait(QUICK_RETRY_SECONDS if quick > 0 else RETRY_SECONDS)
+                    quick = max(0, quick - 1)
+                else:
+                    quick = 0
+                continue
+            if windows_capture_cls is None:
+                try:
+                    windows_capture_cls = _load_backend()
+                except RuntimeError as exc:
+                    self.status = str(exc)
+                    log.warning("%s: %s", self.id, exc)
+                    return
             ended = threading.Event()
 
             def on_frame_arrived(frame, control):
@@ -207,7 +380,8 @@ class _CaptureSource(Source):
                 pass
             if ended.is_set() and not (stop.is_set() or self._restart.is_set()):
                 self.status = "target closed, retrying"
-                time.sleep(RETRY_SECONDS)
+                quick = QUICK_TRIES
+                time.sleep(QUICK_RETRY_SECONDS)
 
 
 @register("display_capture")
@@ -220,7 +394,7 @@ class DisplayCaptureSource(_CaptureSource):
 
 @register("window_capture")
 class WindowCaptureSource(_CaptureSource):
-    """Settings: title, process (exe name), cursor (bool).
+    """Settings: title, process (exe name), cursor (bool), match ("app", the default, or "title").
 
     The window is looked up by its process and title every time capture (re)starts, so a game that is
     restarted, or a browser whose title changes, is found again.
@@ -229,7 +403,11 @@ class WindowCaptureSource(_CaptureSource):
     def _target(self) -> dict[str, Any] | None:
         from sprigcast.sources.win32_enum import find_window
 
-        window = find_window(str(self.settings.get("title", "")), str(self.settings.get("process", "")))
+        title, process = str(self.settings.get("title", "")), str(self.settings.get("process", ""))
+        if self.settings.get("match") == "title":  # Find it again by: Exact title
+            window = find_window(title, process, exact=True)
+        else:  # Same app (the default): a browser whose title changes is still found
+            window = find_window(title, process)
         if window is None:
             return None
         return {"window_hwnd": window.hwnd}
@@ -290,6 +468,26 @@ class GameCaptureSource(WindowCaptureSource):
 
         found = fullscreen_window()
         return found is not None and self._game is not None and found[0] != self._game[0]
+
+
+def _monitor_handle(index: int) -> int:
+    """The HMONITOR of display ``index`` (1-based, in Windows' order, as windows-capture counts them); 0 if none."""
+    import ctypes
+    from ctypes import wintypes
+
+    found: list[int] = []
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC, ctypes.POINTER(wintypes.RECT),
+                                       wintypes.LPARAM)
+
+    def each(monitor, _dc, _rect, _data):
+        found.append(int(monitor or 0))
+        return True
+
+    try:
+        ctypes.windll.user32.EnumDisplayMonitors(None, None, callback_type(each), 0)
+    except (AttributeError, OSError):
+        return 0
+    return found[index - 1] if 1 <= index <= len(found) else 0
 
 
 def _window_alive(hwnd: int) -> bool:

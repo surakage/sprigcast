@@ -114,6 +114,9 @@ def test_main_window_modes(app, tmp_path, monkeypatch):
         assert w.build_stage.isVisible() and w.previews["horizontal"].editable
         assert w.previews["horizontal"].isVisible() and not w.previews["horizontal"].live_look
         assert QSettings().value("window/mode") == "build"
+        # Start-up opens on Live with Destinations, even though it was left on Build (soak, 2026-11-19).
+        w.start_in_live()
+        assert w.mode == "live" and w.live_stage.isVisible() and not w.build_stage.isVisible()
     finally:
         w.close()
         QSettings().clear()
@@ -121,7 +124,7 @@ def test_main_window_modes(app, tmp_path, monkeypatch):
 
 def test_build_canvas_tabs_and_linking(app, tmp_path, monkeypatch):
     import keyring
-    from PySide6.QtWidgets import QInputDialog
+    from sprigcast.app import card as popups
 
     monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
     QCoreApplication.setOrganizationName("SprigCastTests")
@@ -163,8 +166,8 @@ def test_build_canvas_tabs_and_linking(app, tmp_path, monkeypatch):
         assert col.scene("v1").linked_to is None
         # New blooms land on the tab you're on, and can be linked as they're made.
         answers = iter([("Gameplay", True)])
-        monkeypatch.setattr(QInputDialog, "getText", lambda *a, **k: next(answers))
-        monkeypatch.setattr(QInputDialog, "getItem", lambda *a, **k: ("BRB", True))
+        monkeypatch.setattr(popups, "ask_text", lambda *a, **k: next(answers))
+        monkeypatch.setattr(popups, "ask_choice", lambda _w, _t, _l, items, *a, **k: items.index("BRB"))
         w._add_scene()
         new = col.scene(w.selected_scene_id)
         assert new.canvas == "vertical" and new.linked_to == "h2"
@@ -321,9 +324,13 @@ def test_build_edits_a_bloom_without_putting_it_on_air(app, tmp_path, monkeypatc
         w._on_inside_moved(1, 0)
         assert [i.source for i in col.scene("h2").items] == ["b", "a"]
         assert w.source_list.currentRow() == 0 and w._item().source == "a"
-        w._put_on_air()
+        # Build never changes what's on air (user, 2026-11-19): no Put on air button, double-click or menu item.
+        assert col.active_scenes["horizontal"] != "h2" and not hasattr(w, "on_air_button")
+        w.scene_tree.itemDoubleClicked.emit(w.scene_tree.selectedItems()[0] if w.scene_tree.selectedItems()
+                                            else w.scene_tree.topLevelItem(0), 0)
+        assert col.active_scenes["horizontal"] != "h2"
+        w._make_active()  # what Live's tile does
         assert col.active_scenes["horizontal"] == "h2" and w.engine.staged == {}
-        assert not w.on_air_button.isVisibleTo(w)
         w._set_mode("live")
         assert w.engine.staged == {}  # Live's Next is Studio mode's alone
     finally:
@@ -427,7 +434,7 @@ def test_where_it_goes_switches_and_edit_adds_nothing(app, tmp_path, monkeypatch
         assert side.editing and side.manage.text() == "Done" and side.all_settings.isVisibleTo(side.where_card)
         tools = side.place_tools["tw"]
         tools["shape"].click()
-        assert col.outputs[0].canvas == "vertical" and side.place_tools["tw"]["shape"].text() == "Vertical"
+        assert col.outputs[0].canvas == "vertical" and side.place_tools["tw"]["shape"].property("shape") == "vertical"
         side.place_tools["tw"]["test"].click()
         assert col.outputs[0].bandwidth_test
         assert "test" not in side.place_tools["tt"]  # TikTok has no test mode
@@ -436,7 +443,7 @@ def test_where_it_goes_switches_and_edit_adds_nothing(app, tmp_path, monkeypatch
         remove = side.place_tools[col.outputs[2].id]["remove"]
         gone = col.outputs[2].id
         remove.click()
-        assert remove.text() == "Sure?" and len(col.outputs) == 4
+        assert remove.text() == "Remove?" and len(col.outputs) == 4
         remove.click()
         assert gone not in [o.id for o in col.outputs] and removed_keys == [f"sprigcast/{gone}"]
         assert len(opened) == 2
@@ -765,6 +772,45 @@ def test_destination_rows_restyle_only_what_changed(app, monkeypatch):
     side.close()
 
 
+def test_places_move_up_down_and_by_dragging_and_keep_their_order(app, tmp_path, monkeypatch):
+    """Keep both YouTube places together: Edit's Move up / Move down, or drag a row; one order everywhere."""
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda *a: None)
+    from sprigcast.app.main_window import MainWindow
+    from sprigcast.core.scene import SceneCollection
+
+    col = _collection()
+    col.outputs = [Output(id="yt", type="stream", service="youtube", canvas="horizontal"),
+                   Output(id="rec", type="recording", canvas="horizontal"),
+                   Output(id="tw", type="stream", service="twitch", canvas="horizontal"),
+                   Output(id="yt2", type="stream", service="youtube", canvas="vertical")]
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        w._set_mode("live")
+        side = w.live_side
+        ids = lambda: [p.id for p in side._places]  # noqa: E731
+        assert ids() == ["yt", "tw", "yt2"]
+        w._place_action("yt2", "up")
+        assert ids() == ["yt", "yt2", "tw"]
+        assert [o.id for o in col.outputs] == ["yt", "rec", "yt2", "tw"]  # other outputs keep their spots
+        w._place_action("yt", "down")
+        assert ids() == ["yt2", "yt", "tw"]
+        side.move_place("tw", 0)  # dragged to the top
+        assert ids() == ["tw", "yt2", "yt"]
+        side.move_place("tw", 3)  # and to the bottom (dropped after the last row)
+        assert ids() == ["yt2", "yt", "tw"]
+        assert [o.id for o in SceneCollection.load(tmp_path / "scenes.json").outputs if o.type == "stream"] \
+            == ["yt2", "yt", "tw"]  # saved
+        side.set_editing(True)
+        assert not side.place_tools["yt2"]["up"].isEnabled() and side.place_tools["yt2"]["down"].isEnabled()
+        assert side.place_tools["tw"]["up"].isEnabled() and not side.place_tools["tw"]["down"].isEnabled()
+        side.place_tools["tw"]["up"].click()
+        assert ids() == ["yt2", "tw", "yt"]
+    finally:
+        w.close()
+
+
 def test_bloom_pills_show_their_key_and_numbers_switch(app):
     from sprigcast.app.hotkeys import SCENE_PREFIX
     from sprigcast.app.live_panel import LivePanel
@@ -831,3 +877,54 @@ def test_a_view_of_the_bloom_on_air_shares_the_canvas_already_drawn():
     engine.set_view("camera", "v", "bloom", "b")  # a bloom that isn't on air: drawn on its own
     engine._render_views(fake, {}, 10.2, taps, {"v": shared})
     assert fake.drawn == ["view:camera", "view:camera"]
+
+
+def test_edit_rows_all_draw_and_take_clicks_in_a_short_list(app, tmp_path, monkeypatch):
+    """PC test 2026-11-18 (#593): in Edit the list was ~140 px tall but only its top ~80 px drew (one row),
+    a blank band hid the second row and its tools, and clicks there missed."""
+    import keyring
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+
+    monkeypatch.setattr(keyring, "get_password", lambda *a: None)
+    from sprigcast.app.main_window import MainWindow
+
+    col = _collection()
+    col.outputs = [Output(id="yt", type="stream", service="youtube", canvas="horizontal"),
+                   Output(id="tw", type="stream", service="twitch", canvas="horizontal"),
+                   Output(id="yt2", type="stream", service="youtube", canvas="vertical")]
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        w.resize(1280, 720)
+        w.show()
+        w._set_mode("live")
+        side = w.live_side
+        side.set_editing(True)
+        for _ in range(5):
+            app.processEvents()
+        scroll = side.places_scroll
+        content = scroll._content.sizeHint().height()
+        assert scroll.height() < content  # short: the list scrolls
+        assert scroll.viewportMargins().bottom() == 0 and scroll.viewport().height() == scroll.height()
+        gear = side.place_tools["tw"]["settings"]  # the second row's tools
+        spot = gear.mapTo(scroll.viewport(), gear.rect().center())
+        if spot.y() < scroll.viewport().height():  # on screen: a click there lands on it
+            assert scroll.viewport().childAt(spot) is gear or gear.isAncestorOf(scroll.viewport().childAt(spot))
+        bar = scroll.verticalScrollBar()
+        tops = scroll.row_tops()
+
+        def wheel(dy: int) -> None:
+            centre = QPointF(scroll.width() / 2, scroll.height() / 2)
+            scroll.wheelEvent(QWheelEvent(centre, scroll.mapToGlobal(centre), QPoint(), QPoint(0, dy),
+                                          Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                                          Qt.ScrollPhase.NoScrollPhase, False))
+
+        wheel(-120)  # one notch down: the next row's top (or the end)
+        assert bar.value() == min(tops[1], bar.maximum())
+        wheel(-60)  # half a notch (a touchpad): nothing yet
+        assert bar.value() == min(tops[1], bar.maximum())
+        wheel(120)
+        wheel(120)
+        assert bar.value() == 0
+    finally:
+        w.close()

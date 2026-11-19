@@ -22,12 +22,29 @@ def screen_label(index: int, screen: QScreen) -> str:
     return f"Full screen on Screen {index + 1}{main}  ({size.width()}×{size.height()})"
 
 
+HIDE_POINTER = "projector/hide_pointer"  # Settings → General → Pop-out views (full-screen ones)
+ON_TOP = "projector/on_top"
+
+
+def hide_pointer() -> bool:
+    from PySide6.QtCore import QSettings
+
+    return QSettings().value(HIDE_POINTER, True, type=bool)
+
+
+def on_top() -> bool:
+    from PySide6.QtCore import QSettings
+
+    return QSettings().value(ON_TOP, False, type=bool)
+
+
 class Projector(QWidget):
     """One canvas on one screen. screen=None opens a normal window instead of full screen."""
 
     def __init__(self, canvas_id: str, title: str, screen: QScreen | None,
                  on_closed: Callable[["Projector"], None], view: str | None = None):
-        super().__init__(None, Qt.WindowType.Window)
+        flags = Qt.WindowType.Window | (Qt.WindowType.WindowStaysOnTopHint if on_top() else Qt.WindowType.Widget)
+        super().__init__(None, flags)
         self.canvas_id = canvas_id
         self.view = view  # engine view name for a bloom, sprig or source projector; None for a canvas
         self.pending = None  # newest view frame, handed over by the render thread (see take_pending)
@@ -37,7 +54,8 @@ class Projector(QWidget):
         self.setWindowTitle(f"{title} · SprigCast projector")
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
-        self.setCursor(Qt.CursorShape.BlankCursor if screen is not None else Qt.CursorShape.ArrowCursor)
+        blank = screen is not None and hide_pointer()
+        self.setCursor(Qt.CursorShape.BlankCursor if blank else Qt.CursorShape.ArrowCursor)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._menu)
         if screen is not None:

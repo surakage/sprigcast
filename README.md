@@ -81,7 +81,7 @@ Scenes save automatically to `scenes.json` in your AppData folder.
 
 ## Plugins
 
-A plugin is a Python file that adds a new source type. The full guide is [Build your own plugin](docs/plugins.md). *File → Open plugins folder* opens the folder
+A plugin is a Python file that adds a new source type. The full guide is [Build your own plugin](docs/plugins.md). *Tools → Plugin store → Open plugins folder* (also under *+ → Plugins*) opens the folder
 (`%LOCALAPPDATA%\Slothbloom\SprigCast\plugins`). Every `.py` file there loads at startup; files whose
 name starts with `_` are skipped. Plugin sources appear under *Sources → + → Plugins*.
 
@@ -118,7 +118,7 @@ src/sprigcast/
   sources/   built-in sources: capture, camera, image, color, text, browser, media, chat, sound, sprigs
   audio/     mixer that combines sounds into 48 kHz stereo tracks
   output/    recorder, replay and clips, streamer, our own NVENC encoder, Twitch Enhanced Broadcasting
-  chat/      Twitch and YouTube chat
+  chat/      Twitch, YouTube and Kick chat
   control/   the control API (SprigCast's own and the obs-websocket compatibility mode)
   app/       PySide6 windows: Live and Build screens, settings, wizard, theme and art
   plugins.py loads source plugins from the plugins folder and entry points

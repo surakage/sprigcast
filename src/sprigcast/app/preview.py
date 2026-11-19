@@ -9,7 +9,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
@@ -36,6 +36,20 @@ def snap_settings() -> dict:
         "center": q.value("editing/snap_center", True, type=bool),
     }
 ACCENT = QColor(theme.ACCENT)
+
+
+_NATIVE_GESTURE = QEvent.Type.NativeGesture
+
+
+class _Pinch(QObject):
+    """A touchpad pinch on an editable preview zooms it at the fingers (see Preview.editable)."""
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        # (`is`: enum members are singletons, and == went through Python's enum code for every event)
+        if event.type() is _NATIVE_GESTURE and event.gestureType() == Qt.NativeGestureType.ZoomNativeGesture:
+            watched.zoom_at(1 + event.value(), event.position())
+            return True
+        return False
 
 
 class Preview(QWidget):
@@ -112,7 +126,8 @@ class Preview(QWidget):
             self._image_data = None
             self._image = QImage(data, width, height, width * 4, fmt).copy()
         self.aspect = canvas_size or (width, height)  # editing works in canvas pixels, whatever the image size
-        self.update()
+        if not theme.bursting():  # a pop-up being made: the next frame paints (77 ms under Hotkeys on the PC)
+            self.update()
 
     def set_inner_frame(self, data: bytes, width: int, height: int) -> None:
         """The part being edited in place, rendered alone (premultiplied RGBA)."""
@@ -745,12 +760,37 @@ class Preview(QWidget):
         else:
             self.zoom_at(1.15 ** steps, event.position())
 
-    def event(self, event) -> bool:
-        if event.type() == QEvent.Type.NativeGesture and self.editable and not self.twin:
-            if event.gestureType() == Qt.NativeGestureType.ZoomNativeGesture:  # touchpad pinch
-                self.zoom_at(1 + event.value(), event.position())
-                return True
-        return super().event(event)
+    # A touchpad pinch zooms Build's view. Watched by a small filter only while this view can be edited: a Python
+    # event() here ran for every event of every preview (each frame's paint, a pop-up's deactivation), and
+    # comparing the event's type through Python's enum showed up as Settings' open on the PC (108 ms, sweep 13).
+    @property
+    def editable(self) -> bool:
+        return self._editable
+
+    @editable.setter
+    def editable(self, on: bool) -> None:
+        self._editable = bool(on)
+        self._watch_pinch()
+
+    @property
+    def twin(self) -> bool:
+        return self._twin
+
+    @twin.setter
+    def twin(self, on: bool) -> None:
+        self._twin = bool(on)
+        self._watch_pinch()
+
+    def _watch_pinch(self) -> None:
+        want = getattr(self, "_editable", False) and not getattr(self, "_twin", False)
+        pinch = getattr(self, "_pinch", None)
+        if want and pinch is None:
+            self._pinch = _Pinch(self)
+            self.installEventFilter(self._pinch)
+        elif not want and pinch is not None:
+            self.removeEventFilter(pinch)
+            pinch.deleteLater()
+            self._pinch = None
 
     def keyReleaseEvent(self, event) -> None:  # noqa: N802
         if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():

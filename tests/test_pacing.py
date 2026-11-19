@@ -73,7 +73,13 @@ def test_tidy_freezes_what_survives_and_settle_frees_cycles_from_the_show():
 
 def test_the_per_frame_walks_leave_no_reference_cycles():
     """Two nested functions that called themselves left a cycle every frame for the collector to find."""
-    from sprigcast.core.scene import Canvas, Scene, SceneCollection, SceneItem, SourceConfig
+    from sprigcast.core.scene import (
+        Canvas,
+        Scene,
+        SceneCollection,
+        SceneItem,
+        SourceConfig,
+    )
     from sprigcast.render.engine import _walk_visible
 
     col = SceneCollection(canvases=[Canvas(id="h", width=64, height=36)],
@@ -152,3 +158,96 @@ def test_a_stall_dump_names_the_thread_holding_the_lock():
     got = dump.take()
     assert "MainThread at test_pacing.py" in got and "test_a_stall_dump_names_the_thread_holding_the_lock" in got
     assert dump.take() == ""  # read once
+
+
+def test_only_the_main_thread_frees_what_the_cycle_collector_finds():
+    """A collection on another thread used to free a closed page's Qt widgets there, which crashed the test run
+    (2026-11-18). Now what it finds waits for the main thread's next collection."""
+    import threading
+
+    from sprigcast.core import pacing
+
+    pacing.collect_on_main_thread()
+
+    class Node:
+        def __init__(self):
+            self.me = self
+
+    def alive():
+        return sum(1 for o in gc.get_objects() if type(o) is Node)
+
+    def worker():
+        Node()
+        gc.collect()  # a collection on this thread finds the cycle but frees nothing
+
+    t = threading.Thread(target=worker)
+    t.start()
+    t.join()
+    assert alive() == 1 and pacing.deferred_count() >= 1
+    gc.collect()
+    gc.collect()
+    assert alive() == 0 and pacing.deferred_count() == 0
+
+
+def test_trimming_memory_runs_off_the_window_thread(monkeypatch):
+    """Windows walking the app's pages took 60-66 ms on the PC just after start: never on the window's thread."""
+    import threading
+
+    from sprigcast.core import pacing
+
+    seen, done = [], threading.Event()
+    monkeypatch.setattr(pacing, "trim_working_set", lambda: seen.append(threading.current_thread()) or True)
+    pacing.trim_working_set_later(lambda trimmed: (seen.append(trimmed), done.set()))
+    assert done.wait(5)
+    assert seen[0] is not threading.main_thread() and seen[1] is True
+
+
+def test_warm_up_keeps_its_imports_aside():
+    import gc
+
+    from sprigcast.core import warm
+
+    gc.unfreeze()
+    try:
+        _keep = [{} for _ in range(100)]
+        warm.keep_aside()
+        assert gc.get_freeze_count() >= 100
+    finally:
+        gc.unfreeze()
+
+
+def test_stall_dumps_can_be_asked_for_shorter_stalls():
+    """A 235 ms stall held a media source on the PC (2026-11-18), under the usual 350 ms dump: a test run can ask
+    for dumps from 200 ms (never shorter: the watch re-arms the dump every half of it)."""
+    from sprigcast.core.pacing import DUMP_AFTER_MIN_S, DUMP_AFTER_S, dump_after_s
+
+    assert dump_after_s({}) == DUMP_AFTER_S
+    assert dump_after_s({"SPRIGCAST_STALL_DUMP_MS": "220"}) == 0.22
+    assert dump_after_s({"SPRIGCAST_STALL_DUMP_MS": "50"}) == DUMP_AFTER_MIN_S
+    assert dump_after_s({"SPRIGCAST_STALL_DUMP_MS": "soon"}) == DUMP_AFTER_S
+
+
+def test_a_tidy_can_say_what_kinds_of_garbage_it_freed(monkeypatch, caplog):
+    import gc
+    import logging
+
+    from sprigcast.core import pacing
+
+    monkeypatch.setenv("SPRIGCAST_GC_TYPES", "1")
+    monkeypatch.setattr(pacing, "SLOW_GC_MS", -1.0)
+
+    class Knot:
+        pass
+
+    for _ in range(50):
+        a, b = Knot(), Knot()
+        a.other, b.other = b, a
+    del a, b
+    try:
+        with caplog.at_level(logging.INFO, logger="sprigcast.core.pacing"):
+            pacing.tidy()
+        assert any("Knot" in r.getMessage() for r in caplog.records)
+        assert gc.garbage == [] and not gc.get_debug() & gc.DEBUG_SAVEALL
+        assert not any(type(o).__name__ == "Knot" for o in gc.get_objects())  # freed, not kept aside
+    finally:
+        gc.unfreeze()

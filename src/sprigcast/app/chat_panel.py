@@ -24,7 +24,7 @@ import html
 import json
 import logging
 import re
-from collections import deque
+from collections import OrderedDict, deque
 
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QTextDocument
@@ -49,9 +49,13 @@ SOURCE = "chat/source"  # "chat" (your channels, mixed) | "link" | "" (nothing p
 LINK = "chat/link"
 NAMES = "chat/names"  # {"twitch": "", "youtube": "@handle"}; an empty Twitch name = your account
 OLD_CHANNEL = "chat/twitch_channel"  # before YouTube: a Twitch channel picked by hand
-HINTS = {"twitch": "your Twitch name", "youtube": "@your YouTube handle"}
+HINTS = {"twitch": "your Twitch name", "youtube": "@your YouTube handle", "kick": "your Kick name"}
 KEEP = 300  # messages kept on screen
-EMOTE_CACHE = 600  # distinct emote pictures kept before the cache starts over (long streams stay flat)
+FLUSH_MS = 100  # new lines are drawn together this often
+MENU_READY_MS = 5000  # after the panel is made: its ⋯ menu made ready (ChatPanel._ready_menu)
+EMOTE_CACHE = 600  # distinct emote pictures handed to the page before it starts over (long streams stay flat)
+EMOTE_KEEP = 400  # pictures kept in memory across a start-over, newest used first, so it fetches nothing again
+EMOTE_FETCHES = 4  # pictures downloading at once; the rest wait their turn (one request each is UI-thread work)
 EMOTE_URL = "https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/1.0"
 EMOTE_SIZE = 22
 
@@ -144,11 +148,22 @@ class ChatView(QTextBrowser):
         self.names: frozenset[str] = frozenset()  # your channel names, lowercase, for mention highlights
         self._urls: dict[str, str] = {}  # emote id -> picture, for platforms that send their own
         self._net = None
-        self._asked: set[str] = set()
+        self._asked: set[str] = set()  # emote ids waiting, downloading, or that failed
+        self._pictures: OrderedDict[str, object] = OrderedDict()  # emote id -> QImage, newest used last
+        self._given = 0  # pictures handed to the page since it last started over
+        self._queue: deque[QUrl] = deque()
+        self._loading = 0
         self._relayout = QTimer(self)  # pictures arriving together cost one re-layout, not one each
         self._relayout.setSingleShot(True)
-        self._relayout.setInterval(120)
+        self._relayout.setInterval(250)
         self._relayout.timeout.connect(self._pictures_arrived)
+        # A busy chat (xqc's: dozens of lines a second) is drawn in batches: one document edit, one layout and
+        # one scroll per FLUSH_MS, not one each (a line at a time froze the window for 400 ms on 2026-11-18).
+        self._pending: list[ChatMessage] = []
+        self._flush = QTimer(self)
+        self._flush.setSingleShot(True)
+        self._flush.setInterval(FLUSH_MS)
+        self._flush.timeout.connect(self.flush)
         self.jump = QPushButton("New messages ↓", self)
         self.jump.setStyleSheet(GO_STYLE.replace("padding: 7px 16px", "padding: 5px 14px")
                                 .replace("border-radius: 15px", "border-radius: 13px"))
@@ -189,13 +204,37 @@ class ChatView(QTextBrowser):
         return bar.value() >= bar.maximum() - 4
 
     def add(self, message: ChatMessage) -> None:
-        stay = self.at_bottom()
-        if len(self._asked) > EMOTE_CACHE:
-            self._fresh_cache()
+        """A new line: kept now, drawn with the others that arrive in the same FLUSH_MS."""
         self.messages.append(message)
         self._urls.update(message.images)
-        self.append(message_html(message, self.mixed, self.names))
-        self._wash(self.document().lastBlock(), mentions(message.text, self.names))
+        self._pending.append(message)
+        if len(self._pending) > KEEP:
+            del self._pending[:-KEEP]
+        if not self._flush.isActive():
+            self._flush.start()
+
+    def flush(self) -> None:
+        """Draw the waiting lines in one go."""
+        from PySide6.QtGui import QTextCursor
+
+        self._flush.stop()
+        pending, self._pending = self._pending, []
+        if not pending:
+            return
+        stay = self.at_bottom()
+        if self._given > EMOTE_CACHE:
+            self._fresh_cache()  # redraws every kept line, the waiting ones included
+        else:
+            document = self.document()
+            cursor = QTextCursor(document)
+            cursor.beginEditBlock()  # one change for the whole batch: laid out once
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            for message in pending:
+                if not document.isEmpty():
+                    cursor.insertBlock(cursor.blockFormat(), cursor.charFormat())
+                cursor.insertHtml(message_html(message, self.mixed, self.names))
+                self._wash_with(cursor, mentions(message.text, self.names))
+            cursor.endEditBlock()
         if stay:
             self.to_bottom()
         else:
@@ -223,25 +262,53 @@ class ChatView(QTextBrowser):
             self._place_notice()
 
     def _fresh_cache(self) -> None:
-        """Forget emote pictures (the document keeps every one it was given), then redraw what's on screen."""
-        self._asked.clear()
+        """Start the page over (the document keeps every picture it was given), then redraw what's on screen.
+        The pictures still in use come straight from memory, so nothing is downloaded again: before this,
+        a start-over re-requested every emote on the UI thread and froze the window for 2 s (2026-11-18)."""
+        self._given = 0
         self._urls = {k: v for m in self.messages for k, v in m.images.items()}
         self.document().clear()  # also drops the pictures it holds
         self.redraw()
 
     def remove(self, *, message_id: str = "", user_id: str = "", platform: str = "", everything: bool = False) -> None:
-        """A moderator deleted a message, timed someone out, or cleared chat (on one platform)."""
+        """A moderator deleted a message, timed someone out, or cleared chat (on one platform).
+        Only those lines leave the page; the rest isn't rebuilt (a full redraw cost 60 ms on a Twitch clear)."""
+        from PySide6.QtGui import QTextCursor
+
         def goes(m: ChatMessage) -> bool:
             if platform and m.platform != platform:
                 return False
             return everything or bool(message_id and m.id == message_id) or bool(user_id and m.user_id == user_id)
 
-        kept = [m for m in self.messages if not goes(m)]
-        if len(kept) != len(self.messages):
-            self.messages = deque(kept, maxlen=KEEP)
+        self.flush()
+        gone = [i for i, m in enumerate(self.messages) if goes(m)]
+        if not gone:
+            return
+        document = self.document()
+        if document.blockCount() != len(self.messages) or len(gone) == len(self.messages):
+            self.messages = deque((m for m in self.messages if not goes(m)), maxlen=KEEP)
             self.redraw()
+            return
+        stay = self.at_bottom()
+        cursor = QTextCursor(document)
+        cursor.beginEditBlock()
+        for i in reversed(gone):  # from the bottom up, so the earlier block numbers still hold
+            block = document.findBlockByNumber(i)
+            cursor.setPosition(block.position())
+            if block.next().isValid():
+                cursor.setPosition(block.next().position(), QTextCursor.MoveMode.KeepAnchor)
+            else:  # the last line: take the break before it instead
+                cursor.setPosition(block.previous().position() + block.previous().length() - 1)
+                cursor.setPosition(block.position() + block.length() - 1, QTextCursor.MoveMode.KeepAnchor)
+            cursor.removeSelectedText()
+        cursor.endEditBlock()
+        self.messages = deque((m for m in self.messages if not goes(m)), maxlen=KEEP)
+        if stay:
+            self.to_bottom()
 
     def redraw(self) -> None:
+        self._pending.clear()  # every kept line is drawn below
+        self._flush.stop()
         self.setHtml("".join(message_html(m, self.mixed, self.names) for m in self.messages))
         block = self.document().firstBlock()
         for message in self.messages:
@@ -255,7 +322,10 @@ class ChatView(QTextBrowser):
         copies the one before it, so every line sets it either way)."""
         from PySide6.QtGui import QTextCursor
 
-        cursor = QTextCursor(block)
+        ChatView._wash_with(QTextCursor(block), on)
+
+    @staticmethod
+    def _wash_with(cursor, on: bool) -> None:
         fmt = cursor.blockFormat()
         if on:
             fmt.setBackground(QColor(theme.SELECT_BG))
@@ -266,12 +336,19 @@ class ChatView(QTextBrowser):
         cursor.setBlockFormat(fmt)
 
     def clear_chat(self) -> None:
+        self._pending.clear()
+        self._flush.stop()
         self.messages.clear()
         self.clear()
         self.jump.hide()
 
     def loadResource(self, kind, url: QUrl):  # noqa: N802 (Qt override)
         if url.scheme() == "emote" and kind == QTextDocument.ResourceType.ImageResource:
+            picture = self._pictures.get(url.path())
+            if picture is not None:
+                self._pictures.move_to_end(url.path())
+                self._given += 1
+                return picture
             self._fetch(url)
             return None  # drawn as a blank box until the picture arrives
         return super().loadResource(kind, url)
@@ -281,24 +358,41 @@ class ChatView(QTextBrowser):
         if emote_id in self._asked or not re.fullmatch(r"[\w-]{1,64}", emote_id):
             return
         self._asked.add(emote_id)
+        self._queue.append(url)
+        self._next_fetch()
+
+    def _next_fetch(self) -> None:
         from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
 
-        if self._net is None:
-            self._net = QNetworkAccessManager(self)
-        address = self._urls.get(emote_id) or EMOTE_URL.format(id=emote_id)
-        if not address.startswith("https://"):
-            return
-        reply = self._net.get(QNetworkRequest(QUrl(address)))
-        reply.finished.connect(lambda: self._fetched(reply, url))
+        while self._queue and self._loading < EMOTE_FETCHES:
+            url = self._queue.popleft()
+            address = self._urls.get(url.path()) or EMOTE_URL.format(id=url.path())
+            if not address.startswith("https://"):
+                continue
+            if self._net is None:
+                self._net = QNetworkAccessManager(self)
+            self._loading += 1
+            reply = self._net.get(QNetworkRequest(QUrl(address)))
+            reply.finished.connect(lambda reply=reply, url=url: self._fetched(reply, url))
 
     def _fetched(self, reply, url: QUrl) -> None:
         from PySide6.QtGui import QImage
 
+        self._loading -= 1
         image = QImage()
         if image.loadFromData(reply.readAll().data()):
+            if max(image.width(), image.height()) > 4 * EMOTE_SIZE:  # big source pictures: kept at a size we draw
+                image = image.scaled(2 * EMOTE_SIZE, 2 * EMOTE_SIZE, Qt.AspectRatioMode.KeepAspectRatio,
+                                     Qt.TransformationMode.SmoothTransformation)
+            self._asked.discard(url.path())
+            self._pictures[url.path()] = image
+            while len(self._pictures) > EMOTE_KEEP:
+                self._pictures.popitem(last=False)
+            self._given += 1
             self.document().addResource(QTextDocument.ResourceType.ImageResource, url, image)
             self._relayout.start()
         reply.deleteLater()
+        self._next_fetch()
 
     def _pictures_arrived(self) -> None:
         stay = self.at_bottom()
@@ -334,7 +428,7 @@ class ChatPanel(QWidget):
         from sprigcast.chat.hub import ChatHub
 
         super().__init__()
-        self.connect_twitch = connect_twitch  # opens Connect Twitch; the panel hears the result itself
+        self.connect_twitch = connect_twitch  # opens Settings → Stream (sign-in is on the place); the panel hears the result
         # The readers live in the hub, shared with chat sources on your stream (sources/chat.py).
         self.hub = ChatHub(self.reading, self)
         self._was_live: set[tuple[str, str]] = set()  # (platform, channel) chats that have read since starting
@@ -355,6 +449,7 @@ class ChatPanel(QWidget):
                                 .replace("border-radius: 15px", "border-radius: 10px"))
         self.more.setCursor(Qt.CursorShape.PointingHandCursor)
         self.more.clicked.connect(self._open_menu)
+        QTimer.singleShot(MENU_READY_MS, self, lambda: self._ready_menu() if self.isVisible() else None)
         top.addWidget(self.more)
         root.addLayout(top)
 
@@ -417,8 +512,8 @@ class ChatPanel(QWidget):
             return
         mine = self._account()
         if not mine:
-            self.say.setPlaceholderText("Connect Twitch to chat back")
-            self.say_button.setText("Connect")
+            self.say.setPlaceholderText("Sign in to Twitch to chat back")
+            self.say_button.setText("Sign in")
         else:
             self.say.setPlaceholderText("Chat on Twitch…")
             self.say.setToolTip(f"Sends to {channel}'s Twitch chat as you")
@@ -431,7 +526,7 @@ class ChatPanel(QWidget):
         if channel is None or self._sending:
             return
         if not self._account() or not twitch_auth.can_send_chat():
-            self.say.setToolTip("SprigCast needs your OK once to send chat: connect Twitch again.")
+            self.say.setToolTip("SprigCast needs your OK once to send chat: sign in to Twitch again.")
             self._connect()
             return
         text = self.say.text().strip()
@@ -523,7 +618,7 @@ class ChatPanel(QWidget):
         self.link_field.setStyleSheet(FIELD_STYLE)
         self.link_field.returnPressed.connect(self._use_link)
         layout.addWidget(self.link_field)
-        hint = QLabel("Twitch and YouTube links read chat natively. Any other page shows here as it is.")
+        hint = QLabel("Twitch, YouTube and Kick links read chat natively. Any other page shows here as it is.")
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {theme.MUTED}")
         layout.addWidget(hint)
@@ -625,7 +720,7 @@ class ChatPanel(QWidget):
             return
         lower = text.lower()
         is_link = "://" in text or "." in text or "/" in text
-        platform = next((p for p, host in (("twitch", "twitch.tv"), ("youtube", "youtu")) if host in lower), None) if is_link else "twitch"
+        platform = next((p for p, host in (("twitch", "twitch.tv"), ("youtube", "youtu"), ("kick", "kick.com")) if host in lower), None) if is_link else "twitch"
         name = name_for(platform, text) if platform else None
         if name:
             names = saved_names()
@@ -790,9 +885,29 @@ class ChatPanel(QWidget):
     # The ⋯ menu -------------------------------------------------------------------------
 
     def _open_menu(self) -> None:
-        menu = self.build_menu()
-        menu.exec(self.more.mapToGlobal(self.more.rect().bottomLeft()))
-        menu.deleteLater()
+        # Kept and made ready ahead (_ready_menu), opened with popup() (no second event loop in the click): made,
+        # styled and opened in the click it was 151 ms on the PC while live (2026-11-18).
+        self._ready_menu()
+        self._menu.popup(self.more.mapToGlobal(self.more.rect().bottomLeft()))
+
+    def _ready_menu(self) -> None:
+        """The ⋯ menu as it is now, made again only when what it holds changed."""
+        import shiboken6
+
+        kind, _ = self.source()
+        key = (bool(self.reading()), kind, bool(QSettings().value(LINK, "")), bool(self._account()),
+               self.web is not None)
+        menu = getattr(self, "_menu", None)
+        if menu is not None and shiboken6.isValid(menu) and self._menu_key == key:
+            return
+        if menu is not None and shiboken6.isValid(menu):
+            menu.deleteLater()
+        self._menu, self._menu_key = self.build_menu(), key
+        self._menu.ensurePolished()
+        self._menu.adjustSize()
+        # create(), not winId(): winId() marks it native, which makes its parent and the parent's other
+        # children native too, and a native parent window warned "must be a top level window" (PC soak 2026-11-18).
+        self._menu.create()
 
     def build_menu(self) -> QMenu:
         menu = QMenu(self)
@@ -813,7 +928,7 @@ class ChatPanel(QWidget):
         menu.addAction("Channels…").triggered.connect(self.ask_names)
         menu.addAction("Change link…" if saved else "Paste a link…").triggered.connect(self.ask_link)
         if not self._account():
-            menu.addAction("Connect Twitch…").triggered.connect(self._connect)
+            menu.addAction("Sign in…").triggered.connect(self._connect)
         menu.addSeparator()
         if kind == "chat":
             menu.addAction("Clear").triggered.connect(self.view.clear_chat)

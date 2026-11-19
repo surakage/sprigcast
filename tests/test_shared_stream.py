@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from sprigcast.output import shared_stream, stream as stream_mod
-from sprigcast.output.shared_stream import SharedStreamEncoder, StreamLink, share_key
+from sprigcast.output.shared_stream import SharedStreamEncoder, StreamLink, bitrate_groups, share_key
 from sprigcast.output.stream import StreamSession, StreamTarget
 from sprigcast.render.engine import Frame
 
@@ -36,7 +36,7 @@ def test_only_matching_streams_share():
     c, v = _Canvas(), _Canvas("vertical", H, W)
     a, b = share_key(_target("tw", c)), share_key(_target("yt", c))
     assert a == b
-    assert share_key(_target("kick", c, kbps=2000)) != a  # another bitrate
+    assert share_key(_target("kick", c, kbps=2000)) == a  # the same picture: the bitrate decides the encoder
     assert share_key(_target("tt", v)) != a  # another canvas
     assert share_key(_target("x", c, size=(80, 46))) != a
     assert share_key(_target("e", c, enhanced=object())) is None
@@ -119,8 +119,8 @@ def test_a_link_that_cant_connect_retries_and_never_shows_the_key(monkeypatch):
     link.start()
     try:
         _feed(enc, 0.6)
-        assert wait_for(lambda: link.reconnects >= 1)
-        assert "disconnected" in link.status and "SECRET" not in link.status
+        assert wait_for(lambda: "disconnected" in link.status)  # written a moment after the count goes up
+        assert "SECRET" not in link.status
         assert link.summary().startswith("down: never connected")
     finally:
         link.stop()
@@ -342,4 +342,109 @@ def test_clips_move_to_the_streams_encoder_once_it_holds_as_much_and_back_after(
         replay.stop(wait=True)
         assert not pool.encoders
     finally:
+        enc.stop()
+
+
+def test_close_bitrates_share_one_encoder_within_every_services_limit():
+    """PC 2026-11-18: Twitch 6000, YouTube 9000 and Kick 8000 each had an encoder (the video engine at 90%);
+    the 2026-11-19 soak still gave Twitch its own (80% with five encodes)."""
+    c = _Canvas()
+    tw = _target("tw", c, kbps=6000, max_kbps=6000)
+    yt = _target("yt", c, kbps=9000, max_kbps=20000)
+    kick = _target("kick", c, kbps=8000, max_kbps=8000)
+    groups = bitrate_groups([tw, yt, kick])
+    assert [(kbps, [t.name for t in members]) for kbps, _auto, members in groups] == \
+        [(6000, ["yt", "kick", "tw"])]  # one encoder, at Twitch's limit
+    same = [_target(n, c, kbps=6000, max_kbps=6000 if n == "tw" else 0) for n in ("tw", "yt", "kick")]
+    assert [len(m) for _, _, m in bitrate_groups(same)] == [3]  # the same bitrate: one encoder for all
+    far = [_target("a", c, kbps=2500), _target("b", c, kbps=9000)]
+    assert len(bitrate_groups(far)) == 2  # too far apart: the lower one would look much worse at the other's
+    auto = [_target("a", c, kbps=6000, auto_bitrate=True), _target("b", c, kbps=6000)]
+    assert bitrate_groups(auto)[0][1] is False  # auto-pilot steers a shared encoder only if every place asks
+
+
+class _Link:
+    def __init__(self, name, behind):
+        self.name, self.behind = name, behind
+
+    def backlog_seconds(self):
+        return self.behind
+
+
+def test_one_slow_destination_costs_the_others_one_small_step_at_most():
+    """2026-11-19 soak: Kick alone behind (0.41 s, YouTube 0) lowered the shared bitrate for everyone."""
+    enc = SharedStreamEncoder(_Canvas(), 30, 6000, "libx264", time.perf_counter(), auto_bitrate=True)
+    yt, kick, tw = _Link("yt", 0.0), _Link("kick", 3.0), _Link("tw", 0.05)
+    pilot = enc.autopilot
+    links = [(lk.behind, lk) for lk in (yt, kick, tw)]
+    behind, who = enc.steering_backlog(links)
+    assert who is kick and behind <= 1.5  # one small step for Kick alone, never a big one
+    assert pilot.update(100.0, behind) == 4800
+    behind, who = enc.steering_backlog(links)
+    assert who is tw and pilot.update(110.0, behind) is None  # no further: Kick skips frames on its own
+    yt.behind = 0.9  # YouTube behind too: the PC's own upload, so everyone comes down
+    behind, who = enc.steering_backlog([(lk.behind, lk) for lk in (yt, kick, tw)])
+    assert who is kick and pilot.update(120.0, behind) < 4800
+    lone = SharedStreamEncoder(_Canvas(), 30, 6000, "libx264", time.perf_counter(), auto_bitrate=True)
+    assert lone.steering_backlog([(3.0, kick)]) == (3.0, kick)  # on its own a link steers its encoder fully
+    enc.links = [StreamLink("YouTube", "rtmp://x/app", "k", enc), StreamLink("Kick", "rtmp://x/app", "k", enc)]
+    assert enc.label == "stream-horizontal (YouTube, Kick)"  # two encoders on one canvas are told apart in the log
+
+
+def test_the_encoder_rests_while_no_destination_is_connected_and_wakes_when_one_is(tmp_path, monkeypatch):
+    monkeypatch.setattr(shared_stream, "RETRY_FIRST", 0.2)
+    allowed = {"open": False}
+
+    def door(url):
+        if not allowed["open"]:
+            raise OSError("[Errno 5] I/O error")
+        return av.open(str(tmp_path / "k.flv"), "w", format="flv")
+
+    enc = SharedStreamEncoder(_Canvas(), 30, 800, "libx264", time.perf_counter())
+    link = StreamLink("kick", "rtmps://x/app", "sk_SECRET", enc, open_container=door)
+    enc.links.append(link)
+    enc.start()
+    link.start()
+    try:
+        _feed(enc, 0.6)  # opens the encoder (its stream headers), then nobody takes its packets
+        assert wait_for(lambda: link.reconnects >= 1)
+        _feed(enc, 0.3)
+        enc.links_changed()
+        assert enc.paused_since is not None  # resting: no encoding for a destination that isn't there
+        rested = enc.frames
+        _feed(enc, 0.5)
+        assert enc.frames <= rested + 2
+        allowed["open"] = True
+        assert wait_for(lambda: enc.paused_since is None, timeout=5)
+        _feed(enc, 1.0)
+        assert link.connected and link.frames > 5
+    finally:
+        link.stop()
+        enc.stop()
+
+
+def test_the_server_is_named_without_the_key():
+    assert stream_mod.ingest_name("rtmps://ingest.example.net:443/app/sk_SECRET") == "rtmps://ingest.example.net:443/app"
+    assert stream_mod.ingest_name("rtmp://a.example/live/k?bandwidthtest=true") == "rtmp://a.example/live"
+    # Kick's ingest (Amazon IVS) needs its app name; pasted without it, the key would be taken as the app.
+    kick = stream_mod.stream_url("rtmps://abc.global-contribute.live-video.net:443", "sk_X")
+    assert kick == "rtmps://abc.global-contribute.live-video.net:443/app/sk_X"
+    assert stream_mod.stream_url("rtmps://abc.global-contribute.live-video.net/app/", "sk_X").endswith(".net/app/sk_X")
+
+
+def test_a_failed_connect_names_the_server_but_never_the_key(monkeypatch):
+    monkeypatch.setattr(shared_stream, "RETRY_FIRST", 0.2)
+    port = free_port()  # nothing listens there
+    enc = SharedStreamEncoder(_Canvas(), 30, 800, "libx264", time.perf_counter())
+    link = StreamLink("kick", f"rtmp://127.0.0.1:{port}/app", "live_SECRET", enc)
+    enc.links.append(link)
+    enc.start()
+    link.start()
+    try:
+        _feed(enc, 0.6)
+        # The count goes up a moment before the status is written: wait for the words.
+        assert wait_for(lambda: f"couldn't connect to rtmp://127.0.0.1:{port}/app" in link.status)
+        assert "SECRET" not in link.status
+    finally:
+        link.stop()
         enc.stop()

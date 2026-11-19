@@ -21,6 +21,7 @@ from typing import Any
 
 import numpy as np
 
+from sprigcast import sprigcore
 from sprigcast.core.frames import picture_array, reformat
 from sprigcast.core.mailbox import Mailbox
 from sprigcast.core.source import Source, register
@@ -357,6 +358,10 @@ class _Feed:
         self._stop = threading.Event()
         self._restart = threading.Event()
         self._thread: threading.Thread | None = None
+        # With the native engine its own player reads the camera (sprigcore.use_native_camera): render/engine.py
+        # hands it to the engine, and no picture passes through Python. None while Python reads it.
+        self.player: sprigcore.MediaPlayer | None = None
+        self._engine_refused = False  # the engine's player couldn't: Python reads it from now on
 
     def start(self, after: "_Feed | None" = None) -> None:
         """after: the same camera still closing after a sleep(); this feed opens it once that's done."""
@@ -374,8 +379,18 @@ class _Feed:
             self._thread.join(timeout=3)
 
     def retune(self, settings: dict[str, Any]) -> None:
-        """New device or mode for the same (only) subscriber: close and reopen on the capture thread."""
+        """New device or mode for the same (only) subscriber: close and reopen on the capture thread. Only the
+        mirror changed, the engine's player flips its next pictures without reopening."""
+        same = {k: v for k, v in settings.items() if k != "mirror"} == {
+            k: v for k, v in self.settings.items() if k != "mirror"}
         self.settings = dict(settings)
+        player = self.player
+        if same and player is not None:
+            try:
+                player.set_mirror(bool(settings.get("mirror")))
+                return
+            except sprigcore.NativeError:
+                pass
         self._restart.set()
 
     # Capture thread ------------------------------------------------------------------
@@ -389,6 +404,10 @@ class _Feed:
         while not self._stop.is_set():
             self._restart.clear()
             device = find_camera(str(self.settings.get("name", "")), str(self.settings.get("path", "")))
+            if device is not None and not self._engine_refused and sprigcore.use_native_camera():
+                self._run_engine(device)
+                if not self._engine_refused:
+                    continue  # stopped, retuned, or the engine's player gave up on this camera
             opened = device is not None and (self._run_ffmpeg(device) or self._run_opencv(device))
             if self._stop.is_set() or self._restart.is_set():
                 continue
@@ -406,6 +425,58 @@ class _Feed:
     def shrink(self) -> float:
         """The least any source of this camera may be shrunk (one shown big keeps it full size for all)."""
         return max((getattr(s, "shrink", 1.0) for s in list(self.subscribers)), default=1.0)
+
+    # The engine's own player (SPRIGCAST_ENGINE=native) ----------------------------------
+
+    def _run_engine(self, device: CameraDevice) -> None:
+        """Read the camera in the engine's player until stopped or retuned. It reopens an unplugged or busy camera
+        by itself every 2 s; if it can't be made at all, or faults, Python reads the camera instead."""
+        w, h, fps = self._mode()
+        try:
+            format_name, choices = _engine_choices(self, device)
+            player = sprigcore.MediaPlayer(playing=True)
+        except (sprigcore.NativeError, OSError) as exc:
+            log.info("%s: the engine can't read cameras (%s); Python reads it", self.id, exc)
+            self._engine_refused = True
+            return
+        try:
+            player.set_picture("", (w, h))  # a camera bigger than the mode asked for is shrunk while decoding
+            player.set_device(format_name, choices, fps, bool(self.settings.get("mirror")))
+        except sprigcore.NativeError as exc:
+            player.close()
+            log.info("%s: the engine can't read this camera (%s); Python reads it", self.id, exc)
+            self._engine_refused = True
+            return
+        self.backend = "Engine (FFmpeg)"
+        self.opened_with = None
+        log.info("%s: the engine reads %r", self.id, device.name)
+        self.player = player
+        lost = None  # what the engine said when the camera went (the log says when it comes back)
+        try:
+            while not (self._stop.is_set() or self._restart.is_set()):
+                info = player.info()
+                if info.faulted:
+                    log.warning("%s: the engine's camera reader faulted; Python reads it", self.id)
+                    self._engine_refused = True
+                    break
+                text = info.status_text
+                if text == "ok" and info.width > 0:
+                    self.status = f"capturing {info.width}x{info.height}"
+                    for source in list(self.subscribers):
+                        source._size = (info.width, info.height)
+                    if lost is not None:
+                        log.info("%s: %r is back (%dx%d)", self.id, device.name, info.width, info.height)
+                        lost = None
+                elif text not in ("ok", "starting"):
+                    self.status = text
+                    if lost is None:
+                        log.warning("%s: %r went away: %s", self.id, device.name, text)
+                    lost = text
+                player.set_shrink(self.shrink())
+                self._restart.wait(0.25)
+        finally:
+            self.player = None  # the render thread lets go of it; the engine keeps it until then
+            player.close()
 
     # FFmpeg (PyAV) DirectShow: the default ---------------------------------------------
 
@@ -537,14 +608,36 @@ class _Feed:
         return True
 
 
+def _engine_choices(feed: _Feed, device: CameraDevice) -> tuple[str, list[tuple[str, dict]]]:
+    """The input device and the (name, options) the engine's player tries, best first: the camera's own modes for
+    the size and rate asked for, then guesses from strict to loose (as _Feed._open_ffmpeg)."""
+    w, h, fps = feed._mode()
+    names = [f"video=@device_pnp_{device.path}"] if device.path.startswith("\\\\?\\") else []
+    names.append(f"video={device.name}")
+    listed = []
+    for name in names:
+        feed.modes_seen = dshow_modes(name)
+        listed = choose_modes(feed.modes_seen, w, h, fps)
+        if feed.modes_seen:
+            break
+    modes = [*listed,
+             {"video_size": f"{w}x{h}", "framerate": str(fps), "vcodec": "mjpeg"},
+             {"video_size": f"{w}x{h}", "framerate": str(fps)},
+             {"video_size": f"{w}x{h}"},
+             {}]
+    return "dshow", [(name, mode) for name in names for mode in modes]
+
+
 _feeds: dict[tuple, _Feed] = {}  # device + mode -> the feed sources share
 _closing: dict[tuple, _Feed] = {}  # feeds told to stop without waiting (a source went to sleep)
 _feeds_lock = threading.Lock()
 
 
 def _feed_key(settings: dict[str, Any]) -> tuple:
-    """Sources with the same device, size and rate share a feed; mirroring is done per source."""
-    return tuple(sorted((k, repr(v)) for k, v in settings.items() if k not in ("mirror", "pause_off_screen")))
+    """Sources with the same device, size and rate share a feed; mirroring is done per source (with the engine
+    its player mirrors, so a mirrored source has a feed of its own)."""
+    skip = ("pause_off_screen",) if sprigcore.use_native_camera() else ("mirror", "pause_off_screen")
+    return tuple(sorted((k, repr(v)) for k, v in settings.items() if k not in skip))
 
 
 @register("camera")
@@ -664,7 +757,27 @@ class CameraSource(Source):
     def size(self) -> tuple[int, int]:
         return self._size
 
+    @property
+    def engine_player(self) -> sprigcore.MediaPlayer | None:
+        """The engine's player reading this camera (with the native engine): render/engine.py hands it over, and
+        the render thread then only calls :meth:`engine_tick`."""
+        feed = self._feed
+        return feed.player if self._attached and feed is not None else None
+
+    def engine_tick(self) -> None:
+        """Render thread, on a tick the engine showed the picture itself: nothing to do (the feed keeps the size)."""
+
     def video_frame(self) -> np.ndarray | None:
+        player = self.engine_player
+        if player is not None:  # read back for a frame Python draws itself
+            try:
+                got = player.video_frame()
+            except sprigcore.NativeError:
+                return None
+            if got is None or isinstance(got, str):
+                return None
+            frame, self.channel_order = got
+            return frame
         item = self._frames.take()
         if item is None:
             return None

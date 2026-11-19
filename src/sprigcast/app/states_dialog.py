@@ -7,7 +7,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -16,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sprigcast.app import card as popups
 from sprigcast.app import theme
 from sprigcast.app.terms import PART
 from sprigcast.core.scene import Scene, SceneCollection, SprigState
@@ -109,7 +109,7 @@ class StatesDialog(QDialog):
         state.hide = [sid for sid, _ in self.items if sid in hide]
 
     def _ask_name(self, title: str, text: str = "") -> str | None:
-        name, ok = QInputDialog.getText(self, title, "Name (e.g. Alert showing):", text=text)
+        name, ok = popups.ask_text(self, title, "Name", text, placeholder="Alert showing")
         name = name.strip()
         if not ok or not name:
             return None

@@ -128,7 +128,7 @@ def test_privacy_block_names_the_switch_that_is_off():
     values[("HKLM", "webcam", "Value")] = "Deny"
     assert "this PC" in virtualcam.privacy_block(read)
     values[("HKLM", "AppPrivacy", "LetAppsAccessCamera")] = 2
-    assert "organisation" in virtualcam.privacy_block(read)
+    assert "organization" in virtualcam.privacy_block(read)
 
 
 def test_refused_start_points_to_privacy(monkeypatch, tmp_path):

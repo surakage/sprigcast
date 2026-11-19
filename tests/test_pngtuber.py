@@ -320,6 +320,21 @@ def test_it_listens_to_your_sprigcast_mic_or_straight_to_windows(tuber):
     assert source.sound_to_follow(_collection()) is None and source._device() == "Headset"
 
 
+def test_apps_set_the_mic_by_name_or_id_and_unknown_ones_are_refused(tuber):
+    col = _collection()
+    col.sources.append(SourceConfig(id="game-audio", kind="app_audio", name="Game Sound"))
+    col.sources.append(SourceConfig(id="tuber", kind="pngtuber", name="Tuber", settings={}))
+    api = NativeApi(Host(col, None))
+    for given in ("game-audio", "sound:game-audio", "game sound"):
+        got = api.run("source.set", {"source": "Tuber", "settings": {"listen_to": given}})
+        assert got["settings"]["listen_to"] == "sound:game-audio"
+    assert api.run("source.set", {"source": "Tuber", "settings": {"listen_to": "Auto"}})["settings"]["listen_to"] == "auto"
+    for given in ("device:Wave Link Mic", "device:default"):
+        assert api.run("source.set", {"source": "Tuber", "settings": {"listen_to": given}})["settings"]["listen_to"] == given
+    with pytest.raises(ApiError, match="Game Sound"):
+        api.run("source.set", {"source": "Tuber", "settings": {"listen_to": "speakers"}})
+
+
 def test_the_engine_measures_the_followed_sound(tuber):
     from test_sleeping_sources import FakeCompositor
 

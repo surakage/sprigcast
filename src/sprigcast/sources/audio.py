@@ -219,6 +219,7 @@ class _WasapiSource(Source):
         self._stop = threading.Event()
         self._restart = threading.Event()
         self._thread: threading.Thread | None = None
+        self._engine_has_it = False  # the engine's mixer reads the device itself (audio/native_mixer.py)
         self.status = "starting"
 
     @property
@@ -234,6 +235,18 @@ class _WasapiSource(Source):
     def read_block(self, n: int) -> np.ndarray:
         return self.ring.read(n)
 
+    def native_capture(self) -> tuple[str, bool]:
+        """(device name or "" for the Windows default, desktop sound?) for the engine to capture itself."""
+        device = str(self.settings.get("device", DEFAULT))
+        return ("" if device == DEFAULT else device, self.loopback)
+
+    def engine_captures(self, on: bool) -> None:
+        """The engine reads the device itself (on): this source's own capture closes, and opens again when off."""
+        if on != self._engine_has_it:
+            self._engine_has_it = on
+            log.info("audio %s: %s", self.id, "the engine reads this device; Python's capture of it closes" if on
+                     else "Python captures this device again")
+            self._restart.set()
     def start(self) -> None:
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name=f"audio-{self.id}", daemon=True)
@@ -296,6 +309,10 @@ class _WasapiSource(Source):
         rescan = False
         while not self._stop.is_set():
             self._restart.clear()
+            if self._engine_has_it:  # the engine captures it: nothing open here until it hands it back
+                self.ring.read(len(self.ring))
+                self._restart.wait()
+                continue
             stream = None
             try:
                 with PortAudio.lock:

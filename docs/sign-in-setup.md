@@ -34,7 +34,10 @@ to sign in to YouTube again once a week until the app is published.
 
 While the app is in Testing, Google shows an "unverified app" screen and only the test users can sign in.
 To open it to everyone, press **Publish app** and complete Google's verification. Verification needs a home
-page, a privacy policy page and a short video of the sign-in, and takes days to weeks.
+page, a privacy policy page and a short video of the sign-in, and takes days to weeks. The pages are served by
+the sign-in helper (`integrations/signin-helper/pages.js`): home page `https://signin.slothbloom.com/`, privacy
+policy `https://signin.slothbloom.com/privacy`, terms `https://signin.slothbloom.com/terms`. Authorized
+domain: `slothbloom.com` (verify it in Google Search Console first).
 
 ## Kick
 

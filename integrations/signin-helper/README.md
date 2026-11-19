@@ -17,6 +17,15 @@ redirect back to the PC (`http://127.0.0.1:<port>/callback` for YouTube, exactly
 `http://localhost:51587/callback` for Kick). It stores nothing and logs no codes or tokens. It reads the IP
 only to allow at most 10 sign-ins a minute from one address.
 
+It also serves SprigCast's public pages, which Google's verification needs on our own domain (`pages.js`):
+
+- https://signin.slothbloom.com/ : the home page (what SprigCast is and what it does with YouTube)
+- https://signin.slothbloom.com/privacy : the privacy policy
+- https://signin.slothbloom.com/terms : the terms
+
+Keep them true to the app: if SprigCast starts using YouTube (or Kick or Twitch) for something new, update
+`pages.js` and its date, deploy, and tell Google about the change in the console.
+
 It's separate from the website and the report inbox, so deploying one never touches the others.
 Cost: free (Workers' free plan).
 

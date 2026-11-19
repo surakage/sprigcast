@@ -17,6 +17,7 @@ import logging
 import secrets
 import socket
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -207,7 +208,7 @@ class Waiter:
             while not self._done.wait(step):
                 waited += step
                 if cancelled is not None and cancelled.is_set():
-                    raise Cancelled("Sign-in cancelled.")
+                    raise Cancelled("Sign-in canceled.")
                 if waited >= timeout:
                     raise SignInError("Sign-in took too long. Try again.")
             query = self.result or {}
@@ -259,12 +260,28 @@ def refusal_reason(raw: bytes) -> str:
     return " ".join(text.split())[:120]
 
 
-def post_form(url: str, fields: dict, who: str) -> dict:
-    """POST a form; the JSON reply, or {"error": ...} with the status on an HTTP error."""
+HELPER_TIMEOUT = 30  # SprigCast's sign-in helper: a cold start plus the service's own answer can take a while
+
+
+def post_form(url: str, fields: dict, who: str, timeout: float = TIMEOUT, tries: int = 1) -> dict:
+    """POST a form; the JSON reply, or {"error": ...} with the status on an HTTP error.
+    tries > 1: when nothing came back (no answer, timed out), ask again, after a short wait."""
+    for attempt in range(1, tries + 1):
+        try:
+            return _post_form_once(url, fields, who, timeout)
+        except SignInError as exc:
+            if attempt == tries or not isinstance(exc.__cause__, (urllib.error.URLError, TimeoutError, OSError)):
+                raise
+            log.info("sign-in: no answer from %s (%s), asking again", who, exc.__cause__)
+            time.sleep(1)
+    raise SignInError(f"Couldn't reach {who}.")  # not reached
+
+
+def _post_form_once(url: str, fields: dict, who: str, timeout: float) -> dict:
     request = urllib.request.Request(url, data=urllib.parse.urlencode(fields).encode(), method="POST",
                                      headers={"Accept": "application/json", **HEADERS})
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read() or b"{}")
     except urllib.error.HTTPError as exc:
         try:

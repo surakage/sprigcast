@@ -7,6 +7,7 @@ import os
 import threading
 import time
 import types
+import typing
 
 import pytest
 
@@ -123,3 +124,41 @@ def test_saving_a_clip_answers_with_the_names_and_says_saved_later(monkeypatch):
     told.clear()
     w.replay.done([], ["horizontal: disk full"])
     assert "disk full" in said[-1] and told == []  # no clip.saved event for a clip that wasn't
+
+
+def test_a_file_on_an_encoder_that_keeps_running_ends_off_the_ui_thread():
+    """The replay buffer or a stream keeps the encoder: its file ends at the next keyframe, which held the
+    window 185 ms on the PC (2026-11-18). stop() only asks; the waiting goes in `later`."""
+    from sprigcast.output.shared import SharedRecording
+
+    class Keeps:
+        dropped = eased = 0
+
+        def __init__(self):
+            self.asked, self.waited = [], False
+
+        def stop_file(self, timeout=10.0, wait=True):
+            self.asked.append(wait)
+
+        def file_finished(self, timeout=10.0):
+            time.sleep(0.3)
+            self.waited = True
+
+    class Pool:
+        released: typing.ClassVar[list] = []
+
+        def users(self, canvas_id):
+            return {"recording", "replay"}
+
+        def release(self, user, canvas_id, later=None):
+            self.released.append((user, canvas_id))
+
+    enc = Keeps()
+    session = SharedRecording(Pool(), [("h", enc)], [])
+    later: list = []
+    began = time.perf_counter()
+    session.stop(later)
+    assert time.perf_counter() - began < 0.15 and enc.asked == [False] and not enc.waited
+    for item in later:
+        item.stop()
+    assert enc.waited and Pool.released == [("recording", "h")]

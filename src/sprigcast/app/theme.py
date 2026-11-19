@@ -11,7 +11,7 @@ import os
 import sys
 import time
 
-from PySide6.QtCore import QPointF, QRectF, QSettings, QStandardPaths, Qt
+from PySide6.QtCore import QEvent, QPointF, QRectF, QSettings, QStandardPaths, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPalette, QPen, QTransform
 from PySide6.QtWidgets import QApplication
 
@@ -47,9 +47,73 @@ BUTTON_EDGE = "#4a5a52"  # about 2.2:1 against PANEL and CARD, where RAISED and 
 BUTTON_EDGE_HOVER = "#62766c"
 BUTTON_TOP = "#5a6b62"  # the lit top edge
 BUTTON_OFF_EDGE = "#36433d"  # a disabled button keeps its shape, just quieter
+# Titled sections (Settings and other pop-ups): a card that stands off the window, fields that sink into
+# it, labels bright enough to read at a glance. Contrast: card 2.0:1 on BG, field edge 3.2:1 on the card,
+# labels 9.5:1 on the card.
+SECTION = "#1d2823"
+SECTION_EDGE = "#3b4b43"
+FIELD = CHROME
+FIELD_EDGE = "#62776c"
+LABEL = "#c3cfc8"
+SECTION_TITLE_PX = 15
 WARN = "#e6c55a"
 BAD = "#f2665e"
 INFO = "#7fb8ff"
+
+# Settings → Appearance: text size and a color preset. Both are read once, when SprigCast starts: every style in
+# the app is built from the names above as it loads, so a change shows after a restart (Settings says so).
+TEXT_SIZE_KEY = "appearance/text_size"
+COLORS_KEY = "appearance/colors"
+TEXT_SIZES = {"small": ("Small", 0.9), "normal": ("Normal", 1.0), "large": ("Large", 1.15)}
+COLOR_PRESETS = {"default": "Default", "colorblind": "Color-blind friendly", "contrast": "High contrast"}
+# What each preset changes. Color-blind friendly: blue, yellow and orange-red in place of green, yellow and red
+# (told apart with the common kinds of color blindness). High contrast: brighter text and stronger edges.
+PRESET_COLORS: dict[str, dict[str, str]] = {
+    "default": {},
+    "colorblind": {
+        "ACCENT": "#56b4e9", "ACCENT_HOVER": "#7cc6ef", "ACCENT_TEXT": "#06121a", "SELECT_BG": "#17303f",
+        "SELECT_TEXT": "#c4e4f7", "WARN": "#f0e442", "BAD": "#e8743b", "INFO": "#c9a7ff",
+    },
+    "contrast": {
+        "BG": "#060908", "TEXT": "#ffffff", "TEXT_BRIGHT": "#ffffff", "MUTED": "#b4c2ba", "EDGE": "#3b4b43",
+        "EDGE_STRONG": "#62776c", "SECTION_EDGE": "#62776c", "FIELD_EDGE": "#8da196", "LABEL": "#e3ebe6",
+        "BUTTON_EDGE": "#7d9187", "BUTTON_TOP": "#8da196",
+    },
+}
+
+
+def preset_colors(name: str) -> dict[str, str]:
+    """The good / warning / bad colors a preset shows (for its preview in Settings)."""
+    base = {"ACCENT": "#4fd88f", "WARN": "#e6c55a", "BAD": "#f2665e"}
+    return {**base, **{k: v for k, v in PRESET_COLORS.get(name, {}).items() if k in base}}
+
+
+def _settings() -> QSettings:
+    """SprigCast's settings, also before the app has been given its name (this module loads before that)."""
+    from PySide6.QtCore import QCoreApplication
+
+    return QSettings() if QCoreApplication.organizationName() else QSettings("Slothbloom", "SprigCast")
+
+
+def chosen_colors() -> str:
+    try:
+        name = str(_settings().value(COLORS_KEY, "default"))
+    except Exception:  # noqa: BLE001  (no settings yet)
+        return "default"
+    return name if name in COLOR_PRESETS else "default"
+
+
+def chosen_text_size() -> str:
+    try:
+        name = str(_settings().value(TEXT_SIZE_KEY, "normal"))
+    except Exception:  # noqa: BLE001
+        return "normal"
+    return name if name in TEXT_SIZES else "normal"
+
+
+colors_in_use = chosen_colors()  # what this run is drawn with (Settings compares it to what's saved)
+text_size_in_use: str | None = None  # set when the theme is first applied
+globals().update(PRESET_COLORS[colors_in_use])
 
 # Older names, kept so plugins and older code keep working.
 BARK, MOSS, LICHEN, LEAF, BLOOM, INPUT, PETAL, DUSK = BG, PANEL, EDGE_STRONG, ACCENT, LIVE, CHROME, TEXT, MUTED
@@ -138,6 +202,22 @@ SOFT_FIELD_STYLE = (  # borderless inputs on the Build inspector
 # Small header buttons (a card's Edit, + Add, ⚙; a pop-up's "Last streams"): a compact button, never bare text.
 LINK_STYLE = button_style(12, "4px 11px")
 
+# Every scroll bar keeps clear of what it scrolls: the bar's own left margin (8 px) is the gap, so
+# rows, buttons and text never touch it, and nothing else needs its own padding. The handle is 6 px wide
+# at the far edge; the top and bottom margins keep it off rounded corners.
+SCROLL_GAP = 8
+SCROLL_BARS = f"""
+QScrollBar:vertical {{ background: transparent; width: {6 + SCROLL_GAP + 4}px; margin: 8px 4px 8px {SCROLL_GAP}px; }}
+QScrollBar:horizontal {{ background: transparent; height: {6 + SCROLL_GAP + 4}px; margin: {SCROLL_GAP}px 8px 4px 8px; }}
+QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{ background: {EDGE_STRONG}; border-radius: 3px; }}
+QScrollBar::handle:vertical {{ min-height: 30px; }}
+QScrollBar::handle:horizontal {{ min-width: 30px; }}
+QScrollBar::handle:hover {{ background: {MUTED}; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
+QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
+""".strip()
+
+
 STYLESHEET = f"""
 QWidget {{ selection-background-color: {SELECT_BG}; selection-color: {SELECT_TEXT}; }}
 QMainWindow::separator {{ background: {BG}; width: 6px; height: 6px; }}
@@ -166,11 +246,13 @@ QToolButton:pressed {{ background: {PRESSED}; }}
 QToolButton:checked {{ background: {SELECT_BG}; color: {SELECT_TEXT}; border-color: {ACCENT}; }}
 QDialog, QMessageBox {{ background: {PANEL}; border: 1px solid {EDGE_STRONG}; }}
 QGroupBox {{
-    background: {BG}; border: 1px solid {EDGE}; border-radius: 16px; margin-top: 16px; padding: 12px 10px 10px 10px;
+    background: {SECTION}; border: 1px solid {SECTION_EDGE}; border-radius: 16px; margin-top: 22px;
+    padding: 12px 10px 10px 10px;
 }}
-QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px; color: {MUTED}; font-weight: 600; }}
+QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px; color: {TEXT_BRIGHT};
+    font-size: {SECTION_TITLE_PX}px; font-weight: 600; }}
 QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
-    background: {CHROME}; color: {TEXT}; border: 1px solid {EDGE_STRONG}; border-radius: 10px; padding: 3px 8px;
+    background: {FIELD}; color: {TEXT}; border: 1px solid {FIELD_EDGE}; border-radius: 10px; padding: 3px 8px;
 }}
 QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
     border-color: {ACCENT};
@@ -220,19 +302,13 @@ QSlider::handle:horizontal {{
 QSlider::sub-page:horizontal {{ background: {ACCENT}; border-radius: 2px; }}
 QProgressBar {{ background: {CHROME}; border: 1px solid {EDGE}; border-radius: 7px; text-align: center; color: {TEXT}; }}
 QProgressBar::chunk {{ background: {ACCENT}; border-radius: 6px; }}
-QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
-QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
-QScrollBar::handle:vertical, QScrollBar::handle:horizontal {{ background: {EDGE_STRONG}; border-radius: 3px; }}
-QScrollBar::handle:vertical {{ min-height: 30px; }}
-QScrollBar::handle:horizontal {{ min-width: 30px; }}
-QScrollBar::handle:hover {{ background: {MUTED}; }}
-QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
-QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
+{SCROLL_BARS}
 QStatusBar {{ background: {CHROME}; color: {MUTED}; border-top: 1px solid {EDGE}; }}
 QSplitter::handle {{ background: {BG}; }}
 """
 
 
+looks_applied = 0  # how many times a theme was applied: a font may have changed since a widget measured itself
 _applied: str | None = None  # the theme last applied: re-applying it restyles every widget (~1 s)
 
 THEMES = {"slothbloom": "Slothbloom (dark)", "system": "System (Windows default)"}
@@ -275,6 +351,20 @@ def _set_symbol_fallbacks(app: QApplication) -> None:
     font = app.font()
     font.setFamilies([font.family(), "Segoe UI Symbol", "Segoe UI Emoji"])
     app.setFont(font)
+
+
+def _set_text_size(app: QApplication) -> None:
+    """Settings → Appearance → Text size: the app's font, a little smaller or larger. Once, at start."""
+    global text_size_in_use
+    text_size_in_use = chosen_text_size()
+    scale = TEXT_SIZES[text_size_in_use][1]
+    if scale != 1.0:
+        font = app.font()
+        if font.pointSizeF() > 0:
+            font.setPointSizeF(font.pointSizeF() * scale)
+        elif font.pixelSize() > 0:
+            font.setPixelSize(round(font.pixelSize() * scale))
+        app.setFont(font)
 
 
 def guarded_style(base: str):
@@ -322,7 +412,7 @@ def fit_widgets() -> None:
 
         def init(self, *args, _made=made, **kwargs):
             _made(self, *args, **kwargs)
-            wheel_guard.guard(self)
+            wheel_guard.guard_new(self)
         cls.__init__ = init
     aligned = QAbstractSpinBox.setAlignment
 
@@ -410,6 +500,11 @@ def ui_burst(starts: bool = True) -> None:
         QTimer.singleShot(int(BURST_HOLD_S * 1000), _burst_over)
 
 
+def bursting() -> bool:
+    """Widgets are being made (a pop-up opening): the window's own repaints can wait a moment (meters)."""
+    return _usual_switch is not None
+
+
 def _burst_over() -> None:
     global _usual_switch
     left = _burst_until - time.monotonic()
@@ -435,6 +530,30 @@ def ticked(action, on: bool) -> None:
 NUMBER_PAD = 12  # px between a number and the left edge of its box, the same as text fields
 
 
+_ACTIVATION = frozenset((QEvent.Type.WindowActivate, QEvent.Type.WindowDeactivate))
+
+
+def same_when_inactive(palette: QPalette) -> None:
+    """The window's colours don't change when another window (a pop-up) takes the focus. Qt repaints a whole
+    window on that change unless both colour groups match, and Windows' own palette (its accent, inactive
+    selections) doesn't: every pop-up repainted the main window as it opened and again as it closed, its bloom
+    tiles and panels painting in Python (76-214 ms of opening Settings or the Plugin store, PC 2026-11-18)."""
+    active, inactive = QPalette.ColorGroup.Active, QPalette.ColorGroup.Inactive
+    for role in QPalette.ColorRole:
+        if role != QPalette.ColorRole.NColorRoles:
+            palette.setBrush(inactive, role, palette.brush(active, role))
+
+
+def view_activation(view: QWidget, event) -> bool | None:
+    """For an item view's event(): a pop-up taking or giving back the focus doesn't repaint it. Qt's item views
+    repaint their whole viewport on that change, whatever the colours; the Library's rows paint in Python, and
+    every pop-up opened over Build mode repainted them twice (101-156 ms, PC 2026-11-18). Their colours don't change
+    (same_when_inactive), so nothing needs it. Returns the answer, or None to go on as usual."""
+    if event.type() in _ACTIVATION:
+        return True  # taken here: passed on, the view (and its viewport, sent it next) would repaint
+    return None
+
+
 def apply_theme(app: QApplication, name: str | None = None) -> bool:
     """Apply a theme (default: the saved choice). Returns True when the dark theme is on."""
     global _system_style, _applied
@@ -442,9 +561,12 @@ def apply_theme(app: QApplication, name: str | None = None) -> bool:
     if wanted == _applied:
         return wanted != "system"
     _applied = wanted
+    global looks_applied
+    looks_applied += 1  # widgets that remember their measurements measure again (live_stage.Elided)
     if _system_style is None:
         _system_style = app.style().name()
         _set_symbol_fallbacks(app)
+        _set_text_size(app)
     if wanted == "system":
         app.setStyleSheet("")
         app.setStyle(guarded_style(_system_style))  # the system look, still with the wheel guard
@@ -472,6 +594,7 @@ def apply_theme(app: QApplication, name: str | None = None) -> bool:
         palette.setColor(role, QColor(color))
     for role in (QPalette.ColorRole.Text, QPalette.ColorRole.ButtonText, QPalette.ColorRole.WindowText):
         palette.setColor(QPalette.ColorGroup.Disabled, role, QColor(MUTED))
+    same_when_inactive(palette)
     app.setPalette(palette)
     app.setStyleSheet(STYLESHEET + nature_rules())
     return True
@@ -650,6 +773,11 @@ NATURE_PICTURES = {
     "seed_off_disabled": lambda: _seed_svg(EDGE_STRONG, PANEL, None),
     "seed_on_disabled": lambda: _seed_svg(MUTED, MUTED, PANEL),
     "seed_handle": _seed_handle_svg,
+    # A section title's mark: a small filled leaf before the title.
+    "section_leaf": lambda: ('<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 16 16">'
+                             f'<path d="M2 14C2 6 7 2 14 2c0 7-4 12-12 12z" fill="{ACCENT}"/>'
+                             f'<path d="M3.5 12.5L10 6" stroke="{ACCENT_TEXT}" stroke-width="1.3"'
+                             ' stroke-linecap="round"/></svg>'),
     "chevron": lambda: (f'<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12">'
                         f'<path d="M3,4.5 L6,7.5 L9,4.5" fill="none" stroke="{MUTED}" stroke-width="1.6"'
                         ' stroke-linecap="round" stroke-linejoin="round"/></svg>'),
@@ -683,6 +811,12 @@ def nature_pictures(folder: str | None = None) -> dict[str, str]:
 _NATURE_WRITTEN: dict[tuple, dict[str, str]] = {}  # nature_pictures' answers, by folder and picture files
 
 
+def section_title_rule(pic: dict[str, str], selector: str = "QGroupBox::title") -> str:
+    """A titled section's leaf mark, drawn before the title (the room for it is the title's left padding)."""
+    return (f"{selector} {{ padding-left: 20px; background-image: url({pic['section_leaf']});"
+            " background-repeat: no-repeat; background-position: left center; }")
+
+
 def nature_rules(folder: str | None = None) -> str:
     """Style sheet rules that swap tick boxes, radio buttons and slider handles for leaf-cut boxes and seeds."""
     try:
@@ -708,8 +842,65 @@ def nature_rules(folder: str | None = None) -> str:
                  f" margin: -7px 0; border-radius: 9px; image: url({pic['seed_handle']}); }}")
     rules.append(f"QSlider::handle:vertical {{ background: transparent; border: none; width: 18px; height: 18px;"
                  f" margin: 0 -7px; border-radius: 9px; image: url({pic['seed_handle']}); }}")
+    rules.append(section_title_rule(pic))
     # Tick lists get room to breathe: nothing touches the box's edge, rows aren't packed together.
     rules.append("QListWidget, QTreeWidget { padding: 6px; }")
     rules.append("QListWidget::item, QTreeWidget::item { padding: 5px 8px; min-height: 22px; }")
     rules.append("QListWidget::indicator, QTreeWidget::indicator { margin-right: 6px; }")
     return "\n".join(rules) + "\n"
+
+
+# A pop-up card's soft shadow, drawn once per size and then copied. A QGraphicsDropShadowEffect on the card drew the
+# whole card into a picture and blurred it on every repaint of anything in it (a Garden check's numbers each second,
+# a busy bar, hover): part of every pop-up's open on the PC while live (2026-11-18).
+CARD_SHADOW = (36, 10, 190)  # blur, drop and darkness, as the effect had them
+CARD_RADIUS = 24
+_shadow_pictures: dict[tuple, tuple] = {}
+
+
+def _shadow_picture(w: int, h: int, ratio: float, colour: str) -> tuple:
+    """(picture, left, top): the shadow of a w x h rounded card, and where its top left sits from the card's."""
+    from PySide6.QtGui import QBrush, QImage, QPixmap
+    from PySide6.QtWidgets import QGraphicsDropShadowEffect, QGraphicsPathItem, QGraphicsScene
+
+    key = (w, h, ratio, colour)
+    found = _shadow_pictures.get(key)
+    if found is not None:
+        return found
+    blur, drop, dark = CARD_SHADOW
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(0, 0, w, h), CARD_RADIUS, CARD_RADIUS)
+    scene = QGraphicsScene()
+    item = QGraphicsPathItem(path)
+    item.setPen(QPen(Qt.PenStyle.NoPen))
+    item.setBrush(QBrush(QColor(colour)))
+    effect = QGraphicsDropShadowEffect()
+    effect.setBlurRadius(blur)
+    effect.setOffset(0, drop)
+    effect.setColor(QColor(0, 0, 0, dark))
+    item.setGraphicsEffect(effect)
+    scene.addItem(item)
+    area = effect.boundingRectFor(QRectF(0, 0, w, h)).toAlignedRect()
+    image = QImage(round(area.width() * ratio), round(area.height() * ratio), QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    scene.render(painter, QRectF(0, 0, image.width(), image.height()), QRectF(area))
+    painter.end()
+    picture = QPixmap.fromImage(image)
+    picture.setDevicePixelRatio(ratio)
+    if len(_shadow_pictures) > 8:  # a few sizes at most (pop-ups that grow): the oldest go
+        _shadow_pictures.pop(next(iter(_shadow_pictures)))
+    found = _shadow_pictures[key] = (picture, area.left(), area.top())
+    return found
+
+
+def paint_card_shadow(window, card) -> None:
+    """From a pop-up's paintEvent: the soft shadow under its card (see CARD_SHADOW)."""
+    rect = card.geometry()
+    if rect.width() <= 0 or rect.height() <= 0:
+        return
+    picture, left, top = _shadow_picture(rect.width(), rect.height(), window.devicePixelRatioF(), PANEL)
+    painter = QPainter(window)
+    painter.drawPixmap(rect.left() + left, rect.top() + top, picture)
+    painter.end()

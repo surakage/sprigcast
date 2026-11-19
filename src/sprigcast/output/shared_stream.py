@@ -7,7 +7,9 @@ is a ``StreamLink``: its own connection, sender thread, reconnects and health, f
 A link that falls behind (slow upload) skips packets until it has caught up and a keyframe comes,
 so it never holds the encoder or the other destinations back. A link that drops reconnects on its
 own and starts again at a fresh keyframe; the others carry on. With auto bitrate on, the encoder
-follows the link that is struggling most, since they all share one bitrate.
+follows the links' backlog, since they all share one bitrate: when several fall behind (the PC's own upload),
+it lowers for all of them; when one alone does (that service's own path), it may cost the others one small step
+(LONE_LOWERS) and past that the slow link skips frames on its own instead of dragging the rest down.
 """
 
 from __future__ import annotations
@@ -30,19 +32,51 @@ from sprigcast.output.stream import (
     RETRY_MAX,
     SEVERITY,
     log_live,
+    explain_connect,
+    open_ingest,
     stream_url,
 )
 
 log = logging.getLogger(__name__)
 
 
+SHARE_WITHIN = 0.4  # destinations whose bitrates are this close (of the higher one) share one encoder
+LONE_LOWERS = 0.8  # one link alone behind may lower a shared bitrate this far (of what's set), no further
+
+
 def share_key(target) -> tuple | None:
-    """What two stream targets must have in common to share an encoder; None when this one can't."""
+    """What stream targets must have in common to share an encoder (the same picture); None when one can't."""
     if target.enhanced is not None:
         return None
     c = target.canvas
     size = target.size or (c.width, c.height)
-    return c.id, tuple(size), min(target.fps or c.fps, c.fps), target.bitrate_kbps, bool(target.auto_bitrate)
+    return c.id, tuple(size), min(target.fps or c.fps, c.fps)
+
+
+def bitrate_groups(targets: list) -> list[tuple[int, bool, list]]:
+    """Destinations wanting the same picture, split into encoders by bitrate: (kbps, auto-pilot, targets).
+
+    One encoder serves every destination whose own bitrate is within SHARE_WITHIN of the encoder's, and the
+    encoder never goes above what any of them accepts (its service's limit, target.max_kbps). The highest
+    bitrates go first, so each encoder runs as high as its destinations allow: YouTube 9000, Kick 8000 (its limit)
+    and Twitch 6000 (its limit) share one at 6000. Three destinations had three encoders before (PC 2026-11-18:
+    the card's video engine at 90%, and auto-pilot lowering every stream for it); within 25% Twitch still had
+    its own (2026-11-19 soak: 80% with five encodes). Far apart (2500 and 9000) they keep their own encoders,
+    since the higher one would look much worse at the lower bitrate."""
+    groups: list[list] = []  # [kbps, members]
+    for t in sorted(targets, key=lambda t: -int(t.bitrate_kbps)):
+        want = int(t.bitrate_kbps)
+        ceiling = int(getattr(t, "max_kbps", 0) or 0) or want
+        for group in groups:
+            kbps = min(group[0], ceiling)
+            if all(abs(int(m.bitrate_kbps) - kbps) <= SHARE_WITHIN * max(int(m.bitrate_kbps), kbps)
+                   for m in [*group[1], t]):
+                group[0] = kbps
+                group[1].append(t)
+                break
+        else:
+            groups.append([min(want, ceiling), [t]])
+    return [(kbps, all(bool(m.auto_bitrate) for m in members), members) for kbps, members in groups]
 
 
 class SharedStreamEncoder(FileTap, ReplayBuffer):
@@ -75,6 +109,12 @@ class SharedStreamEncoder(FileTap, ReplayBuffer):
     def current_kbps(self) -> int:
         return self.autopilot.current_kbps if self.autopilot else self.bitrate_kbps
 
+    @property
+    def label(self) -> str:
+        """For the log: the canvas and who the encoder sends to (a canvas can have two shared encoders)."""
+        names = ", ".join(link.name for link in list(self.links))
+        return f"{self.canvas_id} ({names})" if names else self.canvas_id
+
     def request_keyframe(self) -> None:
         self._force_key = True  # read on the encoder thread before the next frame
 
@@ -101,6 +141,21 @@ class SharedStreamEncoder(FileTap, ReplayBuffer):
     def hold(self, who: str) -> None:
         with self._hold_lock:
             self.holders.add(who)
+        self.links_changed()
+
+    def links_changed(self) -> None:
+        """A link connected or dropped. With no destination taking the packets and nobody else using them (a
+        "Same as stream" recording, clips), encoding is wasted work: the encoder rests (paused) until a link is
+        back. The 3-way test on 2026-11-18 kept an encoder busy for 10 min for a Kick that never connected."""
+        with self._hold_lock:
+            wanted = any(link._ready for link in self.links) or self.holders != {"stream"} or self.seconds > 0 \
+                or self.file_path is not None or self._templates is None  # not open yet: links wait for it
+            if wanted and self.paused_since is not None:
+                self.resume()
+                log.info("shared stream %s: a destination is connected again, encoding", self.label)
+            elif not wanted and self.paused_since is None and self.links:
+                self.pause()
+                log.info("shared stream %s: no destination is connected, encoding rests", self.label)
 
     def let_go(self, who: str) -> bool:
         """`who` is done with the encoder. Returns True when nobody else holds it (then on_last_let_go runs)."""
@@ -110,6 +165,8 @@ class SharedStreamEncoder(FileTap, ReplayBuffer):
             finish, self.on_last_let_go = (self.on_last_let_go, None) if last else (None, self.on_last_let_go)
         if finish is not None:
             finish()
+        else:
+            self.links_changed()
         return last
 
     def _on_packet(self, p: _Packet) -> None:
@@ -134,10 +191,39 @@ class SharedStreamEncoder(FileTap, ReplayBuffer):
         live = [link for link in self.links if link.connected and now - link._connected_at >= GRACE_SECONDS]
         if not live:
             return
-        kbps = self.autopilot.update(now, max(link.backlog_seconds() for link in live))
+        behind, link = self.steering_backlog([(link.backlog_seconds(), link) for link in live])
+        kbps = self.autopilot.update(now, behind)
         if kbps is not None:
-            log.info("shared stream %s: auto-pilot bitrate %d kbps", self.canvas_id, kbps)
+            why = f" ({link.name} behind {link.backlog_seconds():.2f} s)" if kbps < self._want_kbps and link else ""
+            log.info("shared stream %s: auto-pilot bitrate %d kbps%s", self.label, kbps, why)
             self._want_kbps = kbps
+
+    def steering_backlog(self, backlogs: list[tuple[float, "StreamLink"]]) -> tuple[float, "StreamLink | None"]:
+        """The backlog the shared bitrate follows, and whose it is. Several links behind: the PC's own upload,
+        so the worst one. One link alone behind: that service's own path (PC soak 2026-11-19: Kick at 0.41 s
+        with YouTube at 0), so it may lower the bitrate to LONE_LOWERS of what's set and no further; past that
+        the bitrate follows the next link, and the slow one skips frames until it catches up."""
+        from sprigcast.output.autopilot import BEHIND_S, FAR_BEHIND_S
+
+        ranked = sorted(backlogs, key=lambda b: -b[0])
+        if len(ranked) < 2 or ranked[1][0] > BEHIND_S:
+            return ranked[0]
+        if self.autopilot.current_kbps > self.autopilot.target_kbps * LONE_LOWERS:
+            return min(ranked[0][0], FAR_BEHIND_S), ranked[0][1]  # a small step, never a big one, for one link
+        return ranked[1]
+
+    def _writer_before(self, writer) -> None:
+        """The engine's writer encodes (packets mode): the bitrate steered here goes to it before the next picture."""
+        self._steer()
+        if self._want_kbps != self._applied_kbps:
+            k = self._want_kbps
+            peak, buffer = rate_limits(self.codec, self.encoder, k)
+            try:
+                writer.set_bitrate(k, peak or 0, buffer or 0)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("shared stream: couldn't change the bitrate to %d kbps: %s", k, exc)
+            self._applied_kbps = k
+        super()._writer_before(writer)
 
     def _write_video(self, container, stream, frame, pts: int | None = None) -> None:
         self._steer()
@@ -372,9 +458,7 @@ class StreamLink:
     # Link thread: connect, send, reconnect -----------------------------------------------
 
     def _default_open(self, url: str):
-        import av
-
-        return av.open(url, "w", format="flv")
+        return open_ingest(url)
 
     def _connect(self):
         out = self._open_container(self._url)
@@ -385,6 +469,16 @@ class StreamLink:
         video_t, audio_t = self.shared._templates[:2]
         streams = self.shared._ask(lambda: {"video": out.add_stream_from_template(video_t),
                                             "audio": out.add_stream_from_template(audio_t)})
+        if self._open_container == self._default_open:
+            try:
+                with explain_connect(self._url):
+                    out.start_encoding()  # connect now, on this thread, not at the first packet
+            except Exception:
+                try:
+                    out.close()
+                except Exception:  # noqa: BLE001, S110 - it never connected: nothing to end
+                    pass
+                raise
         return out, streams
 
     def _send(self, out, streams, p: _Packet) -> None:
@@ -421,6 +515,7 @@ class StreamLink:
 
                 self._delay_line = DelayLine(self.delay_s, self._release, f"delay-{self.name}")
             self._ready = True
+            self.shared.links_changed()
             self.shared.request_keyframe()
             while not self._stop.is_set():
                 item = self._q.get()
@@ -434,6 +529,7 @@ class StreamLink:
         finally:
             self._ready = False
             self.connected = False
+            self.shared.links_changed()
             if self._delay_line is not None:
                 self._delay_line.close()
                 self._delay_line = None
