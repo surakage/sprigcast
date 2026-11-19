@@ -119,7 +119,7 @@ def test_upload_speed_uses_the_big_blocks():
         sent.append(len(data))
         t.sleep(len(data) / 2_000_000)  # 16 Mbps
 
-    kbps = optimize.upload_speed(seconds=0.6, post=post)
+    kbps = optimize.upload_speed(seconds=0.6, post=post, connections=1)
     assert 12000 < kbps < 17000
     assert optimize.upload_speed(seconds=0.2, post=lambda d: (_ for _ in ()).throw(OSError("offline"))) is None
 
@@ -260,3 +260,42 @@ def test_a_lighter_clean_stream_keeps_the_most_proven():
     assert optimize.load_proven(s) == 12320
     optimize.remember_proven(s, 0)  # network trouble: start over
     assert optimize.load_proven(s) == 0
+
+
+def test_upload_speed_adds_up_what_several_connections_carry():
+    """PC check 2026-11-19: 11.4 Mbps measured on a line that had carried 23 Mbps of streams for an hour.
+    One connection alone tops out below the line; streams to three places are three connections."""
+    import time as t
+
+    def post(data):
+        t.sleep(len(data) / 750_000)  # each connection carries 6 Mbps
+
+    one = optimize.upload_speed(seconds=1.2, post=post, connections=1)
+    four = optimize.upload_speed(seconds=1.2, post=post, connections=4)
+    assert 4500 < one < 6600 and 18000 < four < 26000
+
+
+def test_canvases_never_end_up_at_two_frame_rates():
+    """PC check 2026-11-19: the horizontal canvas was set to 30 fps and the vertical one, with nothing to
+    send, kept its 60."""
+    c = _collection()
+    c.outputs = [o for o in c.outputs if o.id == "tw"]
+    for canvas in c.canvases:
+        canvas.fps = 60
+    p = optimize.PcProfile(**STRONG, upload_kbps=4000, wants_record=False)
+    fps = optimize.plan(p, c).apply()
+    assert fps == {"horizontal": 30, "vertical": 30}
+    p = optimize.PcProfile(**STRONG, upload_kbps=4000)  # recordings at 60 on a strong PC: both canvases 60
+    c = _collection()
+    fps = optimize.plan(p, c).apply()
+    assert fps == {"horizontal": 60, "vertical": 60}
+    assert next(o for o in c.outputs if o.id == "tw").fps == 30  # the stream itself stays at what the upload carries
+
+
+def test_three_places_on_a_fast_line_keep_full_quality():
+    c = _collection()
+    c.outputs = [Output(id=i, type="stream", service=i, canvas="horizontal", enabled=True)
+                 for i in ("twitch", "youtube", "kick")]
+    p = optimize.PcProfile(**STRONG, upload_kbps=30000)
+    labels = [ch.label for ch in optimize.plan(p, c).changes]
+    assert sum("1920×1080, 60 fps, 6000 kbps" in lab for lab in labels) == 3

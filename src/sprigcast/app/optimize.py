@@ -215,10 +215,19 @@ def _check_x264(p: PcProfile) -> str:
 
 UPLOAD_URL = "https://speed.cloudflare.com/__up"  # Cloudflare's public speed test: takes bytes, keeps nothing
 UPLOAD_SECONDS = 8.0
+UPLOAD_WARMUP_S = 1.5  # connecting and each connection's slow start don't count
+UPLOAD_CONNECTIONS = 4  # at once, like streaming to several places: one connection alone reads the line low
 
 
-def upload_speed(url: str = UPLOAD_URL, seconds: float = UPLOAD_SECONDS, post=None) -> int | None:
-    """Upload speed in kbps: send growing blocks until `seconds` pass, rate of the biggest blocks."""
+def upload_speed(url: str = UPLOAD_URL, seconds: float = UPLOAD_SECONDS, post=None,
+                 connections: int = UPLOAD_CONNECTIONS) -> int | None:
+    """Upload speed in kbps: growing blocks sent over a few connections at once for `seconds`.
+
+    What the line carries is every connection's bytes together over the time after the warm-up. One
+    connection alone often tops out below the line (11.4 Mbps measured on a line that had carried three
+    streams of 23 Mbps for an hour, 2026-11-19), and several streams are several connections.
+    """
+    import threading
     import urllib.request
 
     def default_post(data: bytes) -> None:
@@ -228,23 +237,44 @@ def upload_speed(url: str = UPLOAD_URL, seconds: float = UPLOAD_SECONDS, post=No
             reply.read()
 
     post = post or default_post
-    size, deadline, timings = 256 * 1024, time.monotonic() + seconds, []
-    try:
-        while time.monotonic() < deadline and size <= 64 * 2**20:
-            start = time.perf_counter()
-            post(bytes(size))
-            took = time.perf_counter() - start
-            timings.append((size, took))
-            if took < 1.5:
-                size *= 2
-    except Exception as exc:
-        log.info("upload test stopped: %s", exc)
-    timings = timings[1:] or timings  # the first block also pays for connecting
-    if not timings:
+    began = time.monotonic()
+    deadline = began + seconds
+    blocks: list[tuple[float, float, int]] = []  # start, end, bytes (list.append is safe across threads)
+
+    def send() -> None:
+        size = 256 * 1024
+        try:
+            while time.monotonic() < deadline and size <= 64 * 2**20:
+                start = time.monotonic()
+                post(bytes(size))
+                end = time.monotonic()
+                blocks.append((start, end, size))
+                if end - start < 1.5:
+                    size *= 2
+        except Exception as exc:
+            log.info("upload test stopped: %s", exc)
+
+    senders = [threading.Thread(target=send, name="upload-test", daemon=True) for _ in range(max(1, connections))]
+    for sender in senders:
+        sender.start()
+    for sender in senders:
+        sender.join()
+    if not blocks:
         return None
-    biggest = sorted(timings, key=lambda t: t[0])[-2:]  # big blocks: connection setup counts least
-    sent, took = sum(s for s, _ in biggest), sum(t for _, t in biggest)
-    return int(sent * 8 / 1000 / took) if took > 0 else None
+    # The steady part: after the warm-up, up to the deadline. A block counts for the share of it sent then.
+    first = min(start for start, _, _ in blocks)
+    last = max(end for _, end, _ in blocks)
+    window_start = min(first + min(UPLOAD_WARMUP_S, seconds / 4), last)
+    window_end = min(max(deadline, window_start), last)
+    if window_end - window_start < 0.05:  # everything was over at once: all of it counts
+        window_start, window_end = first, last
+    sent = 0.0
+    for start, end, size in blocks:
+        inside = min(end, window_end) - max(start, window_start)
+        if inside > 0 and end > start:
+            sent += size * inside / (end - start)
+    took = window_end - window_start
+    return int(sent * 8 / 1000 / took) if took > 0 and sent else None
 
 
 MEASURED = "upload/measured_kbps"  # QSettings: the upload Optimize's test measured (the Stream doctor checks with it)
@@ -269,16 +299,21 @@ def _measure_upload(p: PcProfile) -> str:
 
     collection = p.extra.get("collection")
     key = upload_test.twitch_key(collection) if collection is not None else None
-    if key:
-        p.upload_kbps = upload_test.twitch_upload(key)
-        if p.upload_kbps:
-            capped = p.upload_kbps >= upload_test.CEILING_KBPS * 0.9
-            p.extra["upload_source"] = "Twitch"
-            mbps = f"{upload_test.CEILING_KBPS / 1000:.0f}+" if capped else f"{p.upload_kbps / 1000:.1f}"
-            return f"{mbps} Mbps (Twitch test stream)"
-    p.upload_kbps = upload_speed()
-    p.extra["upload_source"] = "Cloudflare" if p.upload_kbps else None
-    return f"{p.upload_kbps / 1000:.1f} Mbps" if p.upload_kbps else "Couldn't test: type it in on the next page"
+    twitch = upload_test.twitch_upload(key) if key else None
+    if twitch and twitch >= upload_test.CEILING_KBPS * 0.9:  # as fast as the test sends: plenty
+        p.upload_kbps = twitch
+        p.extra["upload_source"] = "Twitch"
+        return f"{upload_test.CEILING_KBPS / 1000:.0f}+ Mbps (Twitch test stream)"
+    # Below that, the test stream may have found what one connection to Twitch carries, not the line: the
+    # places to stream each get their own connection, so the line is measured too and the higher one counts.
+    line = upload_speed()
+    if twitch and twitch >= (line or 0):
+        p.upload_kbps = twitch
+        p.extra["upload_source"] = "Twitch"
+        return f"{twitch / 1000:.1f} Mbps (Twitch test stream)"
+    p.upload_kbps = line
+    p.extra["upload_source"] = "Cloudflare" if line else None
+    return f"{line / 1000:.1f} Mbps" if line else "Couldn't test: type it in on the next page"
 
 
 for _check in (
@@ -472,20 +507,29 @@ def stream_rule(p: PcProfile, c: SceneCollection) -> list[Change]:
     return changes
 
 
-def _canvas_fps(p: PcProfile, c: SceneCollection, canvas_id: str) -> int:
-    """60 when something on this canvas runs at 60 (or the PC records at 60), else 30."""
+def _canvas_needs(p: PcProfile, c: SceneCollection, canvas) -> int | None:
+    """The frame rate this canvas's own streams and recordings ask for; None when it has neither."""
     from sprigcast.output.stream import SERVICES
 
     t = target(p, _encodes(p, c))
-    streams = [o for o in _stream_outputs(c) if o.canvas == canvas_id] if p.wants_stream else []
-    canvas = next(cv for cv in c.canvases if cv.id == canvas_id)
+    streams = [o for o in _stream_outputs(c) if o.canvas == canvas.id] if p.wants_stream else []
     budget = _budget(p, c)
     steps = [_best_step(t, SERVICES.get(o.service or "custom", SERVICES["custom"]), canvas, budget) for o in streams]
-    if p.wants_record and canvas_id in c.recording.canvases:
+    if p.wants_record and canvas.id in c.recording.canvases:
         steps.append(t.step)
-    if not steps:
-        return canvas.fps
-    return max(fps for _, fps in steps)
+    return max(fps for _, fps in steps) if steps else None
+
+
+def _canvas_fps(p: PcProfile, c: SceneCollection, canvas_id: str) -> int:
+    """One frame rate for every canvas that's on: 60 when anything streams or records at 60, else 30.
+
+    Never one canvas at 30 and the other at 60 (a canvas with nothing to send kept its own 60 next to a
+    horizontal one set to 30, 2026-11-19): a part shown on both would be drawn at two rates.
+    """
+    needs = [n for n in (_canvas_needs(p, c, cv) for cv in c.canvases if cv.enabled) if n]
+    if needs:
+        return max(needs)
+    return next(cv for cv in c.canvases if cv.id == canvas_id).fps
 
 
 def video_rule(p: PcProfile, c: SceneCollection, waiting: dict[str, int] | None = None) -> list[Change]:
