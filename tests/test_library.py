@@ -64,7 +64,7 @@ def test_library_lists_blooms_then_sprigs_and_files_sprigs_by_drag(tmp_path, mon
     from PySide6.QtCore import QSettings
     from sprigcast.app import card as popups
 
-    from sprigcast.app.library import PART_ROOT, ROLE_FOLDER, ROLE_ID, ROLE_ON_AIR, ROLE_ROW, ROLE_TAG
+    from sprigcast.app.library import PART_ROOT, ROLE_FOLDER, ROLE_ID, ROLE_ON_AIR, ROLE_ROW, ROLE_TAG, ROLE_UNUSED
 
     col, w = _window(tmp_path, monkeypatch, "LibraryTest")
     try:
@@ -75,7 +75,10 @@ def test_library_lists_blooms_then_sprigs_and_files_sprigs_by_drag(tmp_path, mon
         assert [blooms.child(i).data(0, ROLE_ID) for i in range(blooms.childCount())] == ["h1", "h2"]
         assert blooms.child(0).data(0, ROLE_ON_AIR) and not blooms.child(1).data(0, ROLE_ON_AIR)
         assert [sprigs.child(i).data(0, ROLE_ID) for i in range(sprigs.childCount())] == ["p1", "p2"]
-        assert sprigs.child(0).data(0, ROLE_TAG) == "in 1" and sprigs.child(1).data(0, ROLE_TAG) == "unused"
+        # No "in 1" / "unused" words (user, 2026-11-19): an unused sprig is dimmed, the tooltip says it.
+        assert not sprigs.child(0).data(0, ROLE_TAG) and not sprigs.child(1).data(0, ROLE_TAG)
+        assert not sprigs.child(0).data(0, ROLE_UNUSED) and sprigs.child(1).data(0, ROLE_UNUSED)
+        assert "not in any" in sprigs.child(1).toolTip(0)
         # A sprig folder, made from the Sprigs + menu, then a new sprig lands in it.
         monkeypatch.setattr(popups, "ask_text", lambda *a, **k: ("Browser Scenes", True))
         w._add_folder(holds="part")
@@ -151,7 +154,7 @@ def test_sprig_drops_copies_icons_and_links(tmp_path, monkeypatch):
         w.previews["horizontal"].sprig_dropped.emit("horizontal", "p2")
         placed = [col.source(i.source) for i in col.scene("h1").items]
         assert [c.settings.get("scene") for c in placed] == ["p2"]
-        assert w.source_list.item(0).data(ROLE_KIND) == "scene"
+        assert w.source_list.item(0).data(ROLE_KIND) == "empty"  # p2 holds nothing yet
         assert not w.source_list.item(0).data(ROLE_TAG)  # no type tags: you know what you added
         mime = QMimeData()
         mime.setData(SPRIG_MIME, b"p1")
