@@ -224,7 +224,7 @@ def test_clip_length_shapes_and_ready_on_open(app):
 def test_settings_look_titles_pills_and_pages(app):
     from sprigcast.app.settings_window import ABOUT, TABS
 
-    assert TABS == ["General", "Stream", "Accounts", "Audio", "Video", "Recording", "Connections"]
+    assert TABS == ["General", "Stream", "Audio", "Video", "Recording", "Connections"]  # sign-in is in Stream
     w = _window(_collection(), tab="Stream/Quality")
     assert set(ABOUT) == set(TABS) and w.objectName() == "settingsWindow"
     assert [b.text() for b in (w.cancel_button, w.apply_button, w.save_button)] == ["Cancel", "Apply", "Save"]
@@ -537,14 +537,14 @@ def test_a_page_picked_before_the_window_fills_in_stays_picked(app):
 
     w = _window(_collection(), tab="General", fill_after_show=True)
     w.show()
-    w.tabs.setCurrentRow(TABS.index("Accounts"))  # before the fill's timer
+    w.tabs.setCurrentRow(TABS.index("Connections"))  # before the fill's timer
     deadline = time.monotonic() + 3
     while (w._fill_tab is not None or w._slices) and time.monotonic() < deadline:
         app.processEvents()
         time.sleep(0.005)
     app.processEvents()
-    assert w.current_tab() == "Accounts" and w.stack.currentIndex() == TABS.index("Accounts")
-    assert not w._stand_in(TABS.index("Accounts"))
+    assert w.current_tab() == "Connections" and w.stack.currentIndex() == TABS.index("Connections")
+    assert not w._stand_in(TABS.index("Connections"))
     w.close()
 
 
@@ -555,12 +555,12 @@ def test_a_picked_page_waiting_on_held_back_timers_is_put_in_anyway(app, caplog)
     app.processEvents()
     w._slice(lambda: 1 / 0)  # a part that fails never stops the parts after it
     w._flush_slices()
-    w.ensure("Accounts")  # made, waiting to be put in
+    w.ensure("Connections")  # made, waiting to be put in
     w._slices.insert(0, w._slices.pop())  # (as a slice that never got its tick)
-    w.tabs.setCurrentRow(TABS.index("Accounts"))
-    assert w._stand_in(TABS.index("Accounts"))
-    w._make_sure_shown(TABS.index("Accounts"))
-    assert not w._stand_in(TABS.index("Accounts")) and w.stack.currentIndex() == TABS.index("Accounts")
+    w.tabs.setCurrentRow(TABS.index("Connections"))
+    assert w._stand_in(TABS.index("Connections"))
+    w._make_sure_shown(TABS.index("Connections"))
+    assert not w._stand_in(TABS.index("Connections")) and w.stack.currentIndex() == TABS.index("Connections")
     w.close()
 
 
@@ -715,4 +715,14 @@ def test_recording_ticks_line_up_with_the_boxes(app):
     tick = next(t for t in w.findChildren(QCheckBox) if t.text() == "Same as stream while live")
     split = next(c for c in w.findChildren(QComboBox) if c.toolTip().startswith("A new file starts"))
     assert abs(tick.mapTo(w, tick.rect().topLeft()).x() - split.mapTo(w, split.rect().topLeft()).x()) <= 2
+    w.close()
+
+
+def test_accounts_is_gone_and_old_links_land_on_stream_places(app):
+    w = _window(_collection(), tab="Accounts")
+    w.show()
+    w.ensure_all()
+    app.processEvents()
+    assert "Accounts" not in TABS and w.current_tab() == "Stream"
+    assert w.stream_tabs.tabText(w.stream_tabs.currentIndex()) == "Places"
     w.close()

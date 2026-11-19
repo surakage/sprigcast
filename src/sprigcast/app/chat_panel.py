@@ -428,7 +428,7 @@ class ChatPanel(QWidget):
         from sprigcast.chat.hub import ChatHub
 
         super().__init__()
-        self.connect_twitch = connect_twitch  # opens Accounts (the one place to sign in); the panel hears the result
+        self.connect_twitch = connect_twitch  # opens Settings → Stream (sign-in is on the place); the panel hears the result
         # The readers live in the hub, shared with chat sources on your stream (sources/chat.py).
         self.hub = ChatHub(self.reading, self)
         self._was_live: set[tuple[str, str]] = set()  # (platform, channel) chats that have read since starting
