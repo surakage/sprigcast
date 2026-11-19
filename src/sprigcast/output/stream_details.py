@@ -114,10 +114,36 @@ def account(service: str) -> str:
         return ""
 
 
+_events = None
+
+
+def account_events():
+    """A Qt object whose `changed(str)` fires with the service ("youtube" or "kick") when its sign-in comes,
+    goes or names its chat. Create it on the UI thread first (the Chat panel does), so signals land there."""
+    global _events
+    if _events is None:
+        from PySide6.QtCore import QObject, Signal
+
+        class _Events(QObject):
+            changed = Signal(str)
+
+        _events = _Events()
+    return _events
+
+
+def announce(service: str) -> None:
+    if _events is not None:
+        _events.changed.emit(service)
+
+
 def _remember(service: str, name: str) -> None:
     try:
         from PySide6.QtCore import QSettings
 
+        if str(QSettings().value(ACCOUNT_SETTING.format(service), "") or "") != name:
+            QSettings().setValue(ACCOUNT_SETTING.format(service), name)
+            announce(service)  # not on every hourly token renewal: only when who's signed in changes
+            return
         QSettings().setValue(ACCOUNT_SETTING.format(service), name)
     except Exception:  # noqa: BLE001
         pass
@@ -215,6 +241,11 @@ def _access(service: str) -> dict:
     if time.time() >= float(tokens.get("expires_at", 0)):
         tokens = _refresh(service, tokens)
     return tokens
+
+
+def access_token(service: str) -> str:
+    """A working access token for the signed-in account (renewed if it ran out). Worker thread."""
+    return str(_access(service)["access_token"])
 
 
 # Web calls ---------------------------------------------------------------------------------------------

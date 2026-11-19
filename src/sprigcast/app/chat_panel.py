@@ -469,6 +469,10 @@ class ChatPanel(QWidget):
         from sprigcast.output import twitch_auth
 
         twitch_auth.account_events().changed.connect(self._account_changed)
+        from sprigcast.output import stream_details
+
+        self._named: set[str] = set()  # sign-ins already checked this run for a chat to follow
+        stream_details.account_events().changed.connect(self._signed_in)
         self.hub.message.connect(self.view.add)
         self.hub.deleted.connect(lambda platform, mid: self.view.remove(platform=platform, message_id=mid))
         self.hub.cleared.connect(lambda platform, uid: self.view.remove(platform=platform, user_id=uid,
@@ -665,6 +669,32 @@ class ChatPanel(QWidget):
             return
         self.active = True
         self.refresh()
+        self._follow_sign_ins()
+
+    def _signed_in(self, service: str) -> None:
+        """You signed in to YouTube or Kick (anywhere in the app): its chat joins your chats here."""
+        from sprigcast.output import stream_details
+
+        if service not in saved_names() or not stream_details.account(service):
+            return  # signed out, or a sign-in that named no chat: nothing here changes
+        QSettings().setValue(SOURCE, "chat")
+        if self.active:
+            self.refresh()
+
+    def _follow_sign_ins(self) -> None:
+        """Signed in before sign-ins named the chat: look the channel up once, off the UI thread."""
+        import threading
+
+        from sprigcast.output import service_signin, stream_details
+
+        names = saved_names()
+        todo = [s for s in ("youtube", "kick") if s in PLATFORMS and s not in names and s not in self._named
+                and stream_details.account(s)
+                and not QSettings().value(service_signin.CHAT_NAMED.format(s), False, type=bool)]
+        self._named.update(todo)
+        if todo:
+            threading.Thread(target=lambda: [service_signin.name_chat_from_sign_in(s) for s in todo],
+                             name="chat-follow-sign-in", daemon=True).start()
 
     def sleep(self) -> None:
         """The panel was taken off every screen: stop reading and free the page until it's shown again."""

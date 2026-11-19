@@ -25,6 +25,11 @@ def app():
     QCoreApplication.setApplicationName("ChatTest")
     QSettings().clear()
     yield app
+    from sprigcast.app import chat_panel
+
+    for widget in app.allWidgets():  # a panel left reading would answer later tests' sign-ins
+        if isinstance(widget, chat_panel.ChatPanel):
+            widget.sleep()
     QSettings().clear()
 
 
@@ -367,3 +372,38 @@ def test_a_busy_chat_is_drawn_in_batches_and_clears_only_remove_their_lines(app)
     view.add(ChatMessage("twitch", "a", "after"))
     view.remove(platform="twitch", message_id="nope")  # a delete waits for nothing: the batch is drawn first
     assert view.document().lastBlock().text().endswith("after")
+
+
+def test_signing_in_to_youtube_or_kick_starts_its_chat(app, monkeypatch):
+    """A sign-in names the chat (service_signin._name_chat) and the open panel starts reading it at once."""
+    from sprigcast.app import chat_panel
+    from sprigcast.chat import kick
+    from sprigcast.output import service_signin, stream_details
+
+    started = []
+    monkeypatch.setattr(kick.KickChat, "start", lambda self, name: (started.append(name), setattr(self, "channel", name)))
+    monkeypatch.setattr(kick.KickChat, "stop", lambda self: None)
+    QSettings().setValue(chat_panel.SOURCE, "link")
+    QSettings().setValue(chat_panel.LINK, "http://127.0.0.1:8787/chat")
+    panel = chat_panel.ChatPanel()
+    monkeypatch.setattr(panel, "_show_link", lambda url: None)
+    panel.activate()
+    assert not panel.readers
+    QSettings().setValue(stream_details.ACCOUNT_SETTING.format("kick"), "slothbloom")  # what a Kick sign-in does:
+    service_signin._name_chat("kick", "slothbloom")  # it remembers the account, then names the chat
+    assert set(started) == {"slothbloom"} and set(panel.readers) == {"kick"} and panel.source()[0] == "chat"
+
+
+def test_an_older_sign_in_names_its_chat_once(app, monkeypatch):
+    from sprigcast.app import chat_panel
+    from sprigcast.output import service_signin, stream_details
+
+    QSettings().setValue(stream_details.ACCOUNT_SETTING.format("kick"), "slothbloom")
+    QSettings().setValue(stream_details.ACCOUNT_SETTING.format("youtube"), "Sloth Bloom")
+    monkeypatch.setattr(stream_details, "access_token", lambda service: "tok")
+    monkeypatch.setattr(service_signin, "_youtube_channel", lambda token: {"title": "Sloth Bloom", "customUrl": "@slothbloom"})
+    assert service_signin.name_chat_from_sign_in("kick") and service_signin.name_chat_from_sign_in("youtube")
+    assert chat_panel.saved_names() == {"kick": "slothbloom", "youtube": "@slothbloom"}
+    chat_panel.save_names({})  # you cleared them: they aren't put back
+    assert not service_signin.name_chat_from_sign_in("kick") and not service_signin.name_chat_from_sign_in("youtube")
+    assert chat_panel.saved_names() == {}
