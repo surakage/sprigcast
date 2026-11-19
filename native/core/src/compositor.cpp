@@ -224,8 +224,8 @@ struct Renderer {
 
     // A picture drawn into the quad `q` (canvas pixels and its u, v) with its filters: a scene's item, or a piece of
     // a Move.
-    void draw_piece(uint64_t source, double fade, const Piece &p, Corner q[4], const sc_effects &fx, int canvas_w,
-                    int canvas_h) {
+    void draw_piece(uint64_t source, double fade, const Piece &p, Corner (&q)[4], const sc_effects &fx,
+                    int canvas_w, int canvas_h) {
         auto &comp = dev.comp;
 
         if (fx.spin_turns != 0.0f) {  // a barrel roll: eases in and out and lands where it began
