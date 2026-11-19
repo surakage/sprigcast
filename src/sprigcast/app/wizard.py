@@ -469,8 +469,12 @@ class OptimizeWizard(CardWindow):
 
     def show_plan(self) -> None:
         p = self.profile
-        log.info("optimize: %s, %d threads, %.0f GB, %s, x264 %s ms/720p frame, upload %s kbps (%s)",
-                 p.cpu_name or "CPU", p.threads, p.memory_gb, p.codec, p.x264_ms_720, p.upload_kbps,
+        if p.hardware:
+            x264 = "x264 not timed (graphics card encoder)"
+        else:
+            x264 = f"x264 {p.x264_ms_720:.1f} ms/720p frame" if p.x264_ms_720 is not None else "x264 couldn't be timed"
+        log.info("optimize: %s, %d threads, %.0f GB, %s, %s, upload %s kbps (%s)",
+                 p.cpu_name or "CPU", p.threads, p.memory_gb, p.codec, x264, p.upload_kbps,
                  p.extra.get("upload_source") or "not tested")
         if p.extra.get("proven_kbps"):
             log.info("optimize: your last clean stream carried %s kbps", p.extra["proven_kbps"])

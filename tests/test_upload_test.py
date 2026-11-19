@@ -65,9 +65,27 @@ def test_the_wizard_check_prefers_twitch(monkeypatch):
 
     monkeypatch.setattr(upload_test, "twitch_key", lambda c: "live_abc")
     monkeypatch.setattr(upload_test, "twitch_upload", lambda key: 9000)
+    monkeypatch.setattr(optimize, "upload_speed", lambda: 7000)
     p = optimize.PcProfile()
     p.extra["collection"] = object()
     assert optimize._check_upload(p) == "9.0 Mbps (Twitch test stream)" and p.upload_kbps == 9000
     monkeypatch.setattr(upload_test, "twitch_upload", lambda key: None)  # Twitch unreachable: Cloudflare
     monkeypatch.setattr(optimize, "upload_speed", lambda: 7000)
     assert optimize._check_upload(p) == "7.0 Mbps" and p.extra["upload_source"] == "Cloudflare"
+
+
+def test_a_test_stream_below_its_ceiling_is_checked_against_the_line(monkeypatch):
+    """One connection to Twitch read 11.4 Mbps where the line carried 23 (2026-11-19): the line is measured
+    too, over several connections, and the higher one counts. At the ceiling nothing more is measured."""
+    from sprigcast.app import optimize
+
+    asked = []
+    monkeypatch.setattr(upload_test, "twitch_key", lambda c: "live_abc")
+    monkeypatch.setattr(upload_test, "twitch_upload", lambda key: 11400)
+    monkeypatch.setattr(optimize, "upload_speed", lambda: asked.append(1) or 24000)
+    monkeypatch.setattr(optimize, "remember_measured", lambda kbps: None)
+    p = optimize.PcProfile()
+    p.extra["collection"] = object()
+    assert optimize._check_upload(p) == "24.0 Mbps" and p.upload_kbps == 24000 and asked == [1]
+    monkeypatch.setattr(upload_test, "twitch_upload", lambda key: 15800)
+    assert optimize._check_upload(p) == "16+ Mbps (Twitch test stream)" and asked == [1]
