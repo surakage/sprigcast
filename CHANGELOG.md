@@ -175,6 +175,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   Python drew every sprig and copied every source of every canvas again; now only the sources it waits for are
   copied. Sources waking are spread over ticks (about 4 ms of waking a tick), and the window measures its
   previews four times a second, not on every poll.
+- New engine: switching to a bloom with a display, window or game capture no longer reads the capture back from
+  the card and copies it to Python's compositor while the switch waits for its first picture (PC soak 2026-11-19:
+  display capture 22 to 130 ms on the switch frame, a 191 ms frame). The engine says when it has shown a picture.
 - New engine: on a PC with no graphics driver (only Windows' software renderer, the Microsoft Basic Render
   Driver) the old engine draws, as the new one fell 5-47 s behind per frame there; `SPRIGCAST_ENGINE=native` still
   asks for it. Copies back from the card (previews, outputs) wait for an event query, never in Map, and a stuck

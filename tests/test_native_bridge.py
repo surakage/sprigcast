@@ -563,6 +563,38 @@ def test_a_switch_waiting_on_one_source_leaves_the_engines_videos_alone(monkeypa
     assert awaited.asked == cam_asked + 10  # Python's compositor gets the one it waits for
 
 
+class EngineCapture(EngineVideo):
+    """Stands in for a capture the engine does itself: it says when the engine has shown a picture of it."""
+
+    kind, shows = "display_capture", False
+
+    @property
+    def engine_shows(self):
+        return self.shows
+
+
+def test_a_switch_waiting_on_an_engine_capture_never_reads_it_back():
+    """A switch waiting for a capture had its picture read back from the card and copied to Python's compositor
+    every tick, only to learn it had one (PC soak 2026-11-19: display capture 22 to 130 ms on a switch frame).
+    The engine's own count of pictures shown ends the wait."""
+    engine, fake = _engine(), FakeCompositor()
+    engine.previews = frozenset({"h"})
+    screen = engine._sources["screen"] = EngineCapture()
+    engine._collection.scenes[0].items.append(SceneItem(source="screen"))
+    _run(engine, fake, seconds=0.2)
+    fake.textures = {}
+    engine._waking["h"] = (engine._collection.scenes[0], 1e9, {"screen"})
+    asked, ticked = screen.asked, screen.ticked
+    for i in range(5):
+        engine._tick(fake, 20.0 + i / 60)
+    assert screen.asked == asked and screen.ticked == ticked + 5  # waited for, and still not read back
+    assert "h" in engine._waking and engine._switch_waits(fake, "h", 21.0)
+    screen.shows = True
+    assert not engine._switch_waits(fake, "h", 21.0)
+    engine._tick(fake, 21.0)
+    assert "h" not in engine._waking and screen.asked == asked
+
+
 def test_the_bridge_tells_the_engine_once_which_player_a_source_shows(monkeypatch):
     calls = []
 

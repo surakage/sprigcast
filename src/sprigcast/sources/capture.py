@@ -145,6 +145,17 @@ class _CaptureSource(Source):
         """Render thread, on a tick the engine showed the picture itself: nothing to do (the supervisor keeps the
         status and size)."""
 
+    @property
+    def engine_shows(self) -> bool:
+        """The engine captures it and has shown a picture of it since it (re)started. A bloom switch waiting for
+        this source goes by this, so no picture has to be read back from the card for Python's compositor just to
+        end the wait (PC soak 2026-11-19: that read-back and copy held a switch frame 22 to 130 ms)."""
+        target = self._engine_target
+        if target is None or not target.linked:
+            return False
+        state, width, _height, shown = target.state()
+        return state == sprigcore.SCREEN_RUNNING and width > 0 and shown > 0
+
     # The renderer sets this to the fastest canvas's frame rate: more pictures than that are never shown.
     canvas_fps = 60
 
