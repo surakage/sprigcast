@@ -2,6 +2,11 @@ name: Windows installer
 
 on:
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish a GitHub Release v<version> from this commit (makes the tag)"
+        type: boolean
+        default: false
   push:
     tags: ["v*"]
 
@@ -151,18 +156,26 @@ jobs:
             packaging/out/screens/*.png
           retention-days: 14
       # A v* tag also publishes a GitHub Release with the installer, SHA256.txt and that version's CHANGELOG
-      # section. SprigCast's "Check for updates" reads the newest one; it checks the installer against
+      # section. So does a run started by hand with "release" ticked: it makes the v<version> tag on this
+      # commit (for when a tag can't be pushed). SprigCast's "Check for updates" reads the newest one; it checks the installer against
       # SHA256.txt before running it. Runs only after the Defender scan passed.
       - name: Publish the release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "${{ github.ref_name }}"
+          if ("${{ github.ref }}".StartsWith("refs/tags/v")) {
+            $tag = "${{ github.ref_name }}"
+            $where = "--verify-tag"
+          } else {
+            $built = (& packaging\build\python\python.exe -c "import importlib.metadata as m; print(m.version('sprigcast'))").Trim()
+            $tag = "v$built"
+            $where = "--target=${{ github.sha }}"
+          }
           $version = $tag.TrimStart("v")
           $setup = "packaging\out\SprigCast-Setup-$version.exe"
           if (-not (Test-Path $setup)) { throw "Tag $tag doesn't match the version that was built (see pyproject.toml)" }
           & packaging\build\python\python.exe packaging\release_notes.py $version notes.md
           if ($LASTEXITCODE -ne 0) { throw "CHANGELOG.md needs a section for $version" }
-          gh release create $tag $setup packaging\out\SHA256.txt --title "SprigCast $version" --notes-file notes.md --verify-tag --latest
+          gh release create $tag $setup packaging\out\SHA256.txt --title "SprigCast $version" --notes-file notes.md $where --latest
