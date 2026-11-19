@@ -48,7 +48,7 @@ ROLE_TAG = Qt.ItemDataRole.UserRole + 32  # quiet text on the right: "on Live", 
 ROLE_COLOUR = Qt.ItemDataRole.UserRole + 33  # folder dot, or a bloom's swatch before it has a picture
 ROLE_ON_AIR = Qt.ItemDataRole.UserRole + 34  # a bloom on air gets a pink dot
 ROLE_THUMB = Qt.ItemDataRole.UserRole + 35  # a bloom's last on-air picture (QImage)
-ROLE_SOURCE_KIND = Qt.ItemDataRole.UserRole + 37  # sound rows: the source's kind, for its icon
+ROLE_SOURCE_KIND = Qt.ItemDataRole.UserRole + 37  # sound rows: the source's kind; sprigs: what they show
 ROLE_NOTE = Qt.ItemDataRole.UserRole + 36  # headings: the quiet words after the title
 PART_ROOT = "~sprigs"
 SOUND_ROOT = "~sound"  # the Sound heading: mics, desktop sound and pages with sound, shared by both shapes
@@ -152,9 +152,12 @@ class LibraryDelegate(QStyledItemDelegate):
             x += 26
             if selected:
                 font.setWeight(QFont.Weight.Bold)
-        else:  # sprig
-            icons.paint_icon(p, QRectF(x, mid - 8, 16, 16), "sprig", theme.ACCENT)
-            x += 20
+        else:  # sprig: an icon for what it shows (camera, chat, game...), in sprig green
+            from sprigcast.app.build_stage import paint_kind_icon
+
+            paint_kind_icon(p, QRectF(x - 2, mid - 10, 20, 20), index.data(ROLE_SOURCE_KIND) or "scene",
+                            index.data(ROLE_COLOUR), selected=selected, sprig=True)
+            x += 26
             if selected:
                 font.setWeight(QFont.Weight.Bold)
         right = r.right() - 10

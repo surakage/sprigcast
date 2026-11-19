@@ -41,3 +41,22 @@ def test_a_sprig_shared_by_a_vertical_bloom_shows_there_too():
     shared = col.scene("shared")
     assert col.part_on(shared, H) and col.part_on(shared, V)
     assert not col.part_on(col.scene("game"), V) and not col.part_on(col.scene("tall"), H)
+
+
+def test_a_sprig_reads_as_what_it_shows():
+    """Sprigs get the icon of what they hold (user, 2026-11-19), so a renamed one still reads at a glance."""
+    S = lambda i, kind: SourceConfig(id=i, kind=kind, name=i)  # noqa: E731
+    P = lambda i, part: SourceConfig(id=i, kind=PART_KIND, name=i, settings={"scene": part})  # noqa: E731
+    col = SceneCollection(
+        canvases=[Canvas(id=H, width=1920, height=1080)],
+        sources=[S("cam", "camera"), S("mic", "audio_input"), S("bg", "color"), S("chat", "chat"),
+                 S("game", "game_capture"), P("p-cam", "cam-sprig")],
+        scenes=[Scene(id="cam-sprig", name="Me", canvas=H, kind="part",
+                      items=[SceneItem(source="bg"), SceneItem(source="cam"), SceneItem(source="mic")]),
+                Scene(id="wrap", name="Wrapped", canvas=H, kind="part", items=[SceneItem(source="p-cam")]),
+                Scene(id="mix", name="Mixed", canvas=H, kind="part",
+                      items=[SceneItem(source="chat"), SceneItem(source="game")]),
+                Scene(id="colour", name="Wash", canvas=H, kind="part", items=[SceneItem(source="bg")]),
+                Scene(id="empty", name="Empty", canvas=H, kind="part")])
+    kinds = {s.id: col.sprig_kind(s, H) for s in col.parts()}
+    assert kinds == {"cam-sprig": "camera", "wrap": "camera", "mix": "scene", "colour": "color", "empty": "scene"}
