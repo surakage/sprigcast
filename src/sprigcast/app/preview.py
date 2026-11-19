@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QImage, QPainter, QPen, QPixmap, QPolygonF
+from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QImage, QPainter, QPen, QPixmap, QPolygonF, QRegion
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from sprigcast.app import safe_zones, theme
@@ -50,6 +50,15 @@ class _Pinch(QObject):
             watched.zoom_at(1 + event.value(), event.position())
             return True
         return False
+
+
+OVERFLOW_KEY = "preview/show_overflow"  # Settings → Preview: "Show what's outside the canvas" (bool, off by default)
+
+
+def show_overflow_setting() -> bool:
+    from PySide6.QtCore import QSettings
+
+    return str(QSettings().value(OVERFLOW_KEY, False)).lower() in ("true", "1")
 
 
 class Preview(QWidget):
@@ -102,6 +111,7 @@ class Preview(QWidget):
         self.empty_text = "Waiting for the renderer…"  # shown until the first frame arrives
         self.hint: tuple[str, str] | None = None  # an empty bloom or sprig: a title and a line, in a card
         self.safe_zones = "Off"  # see safe_zones.CHOICES; only portrait canvases draw them
+        self.show_overflow = False  # Build: hatch the parts of things hanging off the canvas (OVERFLOW_KEY)
         self.live_safe_zones = "Off"  # Live keeps its own choice (off unless picked on the canvas's right-click)
         self.part_names: dict[str, str] = {}  # placement source id -> part name, for the hover hint  # the part alone, drawn bright over the dimmed show
         self._image: QImage | None = None
@@ -328,6 +338,7 @@ class Preview(QWidget):
         self._paint_empty_pages(p)
         self._paint_hint(p, rect)
         self._paint_inner(p)
+        self._paint_overflow(p, rect, band)
         self._paint_safe_zones(p)
         self._paint_selection(p)
         self._paint_zoom_bar(p)
@@ -573,6 +584,50 @@ class Preview(QWidget):
         p.setPen(pen)
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPolygon(QPolygonF([tl, tr, br, bl]))
+
+    def _paint_overflow(self, p: QPainter, rect: QRectF, band: int) -> None:
+        """Show what's outside the canvas: each visible thing's box, hatched, where it hangs past the edge.
+        Drawn only here, in Build's paint, from the boxes we already know: nothing extra is rendered."""
+        if (not self.show_overflow or not self.editable or self.live_look or self.twin or self.inner is not None
+                or self.scene is None or self.paused):
+            return
+        outside = QRegion(0, band, self.width(), self.height() - band) - QRegion(rect.toAlignedRect())
+        if outside.isEmpty():
+            return
+        cw, ch = self.aspect
+        boxes = []
+        for item in self.scene.items:
+            size = self.sizes.get(item.source)
+            if not item.visible or not size or not size[0] or not size[1]:
+                continue
+            box = item.box(size)
+            if not box:
+                continue
+            xs, ys = [x for x, _ in box], [y for _, y in box]
+            if min(xs) >= 0 and min(ys) >= 0 and max(xs) <= cw and max(ys) <= ch:
+                continue  # all on the canvas
+            boxes.append(QPolygonF([self.to_widget(x, y) for x, y in (box[0], box[1], box[3], box[2])]))
+        if not boxes:
+            return
+        p.save()
+        p.setClipRegion(outside)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        tint = QColor(theme.MUTED)
+        fill = QColor(tint)
+        fill.setAlpha(40)
+        hatch = QColor(tint)
+        hatch.setAlpha(110)
+        edge = QPen(tint, 1.2, Qt.PenStyle.DashLine)
+        for poly in boxes:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(fill)
+            p.drawPolygon(poly)
+            p.setBrush(QBrush(hatch, Qt.BrushStyle.BDiagPattern))
+            p.drawPolygon(poly)
+            p.setPen(edge)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawPolygon(poly)
+        p.restore()
 
     def _paint_selection(self, p: QPainter) -> None:
         self._paint_ghost(p)

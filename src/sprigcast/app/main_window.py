@@ -460,6 +460,7 @@ class MainWindow(QMainWindow):
         page_layout.addWidget(self.canvas_tabs_row)
         page_layout.addWidget(splitter, 1)
         self._set_safe_zones(saved_zone)
+        self._apply_preview_settings()
         self._set_live_safe_zones(QSettings().value("live/safe_zones", "Off"))
         self.center = QStackedWidget()
         self.center.addWidget(canvas_page)
@@ -524,6 +525,7 @@ class MainWindow(QMainWindow):
         from sprigcast.app.settings_window import apply_naming, sleep_policy
 
         self.engine.sleep_policy = sleep_policy()
+        self._apply_preview_settings()
         apply_naming()  # file-name patterns from Settings → Recording
         # Nothing is on screen yet: don't copy full-size frames back until _poll_engine says which
         # previews are showing and how big they are (each early one was an 8 MB frame).
@@ -2533,6 +2535,16 @@ class MainWindow(QMainWindow):
                 self.canvas_tabs.setCurrentIndex(first)  # moves Build to a canvas that's on
         choice = self.canvas_choice()
         self._apply_canvas_view()
+
+    def _apply_preview_settings(self) -> None:
+        """Settings → Preview: "Show what's outside the canvas" on Build's canvases."""
+        from sprigcast.app.preview import show_overflow_setting
+
+        on = show_overflow_setting()
+        for preview in self.previews.values():
+            if preview.show_overflow != on:
+                preview.show_overflow = on
+                preview.update()
 
     def _set_safe_zones(self, choice: str) -> None:
         for preview in self.previews.values():
