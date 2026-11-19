@@ -2409,6 +2409,11 @@ class MainWindow(QMainWindow):
         self._hold_clock_width()
         QTimer.singleShot(0, self, self._fit_header)
 
+    def start_in_live(self) -> None:
+        """SprigCast opens on Live (Destinations, Go live) every time, whatever screen it closed on: after an
+        update it opened on Build with no Destinations (soak, 2026-11-19)."""
+        self._set_mode("live")
+
     def _set_mode(self, mode: str) -> None:
         if mode == self.mode:
             self.mode_actions[mode].setChecked(True)
