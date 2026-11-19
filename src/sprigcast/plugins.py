@@ -12,7 +12,9 @@ entry point. A plugin registers sources exactly like the built-in ones:
         defaults = {"text": "hello"}     # editable in the source's Settings dialog
         ...
 
-A plugin that fails to import is skipped and listed in the status bar; it never stops the app.
+A plugin that fails to import is skipped and listed in the status bar; it never stops the app. The sources a plugin
+of your own adds are drawn in the plugin helper process (app/plugin_helper.py), so one that raises, hangs or
+crashes can't take SprigCast with it; keep a source's work inside the source (it can't reach the window from there).
 Plugins run with the same rights as SprigCast itself, so only install ones you trust.
 """
 
@@ -28,6 +30,7 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 ENTRY_POINT_GROUP = "sprigcast.plugins"
+_IN_HELPER = False  # set in the plugin helper process itself (app/plugin_helper.py serve), which runs them
 
 
 @dataclass
@@ -69,11 +72,19 @@ def load_plugin_file(path: Path) -> str | None:
         module = importlib.util.module_from_spec(spec)
         sys.modules[name] = module
         spec.loader.exec_module(module)
-        return None
     except Exception as exc:
         sys.modules.pop(name, None)
         log.warning("plugin %s failed to load: %s", path.name, exc)
         return f"{exc.__class__.__name__}: {exc}"
+    if not _IN_HELPER:
+        try:
+            from sprigcast.app import plugin_helper
+
+            plugin_helper.adopt(path, name)  # your own plugin's sources run in the helper process
+        except Exception:  # noqa: BLE001 - they run here, as before
+            log.warning("plugin %s: its sources run in SprigCast (the helper couldn't take them)", path.name,
+                        exc_info=True)
+    return None
 
 
 EXAMPLE = '''"""Example SprigCast plugin: a countdown timer source. Edit or copy it to make your own.

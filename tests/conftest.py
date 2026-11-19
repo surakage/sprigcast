@@ -12,6 +12,8 @@ os.environ.setdefault("SPRIGCAST_BROWSER_IN_PROCESS", "1")
 # The native engine is the app's default on Windows. Tests use the Python engine unless they ask for the native one
 # (or check the default itself, tests/test_sprigcore.py).
 os.environ.setdefault("SPRIGCAST_ENGINE", "python")
+# Plugin sources run in SprigCast in tests, unless a test starts the plugin helper itself (test_plugin_helper.py).
+os.environ.setdefault("SPRIGCAST_PLUGINS_IN_PROCESS", "1")
 if sys.platform == "win32":
     os.environ.setdefault("QT_QPA_FONTDIR", os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts"))
 

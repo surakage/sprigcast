@@ -3210,6 +3210,9 @@ class MainWindow(QMainWindow):
         self.engine.stop(wait=False)  # the render thread lets go of the card on its own time (main waits)
         if self.browser_host is not None:
             self.browser_host.shutdown()
+        from sprigcast.app import plugin_helper
+
+        plugin_helper.shutdown()  # your plugins' sources end with SprigCast
         if not forgetting:
             self.updater.install_on_quit()  # a downloaded update runs once SprigCast has closed
         super().closeEvent(event)
