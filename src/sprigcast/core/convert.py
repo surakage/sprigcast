@@ -255,6 +255,8 @@ def _source(obs: dict[str, Any], audio_devices: list[str] | None, notes: list[st
     elif kind == "window_capture":
         title, exe = _window_parts(s.get("window", ""))
         out = "window_capture", {"title": title, "process": exe, "cursor": bool(s.get("cursor", True))}
+        if int(_num(s.get("priority"), 0)) == 1:  # OBS's "Window title must match"
+            out[1]["match"] = "title"
     elif kind == "game_capture":
         mode = str(s.get("capture_mode", "any_fullscreen"))
         if mode == "window":

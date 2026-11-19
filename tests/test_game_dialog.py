@@ -80,3 +80,40 @@ def test_hotkey_lists_hotkey_game_captures():
         SourceConfig(id="g2", kind="game_capture", name="Other", settings={"mode": "any"})])
     ids = [a for a, _ in actions(col)]
     assert f"{GAME_PREFIX}g1" in ids and f"{GAME_PREFIX}g2" not in ids
+
+
+def test_display_capture_dialog(app):
+    from sprigcast.app.capture_dialog import DisplayCaptureDialog
+    from sprigcast.sources.win32_enum import MonitorInfo
+
+    monitors = [MonitorInfo(1, "a", 1920, 1080, True), MonitorInfo(2, "b", 2560, 1440, False)]
+    d = DisplayCaptureDialog({"monitor": 2, "cursor": True}, monitors)
+    assert d.values() == {"monitor": 2, "cursor": True} and d.monitor().width == 2560
+    d.cursor.setChecked(False)
+    d.screen.setCurrentIndex(0)
+    assert d.values() == {"monitor": 1, "cursor": False}
+    gone = DisplayCaptureDialog({"monitor": 3}, monitors)  # unplugged: kept, pointer on by default
+    assert gone.values() == {"monitor": 3, "cursor": True} and gone.monitor() is None
+
+
+def test_window_capture_dialog(app):
+    from sprigcast.app.capture_dialog import WindowCaptureDialog
+    from sprigcast.sources.win32_enum import WindowInfo
+
+    windows = [WindowInfo(1, "Zed", "zed.exe"), WindowInfo(2, "New tab - Firefox", "firefox.exe")]
+    d = WindowCaptureDialog({"title": "Old tab - Firefox", "process": "firefox.exe", "cursor": True}, windows,
+                            False, list_windows=lambda: windows)
+    texts = [d.window.itemText(i) for i in range(d.window.count())]
+    assert texts == sorted(texts, key=str.lower) and [d.match.itemText(i) for i in range(2)] == \
+        ["Exact title", "Same app"]
+    changes, sound = d.values()
+    assert changes == {"title": "New tab - Firefox", "process": "firefox.exe", "match": "app", "cursor": True}
+    assert not sound
+    d.match.setCurrentIndex(d.match.findData("title"))
+    d.sound.setChecked(True)
+    d._reload()
+    changes, sound = d.values()
+    assert sound and changes["match"] == "title" and changes["process"] == "firefox.exe"
+
+    closed = WindowCaptureDialog({"title": "Hades", "process": "hades.exe", "match": "title"}, windows, True)
+    assert closed.values()[0]["title"] == "Hades" and closed.values()[0]["match"] == "title"

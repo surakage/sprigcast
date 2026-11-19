@@ -155,3 +155,28 @@ def test_border_falls_back_to_default_when_hiding_is_unsupported(fake_backend, m
         assert Win10Capture.instances[0].kwargs["draw_border"] is None
     finally:
         src.stop()
+
+
+def test_find_window_exact_title(monkeypatch):
+    from sprigcast.sources import win32_enum
+    from sprigcast.sources.capture import WindowCaptureSource
+    from sprigcast.sources.win32_enum import WindowInfo
+
+    windows = [WindowInfo(1, "New tab - Firefox", "firefox.exe")]
+    monkeypatch.setattr(win32_enum, "list_windows", lambda: windows)
+    assert win32_enum.find_window("Old tab - Firefox", "firefox.exe").hwnd == 1  # same app
+    assert win32_enum.find_window("Old tab - Firefox", "firefox.exe", exact=True) is None
+    assert win32_enum.find_window("New tab - Firefox", "FIREFOX.EXE", exact=True).hwnd == 1
+    exact = WindowCaptureSource("w", {"title": "Old tab - Firefox", "process": "firefox.exe", "match": "title"})
+    assert exact._target() is None
+    loose = WindowCaptureSource("w", {"title": "Old tab - Firefox", "process": "firefox.exe"})
+    assert loose._target() == {"window_hwnd": 1}
+
+
+def test_obs_window_match_priority_imports():
+    from sprigcast.core.convert import _source
+
+    obs = {"id": "window_capture", "name": "W", "settings": {"window": "Hades:SDL:hades.exe", "priority": 1}}
+    assert _source(obs, None, []).settings["match"] == "title"  # OBS's "Window title must match"
+    obs["settings"]["priority"] = 0
+    assert "match" not in _source(obs, None, []).settings  # same app, our default
