@@ -6,7 +6,8 @@ PySide6 ships every Qt module (Quick, 3D, Designer, Multimedia, PDF and more). S
 so this keeps their Python modules, every Qt DLL those need (followed through each DLL's imports with
 pefile), the Qt plugins a widgets app with web pages uses, and Qt WebEngine's helper and resources.
 Everything else in PySide6 goes, along with Python's Tk and pip, and OpenCV's FFmpeg (cameras open
-through DirectShow, and videos play through PyAV).
+through DirectShow, and videos play through PyAV). So do libraries' test folders and type hints, and
+the parts of Python only developers use.
 
 Prints the size before and after. Needs pefile (run it with `uv run --with pefile`).
 """
@@ -31,7 +32,8 @@ QML_KEEP = {"QtQml": True, "QtQuick": False, "QtWebEngine": True, "QtWebChannel"
 # platforminputcontexts only holds Qt's on-screen keyboard, which needs Qt Quick.)
 QT_PLUGINS = {"platforms", "imageformats", "iconengines", "styles", "tls", "networkinformation", "generic"}
 # Plugins inside those folders that pull in big modules SprigCast doesn't use (PDF pictures).
-QT_PLUGIN_SKIP = {"qpdf.dll"}
+QT_PLUGIN_SKIP = {"qpdf.dll",
+                  "qdirect2d.dll"}  # a second Windows platform plugin; Qt uses qwindows.dll unless told otherwise
 # Qt Multimedia's own FFmpeg: SprigCast plays and records through PyAV's.
 FFMPEG = ("avcodec", "avformat", "avutil", "avdevice", "avfilter", "swscale", "swresample")
 # Loaded by name at run time, not through an import table, so never followed: keep them.
@@ -133,6 +135,8 @@ def prune_pyside(pyside: Path) -> None:
     # Debug builds' copies of WebEngine resources (the release DLL reads the plain ones).
     for f in (pyside / "resources").glob("*.debug.*"):
         remove(f)
+    # Chromium's developer tools (the inspector). SprigCast never opens them or turns on remote debugging.
+    remove(pyside / "resources" / "qtwebengine_devtools_resources.pak")
 
 
 def main() -> None:
@@ -152,6 +156,23 @@ def main() -> None:
         remove(home / rel)
     for f in site.glob("pip-*.dist-info"):
         remove(f)
+    # Other parts of Python only developers use: C import libraries for building extensions, Python's
+    # own C-API test modules, venv, the 2to3 converter and help()'s topic texts.
+    for rel in ("libs", "Lib/venv", "Lib/lib2to3", "Lib/pydoc_data"):
+        remove(home / rel)
+    for f in (home / "DLLs").glob("_test*.pyd"):
+        remove(f)
+
+    # Libraries' own test folders (numpy's are 8 MB) and type hints (.pyi, for editors only). SprigCast's
+    # own package is left alone. This used to happen in build_windows.ps1, but its filter skipped every
+    # path containing "sprigcast", and the build folder's path does, so nothing was ever removed.
+    for package in site.iterdir():
+        if not package.is_dir() or package.name.lower().startswith("sprigcast"):
+            continue
+        for folder in [d for d in package.rglob("*") if d.is_dir() and d.name in ("tests", "test")]:
+            remove(folder)
+        for f in package.rglob("*.pyi"):
+            remove(f)
 
     after = size(home)
     print(f"Pruned the bundled Python: {before / 2**20:.0f} MB -> {after / 2**20:.0f} MB")

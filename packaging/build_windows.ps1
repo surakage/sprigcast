@@ -80,8 +80,8 @@ Copy-Item (Join-Path $build "launcher\Release\SprigCast.exe") (Join-Path $build 
 
 # 3. Leave out what never runs on a user's PC (tests, caches, headers, pip itself).
 $py = Join-Path $build "python"
-Get-ChildItem $py -Recurse -Directory -Include "__pycache__", "tests", "test" -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -notmatch "sprigcast" } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+# (Libraries' test folders and type hints go in prune.py. Compiled __pycache__ files stay: Program Files
+# can't be written to, so without them Python would recompile every module on every start.)
 Remove-Item -Recurse -Force (Join-Path $py "include") -ErrorAction SilentlyContinue
 # Unused Qt modules, plugins and tools, WebEngine's debug resources and other languages, Tk, pip and
 # OpenCV's FFmpeg (prune.py says why each is safe). The build checks the app still starts afterwards.
