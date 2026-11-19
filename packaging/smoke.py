@@ -10,6 +10,8 @@ crash in the first seconds.
 1. A short video (picture and sound) is made in another process, so this one never imports PyAV first.
 2. The garden gets a sprig playing it, on top of the bloom on air; Getting started is marked as done.
 3. SprigCast starts offscreen and must still be running after <seconds>.
+   With SMOKE_LIGHT=1 the canvases are made 640x360 at 30 fps (CI runs it with SPRIGCAST_ENGINE=native: the
+   new engine on the build machine's software renderer, which can't keep up with full-size canvases).
 4. Its log for the run must have no errors, no import trouble and no media that couldn't play, and it
    must say which graphics it drew with. crash.log must not have grown.
 The whole log is printed either way.
@@ -62,9 +64,16 @@ from sprigcast.app.main import config_dir, load_collection
 from sprigcast.core.gardens import Shelf
 from sprigcast.core.scene import SourceConfig
 QSettings().setValue(getting_started.DONE, True)  # its window would ask to replace the blooms
+from sprigcast.app import crash_report
+# A run this check ended before (it's ended by force) would make this one ask about safe mode and wait.
+(config_dir() / crash_report.MARK).unlink(missing_ok=True)
 path = Shelf(config_dir()).garden_file()
 path.parent.mkdir(parents=True, exist_ok=True)
 garden = load_collection(path)
+if sys.argv[2] == "light":  # small canvases at 30 fps: what even the software renderer keeps up with
+    for c in garden.canvases:
+        c.width, c.height = (640, 360) if c.width >= c.height else (360, 640)
+        c.fps = 30
 canvas = next(c for c in garden.canvases if c.enabled)
 bloom = garden.scene(garden.active_scenes.get(canvas.id) or garden.scenes_for(canvas.id)[0].id)
 clip = SourceConfig(id=garden.new_id("media"), kind="media", name="Smoke clip",
@@ -140,7 +149,9 @@ def main() -> int:
     subprocess.run([sys.executable, "-I", "-c", CLIP, str(clip)], check=True, timeout=120)
     print(f"Made {clip} ({size(clip) // 1024} KB)", flush=True)
     stage("setting up the garden")
-    paths = json.loads(subprocess.run([sys.executable, "-I", "-c", SETUP, str(clip)], check=True, timeout=120,
+    light = os.environ.get("SMOKE_LIGHT") == "1"
+    paths = json.loads(subprocess.run([sys.executable, "-I", "-c", SETUP, str(clip), "light" if light else "full"],
+                                      check=True, timeout=120,
                                       capture_output=True, text=True).stdout.strip().splitlines()[-1])
     print(f"Garden {paths['garden']}: the clip plays on top of {paths['bloom']}", flush=True)
     logs = Path(paths["logs"])
