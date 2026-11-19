@@ -165,4 +165,4 @@ jobs:
           if (-not (Test-Path $setup)) { throw "Tag $tag doesn't match the version that was built (see pyproject.toml)" }
           & packaging\build\python\python.exe packaging\release_notes.py $version notes.md
           if ($LASTEXITCODE -ne 0) { throw "CHANGELOG.md needs a section for $version" }
-          gh release create $tag $setup packaging\out\SHA256.txt --title "SprigCast $version" --notes-file notes.md --verify-tag
+          gh release create $tag $setup packaging\out\SHA256.txt --title "SprigCast $version" --notes-file notes.md --verify-tag --latest

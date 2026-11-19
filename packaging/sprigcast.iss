@@ -98,6 +98,17 @@ Filename: "{app}\python\SprigCast.exe"; WorkingDir: "{app}"; Flags: nowait posti
 [UninstallRun]
 ; Remove the "Start with Windows" entry, if it was switched on, so nothing points at a removed program.
 Filename: "{sys}\reg.exe"; Parameters: "delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v SprigCast /f"; Flags: runhidden; RunOnceId: "RemoveAutostart"
+; The capture helper can outlive a closed SprigCast for a moment; stop it so its files can be removed.
+Filename: "{sys}\taskkill.exe"; Parameters: "/f /im SprigCastCapture.exe"; Flags: runhidden; RunOnceId: "StopCaptureHelper"
+
+[UninstallDelete]
+; Uninstall removes only the files Setup copied, so files SprigCast made later in its own folder (Python's
+; compiled __pycache__ files, mostly) kept {app} alive and the next Setup asked "Folder exists". {app}\python
+; is always SprigCast's own, so it goes whole; {app} itself goes only once empty, so nothing of yours
+; is touched if you installed into a folder that holds other things. Settings, gardens and logs live
+; elsewhere and go only when "Also delete my SprigCast data" is ticked.
+Type: filesandordirs; Name: "{app}\python"
+Type: dirifempty; Name: "{app}"
 
 [Code]
 // ---- Look: the Night Canopy header, the Extras page and the Finish page link ----
