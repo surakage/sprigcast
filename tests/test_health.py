@@ -196,7 +196,8 @@ def test_stream_health_rows_keep_name_and_detail_apart(app):
     snap = GardenSnapshot(rows=[("Twitch · horizontal", long, "warning", "bumpy"), ("Kick", "6000 kbps", "good", "steady")])
     pop = garden_check_popup(lambda: snap, [], None)
     pop.show()
-    app.processEvents()
+    app.processEvents()  # filled a tick after it opens
+    app.processEvents()  # and its rows shown and laid out together on the next
     rows = pop.findChildren(QFrame, "healthRow")
     assert len(rows) == 2
     for row in rows:
