@@ -170,6 +170,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   captures, and a capture Windows hasn't started in 5 s is captured the old way. If a frame is ever stuck anyway,
   Python draws everything again after 3 s instead of freezing, and its calls into the engine wait half a second at
   most. A capture waking up no longer fills the log with "no room for the picture".
+- New engine: its shaders are compiled when SprigCast is built and ship inside the engine, so nothing is compiled
+  while it runs. Compiling one still held a frame 3.4 s on the CI start-up check, even ahead of time on a
+  thread of its own (the frame needing it waited).
 - New engine: shaders are compiled on a thread of their own as the engine starts, instead of on the frame
   thread the first time each is needed. On the software renderer one held a frame 2.3 s (CI start-up check),
   and slow PCs are not much quicker. A shader that is slow to compile says so in the log.
