@@ -104,3 +104,22 @@ def test_the_shadow_picture_is_made_before_the_first_pop_up_opens(app):
     theme.warm_card_shadow(window)
     assert (window.devicePixelRatioF(), theme.PANEL) in theme._shadow_pictures  # what paint_card_shadow asks for
     theme.warm_card_shadow(None)  # a warm-up never raises
+
+
+def test_garden_check_parts_are_made_as_children_of_where_they_end_up(app):
+    """Made on their own and put in after, each part got the page's look on the spot: one wait each while live."""
+    from PySide6.QtWidgets import QWidget
+
+    from sprigcast.app import garden_check
+    from sprigcast.app.live_stage import Elided
+
+    home = QWidget()
+    tile, value = garden_check._tile("CPU", home)
+    assert tile.parent() is home and value.parent() is tile
+    assert garden_check._section("Stream health", home).parent() is home
+    row = garden_check.GardenCheckPage._row("Twitch", "6000 kbps", "good", "steady", first=True, parent=home)
+    assert row.parent() is home and all(part.parent() is row for part in row.parts)
+    assert Elided("words", home).parent() is home
+    page = garden_check.GardenCheckPage(lambda: garden_check.GardenSnapshot(checks=[("Mic heard", True, "")]), [])
+    assert page.checks.itemAt(0).widget().parent() is page._now
+    assert page.overload_bar.parent() is page._now and page.done.parent() is page

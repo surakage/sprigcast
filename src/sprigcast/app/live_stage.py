@@ -175,8 +175,8 @@ ADD_MENU_READY_MS = 4000  # after the Live screen is made: the + Add menu made r
 class Elided(QLabel):
     """A one-line label that ends in "…" when it hasn't room (the whole text is in its tooltip)."""
 
-    def __init__(self, text: str = ""):
-        super().__init__()
+    def __init__(self, text: str = "", parent: QWidget | None = None):
+        super().__init__(parent)
         self._full = ""
         self._hint = self._draft = None
         self._hint_look = 0
