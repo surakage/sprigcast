@@ -1,6 +1,7 @@
 """Settings → General → System tray: SprigCast's icon beside the clock, and the window out of the way there.
 
-- Show in the tray: the icon, with Open SprigCast and Quit. A click on it opens the window.
+- Show in the tray: the icon, with Open SprigCast, Go live, Start recording and Quit. A click on it opens the
+  window, and resting the pointer on it says whether you're live or recording.
 - Minimize to the tray: minimizing hides the window (no taskbar button) instead.
 - Close to the tray: the window's × hides it and SprigCast keeps running (a stream or recording carries on).
   Quit on the icon's menu closes it for real, asking first while live or recording like the × does.
@@ -51,6 +52,7 @@ class Tray:
         self.icon = None
         self.menu = None
         self._make_icon = make_icon
+        self._state = (False, False)  # (live, recording), as last shown
 
     def active(self) -> bool:
         return self.icon is not None and self.icon.isVisible()
@@ -70,9 +72,13 @@ class Tray:
             self.menu = QMenu(self.window)
             self.menu.addAction("Open SprigCast", self.open)
             self.menu.addSeparator()
+            self.live_action = self.menu.addAction("Go live", self._live)
+            self.record_action = self.menu.addAction("Start recording", self._record)
+            self.menu.addSeparator()
             self.menu.addAction("Quit", self.quit)
             self.icon.setContextMenu(self.menu)
-            self.icon.setToolTip("SprigCast")
+            self._state = (None, None)
+            self.show_state(False, False)
             self.icon.activated.connect(self._activated)
             self.icon.show()
             log.info("tray: icon shown")
@@ -89,6 +95,27 @@ class Tray:
             icon.deleteLater()
         if menu is not None:
             menu.deleteLater()
+
+    def show_state(self, live: bool, recording: bool) -> None:
+        """Live and Recording on the icon's tip and menu (asked often by the window: nothing done unless changed)."""
+        if (live, recording) == self._state or self.icon is None:
+            return
+        self._state = (live, recording)
+        doing = " and ".join(what for what, on in (("Live", live), ("Recording", recording)) if on)
+        self.icon.setToolTip(f"SprigCast · {doing}" if doing else "SprigCast")
+        self.live_action.setText("End stream" if live else "Go live")
+        self.record_action.setText("Stop recording" if recording else "Start recording")
+
+    def _live(self) -> None:
+        """As the Go live button: it asks where the window would, so the window comes up for the question."""
+        self.open()
+        self.window._on_live_clicked()
+
+    def _record(self) -> None:
+        window = self.window
+        if getattr(window, "recording", None) is not None:
+            self.open()  # stopping may ask first
+        window._on_record_clicked()
 
     def _activated(self, reason) -> None:
         from PySide6.QtWidgets import QSystemTrayIcon

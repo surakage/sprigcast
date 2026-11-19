@@ -21,8 +21,8 @@ class Icon:
     def setContextMenu(self, menu):  # noqa: N802
         self.menu = menu
 
-    def setToolTip(self, _text):  # noqa: N802
-        pass
+    def setToolTip(self, text):  # noqa: N802
+        self.tip = text
 
     def show(self):
         self.shown = True
@@ -42,6 +42,14 @@ class Icon:
 
 class Window(QWidget):
     asked, may = 0, True
+    recording = None
+    pressed: list = []
+
+    def _on_live_clicked(self):
+        self.pressed.append("live")
+
+    def _on_record_clicked(self):
+        self.pressed.append("record")
 
     def _may_close(self):
         self.asked += 1
@@ -77,7 +85,19 @@ def test_the_icon_follows_the_setting_and_hides_the_window_only_when_asked(clean
     t.sync()
     t.sync()  # again: still one icon
     assert len(made) == 1 and t.active()
-    assert [a.text() for a in made[0].menu.actions() if a.text()] == ["Open SprigCast", "Quit"]
+    assert [a.text() for a in made[0].menu.actions() if a.text()] == ["Open SprigCast", "Go live", "Start recording",
+                                                                     "Quit"]
+    assert made[0].tip == "SprigCast"
+    t.show_state(True, True)
+    assert made[0].tip == "SprigCast · Live and Recording"
+    assert (t.live_action.text(), t.record_action.text()) == ("End stream", "Stop recording")
+    t.show_state(False, True)
+    assert made[0].tip == "SprigCast · Recording" and t.live_action.text() == "Go live"
+    window.pressed.clear()
+    t.record_action.trigger()
+    t.live_action.trigger()
+    assert window.pressed == ["record", "live"]
+    t.show_state(False, False)
     assert not t.closing() and not t.minimized() and window.isVisible()  # shown in the tray only
     QSettings().setValue(tray.CLOSE_TO, True)
     assert t.closing() and not window.isVisible()
@@ -166,3 +186,35 @@ def test_settings_general_has_the_system_tray_section(clean):
     assert w.apply()
     assert tray.wanted() and tray.close_to() and not tray.minimize_to()
     w.close()
+
+
+def test_settings_import_closes_settings_before_anything_is_imported(clean):
+    """An import switches gardens: Settings, still open on the old one, must never save over it."""
+    from test_settings_window import _collection, _window
+
+    w = _window(_collection(), tab="General")
+    asked = []
+    w.on_import = asked.append
+    w.import_button.click()
+    assert asked == [w]
+    w.close()
+
+
+def test_the_gardens_import_choices_list_a_file_and_the_other_apps(clean, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMenu
+
+    from test_add_menu import _window
+
+    col, w = _window(tmp_path, monkeypatch)
+    try:
+        scenes = tmp_path / "obs-studio" / "basic" / "scenes"
+        scenes.mkdir(parents=True)
+        (scenes / "My_Stream.json").write_text("{}")
+        monkeypatch.setenv("APPDATA", str(tmp_path))
+        menu = QMenu()
+        w.gardens.fill_imports(menu)
+        assert menu.actions()[0].text() == "From a file…"
+        subs = [a.menu() for a in menu.actions() if a.menu() is not None]
+        assert len(subs) == 1 and [a.text() for a in subs[0].actions()] == ["My Stream"]
+    finally:
+        w.close()
