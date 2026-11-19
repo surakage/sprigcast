@@ -40,11 +40,12 @@ constexpr int REBUILDS_PER_MINUTE = 5;   // more than this and the engine gives 
 constexpr int BUILD_TRIES = 10;          // a new device that can't be made after this many tries: faulted
 constexpr int WAIT_MS = 2000;            // how long Python waits for the frame thread before giving up
 constexpr int FRAME_WAIT_MS = 500;       // how long a Python call waits for a frame to let go (a stuck one never does)
-// A capture whose source went to sleep stays open this long, taking a picture a second, and is taken up again if
-// the source wakes: every capture Windows starts leaves about one picture of graphics memory behind for good,
-// whoever starts it and however it is closed (PC 2026-11-19: +8.4 MB per wake of a 1080p window or display, the
-// same with windows-capture on the old engine; 5.5 MB a minute over an 80-minute soak of 15 s bloom switches).
-constexpr double CAPTURE_PARK_S = 600.0;
+// A capture whose source went to sleep stays open, parked, taking a picture a second, and is taken up again when
+// the source wakes: every capture Windows starts leaves about one picture of graphics memory behind until the
+// program ends, whoever starts it and however it is closed (PC 2026-11-19: +8.4 MB per wake of a 1080p window or
+// display, the same with windows-capture on the old engine and in OBS; 5.5 MB a minute over an 80-minute soak of
+// 15 s bloom switches). It is parked for as long as the source exists (user, 2026-11-19: no time limit, a bloom
+// back after an hour would cost a start again); a capture helper that can be restarted is to replace this.
 constexpr double CAPTURE_BACK_S = 0.5;   // back from parked with nothing new drawn by then: its picture stands
 constexpr double CAPTURE_FRESH_S = 2.0;  // a parked capture's picture this new is shown at once on waking
 constexpr double CAPTURE_START_S = 5.0;  // a capture Windows hasn't started by then is given up (Python captures)
@@ -99,7 +100,7 @@ struct CaptureRun {
     uint64_t frames = 0;
     bool done = false;
     sc::CaptureAsk ask;        // what `cap` captures
-    int64_t parked = 0;        // when its source went to sleep (qpc), 0 while it is wanted: see CAPTURE_PARK_S
+    int64_t parked = 0;        // when its source went to sleep (qpc), 0 while it is wanted
     int64_t copied = 0;        // when it last gave the source a picture (qpc)
     int64_t back = 0;          // when it came back from being parked (qpc), until its first news is said
 };
@@ -1347,7 +1348,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
             continue;
         }
         e.capture_staging.erase(run->first);
-        // Asleep: parked, not closed (CAPTURE_PARK_S). It takes a picture a second so it is current on waking.
+        // Asleep: parked, not closed. It takes a picture a second so it is current on waking.
         CaptureRun &r = run->second;
         const int64_t tick_now = qpc();
         const bool forgotten = forgets.count(run->first) != 0;
@@ -1357,7 +1358,6 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
             r.starting.reset();
             r.cap->slow(true);
         }
-        if (keep) keep = static_cast<double>(tick_now - r.parked) < CAPTURE_PARK_S * static_cast<double>(qpf());
         if (keep) {
             at(e, "a parked capture", run->first);
             if (r.cap->take(*e.dev, run->first, true)) r.copied = tick_now;
