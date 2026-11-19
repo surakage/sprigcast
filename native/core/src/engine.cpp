@@ -2088,7 +2088,9 @@ SC_API int sc_engine_canvas_transition(sc_engine *engine, int index, uint64_t fr
         if (index < 0 || index >= SC_ENGINE_CANVASES)
             return fail(SC_ERR_ARGUMENT, "sc_engine_canvas_transition: no such slot");
         const bool stop = from == 0 || !how;
-        if (!stop && (how->mode < SC_TRANSITION_FADE || how->mode > SC_TRANSITION_BLOOM || !(how->seconds > 0)))
+        const bool known = (how && how->mode >= SC_TRANSITION_FADE && how->mode <= SC_TRANSITION_BLOOM) ||
+                           (how && how->mode == SC_TRANSITION_STINGER);
+        if (!stop && (!known || !(how->seconds > 0)))
             return fail(SC_ERR_ARGUMENT, "sc_engine_canvas_transition: unknown kind or no length");
         std::lock_guard<std::mutex> lock(engine->state);
         TransitionCfg &t = engine->transitions[index];

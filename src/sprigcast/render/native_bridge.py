@@ -78,13 +78,18 @@ def view_key(name: str) -> str:
 
 def engine_kind(kind: str) -> bool:
     """Whether the native engine draws transitions of this kind (core/scene.py Transition.kind)."""
-    return kind in sprigcore.TRANSITION_MODES or (kind == "move" and sprigcore.use_native_move())
+    return kind in sprigcore.TRANSITION_MODES or (kind == "move" and sprigcore.use_native_move()) or \
+        (kind == "stinger" and sprigcore.use_native_stinger())
 
 
 def native_transition(running) -> bool:
-    """Whether the native engine draws this running transition (render/engine.py Running)."""
-    return running is not None and running.began is not None and running.stinger is None and \
-        engine_kind(running.settings.kind)
+    """Whether the native engine draws this running transition (render/engine.py Running): a stinger only when its
+    clip plays in the engine's own player (render/stinger.py NativeStinger), which the engine takes it from."""
+    if running is None or running.began is None or not engine_kind(running.settings.kind):
+        return False
+    if running.settings.kind == "stinger":
+        return running.stinger is not None and getattr(running.stinger, "engine_player", None) is not None
+    return running.stinger is None
 
 
 def snapshot_draws(collection: SceneCollection, state_view, outgoing: dict[str, Scene] | None = None,
@@ -482,7 +487,9 @@ class NativeCanvases:
                 rgba = np.concatenate([picture, np.full(picture.shape[:2] + (1,), 255, np.uint8)], axis=-1)
                 self._guard("wipe image", self.engine.set_mask, f"wipe:{wipe}", rgba, True)
                 self._wipe_maps.add(wipe)
-        spec = sprigcore.transition_spec(running.settings, f"wipe:{wipe}" if wipe in self._wipe_maps else None)
+        player = running.stinger
+        spec = sprigcore.transition_spec(running.settings, f"wipe:{wipe}" if wipe in self._wipe_maps else None,
+                                         player.id if player is not None else None)
         spec.seconds = max(0.001, float(running.duration))
         self._guard("transition", self.engine.transition, slot, from_key(canvas_id), spec)
 
@@ -530,7 +537,11 @@ class NativeCanvases:
         """Whether this frame's transition arguments (render/engine.py _transition_step) are ones the native
         engine draws itself."""
         transition = extra.get("transition")
-        return transition is not None and engine_kind(transition.kind) and "overlay" not in extra
+        if transition is None or not engine_kind(transition.kind):
+            return False
+        if transition.kind == "stinger":
+            return bool(extra.get("engine_stinger"))  # its clip plays in the engine's own player
+        return "overlay" not in extra
 
     def draws(self, canvas_id: str) -> bool:
         """True when this canvas's preview comes from the native engine."""

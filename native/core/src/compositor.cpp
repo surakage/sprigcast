@@ -833,7 +833,8 @@ SC_API int sc_move_frame(const sc_move *move, float progress, int width, int hei
 SC_API int sc_canvas_render_transition(sc_canvas *canvas, uint64_t from, uint64_t to, double time,
                                        const sc_transition *how, float progress) {
     return device_call(canvas ? canvas->device : nullptr, "sc_canvas_render_transition", [&]() -> int {
-        if (!canvas || !how || how->mode < SC_TRANSITION_FADE || how->mode > SC_TRANSITION_BLOOM)
+        if (!canvas || !how || how->mode < SC_TRANSITION_FADE ||
+            (how->mode > SC_TRANSITION_BLOOM && how->mode != SC_TRANSITION_STINGER))
             return fail(SC_ERR_ARGUMENT, "sc_canvas_render_transition: no canvas, or an unknown kind");
         std::lock_guard<std::mutex> lock(canvas->device->lock);
         return render_transition(*canvas, from, to, time, *how, progress);

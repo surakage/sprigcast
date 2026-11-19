@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 32
+#define SC_INTERFACE_VERSION 33
 
 enum {
     SC_OK = 0,
@@ -227,7 +227,9 @@ enum {
     SC_TRANSITION_WIPE = 4,
     SC_TRANSITION_LEAF = 5,
     SC_TRANSITION_BLOOM = 6,
+    SC_TRANSITION_STINGER = 8,  /* a clip played over the change (7 is the Move, below) */
 };
+enum { SC_STINGER_MATTE_NONE = 0, SC_STINGER_MATTE_RIGHT = 1, SC_STINGER_MATTE_BELOW = 2 };
 
 typedef struct sc_transition {
     int mode;              /* SC_TRANSITION_* */
@@ -236,6 +238,12 @@ typedef struct sc_transition {
     float softness;        /* wipe, leaf and bloom edge, 0 .. 1 */
     int reserved;
     uint64_t wipe_map;     /* wipe: a picture set with sc_mask_set, dark parts change first; 0 = a straight edge */
+    uint64_t overlay;      /* stinger: the source showing the clip (a player attached with sc_engine_source_media);
+                              0 or no picture yet: it just cuts at cut_seconds */
+    float cut_seconds;     /* stinger: when the scenes change under the clip */
+    int matte;             /* stinger: SC_STINGER_MATTE_*: a black and white half that says where the new scene shows */
+    int matte_only;        /* stinger: draw only the matte's change, not the clip */
+    int reserved2;
 } sc_transition;
 
 /* Draws the change from scene `from` to scene `to` onto the canvas at `progress` (0 .. 1). */

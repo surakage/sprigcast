@@ -336,6 +336,24 @@ int main() {
         t.softness = 0.2f;
         CHECK(sc_canvas_render_transition(c2, 1, 12345, 0.0, &t, 0.5f) == SC_OK);
     }
+    // Stinger: with no clip yet it just cuts at the cut point; a solid clip covers the canvas (centred, cropped).
+    {
+        sc_transition sting = fade;
+        sting.mode = SC_TRANSITION_STINGER;
+        sting.cut_seconds = 0.15f;
+        CHECK(sc_canvas_render_transition(c2, 1, 12345, 0.0, &sting, 0.1f) == SC_OK);
+        CHECK(sc_canvas_read_bgra(c2, mixed.data(), 32 * 4) == SC_OK);
+        CHECK(mixed == out);  // before the cut: the old scene
+        CHECK(sc_canvas_render_transition(c2, 1, 12345, 0.0, &sting, 0.6f) == SC_OK);
+        CHECK(sc_canvas_read_bgra(c2, mixed.data(), 32 * 4) == SC_OK);
+        CHECK(at(mixed, 32, 1, 1).a == 0);  // after it: the new one (see-through)
+        sting.overlay = 11;  // the 8 x 8 picture: red top left
+        CHECK(sc_canvas_render_transition(c2, 1, 12345, 0.0, &sting, 0.6f) == SC_OK);
+        CHECK(sc_canvas_read_bgra(c2, mixed.data(), 32 * 4) == SC_OK);
+        Pixel clip = at(mixed, 32, 1, 1);
+        std::printf("stinger pixel: %d,%d,%d,%d\n", clip.r, clip.g, clip.b, clip.a);
+        CHECK(clip.r > 200 && clip.g < 40 && clip.a == 255);
+    }
     fade.mode = 99;
     CHECK(sc_canvas_render_transition(c2, 1, 12345, 0.0, &fade, 0.5f) == SC_ERR_ARGUMENT);
 
