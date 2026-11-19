@@ -77,7 +77,11 @@ def test_which_transitions_the_native_engine_draws(monkeypatch):
         assert native_bridge.native_transition(running(kind))
     monkeypatch.setenv("SPRIGCAST_NO_NATIVE_MOVE", "1")
     assert not native_bridge.native_transition(running("move"))  # left to Python, as before
-    assert not native_bridge.native_transition(running("stinger", stinger=object()))
+    assert not native_bridge.native_transition(running("stinger", stinger=object()))  # a clip Python decodes
+    clip = SimpleNamespace(id="stinger:x", engine_player=object())
+    assert native_bridge.native_transition(running("stinger", stinger=clip))  # its clip plays in the engine
+    monkeypatch.setenv("SPRIGCAST_NO_NATIVE_STINGER", "1")
+    assert not native_bridge.native_transition(running("stinger", stinger=clip))
     assert not native_bridge.native_transition(running("fade", began=None))  # waiting for a camera
     spec = sprigcore.transition_spec(Transition(kind="wipe", direction="up", softness=2.0, duration_ms=500), "w")
     assert (spec.mode, round(spec.seconds, 3), tuple(spec.direction), spec.softness) == (4, 0.5, (0.0, -1.0), 1.0)
@@ -670,6 +674,96 @@ def test_a_move_transition_is_drawn_by_python_when_asked(monkeypatch):
     _run(engine, fake, seconds=0.25)
     assert fake.rendered.count("h") >= 7
     assert engine.frames["h"].take().data == b"x"
+
+
+class _EngineClip:
+    """Stands in for render/stinger.py NativeStinger: a clip in the engine's own player."""
+
+    def __init__(self):
+        import threading
+
+        self.id, self.duration, self.error, self.channel_order = "stinger:x", 1.0, None, "BGRA"
+        self.ready = threading.Event()
+        self.ready.set()
+        self.engine_player, self.played, self.closed = object(), 0, False
+
+    def play(self):
+        self.played += 1
+
+    def frame_at(self, t):
+        raise AssertionError("Python read a picture of a clip the engine draws")
+
+    def close(self):
+        self.closed = True
+
+
+def _stinger_switch(engine, monkeypatch, clip, matte="none"):
+    from sprigcast.core.scene import Stinger, Transition
+
+    monkeypatch.setattr(engine, "_new_stinger", lambda path, transition, collection: clip)
+    monkeypatch.setattr(engine.mixer, "add_extra", lambda player: None)
+    monkeypatch.setattr(engine.mixer, "remove_extra", lambda player: None)
+    new = engine._collection.model_copy(deep=True)
+    new.scenes.append(Scene(id="c", name="C", canvas="h"))
+    new.active_scenes["h"] = "c"
+    new.transition = Transition(kind="stinger", duration_ms=500,
+                                stinger=Stinger(path="clip.webm", cut_ms=400, matte=matte))
+    old, engine._collection = engine._collection, new
+    engine._start_transitions(old, new)
+
+
+def test_a_stinger_is_drawn_by_the_native_engine_from_its_player(monkeypatch):
+    engine, fake = _engine(), FakeCompositor()
+    engine.previews = frozenset({"h"})
+    clip = _EngineClip()
+    _stinger_switch(engine, monkeypatch, clip)
+    _run(engine, fake, seconds=0.5)
+    assert fake.rendered == []  # Python draws nothing and reads no picture: the engine plays the clip itself
+    assert clip.played > 0 and "h" in engine._native.transitions
+    assert engine._native.attached.get("stinger:x") is clip.engine_player
+    fake.end_transition = fake.forget = lambda key: None
+    for i in range(40):  # over (the clip is a second long): it is let go
+        engine._tick(fake, 10.5 + i / 60)
+    assert clip.closed and "h" not in engine._transitions
+
+
+def test_a_stinger_is_drawn_by_python_when_asked(monkeypatch):
+    monkeypatch.setenv("SPRIGCAST_NO_NATIVE_STINGER", "1")
+    engine, fake = _engine(), FakeCompositor()
+    engine.previews = frozenset({"h"})
+    clip = _EngineClip()
+    clip.frame_at = lambda t: None
+    _stinger_switch(engine, monkeypatch, clip)
+    _run(engine, fake, seconds=0.25)
+    assert fake.rendered.count("h") >= 7 and "stinger:x" not in engine._native.attached
+
+
+def test_a_stinger_hands_the_engine_its_clip_cut_and_matte(monkeypatch):
+    from sprigcast.core.scene import Stinger, Transition
+    from sprigcast.render.engine import Running
+
+    calls = []
+
+    class Stinging(FakeEngine):
+        def transition(self, index, previous, spec):
+            calls.append((index, previous, spec))
+
+        def __getattr__(self, name):
+            return lambda *a, **k: None
+
+    monkeypatch.setattr(sprigcore, "Engine", Stinging)
+    monkeypatch.setattr(native_bridge.native_snapshot, "hand_over", lambda *a, **k: None)
+    col = _collection()
+    bridge = native_bridge.NativeCanvases(col)
+    clip = _EngineClip()
+    settings = Transition(kind="stinger", duration_ms=500,
+                          stinger=Stinger(path="clip.webm", cut_ms=400, matte="right", matte_only=True))
+    running = Running(Scene(id="old", name="Old", canvas="h"), 1.0, 1.5, settings, stinger=clip)
+    bridge.sync(col, {}, _plain_state, False, {"h": running})
+    (_index, previous, spec), = calls
+    assert previous == "from:h" and spec.mode == sprigcore.STINGER_MODE and round(spec.seconds, 3) == 1.5
+    assert spec.overlay == sprigcore.key("stinger:x") and round(spec.cut_seconds, 3) == 0.4
+    assert sprigcore.STINGER_MATTES[spec.matte] == "right" and spec.matte_only == 1
 
 
 def test_a_move_hands_the_engine_its_pieces_once(monkeypatch):

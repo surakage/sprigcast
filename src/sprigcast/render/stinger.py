@@ -133,14 +133,23 @@ class NativeStinger:
         self._ready = True
         return True
 
+    @property
+    def engine_player(self):
+        """The engine's player itself: the native engine draws the clip from it (render/native_bridge.py)."""
+        return None if self._closed else self._player
+
+    def play(self) -> None:
+        """Starts the clip's clock (once), without reading a picture: when the engine draws the clip itself."""
+        if not self._playing and not self._closed:
+            self._playing = True
+            self._player.control(self._play)
+
     def frame_at(self, t: float) -> np.ndarray | None:
         """The frame due now if it is new since the last call, else None. The player keeps the time itself from
         the first call on (t is the same clock, counted by the transition)."""
         if self._closed:
             return None
-        if not self._playing:
-            self._playing = True
-            self._player.control(self._play)
+        self.play()
         got = self._player.video_frame()
         if got is None or isinstance(got, str):
             return None

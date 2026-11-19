@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 32  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 33  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -152,7 +152,9 @@ class TransitionSpec(ctypes.Structure):
     """include/sprigcore.h sc_transition."""
 
     _fields_ = [("mode", ctypes.c_int), ("seconds", ctypes.c_float), ("direction", ctypes.c_float * 2),
-                ("softness", ctypes.c_float), ("reserved", ctypes.c_int), ("wipe_map", ctypes.c_uint64)]
+                ("softness", ctypes.c_float), ("reserved", ctypes.c_int), ("wipe_map", ctypes.c_uint64),
+                ("overlay", ctypes.c_uint64), ("cut_seconds", ctypes.c_float), ("matte", ctypes.c_int),
+                ("matte_only", ctypes.c_int), ("reserved2", ctypes.c_int)]
 
 
 MOVE_EASINGS = ("smooth", "ease_out", "ease_in", "linear", "spring")  # SC_MOVE_*: core/scene.py MOVE_EASINGS
@@ -222,8 +224,29 @@ def use_native_move() -> bool:
     return not os.environ.get("SPRIGCAST_NO_NATIVE_MOVE")
 
 
-def transition_spec(transition, wipe_map: str | None = None) -> TransitionSpec | None:
-    """core/scene.py Transition as the engine takes it, or None for a kind it doesn't draw (cut, stinger, move)."""
+STINGER_MODE = 8  # SC_TRANSITION_STINGER
+STINGER_MATTES = ("none", "right", "below")  # SC_STINGER_MATTE_*
+
+
+def use_native_stinger() -> bool:
+    """True when the engine draws stinger transitions itself (their clip played by the engine's own player);
+    SPRIGCAST_NO_NATIVE_STINGER=1 leaves them to Python."""
+    return not os.environ.get("SPRIGCAST_NO_NATIVE_STINGER")
+
+
+def transition_spec(transition, wipe_map: str | None = None, overlay: str | None = None) -> TransitionSpec | None:
+    """core/scene.py Transition as the engine takes it, or None for a kind it doesn't draw this way (cut, move).
+    overlay: a stinger's clip, the source id its player is attached under (None: it just cuts)."""
+    if transition.kind == "stinger":
+        spec = TransitionSpec()
+        spec.mode = STINGER_MODE
+        spec.seconds = 1.0  # the clip's length: the caller sets it
+        sting = transition.stinger
+        spec.overlay = key(overlay) if overlay else 0
+        spec.cut_seconds = max(0.0, sting.cut_ms / 1000)
+        spec.matte = STINGER_MATTES.index(sting.matte) if sting.matte in STINGER_MATTES else 0
+        spec.matte_only = int(bool(sting.matte_only))
+        return spec
     mode = TRANSITION_MODES.get(transition.kind)
     if mode is None:
         return None

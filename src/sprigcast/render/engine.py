@@ -935,9 +935,16 @@ class Engine:
             if canvas is not None:
                 extra["move"] = partial(self._move_frame, running, canvas, max(0.0, progress))
         if running.stinger is not None:
-            frame = running.stinger.frame_at(elapsed)
-            if frame is not None:
-                compositor.upload(running.stinger.id, frame, running.stinger.channel_order)
+            from sprigcast.render.native_bridge import native_transition
+
+            native = self._native
+            if native is not None and not native.failed and native_transition(running):
+                running.stinger.play()  # the engine draws the clip from its player: no picture comes through here
+                extra["engine_stinger"] = True
+            else:
+                frame = running.stinger.frame_at(elapsed)
+                if frame is not None:
+                    compositor.upload(running.stinger.id, frame, running.stinger.channel_order)
             extra["overlay"] = running.stinger.id
             extra["cut"] = elapsed >= running.settings.stinger.cut_ms / 1000
         if running.wipe_map:
@@ -2060,7 +2067,13 @@ class Engine:
         self._served_views = set()
         if native is not None:
             self._engine_views, self._riders = self._native_views(taps, sizes)
-            native.forget_gone(self._sources)
+            from sprigcast.render.native_bridge import native_transition
+
+            stingers = {r.stinger.id: r.stinger.engine_player for r in self._transitions.values()
+                        if r.stinger is not None and native_transition(r)}
+            for sting_id, player in stingers.items():  # a stinger's clip: drawn by the engine from its player
+                native.attach_media(sting_id, player)
+            native.forget_gone({*self._sources, *stingers})
             native.sync(self._collection, getattr(compositor, "effects", {}), self._state_view, bool(self._state_fades),
                         {cid: r for cid, r in self._transitions.items() if cid not in self._waking}, self._wipe_map,
                         views=self._engine_views, held={cid: w[0] for cid, w in self._waking.items()},

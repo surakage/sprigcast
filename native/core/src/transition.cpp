@@ -22,11 +22,19 @@ cbuffer Transition : register(b0) {
     int use_map;
     float level_max;
     float3 unused;
+    float4 overlay_rect;  // stinger: clip uv = xy + canvas uv * zw (the clip covers the canvas)
+    float2 matte_offset;  // stinger: where the matte half starts, in clip uv; (0, 0) = no matte
+    int show_overlay;
+    int cut;              // stinger: past the cut point
+    int overlay_swizzle;  // stinger: 1 = the clip's picture is BGRA
+    float3 unused2;
 };
 Texture2D old_scene : register(t0);
 Texture2D new_scene : register(t1);
 Texture2D wipe_map : register(t2);
+Texture2D overlay : register(t3);  // stinger: the clip's picture (straight alpha)
 SamplerState smooth : register(s0);
+SamplerState edge : register(s1);
 
 static const float3 LUMA = float3(0.2126, 0.7152, 0.0722);
 static const float LEAF_TURN = 0.785;
@@ -95,6 +103,22 @@ float4 ps_main(float4 pos : SV_Position) : SV_Target {
     }
     if (mode == 5) return blend(a, b, reveal(leaf_level(q, LEAF_TURN + LEAF_SPIN * p) / level_max, p));
     if (mode == 6) return blend(a, b, reveal(bloom_level(q, BLOOM_SPIN * p) / level_max, p));
+    if (mode == 8) {  // render/compositor.py's stinger, line for line
+        float2 st = overlay_rect.xy + uv * overlay_rect.zw;
+        float4 base;
+        if (matte_offset.x != 0.0 || matte_offset.y != 0.0) {
+            float4 m = overlay.SampleLevel(edge, st + matte_offset, 0);
+            base = blend(a, b, dot((overlay_swizzle ? m.bgr : m.rgb), LUMA));
+        } else {
+            base = cut ? b : a;
+        }
+        if (show_overlay) {
+            float4 o = overlay.SampleLevel(edge, st, 0);
+            if (overlay_swizzle) o = o.bgra;
+            base = float4(o.rgb * o.a, o.a) + base * (1.0 - o.a);
+        }
+        return base;
+    }
     return blend(a, b, p);
 }
 )";
@@ -108,8 +132,14 @@ struct TransitionConstants {
     int use_map;
     float level_max;
     float unused[3];
+    float overlay_rect[4];
+    float matte_offset[2];
+    int show_overlay;
+    int cut;
+    int overlay_swizzle;
+    float unused2[3];
 };
-static_assert(sizeof(TransitionConstants) == 48, "matches the shader's constant buffer");
+static_assert(sizeof(TransitionConstants) == 80, "matches the shader's constant buffer");
 
 constexpr double LEAF_TURN = 0.785, LEAF_SPIN = 0.5, BLOOM_SPIN = 1.2;
 
@@ -205,6 +235,40 @@ int sc::render_transition(sc_canvas &canvas, uint64_t from, uint64_t to, double 
     k.use_map = map ? 1 : 0;
     k.level_max = (how.mode == SC_TRANSITION_LEAF || how.mode == SC_TRANSITION_BLOOM)
                       ? shape_reach(how.mode, w, h, k.progress) : 1.0f;
+    ID3D11ShaderResourceView *clip = nullptr;
+    if (how.mode == SC_TRANSITION_STINGER) {
+        k.cut = static_cast<double>(k.progress) * how.seconds >= how.cut_seconds ? 1 : 0;
+        auto found = how.overlay ? dev.comp.sources.find(how.overlay) : dev.comp.sources.end();
+        if (found != dev.comp.sources.end() && found->second.view && !found->second.planar) {
+            const Source &src = found->second;
+            clip = src.view.Get();
+            k.overlay_swizzle = src.format == SC_FMT_BGRA || src.format == SC_FMT_PBGRA ? 1 : 0;
+            // render/compositor.py: the clip (or its picture half, beside a matte) covers the canvas, centred
+            const double tw = std::max(1, src.pic_w), th = std::max(1, src.pic_h);
+            const double half_w = how.matte == SC_STINGER_MATTE_RIGHT ? tw / 2 : tw;
+            const double half_h = how.matte == SC_STINGER_MATTE_BELOW ? th / 2 : th;
+            const double pa = half_w / std::max(1e-6, half_h), ca = static_cast<double>(w) / std::max(1, h);
+            double x = 0, y = 0, cw = 1, ch = 1;
+            if (pa > ca) {
+                cw = ca / pa;
+                x = (1 - cw) / 2;
+            } else {
+                ch = pa / ca;
+                y = (1 - ch) / 2;
+            }
+            const double sx = half_w / tw, sy = half_h / th;
+            // the picture may sit in a wider texture (rows padded): uv in the texture, not the picture
+            const double fx = static_cast<double>(src.pic_w) / std::max(1, src.data_w);
+            const double fy = static_cast<double>(src.pic_h) / std::max(1, src.data_h);
+            k.overlay_rect[0] = static_cast<float>(x * sx * fx);
+            k.overlay_rect[1] = static_cast<float>(y * sy * fy);
+            k.overlay_rect[2] = static_cast<float>(cw * sx * fx);
+            k.overlay_rect[3] = static_cast<float>(ch * sy * fy);
+            k.matte_offset[0] = how.matte == SC_STINGER_MATTE_RIGHT ? static_cast<float>(0.5 * fx) : 0.0f;
+            k.matte_offset[1] = how.matte == SC_STINGER_MATTE_BELOW ? static_cast<float>(0.5 * fy) : 0.0f;
+            k.show_overlay = (how.matte != SC_STINGER_MATTE_NONE && how.matte_only) ? 0 : 1;
+        }
+    }
     ID3D11DeviceContext *c = dev.context.Get();
     D3D11_MAPPED_SUBRESOURCE mapped;
     HRESULT hr = c->Map(dev.trans_constants.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
@@ -225,12 +289,13 @@ int sc::render_transition(sc_canvas &canvas, uint64_t from, uint64_t to, double 
     ID3D11Buffer *buffers[] = {dev.trans_constants.Get()};
     c->PSSetConstantBuffers(0, 1, buffers);
     ID3D11ShaderResourceView *views[] = {canvas.outgoing.view.Get(), canvas.incoming.view.Get(),
-                                         map ? map : canvas.outgoing.view.Get()};
-    c->PSSetShaderResources(0, 3, views);
-    ID3D11SamplerState *samplers[] = {dev.comp.wrap.Get()};
-    c->PSSetSamplers(0, 1, samplers);
+                                         map ? map : canvas.outgoing.view.Get(),
+                                         clip ? clip : canvas.outgoing.view.Get()};
+    c->PSSetShaderResources(0, 4, views);
+    ID3D11SamplerState *samplers[] = {dev.comp.wrap.Get(), dev.comp.clamp.Get()};
+    c->PSSetSamplers(0, 2, samplers);
     c->Draw(3, 0);
-    ID3D11ShaderResourceView *none[3] = {};
-    c->PSSetShaderResources(0, 3, none);
+    ID3D11ShaderResourceView *none[4] = {};
+    c->PSSetShaderResources(0, 4, none);
     return SC_OK;
 }

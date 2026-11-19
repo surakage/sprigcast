@@ -125,7 +125,12 @@ sprig's drawing or its filters. The engine then works out every frame on its own
 `move.frame` (`tests/test_native_move.py` checks them against each other) and draws the quads straight onto the
 canvas. `SPRIGCAST_NO_NATIVE_MOVE=1` leaves them to Python.
 
-Python's compositor still draws stinger transitions, Build's edited bloom, the Part editor, screenshots,
+Stinger transitions are the engine's too (`SC_TRANSITION_STINGER`): the clip's player is attached to the engine
+under the clip's id, so the frame thread takes each picture straight from it and draws it over the change, cover
+fitted to the canvas and swapping blooms at the cut point. A track matte clip shows its picture half and swaps
+through its matte half, as Python's compositor does. `SPRIGCAST_NO_NATIVE_STINGER=1` leaves them to Python.
+
+Python's compositor still draws Build's edited bloom, the Part editor, screenshots,
 source record, full-size RGBA taps (a projector showing a view) and a canvas's outputs while it draws one of those (a frame older than one already handed on is never sent). If the native engine stops
 (faulted), Python's compositor draws the previews and outputs again by itself.
 
@@ -148,13 +153,14 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   player (`sc_engine_source_media`): each frame the frame thread takes the picture due from the player itself and
   sends it to the card, so pictures go from the decoder thread to the screen without touching Python or its lock,
   at the engine's own frame times. Python's render thread asks for a picture only on ticks where its own
-  compositor still draws something (a screenshot, a stinger, Build's edited bloom); each taker remembers the
+  compositor still draws something (a screenshot, Build's edited bloom); each taker remembers the
   picture it took last, so whoever starts looking gets the one on screen at once. A sleeping or frozen source is
   detached and keeps the picture it has. The engine holds the player for as long as it is attached, so a source
   closing its player first is safe.
 - **Stinger clips.** A stinger transition's clip is played by the same player (`render/stinger.py`
   `NativeStinger`): asked for RGBA pictures with straight alpha, shrunk to fit the canvas while decoding
-  (`sc_media_set_picture`), which is what the transition draws. It waits paused with its first pictures decoded
+  (`sc_media_set_picture`), which is what the transition draws. The engine takes those pictures from the player
+  itself; Python only starts the clip's clock. It waits paused with its first pictures decoded
   and starts its clock with the transition's first frame, so picture and sound stay in step. A clip that can't be
   played, or faults the decoder, falls back to a fade as before.
 - **Instant replay.** The replay itself plays through the same player (`store/instant_replay.py`

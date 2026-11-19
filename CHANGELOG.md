@@ -162,7 +162,7 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   waits for a camera gave its outputs back to Python and made them again after, with new textures each time, and
   the recording's encoder on the graphics card keeps every texture it was handed. The engine now keeps drawing the
   bloom being held, so recordings, streams and the replay buffer keep their outputs through a switch.
-  Move and stinger transitions (drawn by Python) keep them too: the recording takes Python's frames for the
+  Transitions drawn by Python keep them too: the recording takes Python's frames for the
   transition, then goes back to the engine's same textures.
 - New engine: closing a captured window just as its capture started could leave the engine's frame stuck for good
   (a call into Windows' capture service that never came back), and nothing was drawn after that (PC test
@@ -170,6 +170,10 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   captures, and a capture Windows hasn't started in 5 s is captured the old way. If a frame is ever stuck anyway,
   Python draws everything again after 3 s instead of freezing, and its calls into the engine wait half a second at
   most. A capture waking up no longer fills the log with "no room for the picture".
+- New engine: stinger transitions are drawn by the engine. The clip's player hands its pictures straight to the
+  engine, which draws them over the change and swaps blooms at the cut point (track matte clips too), so a
+  stinger no longer hands the canvas and its recordings back to Python. SPRIGCAST_NO_NATIVE_STINGER=1 draws them
+  in Python as before.
 - New engine: Move transitions are drawn by the engine. Python lays both blooms out once when the Move starts,
   and the engine works out every frame itself on its own clock (the same arithmetic, checked against Python on
   thousands of frames), so a Move no longer hands the canvas and its recordings back to Python, and a busy
