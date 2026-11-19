@@ -1108,6 +1108,10 @@ class Engine:
         out = getattr(self, "_sound_out", None)
         return out.status if out is not None else "off"
 
+    def push_key(self, down: bool) -> None:
+        """The push-to-talk key went down or up (any thread): the mixer opens or closes the mic per block."""
+        self.mixer.push_key(down)
+
     def _sync_audio_options(self) -> None:
         """Ducking settings to the mixer; start monitoring when a source is monitored, stop when none is."""
         audio = self._collection.audio
@@ -1115,6 +1119,24 @@ class Engine:
             enabled=audio.ducking, amount_db=audio.duck_amount_db, threshold_db=audio.duck_threshold_db,
             attack_ms=audio.duck_attack_ms, release_ms=audio.duck_release_ms, hold_ms=audio.duck_hold_ms,
         ))
+        self.mixer.set_push(audio.push_mic(self._collection), audio.push_mode, audio.push_release_ms)
+        if audio.windows_ducking_off != getattr(self, "_windows_ducking_off", None):
+            from sprigcast import sprigcore
+
+            self._windows_ducking_off = audio.windows_ducking_off
+            try:
+                sprigcore.set_windows_ducking(audio.windows_ducking_off)
+            except Exception as exc:  # noqa: BLE001 (an older engine: Windows keeps its own setting)
+                log.info("couldn't set Windows ducking: %s", exc)
+        device = audio.monitor_device or None
+        if device != getattr(self, "_monitor_device", None):  # "Listen through" changed: a monitor on that device
+            self._monitor_device = device
+            was = self._monitoring
+            if was:
+                self.mixer.remove_monitor_tap(self.monitor.write)
+                self.monitor.stop()
+                self._monitoring = False
+            self.monitor = make_monitor(self.mixer, device)
         monitoring = any(
             s.settings.get("monitor") and not s.settings.get("muted") for s in self._collection.sources_in_use()
             if s.kind in ("audio_input", "audio_output", "app_audio", "media")

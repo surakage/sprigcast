@@ -402,6 +402,20 @@ class AudioSettings(BaseModel):
     # and leave the Sound list, so only the mics and desktop sounds you add yourself play.
     global_devices: bool = True
     global_sources: list[str] | None = None  # their source ids; None (older files): the first desktop and mic
+    # Hearing it yourself: the device monitoring plays on ("Listen through"); "" = the Windows default.
+    monitor_device: str = ""
+    # Ask Windows not to turn other apps down when SprigCast opens a mic (communications ducking).
+    windows_ducking_off: bool = True
+    # Push to talk on the mic: "talk" (heard only while the key is held), "mute" (silent while held) or "off".
+    push_mode: Literal["off", "talk", "mute"] = "off"
+    push_key: str = ""  # the key, as hotkeys are written ("F13", "Ctrl+Alt+T")
+    push_release_ms: int = 250  # "Let go after": letting go counts this much later (0, 100, 250 or 500)
+
+    def push_mic(self, collection: "SceneCollection") -> str:
+        """The mic push to talk holds: the global mic, else the first mic (its source id, "" for none)."""
+        ids = collection.global_device_ids()
+        mics = [s for s in collection.sources if s.kind == "audio_input"]
+        return next((s.id for s in mics if s.id in ids), mics[0].id if mics else "")
 
     def track_name(self, number: int) -> str:
         names = [*self.track_names, *TRACK_NAMES[len(self.track_names):]]

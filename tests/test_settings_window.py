@@ -58,7 +58,7 @@ def test_tabs_and_apply_writes_everything(app):
     enabled, width, height, fps = w.video_fields["horizontal"]
     width.setValue(1280)
     height.setValue(720)
-    fps.setCurrentIndex(fps.findData(30))
+    fps.buttons[30].click()
     assert w.apply() and fired
 
     assert col.recording.canvases == ["horizontal"] and col.recording.container == "mp4"
@@ -303,7 +303,7 @@ def test_video_page_base_and_output_size(app):
     assert not out.isVisible()  # an expert row while it's the canvas size
     w.expert.setChecked(True)
     app.processEvents()
-    assert out.isVisible() and out.itemText(0).startswith("Same as base (1920×1080)")
+    assert out.isVisible() and out.itemText(0).startswith("Same as the canvas (1920×1080)")
     out.setCurrentIndex(out.findData(720))
     assert out.currentText() == "1280×720" and downscale.isEnabled()
     downscale.setCurrentIndex(downscale.findData("lanczos"))
@@ -871,4 +871,66 @@ def test_quality_made_but_not_yet_in_its_tab_goes_with_the_window(app):
         w._slices.pop(0)()  # the part that makes Quality; putting it in its tab still waits
     quality = w.stream_quality
     assert quality.parentWidget() is not None and quality.window() is w and not quality.isWindow()
+    w.close()
+
+
+def test_canvas_cards_pick_a_size_and_a_frame_rate(app):
+    """Settings redesign (2026-11-19): a card per canvas with its shape, a size list and 30 / 60 quick picks."""
+    col = _collection()
+    w = _window(col, tab="Video")
+    w.show()
+    app.processEvents()
+    enabled, width, height, fps = w.video_fields["horizontal"]
+    size, (big, small) = w.video_sizes["horizontal"], w.video_heads["horizontal"]
+    assert size.currentText() == "1920×1080 (1080p)" and not width.isVisible()  # the boxes are for Custom
+    assert big.text() == "1920×1080" and small.text().startswith("Landscape")
+    assert [f for f, b in fps.buttons.items() if not b.isHidden()] == sorted({30, 60, fps.value()})
+    size.setCurrentIndex(size.findText("1280×720 (720p)"))
+    assert (width.value(), height.value()) == (1280, 720) and big.text() == "1280×720"
+    size.setCurrentIndex(size.findText("Custom"))
+    app.processEvents()
+    assert width.isVisible()
+    width.setValue(1000)
+    assert big.text() == "1000×720" and size.currentText() == "Custom"  # typing never jumps the list about
+    fps.buttons[30].click()
+    assert small.text().endswith("30 fps") and fps.currentData() == 30
+    other = w.video_other_fps["horizontal"]
+    assert not other.isVisible()  # the rarer frame rates are for experts
+    w.expert.setChecked(True)
+    app.processEvents()
+    assert other.isVisible()
+    other.setCurrentIndex(other.findData(50))
+    assert fps.currentData() == 50 and not fps.buttons[50].isHidden() and other.currentIndex() == 0
+    assert small.text().endswith("50 fps")
+    assert w.video_sizes["vertical"].currentText() == "1080×1920 (1080p)"
+    assert w.video_heads["vertical"][1].text().startswith("Portrait")
+    w.close()
+
+
+def test_a_canvas_size_of_your_own_opens_on_custom(app):
+    col = _collection()
+    col.canvases[0].width, col.canvases[0].height = 1600, 900
+    w = _window(col, tab="Video")
+    w.show()
+    app.processEvents()
+    assert w.video_sizes["horizontal"].currentText() == "Custom" and w.video_fields["horizontal"][1].isVisible()
+    assert w.apply() and (col.canvases[0].width, col.canvases[0].height) == (1600, 900)
+    w.close()
+
+
+def test_one_scaling_for_every_canvas_only_changes_them_when_it_is_changed(app):
+    col = _collection()
+    col.canvases[0].downscale, col.canvases[1].downscale = "bicubic", "lanczos"
+    w = _window(col, tab="Video")
+    w.show()
+    app.processEvents()
+    assert not w.sent_out.isVisible()  # Sent out at is for experts while everything goes out at canvas size
+    assert w.apply()
+    assert [c.downscale for c in col.canvases[:2]] == ["bicubic", "lanczos"]  # untouched: each keeps its own
+    w.expert.setChecked(True)
+    app.processEvents()
+    assert w.sent_out.isVisible() and w.sent_out.badge.text() == "Expert"
+    w.scaling.setCurrentIndex(w.scaling.findData("bilinear"))
+    assert w.apply()
+    assert [c.downscale for c in col.canvases[:2]] == ["bilinear", "bilinear"]
     w.close()

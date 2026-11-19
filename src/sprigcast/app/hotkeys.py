@@ -201,3 +201,69 @@ class Hotkeys(QObject):
             shortcut.deleteLater()
         self._shortcuts = []
         self.mode = "off"
+
+
+class PushKey:
+    """The push-to-talk key: calls on_change(True) when the whole combo is down and on_change(False) once any of it
+    is let go. It only says when; the mixer opens and closes the mic per block (with "Let go after").
+
+    Heard globally with pynput, so it works while a game has focus. Without pynput there is no push to talk:
+    `mode` says "off" and the mic stays as it is."""
+
+    def __init__(self, on_change):
+        self.on_change = on_change
+        self.mode = "off"
+        self.combo = ""
+        self._listener = None
+        self._down = False
+
+    def apply(self, combo: str, active: bool = True) -> None:
+        if combo == self.combo and active == (self._listener is not None):
+            return
+        self.stop()
+        self.combo = combo
+        key = to_pynput(combo) if active else None
+        if key is None:
+            return
+        try:
+            from pynput import keyboard
+
+            wanted = set(keyboard.HotKey.parse(key))
+            held: set = set()
+
+            def changed() -> None:
+                down = wanted <= held
+                if down != self._down:
+                    self._down = down
+                    self.on_change(down)
+
+            def press(k) -> None:
+                held.add(listener.canonical(k))
+                changed()
+
+            def release(k) -> None:
+                held.discard(listener.canonical(k))
+                changed()
+
+            listener = keyboard.Listener(on_press=press, on_release=release)
+            listener.daemon = True
+            listener.start()
+            self._listener = listener
+            self.mode = "global"
+        except Exception as exc:  # pynput missing or not supported here
+            log.info("push to talk unavailable (%s)", exc)
+            self._listener = None
+            self.mode = "off"
+
+    def stop(self) -> None:
+        if self._listener is not None:
+            try:
+                self._listener.stop()
+            except Exception:
+                pass
+            self._listener = None
+        if self._down:  # a key held as it stops counts as let go
+            self._down = False
+            self.on_change(False)
+        self.mode = "off"
+        self.combo = ""

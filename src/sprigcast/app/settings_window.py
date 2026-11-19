@@ -39,6 +39,8 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app import autostart, priority, theme
 from sprigcast.app import message as msgbox
+from sprigcast.app.badged import BadgedGroup
+from sprigcast.app.segmented import Segmented
 from sprigcast.app.live_stage import heading
 from sprigcast.app.output_page import (  # noqa: F401 (stream_delay and apply_naming are imported from here)
     CameraTab,
@@ -110,8 +112,10 @@ SEARCH: list[tuple[str, str, bool]] = [
     ("Tracks", "Audio/Tracks", False), ("Advanced audio", "Audio/Sounds", False), ("Ducking", "Audio/Sounds", False),
     ("Volume", "Audio/Sounds", False), ("Balance", "Audio/Sounds", False),
     ("Canvas size", "Video/Canvases", False), ("Canvas frame rate", "Video/Canvases", False),
-    ("Vertical canvas", "Video/Canvases", False), ("Output (scaled) size", "Video/Canvases", True),
-    ("Downscale filter", "Video/Canvases", True), ("Virtual camera", "Video/Virtual camera", False),
+    ("Vertical canvas", "Video/Canvases", False), ("Sent out at", "Video/Canvases", True),
+    ("Output size", "Video/Canvases", True),
+    ("Scaling", "Video/Canvases", True), ("Downscale filter", "Video/Canvases", True),
+    ("Virtual camera", "Video/Virtual camera", False),
     ("Accounts", "Stream/Places", False), ("Sign in", "Stream/Places", False), ("Sign out", "Stream/Places", False),
     ("Twitch account", "Stream/Places", False), ("YouTube account", "Stream/Places", False),
     ("Kick account", "Stream/Places", False),
@@ -322,6 +326,72 @@ def line_up_labels(root: QWidget) -> None:
             widget.setSizePolicy(widget.sizePolicy().horizontalPolicy(), QSizePolicy.Policy.Expanding)
             flags = widget.alignment() & ~Qt.AlignmentFlag.AlignVertical_Mask
             widget.setAlignment(flags | Qt.AlignmentFlag.AlignVCenter)
+
+
+EVERYDAY_FPS = (30, 60)
+CANVAS_SIZES = ((1280, 720, "720p"), (1920, 1080, "1080p"), (2560, 1440, "1440p"), (3840, 2160, "4K"))
+
+
+def canvas_sizes(width: int, height: int) -> list[tuple[int, int, str]]:
+    """The sizes offered for a canvas of this shape: the usual four, turned on their side for a tall canvas."""
+    if height > width:
+        return [(h, w, name) for w, h, name in CANVAS_SIZES]
+    return list(CANVAS_SIZES)
+
+
+class FpsPick(Segmented):
+    """Frame rate as quick picks: 30 and 60, and the one in use if it's another (24, 25, 48, 50, 120: picked from
+    "Other" beside it, with Expert settings on)."""
+
+    def __init__(self, fps: int, parent: QWidget | None = None):
+        choices = sorted({*FPS_CHOICES, int(fps)})
+        super().__init__([(c, str(c)) for c in choices], int(fps), parent)
+        self._made = True
+        self.picked.connect(lambda _fps: self._label())
+        self._label()
+
+    def currentData(self) -> int:  # noqa: N802 (read like the drop-down this was)
+        return self.value()
+
+    def _label(self) -> None:
+        current = self.value()
+        for fps, button in self.buttons.items():
+            button.setVisible(fps in EVERYDAY_FPS or fps == current)
+            button.setText(f"{fps} fps" if fps == current else str(fps))
+
+    def set_value(self, value) -> None:
+        super().set_value(value)
+        if hasattr(self, "_made"):
+            self._label()
+
+
+class CanvasShape(QWidget):
+    """A canvas's shape in small: an outlined box, wide for horizontal and tall for vertical."""
+
+    def __init__(self, width: int, height: int, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setFixedSize(68, 44)
+        self.shape = (width, height)
+
+    def set_size(self, width: int, height: int) -> None:
+        if (width, height) != self.shape:
+            self.shape = (width, height)
+            self.update()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QColor, QPainter, QPen
+
+        w, h = self.shape
+        k = min((self.width() - 2) / max(1, w), (self.height() - 2) / max(1, h))
+        box = QRectF(0, 0, w * k, h * k)
+        box.moveCenter(QRectF(self.rect()).center())
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor(theme.ACCENT), 1.6))
+        p.setBrush(QColor(theme.FIELD))
+        p.drawRoundedRect(box, 3, 3)
+        p.end()
 
 
 SECTION_GAP = 14  # between a page's section cards
@@ -888,7 +958,6 @@ class SettingsWindow(QDialog):
     def _appearance_page(self) -> QWidget:
         """Appearance: the theme, text size and a color preset. Text size and colors show after a restart: every
         style in the app is built from them as SprigCast starts (theme.py)."""
-        from sprigcast.app.segmented import Segmented
 
         look = QGroupBox("Look")
         form = QFormLayout(look)
@@ -1108,35 +1177,82 @@ class SettingsWindow(QDialog):
         return _page(self.audio_page)
 
     def _video_page(self) -> QWidget:
-        """Canvases (one card each: on, base size, frame rate; expert: output size and filter) and the camera."""
+        """Canvases (a card each, side by side: on, size, frame rate; "Sent out at" for experts) and the camera."""
+        from sprigcast.app.live_stage import Switch
+
         pending = pending_video()
         locked = self.streaming or self.recording
-        cards: list[QWidget] = []
-        self.video_fields: dict[str, tuple[QCheckBox, QSpinBox, QSpinBox, QComboBox]] = {}
+        self.video_fields: dict[str, tuple[QCheckBox, QSpinBox, QSpinBox, FpsPick]] = {}
         self.video_output: dict[str, tuple[QComboBox, QComboBox]] = {}
-        self._video_forms: list[tuple[QFormLayout, QComboBox, QComboBox]] = []
+        self.video_sizes: dict[str, QComboBox] = {}
+        self.video_other_fps: dict[str, QComboBox] = {}
+        self.video_heads: dict[str, tuple[QLabel, QLabel]] = {}
+        side_by_side = QHBoxLayout()
+        side_by_side.setContentsMargins(0, 0, 0, 0)
+        side_by_side.setSpacing(SECTION_GAP)
+        sent = self.sent_out = BadgedGroup("Sent out at", "Expert")
+        sent_form = QFormLayout(sent)
+        sent_form.setVerticalSpacing(12)
+        sent_form.setHorizontalSpacing(18)
+        scaling = self.scaling = QComboBox()
+        for key, label in DOWNSCALE_LABELS.items():
+            scaling.addItem(label, key)
+        first = self.collection.canvases[0].downscale if self.collection.canvases else None
+        scaling.setCurrentIndex(max(0, scaling.findData(first)))
+        self._scaling_was = scaling.currentData()
+
+        def scaling_needed(_=None) -> None:
+            scaling.setEnabled(not locked and any(out.currentData() is not None for out, _s in self.video_output.values()))
+
         for canvas in self.collection.canvases:
             values = {"width": canvas.width, "height": canvas.height, "fps": canvas.fps}
             values.update({k: v for k, v in pending.get(canvas.id, {}).items() if k in values})
             card = QGroupBox(f"{canvas.id.capitalize()} canvas")
-            form = QFormLayout(card)
-            form.setVerticalSpacing(12)
-            form.setHorizontalSpacing(18)
-            enabled = QCheckBox("On")
+            box = QVBoxLayout(card)
+            box.setSpacing(14)
+            head = QHBoxLayout()
+            head.setSpacing(14)
+            shape = CanvasShape(int(values["width"]), int(values["height"]))
+            head.addWidget(shape)
+            words = QVBoxLayout()
+            words.setSpacing(2)
+            big, small = QLabel(), QLabel()
+            big.setObjectName("canvasSize")
+            small.setObjectName("canvasNote")
+            words.addWidget(big)
+            words.addWidget(small)
+            head.addLayout(words)
+            head.addStretch(1)
+            enabled = Switch()
             enabled.setChecked(canvas.enabled)
             enabled.setToolTip("Off: this canvas stops rendering and leaves the window right away")
-            form.addRow("Canvas", enabled)
+            on_text = QLabel("On" if canvas.enabled else "Off")
+            enabled.toggled.connect(lambda on, label=on_text: label.setText("On" if on else "Off"))
+            head.addWidget(enabled)
+            head.addWidget(on_text)
+            box.addLayout(head)
+            form = QFormLayout()
+            form.setVerticalSpacing(12)
+            form.setHorizontalSpacing(18)
+            form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            size = QComboBox()
+            for w, h, name in canvas_sizes(int(values["width"]), int(values["height"])):
+                size.addItem(f"{w}×{h} ({name})", f"{w}x{h}")
+            size.addItem("Custom", None)
+            form.addRow("Size", size)
             width, height = QSpinBox(), QSpinBox()
-            for box, value in ((width, values["width"]), (height, values["height"])):
-                box.setRange(16, 7680)
-                box.setSingleStep(2)
-                box.setValue(int(value))
-                box.setFixedWidth(112)
+            for number, value in ((width, values["width"]), (height, values["height"])):
+                number.setRange(16, 7680)
+                number.setSingleStep(2)
+                number.setValue(int(value))
+                number.setFixedWidth(96)
                 # NoButtons + the window stylesheet collapses the text to nothing, so hide the arrows instead.
-                box.setStyleSheet("QSpinBox { padding: 7px 14px; }"
-                                  " QSpinBox::up-button, QSpinBox::down-button { width: 0px; border: none; }")
-                box.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            size_row = QHBoxLayout()
+                number.setStyleSheet("QSpinBox { padding: 7px 14px; }"
+                                     " QSpinBox::up-button, QSpinBox::down-button { width: 0px; border: none; }")
+                number.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            custom = QWidget()
+            size_row = QHBoxLayout(custom)
+            size_row.setContentsMargins(0, 0, 0, 0)
             size_row.setSpacing(10)
             size_row.addWidget(width)
             times = QLabel("×")
@@ -1144,52 +1260,89 @@ class SettingsWindow(QDialog):
             size_row.addWidget(times)
             size_row.addWidget(height)
             size_row.addStretch(1)
-            form.addRow("Size", size_row)
-            fps = QComboBox()
+            form.addRow("", custom)
+            fps = FpsPick(int(values["fps"]))
+            other = QComboBox()  # the rarer frame rates, for experts
+            other.addItem("Other", None)
             for choice in FPS_CHOICES:
-                fps.addItem(f"{choice} fps", choice)
-            if fps.findData(int(values["fps"])) < 0:
-                fps.addItem(f"{values['fps']} fps", int(values["fps"]))
-            fps.setCurrentIndex(fps.findData(int(values["fps"])))
-            form.addRow("Frame rate", fps)
+                if choice not in EVERYDAY_FPS:
+                    other.addItem(f"{choice} fps", choice)
+            other.setFixedWidth(104)
+
+            def other_picked(_=None, other=other, fps=fps):
+                if other.currentData() is not None:
+                    fps.set_value(other.currentData())
+                    fps.picked.emit(other.currentData())
+                    other.setCurrentIndex(0)
+
+            other.currentIndexChanged.connect(other_picked)
+            self.video_other_fps[canvas.id] = other
+            fps_row = QHBoxLayout()
+            fps_row.setSpacing(10)
+            fps_row.addWidget(fps)
+            fps_row.addWidget(other)
+            fps_row.addStretch(1)
+            form.addRow("Frame rate", fps_row)
+            box.addLayout(form)
+            box.addStretch(1)
             out = QComboBox()
             out.setMinimumWidth(240)
             out.setToolTip("What viewers and recordings get. Smaller is lighter on the encoder and upload.\n"
                            "Each place in Stream can still pick its own size.")
-            form.addRow("Output (scaled) size", out)
-            downscale = QComboBox()
-            for key, label in DOWNSCALE_LABELS.items():
-                downscale.addItem(label, key)
-            downscale.setCurrentIndex(max(0, downscale.findData(canvas.downscale)))
-            form.addRow("Downscale filter", downscale)
+            sent_form.addRow(canvas.id.capitalize(), out)
 
             def fill(_=None, out=out, width=width, height=height, current=canvas.output_short_side,
-                     downscale=downscale):
+                     shape=shape, big=big, small=small, fps=fps):
                 keep = out.currentData() if out.count() else current
                 w, h = width.value(), height.value()
                 short = min(w, h)
                 out.blockSignals(True)
                 out.clear()
-                out.addItem(f"Same as base ({w}×{h})", None)
+                out.addItem(f"Same as the canvas ({w}×{h})", None)
                 for side in OUTPUT_SIDES[1:]:
                     if side < short:
                         k = side / short
                         out.addItem(f"{round(w * k / 2) * 2}×{round(h * k / 2) * 2}", side)
                 out.setCurrentIndex(max(0, out.findData(keep)))
                 out.blockSignals(False)
-                downscale.setEnabled(out.currentData() is not None and not locked)
+                shape.set_size(w, h)
+                big.setText(f"{w}×{h}")
+                small.setText(f"{'Landscape' if w > h else 'Portrait' if h > w else 'Square'} · {fps.value()} fps")
+                scaling_needed()
+
+            def picked(_=None, size=size, width=width, height=height, form=form, custom=custom):
+                wanted = size.currentData()
+                form.setRowVisible(custom, wanted is None)
+                if wanted is not None:
+                    w, h = wanted.split("x")
+                    width.setValue(int(w))
+                    height.setValue(int(h))
+
+            at = size.findData(f"{int(values['width'])}x{int(values['height'])}")
+            size.setCurrentIndex(at if at >= 0 else size.count() - 1)  # a size of your own: Custom, with its boxes
+            size.currentIndexChanged.connect(picked)
             width.valueChanged.connect(fill)
             height.valueChanged.connect(fill)
             out.currentIndexChanged.connect(fill)
-            fill()
+            fps.picked.connect(fill)
             self.video_fields[canvas.id] = (enabled, width, height, fps)
-            self.video_output[canvas.id] = (out, downscale)
-            self._video_forms.append((form, out, downscale))
+            self.video_output[canvas.id] = (out, scaling)
+            self.video_sizes[canvas.id] = size
+            self.video_heads[canvas.id] = (big, small)
+            picked()
+            fill()
             if locked:
-                for widget in (enabled, width, height, fps, out, downscale):
+                for widget in (enabled, size, width, height, fps, other, out):
                     widget.setEnabled(False)
-            cards.append(card)
-        widgets = list(cards)
+            side_by_side.addWidget(card, 1)
+        sent_form.addRow("Scaling", scaling)
+        scaling_needed()
+        canvases = QWidget()
+        canvases.setLayout(side_by_side)
+        canvases.setStyleSheet(
+            f"QLabel#canvasSize {{ color: {theme.TEXT_BRIGHT}; font-size: 16px; font-weight: 700; }}"
+            f"QLabel#canvasNote {{ color: {theme.MUTED}; }}")
+        widgets: list[QWidget] = [canvases, sent]
         if locked:
             widgets.insert(0, _hint("Stop streaming and recording to change the canvases."))
         self._video_expert()
@@ -1213,12 +1366,13 @@ class SettingsWindow(QDialog):
         return self.video_tabs
 
     def _video_expert(self) -> None:
-        """Output size and filter: expert rows, unless one is already set (then it's shown, so it's never hidden
-        while it changes what viewers get)."""
-        for form, out, downscale in self.__dict__.get("_video_forms", []):
-            show = self._expert or out.currentData() is not None
-            form.setRowVisible(out, show)
-            form.setRowVisible(downscale, show)
+        """Sent out at (output size and scaling): for experts, unless a size is already set (then it's shown, so
+        it's never hidden while it changes what viewers get). Experts also get every frame rate."""
+        outputs = self.__dict__.get("video_output", {})
+        if outputs:
+            self.sent_out.setVisible(self._expert or any(out.currentData() is not None for out, _s in outputs.values()))
+        for other in self.__dict__.get("video_other_fps", {}).values():
+            other.setVisible(self._expert)
 
     def _connections_page(self, control) -> QWidget:
         from sprigcast.app.connections_page import ConnectionsPage
@@ -1284,9 +1438,11 @@ class SettingsWindow(QDialog):
             if wanted != current:
                 changes[canvas.id] = wanted
         for canvas in self.collection.canvases:
-            out, downscale = self.video_output[canvas.id]
+            out, scaling = self.video_output[canvas.id]
             canvas.output_short_side = out.currentData()
-            canvas.downscale = downscale.currentData()
+            if scaling.currentData() != self._scaling_was:  # one Scaling for every canvas: only when it was changed
+                canvas.downscale = scaling.currentData()
+        self._scaling_was = self.scaling.currentData()
         if changes:
             settings.setValue(PENDING_VIDEO, json.dumps(changes))
         else:
