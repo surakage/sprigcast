@@ -94,6 +94,33 @@ def test_lines_and_the_card(np_mod):
     np_mod.paint(T("Song", art=b"not a picture"), {})  # a broken cover: just no cover
 
 
+def test_a_wake_leaves_no_timer_for_pythons_cleanup(fake):
+    """A cancelled linger timer goes by itself, with no cycle: Python's cleanup sets aside what outlives one tidy
+    and never looks at it again, so a timer that held itself stayed for good, locks and all (3 Windows handles
+    each time its bloom came back: PC soak, 2026-11-19)."""
+    import gc
+    import weakref
+
+    source = create_source("now_playing", "np", {})
+    source.start()
+    gc.collect()
+    gc.disable()
+    try:
+        source.sleep()
+        timer = source._linger
+        gone = weakref.ref(timer)
+        source.wake()
+        timer.join(2)
+        del timer
+        assert gone() is None
+        source.sleep()
+        source._quiet_if_asleep(source._linger_turn - 1)  # an older sleep's timer, late: nothing stops
+        assert source._watcher is not None
+    finally:
+        gc.enable()
+        source.stop()
+
+
 def test_it_listens_only_while_on_screen(fake):
     source = create_source("now_playing", "np", {})
     assert not FakeWatcher.made
@@ -108,7 +135,7 @@ def test_it_listens_only_while_on_screen(fake):
     linger = source._linger
     assert linger is not None
     linger.cancel()
-    source._quiet_if_asleep(linger)  # LINGER_S asleep: it stops listening
+    source._quiet_if_asleep(source._linger_turn)  # LINGER_S asleep: it stops listening
     assert not watcher.running and source._watcher is None
     source.wake()
     assert FakeWatcher.made[-1].running and FakeWatcher.made[-1] is not watcher
