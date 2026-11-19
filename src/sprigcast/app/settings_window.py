@@ -922,9 +922,18 @@ class SettingsWindow(QDialog):
             self.tray_close.setChecked(q.value(tray.CLOSE_TO, False, type=bool))
             tbox.addWidget(self.tray_close)
 
+            kept = self._tray_kept = {}  # what the two were before the tray was unticked
+
             def tray_on(on: bool) -> None:
-                self.tray_minimize.setEnabled(on)
-                self.tray_close.setEnabled(on)
+                # Without the tray icon there's nowhere to go: the two show as off, and come back as they
+                # were when it's ticked again.
+                for tick in (self.tray_minimize, self.tray_close):
+                    if on:
+                        tick.setChecked(kept.pop(tick, tick.isChecked()))
+                    else:
+                        kept[tick] = tick.isChecked()
+                        tick.setChecked(False)
+                    tick.setEnabled(on)
 
             self.tray_show.toggled.connect(tray_on)
             tray_on(self.tray_show.isChecked())
@@ -1464,8 +1473,8 @@ class SettingsWindow(QDialog):
         from sprigcast.app import tray
 
         settings.setValue(tray.SHOW, self.tray_show.isChecked())
-        settings.setValue(tray.MINIMIZE_TO, self.tray_minimize.isChecked())
-        settings.setValue(tray.CLOSE_TO, self.tray_close.isChecked())
+        for key, tick in ((tray.MINIMIZE_TO, self.tray_minimize), (tray.CLOSE_TO, self.tray_close)):
+            settings.setValue(key, self._tray_kept.get(tick, tick.isChecked()))  # kept for when the tray is back
         settings.setValue(autostart.START_MINIMIZED, self.start_minimized.isChecked())
         from sprigcast.app.updates import AUTO_CHECK
 

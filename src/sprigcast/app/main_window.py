@@ -2536,6 +2536,19 @@ class MainWindow(QMainWindow):
         choice = self.canvas_choice()
         self._apply_canvas_view()
 
+    def _privacy_to_open_windows(self) -> None:
+        """Hide from screen capture reaches the windows already open (Settings itself, on Apply), not only the
+        next one opened. Pop-out projectors are never hidden: they're there to be captured."""
+        from sprigcast.app import privacy
+        from sprigcast.app.projector import Projector
+
+        for window in QApplication.topLevelWidgets():
+            if (window is self or isinstance(window, Projector) or not window.isVisible()
+                    or not window.testAttribute(Qt.WidgetAttribute.WA_WState_Created)):
+                continue
+            if window.windowType() in (Qt.WindowType.Dialog, Qt.WindowType.Window, Qt.WindowType.Tool):
+                privacy.apply_to(window)
+
     def _apply_preview_settings(self) -> None:
         """Settings → Preview: "Show what's outside the canvas" on Build's canvases."""
         from sprigcast.app.preview import show_overflow_setting
@@ -6796,7 +6809,9 @@ class MainWindow(QMainWindow):
 
         if privacy.supported():
             privacy.apply_to(self)  # Hide from screen capture, as just set
+            self._privacy_to_open_windows()
         self.tray.sync()  # Show in the tray, as just set
+        self._apply_preview_settings()  # Show what's outside the canvas, as just set
         clips = getattr(self, "_clips_before", None)
         if clips is not None:
             self._restart_clips_if_changed(clips)
