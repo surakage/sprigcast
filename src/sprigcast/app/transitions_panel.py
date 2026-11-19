@@ -12,7 +12,7 @@ import os
 from collections.abc import Callable
 
 from PySide6.QtCore import QElapsedTimer, QPointF, QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPixmap
+from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -204,6 +204,10 @@ class TransitionPicture(QWidget):
         frame.addRoundedRect(box, radius, radius)
         p.setClipPath(frame)
         p.drawImage(box, self.frame(self.progress))
+        # A hairline round the screen, so a dark bloom still has an edge on a dark card.
+        p.setPen(QPen(QColor(theme.SECTION_EDGE), 2))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(box, radius, radius)
 
     def frame(self, progress: float) -> QImage:
         """The picture `progress` (0 .. 1) of the way from A to B, at the widget's size in device pixels."""
@@ -291,27 +295,19 @@ class TransitionPicture(QWidget):
         p = QPainter(image)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
-        font = QFont(self.font())
-        font.setBold(True)
-        font.setPixelSize(max(12, round(lh * 0.24)) if self.wide else max(10, round(min(lh * 0.42, 22))))
-        p.setFont(font)
         for draw in move.frame(old, new, progress, t.easing, t.unmatched, (lw, lh)):
             p.setOpacity(draw.opacity)
             (x0, y0, *_), (x1, y1, *_) = draw.quad[0], draw.quad[3]
             box = QRectF(QPointF(x0, y0), QPointF(x1, y1)).normalized()
             if draw.source.startswith("bg_"):
-                p.fillRect(box, QColor(theme.STAGE_EMPTY if draw.source == "bg_a" else theme.ACCENT))
+                self._backdrop(p, box, draw.source == "bg_b")
             elif draw.source.startswith("label_"):
-                p.setPen(QColor(theme.SELECT_TEXT if draw.source == "label_a" else theme.ACCENT_TEXT))
-                p.drawText(box, Qt.AlignmentFlag.AlignCenter, "A" if draw.source == "label_a" else "B")
-                p.setPen(Qt.PenStyle.NoPen)
+                first = draw.source == "label_a"
+                self._letter(p, box, "A" if first else "B", theme.SELECT_TEXT if first else theme.ACCENT_TEXT, lh)
+            elif draw.source == "cam":
+                self._camera(p, box, theme.TEXT_BRIGHT, 0.6)
             else:
-                p.setBrush(QColor(theme.TEXT_BRIGHT))
-                p.setOpacity(draw.opacity * 0.85)
-                if draw.source == "cam":
-                    p.drawRoundedRect(box, unit * 0.5, unit * 0.5)
-                else:
-                    p.drawRoundedRect(box, box.height() / 2, box.height() / 2)
+                self._name_bar(p, box, theme.TEXT_BRIGHT, 0.45)
         p.end()
         return image
 
@@ -348,7 +344,7 @@ class TransitionPicture(QWidget):
                                            ("B", theme.ACCENT, theme.ACCENT_TEXT, True)):
                 image = QImage(w, h, QImage.Format.Format_RGBA8888)
                 image.setDevicePixelRatio(dpr)
-                image.fill(QColor(fill))
+                image.fill(QColor(fill))  # _scene paints the backdrop over it
                 painter = QPainter(image)
                 painter.setRenderHint(QPainter.RenderHint.Antialiasing)
                 self._scene(painter, QRectF(0, 0, w / dpr, h / dpr), label, ink, flip)
@@ -361,36 +357,114 @@ class TransitionPicture(QWidget):
         return self._scenes[1:]
 
     def _scene(self, p: QPainter, rect: QRectF, label: str, ink: str, flip: bool) -> None:
-        """One bloom: its letter, and on the pop-up's screen a camera box and a name bar (on the other
-        sides for B, so the change reads even where the colours meet)."""
-        font = QFont(self.font())
-        font.setBold(True)
+        """One bloom: its backdrop and letter, and on the pop-up's screen a camera and a name bar (on the
+        other sides for B, so the change reads even where the colours meet)."""
+        self._backdrop(p, rect, flip)
         if self.wide:
-            unit = rect.height() / 9
-            cam = QRectF(0, 0, 4 * unit, 3 * unit)
-            bar = QRectF(0, 0, 5 * unit, 0.9 * unit)
-            if flip:
-                cam.moveTopLeft(QPointF(rect.left() + 0.6 * unit, rect.top() + 0.6 * unit))
-                bar.moveBottomRight(QPointF(rect.right() - 0.6 * unit, rect.bottom() - 0.7 * unit))
-            else:
-                cam.moveBottomRight(QPointF(rect.right() - 0.6 * unit, rect.bottom() - 0.8 * unit))
-                bar.moveBottomLeft(QPointF(rect.left() + 0.6 * unit, rect.bottom() - 0.7 * unit))
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(ink))
-            p.setOpacity(0.18)
-            p.drawRoundedRect(cam, unit * 0.5, unit * 0.5)
-            p.drawRoundedRect(bar, bar.height() / 2, bar.height() / 2)
-            p.setOpacity(1.0)
-            font.setPixelSize(max(12, round(rect.height() * 0.24)))
-        else:
-            font.setPixelSize(max(10, round(min(rect.height() * 0.42, 22))))
-        p.setFont(font)
-        p.setPen(QColor(ink))
+            cam, bar = self._spots(rect, flip)
+            self._camera(p, cam, ink, 0.2)
+            self._name_bar(p, bar, ink, 0.2)
         # A's letter sits left of centre and B's right of it, so a fade never stacks one on the other.
         spot = QRectF(rect)
         spot.setWidth(rect.width() * 0.5)
         spot.moveCenter(QPointF(rect.left() + rect.width() * (0.62 if flip else 0.38), rect.center().y()))
-        p.drawText(spot, Qt.AlignmentFlag.AlignCenter, label)
+        self._letter(p, spot, label, ink, rect.height())
+
+    @staticmethod
+    def _spots(rect: QRectF, flip: bool) -> tuple[QRectF, QRectF]:
+        """Where the camera and the name bar sit on the pop-up's screen: A's spots, or B's with flip."""
+        unit = rect.height() / 9
+        cam = QRectF(0, 0, 4 * unit, 3 * unit)
+        bar = QRectF(0, 0, 5 * unit, 0.9 * unit)
+        if flip:
+            cam.moveTopLeft(QPointF(rect.left() + 0.6 * unit, rect.top() + 0.6 * unit))
+            bar.moveBottomRight(QPointF(rect.right() - 0.6 * unit, rect.bottom() - 0.7 * unit))
+        else:
+            cam.moveBottomRight(QPointF(rect.right() - 0.6 * unit, rect.bottom() - 0.6 * unit))
+            bar.moveBottomLeft(QPointF(rect.left() + 0.6 * unit, rect.bottom() - 0.7 * unit))
+        return cam, bar
+
+    @staticmethod
+    def _backdrop(p: QPainter, rect: QRectF, flip: bool) -> None:
+        """A bloom's background: A is the dark stage, B the accent, each with a soft slant of light and a
+        faint leaf, so the two never read as one flat block."""
+        base = QColor(theme.ACCENT if flip else theme.STAGE_EMPTY)
+        shade = QLinearGradient(rect.topLeft(), rect.bottomRight())
+        shade.setColorAt(0.0, base.lighter(112 if flip else 128))
+        shade.setColorAt(1.0, base.darker(122 if flip else 135))
+        p.save()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.fillRect(rect, shade)
+        size = rect.height() * 1.25
+        leaf = QRectF(0, 0, size, size)
+        leaf.moveCenter(QPointF(rect.right() - size * 0.2, rect.top() + size * 0.16) if not flip
+                        else QPointF(rect.left() + size * 0.2, rect.bottom() - size * 0.16))
+        p.setOpacity(p.opacity() * 0.08)
+        p.setBrush(QColor(theme.ACCENT_TEXT if flip else theme.SELECT_TEXT))
+        p.setClipRect(rect)
+        p.drawPath(theme.leaf_path(leaf, tilt=-18 if not flip else 162))
+        p.restore()
+
+    @staticmethod
+    def _camera(p: QPainter, cam: QRectF, ink: str, strength: float) -> None:
+        """A camera: a rounded frame with a little head and shoulders in it."""
+        p.save()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(ink))
+        base = p.opacity()
+        p.setOpacity(base * strength)
+        radius = cam.height() * 0.17
+        p.drawRoundedRect(cam, radius, radius)
+        frame = QPainterPath()
+        frame.addRoundedRect(cam, radius, radius)
+        p.setClipPath(frame, Qt.ClipOperation.IntersectClip)
+        p.setOpacity(base * min(1.0, strength * 1.6))
+        head = cam.height() * 0.19
+        p.drawEllipse(QPointF(cam.center().x(), cam.top() + cam.height() * 0.4), head, head)
+        p.drawEllipse(QPointF(cam.center().x(), cam.bottom() + cam.height() * 0.12), cam.width() * 0.3,
+                      cam.height() * 0.42)
+        p.restore()
+
+    @staticmethod
+    def _name_bar(p: QPainter, bar: QRectF, ink: str, strength: float) -> None:
+        """A name bar: a pill with a dot and a line of text."""
+        p.save()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(ink))
+        base = p.opacity()
+        p.setOpacity(base * strength)
+        p.drawRoundedRect(bar, bar.height() / 2, bar.height() / 2)
+        p.setOpacity(base * min(1.0, strength * 2.2))
+        dot = bar.height() * 0.24
+        p.drawEllipse(QPointF(bar.left() + bar.height() / 2, bar.center().y()), dot, dot)
+        line = QRectF(bar.left() + bar.height(), bar.center().y() - dot * 0.6, bar.width() * 0.5, dot * 1.2)
+        p.drawRoundedRect(line, line.height() / 2, line.height() / 2)
+        p.restore()
+
+    def _letter(self, p: QPainter, spot: QRectF, label: str, ink: str, tall: float) -> None:
+        """A bloom's letter on a round badge, in the middle of `spot`."""
+        p.save()
+        font = QFont(self.font())
+        font.setBold(True)
+        font.setPixelSize(max(12, round(tall * 0.2)) if self.wide else max(10, round(min(tall * 0.36, 20))))
+        size = font.pixelSize() * 1.9
+        badge = QRectF(0, 0, size, size)
+        badge.moveCenter(spot.center())
+        base = p.opacity()
+        colour = QColor(ink)
+        p.setOpacity(base * 0.16)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(colour)
+        p.drawEllipse(badge)
+        p.setOpacity(base * 0.55)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(colour, max(1.0, size / 28)))
+        p.drawEllipse(badge)
+        p.setOpacity(base)
+        p.setFont(font)
+        p.setPen(colour)
+        p.drawText(badge, Qt.AlignmentFlag.AlignCenter, label)
+        p.restore()
 
     def _wipe_map(self, path: str, w: int, h: int):
         """The wipe image as grey levels 0 .. 1 at this size (None when there is none or it can't be read)."""
@@ -413,19 +487,38 @@ class TransitionPicture(QWidget):
 
     @staticmethod
     def _sweep(p: QPainter, box: QRectF, progress: float) -> None:
-        """The stinger stand-in: a band of leaves sweeps across, covering the whole screen at the swap."""
-        width = box.width() * 1.8
-        left = box.left() - width + (box.width() + width) * progress
-        band = QRectF(left, box.top() - 2, width, box.height() + 4)
+        """The stinger stand-in: a slanted band of leaves sweeps across, covering the whole screen at the swap."""
+        lean = box.height() * 0.45  # how far the band's edges slant
+        width = box.width() + 2 * lean + box.height() * 0.3
+        left = box.left() - width - lean + (box.width() + width + 2 * lean) * progress
+        band = QPainterPath()
+        band.moveTo(left + lean, box.top() - 2)
+        band.lineTo(left + width + lean, box.top() - 2)
+        band.lineTo(left + width - lean, box.bottom() + 2)
+        band.lineTo(left - lean, box.bottom() + 2)
+        band.closeSubpath()
+        p.save()
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(theme.ACCENT_DARK))
-        p.drawRoundedRect(band, box.height() / 2, box.height() / 2)
-        size = box.height() * 0.9
-        for i, (u, v, tilt) in enumerate(((0.25, 0.3, -30), (0.5, 0.62, 15), (0.75, 0.32, -10))):
-            leaf = QRectF(0, 0, size * (0.8 if i != 1 else 1.0), size * (0.8 if i != 1 else 1.0))
-            leaf.moveCenter(QPointF(band.left() + band.width() * u, box.top() + box.height() * v))
+        shade = QLinearGradient(QPointF(left, box.top()), QPointF(left + width, box.bottom()))
+        shade.setColorAt(0.0, QColor(theme.ACCENT_DARK).darker(125))
+        shade.setColorAt(1.0, QColor(theme.ACCENT_DARK))
+        p.setBrush(shade)
+        p.drawPath(band)
+        # A lighter stripe on each edge, like the lit rim of a leaf.
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QColor(theme.ACCENT), max(2.0, box.height() * 0.03)))
+        p.drawLine(QPointF(left + lean, box.top() - 2), QPointF(left - lean, box.bottom() + 2))
+        p.drawLine(QPointF(left + width + lean, box.top() - 2), QPointF(left + width - lean, box.bottom() + 2))
+        p.setClipPath(band, Qt.ClipOperation.IntersectClip)
+        size = box.height() * 0.62
+        for u, v, scale, tilt in ((0.2, 0.34, 0.8, -28), (0.4, 0.68, 0.7, 20), (0.5, 0.42, 1.15, -8),
+                                  (0.68, 0.7, 0.75, 34), (0.82, 0.3, 0.85, -40)):
+            leaf = QRectF(0, 0, size * scale, size * scale)
+            leaf.moveCenter(QPointF(left + width * u, box.top() + box.height() * v))
             theme.paint_leaf(p, leaf, True, theme.ACCENT, vein=theme.ACCENT_DARK, tilt=tilt,
-                             width=max(1.2, size / 40))
+                             width=max(1.2, size / 34))
+        p.restore()
+
 
 
 COMBO_STYLE = (  # Live's type drop-down: a soft pill, the name on the left and a drawn chevron on the right
