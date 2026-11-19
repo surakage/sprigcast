@@ -98,6 +98,7 @@ class CaptureHelper:
         self._linger: threading.Timer | None = None
         self._broken_at: float | None = None
         self._shut = False
+        self._starting = 0  # start() calls under way: the helper isn't ended under them
         self.starts = 0  # helpers started
         self.captures = 0  # captures the running helper has started (each keeps a picture until it ends)
 
@@ -125,13 +126,29 @@ class CaptureHelper:
     def start(self, window: int, monitor: int, flags: int, interval_ms: int) -> Feed | None:
         """Start capturing a window or a display. None when the helper can't be used (capture in the engine).
         Waits for a helper that is starting, so never call it on the render or the UI thread."""
-        if not self.usable():
-            return None
-        with self._lock:
-            proc, ready = self._ensure()
-        if proc is None or ready is None:
-            return None
+        for _attempt in range(2):  # a helper that ended just as it was asked is started again, once
+            if not self.usable():
+                return None
+            with self._lock:
+                proc, ready = self._ensure()
+                if proc is None or ready is None:
+                    return None
+                self._starting += 1  # it has something to capture: it doesn't end for having nothing
+            try:
+                feed = self._start_in(proc, ready, window, monitor, flags, interval_ms)
+            finally:
+                with self._lock:
+                    self._starting -= 1
+                    self._linger_if_idle()
+            if feed is not None or self._broken_at is not None or self.proc is proc:
+                return feed
+        return None
+
+    def _start_in(self, proc: subprocess.Popen, ready: threading.Event, window: int, monitor: int, flags: int,
+                  interval_ms: int) -> Feed | None:
         if not ready.wait(READY_S) or proc.poll() is not None:
+            if ready.is_set():
+                return None  # it started and has ended since (nothing was captured, or by itself): start() asks again
             log.warning("capture helper: it didn't start; captures run in the engine")
             self._broken_at = time.monotonic()
             self._end(proc, asked=True)
@@ -144,7 +161,7 @@ class CaptureHelper:
         feed = Feed(f"sprigcast-capture-{os.getpid()}-{number}", number, proc)
         with self._lock:
             if self.proc is not proc:
-                return None  # it ended meanwhile: the source asks again
+                return None  # it ended meanwhile: start() asks again
             if self._linger is not None:
                 self._linger.cancel()
                 self._linger = None
@@ -167,10 +184,13 @@ class CaptureHelper:
                 return
             if feed.proc is self.proc and self.proc is not None:
                 self._send(self.proc, f"stop {feed.number}")
-            if not self._feeds and self.proc is not None and self._linger is None:
-                self._linger = threading.Timer(LINGER_S, self._idle, args=(self.proc,))
-                self._linger.daemon = True
-                self._linger.start()
+            self._linger_if_idle()
+
+    def _linger_if_idle(self) -> None:  # `_lock` held
+        if not self._feeds and not self._starting and self.proc is not None and self._linger is None:
+            self._linger = threading.Timer(LINGER_S, self._idle, args=(self.proc,))
+            self._linger.daemon = True
+            self._linger.start()
 
     def shutdown(self) -> None:
         with self._lock:
@@ -216,8 +236,8 @@ class CaptureHelper:
     def _idle(self, proc: subprocess.Popen) -> None:
         with self._lock:
             self._linger = None
-            if self._feeds or self.proc is not proc:
-                return
+            if self._feeds or self._starting or self.proc is not proc:
+                return  # a capture being started keeps it (start() sets the next wait if that comes to nothing)
             self.proc = None
             captures = self.captures
         log.info("capture helper ended (nothing to capture; Windows frees what its %d capture%s kept)", captures,

@@ -159,3 +159,37 @@ def test_a_window_that_closes_is_looked_for_again(helper, in_engine):
         assert not src._helper_refused and src._engine_target is None  # still the helper's to capture
     finally:
         src.stop()
+
+
+def test_a_helper_about_to_end_is_kept_by_a_capture_being_started(helper, monkeypatch):
+    feed = helper.start(window=7, monitor=0, flags=1, interval_ms=16)
+    proc = helper.proc
+    waited = capture_helper.CaptureHelper._start_in
+
+    def slow(self, *args):  # the wait for nothing to capture runs out while this capture is being started
+        helper.stop(feed)
+        time.sleep(0.3)
+        return waited(self, *args)
+
+    monkeypatch.setattr(capture_helper.CaptureHelper, "_start_in", slow)
+    other = helper.start(window=8, monitor=0, flags=1, interval_ms=16)
+    assert other is not None and helper.proc is proc and helper.starts == 1
+    helper.stop(other)
+    assert wait_for(lambda: helper.proc is None and proc.poll() is not None)  # and it still ends with nothing
+
+
+def test_a_helper_that_ended_as_a_capture_was_asked_for_is_started_again(helper, monkeypatch):
+    waited = capture_helper.CaptureHelper._start_in
+    ended = []
+
+    def gone(self, proc, *args):
+        if not ended:
+            ended.append(proc)
+            helper._send(proc, "die")
+            proc.wait(5)
+            assert wait_for(lambda: helper.proc is None)
+        return waited(self, proc, *args)
+
+    monkeypatch.setattr(capture_helper.CaptureHelper, "_start_in", gone)
+    feed = helper.start(window=7, monitor=0, flags=1, interval_ms=16)
+    assert feed is not None and helper.starts == 2 and feed.proc is helper.proc
