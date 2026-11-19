@@ -146,8 +146,12 @@ def test_the_engine_captures_a_display_and_python_reads_it_back_only_when_it_dra
         assert target.monitor == 0x5002 and target.window == 0
         assert target.flags == sprigcore.SCREEN_CURSOR and target.interval_ms == 33
         assert src.video_frame() is None  # not linked yet: the engine hasn't taken it up
+        assert not src.engine_shows
         target.link(engine, "d")
+        engine.states["d"] = (sprigcore.SCREEN_RUNNING, 1920, 1080, 0)
+        assert not src.engine_shows  # running, but no picture shown yet: a switch still waits
         engine.states["d"] = (sprigcore.SCREEN_RUNNING, 1920, 1080, 5)
+        assert src.engine_shows and engine.reads == 0  # a waiting switch learns it without a read-back
         assert wait_for(lambda: src.status == "capturing" and src.size == (1920, 1080))
         src.engine_tick()
         assert engine.reads == 0  # the engine drew it: nothing read back

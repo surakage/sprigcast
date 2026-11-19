@@ -831,8 +831,16 @@ class Engine:
         if waiting is None:
             return False
         _outgoing, give_up, ids = waiting
-        return now < give_up and not all(sid in compositor.textures
-                                         and getattr(self._sources.get(sid), "first_picture", True) for sid in ids)
+        return now < give_up and not all(self._has_picture(compositor, sid) for sid in ids)
+
+    def _has_picture(self, compositor, source_id: str) -> bool:
+        """A source a switch waits for has its picture: in Python's compositor, or (a capture the engine does
+        itself) in the engine, which then draws the switch without Python ever getting a copy."""
+        source = self._sources.get(source_id)
+        if source_id in compositor.textures and getattr(source, "first_picture", True):
+            return True
+        return self._native is not None and not self._native.failed and (
+            hasattr(type(source), "engine_shows") and bool(source.engine_shows))
 
     def _still_waking(self, compositor, canvas_id: str, now: float):
         """The scene to keep showing while a switch waits for a camera to open, or None to go ahead."""
@@ -2023,7 +2031,9 @@ class Engine:
             began = time.perf_counter()
             missed = self._missed.pop(source_id, None) if self._missed and freeze is None else None
             try:
-                if direct and not self._python_drew and source_id not in awaited:
+                # (A capture the engine does itself isn't copied for a waiting switch either: the engine says
+                # when it has a picture, see _has_picture. Its copy is a read-back from the card.)
+                if direct and not self._python_drew and (source_id not in awaited or hasattr(type(source), "engine_shows")):
                     source.engine_tick()  # nothing of Python's shows it this tick: no picture is copied at all
                     frame = None
                 else:
