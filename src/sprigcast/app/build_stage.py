@@ -192,14 +192,15 @@ KIND_NAMES = {"display_capture": "screen", "window_capture": "window", "game_cap
               "slideshow": "slide show",  # the Slide show plugin
               "camera": "camera", "color": "color",
               "image": "picture", "text": "text", "browser": "web page", "chat": "chat", "audio_input": "mic",
-              "audio_output": "desktop sound", "app_audio": "app sound", "scene": "sprig", "media": "video"}
+              "audio_output": "desktop sound", "app_audio": "app sound", "scene": "sprig", "media": "video",
+              "capture_card": "capture card"}
 
 
 KIND_TINTS = {  # each kind its own colour, so a list reads at a glance (pink stays for Live and Recording)
     "game_capture": "#b388ff", "display_capture": "#7fb8ff", "window_capture": "#9aa7ff", "camera": "#4cc9f0",
     "chat": "#ffd23f", "browser": "#5fe0d0", "image": "#a6e36b", "slideshow": "#c8e86b", "media": "#ff9f5a",
     "text": "#dfe7e2", "audio_input": "#ffb35c", "audio_output": "#f2c46b", "app_audio": "#ffc98a",
-    "scene": "#e6e0ff", "nested": "#9aa7ff", "empty": "#9fb3a9",
+    "capture_card": "#e08cff", "scene": "#e6e0ff", "nested": "#9aa7ff", "empty": "#9fb3a9",
 }
 
 
@@ -256,6 +257,16 @@ def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None
         path.lineTo(cx + 7, cy + 4)
         path.lineTo(cx + 3, cy + 1.5)
         p.drawPath(path)
+    elif kind == "capture_card":  # a capture box: its body, a play mark, and the HDMI port on its side
+        p.drawRoundedRect(QRectF(cx - 5, cy - 4.5, 12, 9), 2.5, 2.5)
+        tri = QPainterPath()
+        tri.moveTo(cx - 0.5, cy - 2.2)
+        tri.lineTo(cx + 3, cy)
+        tri.lineTo(cx - 0.5, cy + 2.2)
+        tri.closeSubpath()
+        p.drawPath(tri)
+        p.drawLine(QPointF(cx - 8, cy - 1.5), QPointF(cx - 5, cy - 1.5))
+        p.drawLine(QPointF(cx - 8, cy + 1.5), QPointF(cx - 5, cy + 1.5))
     elif kind == "color":
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(str(colour or "#888888")[:7]))

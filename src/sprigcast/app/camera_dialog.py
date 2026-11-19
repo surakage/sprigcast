@@ -16,6 +16,7 @@ from sprigcast.sources.camera import (
     CameraDevice,
     choose_modes,
     dshow_modes,
+    is_capture_card,
     mode_cost,
     plain_mode,
 )
@@ -54,7 +55,7 @@ class CameraDialog(CardDialog):
         self.device.setCurrentIndex(index)
         if modes and cameras:
             self._modes[self._key(cameras[index])] = list(modes)
-        self.body.addLayout(_field("Camera", self.device))
+        self.body.addLayout(_field("Device", self.device))
 
         self.size = combo(8)
         for w, h in SIZES:
@@ -66,7 +67,10 @@ class CameraDialog(CardDialog):
         rates = [r for r in RATES if r <= max_fps] or [min(RATES)]
         for r in rates:  # faster than the canvas only costs more: those frames are never shown
             self.rate.addItem(f"{r} fps", r)
-        fps = min(int(current.get("fps", 30)), max(rates))
+        card = "width" not in current and is_capture_card(cameras[index].name) if cameras else False
+        if card and (1920, 1080) in SIZES:  # a console or second PC: full HD, filling the canvas
+            self.size.setCurrentIndex(SIZES.index((1920, 1080)))
+        fps = min(int(current.get("fps", 60 if card else 30)), max(rates))
         self.rate.setCurrentIndex(next((i for i, r in enumerate(rates) if r == fps), rates.index(min(30, max(rates)))
                                        if min(30, max(rates)) in rates else 0))
         pair = QHBoxLayout()
@@ -100,7 +104,19 @@ class CameraDialog(CardDialog):
 
         for box in (self.device, self.size, self.rate):
             box.currentIndexChanged.connect(self._explain)
+        self.device.currentIndexChanged.connect(self._retitle)
+        self._retitle()
         self._explain()
+
+    def _is_card(self) -> bool:
+        return bool(self.cameras) and is_capture_card(self.device_choice().name)
+
+    def _retitle(self) -> None:
+        """A capture card (Elgato HD60 X...) is called what it is, not a camera."""
+        title = "Video capture" if self._is_card() else "Camera"
+        self.heading.setText(title)
+        self.setWindowTitle(title)
+        self.lighter.setVisible(len(self.cameras) > 1 and not self._is_card())
 
     @staticmethod
     def _key(cam: CameraDevice) -> str:
@@ -120,7 +136,8 @@ class CameraDialog(CardDialog):
             self._say("")
             return
         modes = self._modes.get(self._key(self.device_choice()))
-        self._say(describe_mode(modes, *self._ask()) if modes else "")
+        self._say(describe_mode(modes, *self._ask(), noun="capture card" if self._is_card() else "camera")
+                  if modes else "")
 
     def _modes_of(self, cam: CameraDevice) -> list:
         key = self._key(cam)
@@ -153,7 +170,7 @@ class CameraDialog(CardDialog):
                 "mirror": self.mirror.isChecked(), "pause_off_screen": self.pause.isChecked()}
 
 
-def describe_mode(modes: list, w: int, h: int, fps: int) -> str:
+def describe_mode(modes: list, w: int, h: int, fps: int, noun: str = "camera") -> str:
     """One plain line on what the camera sends for this ask and what SprigCast does with it."""
     options = choose_modes(modes, w, h, fps)
     if not options:
@@ -168,8 +185,8 @@ def describe_mode(modes: list, w: int, h: int, fps: int) -> str:
         parts.append(f"skips frames down to {fps} fps")
     sends = plain_mode(first)
     if not parts:
-        return f"The camera sends {sends}, exactly what's needed."
-    return f"The camera only sends {sends}, so SprigCast " + " and ".join(parts) + "."
+        return f"The {noun} sends {sends}, exactly what's needed."
+    return f"The {noun} only sends {sends}, so SprigCast " + " and ".join(parts) + "."
 
 
 def lighter_camera(here: CameraDevice, others: list[CameraDevice], modes_of, w: int, h: int, fps: int):
