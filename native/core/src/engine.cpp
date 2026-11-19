@@ -189,9 +189,9 @@ struct SharedPictures {
             return seq;
         }
         const size_t room = (size - HEADER) / 2;
-        uint64_t said = 0;
-        std::memcpy(&said, view + 32, sizeof said);
-        const size_t capacity = said > 0 && said <= room ? static_cast<size_t>(said) : room;
+        uint64_t slot_bytes = 0;
+        std::memcpy(&slot_bytes, view + 32, sizeof slot_bytes);
+        const size_t capacity = slot_bytes > 0 && slot_bytes <= room ? static_cast<size_t>(slot_bytes) : room;
         const size_t bytes = static_cast<size_t>(head[0]) * head[1] * 4;
         if (!head[0] || !head[1] || head[0] > 16384 || head[1] > 16384 || bytes > capacity || head[2] > 1) return 0;
         *data = view + HEADER + head[2] * capacity;
