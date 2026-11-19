@@ -376,7 +376,7 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   good (a window closing just as its capture started: PC test 2026-11-18). Both run on a thread of their own
   (`start_capture`, `CaptureRetire` in `capture_wgc.cpp`); the frame thread only takes pictures. A capture not
   started within 5 s is refused, so the package captures it.
-  A capture whose source goes to sleep is parked, not closed (`CAPTURE_PARK_S`, 10 minutes): one picture a
+  A capture whose source goes to sleep is parked, not closed, for as long as the source exists: one picture a
   second, and the same capture goes on when the source wakes. Each capture Windows starts leaves about one
   picture of graphics memory behind for good (PC 2026-11-19), so starting one per bloom switch is avoided.
 - A frame stuck anyway: Python's calls that wait for the frame (`sc_engine_capture_read`, `sc_engine_canvas_read`)
