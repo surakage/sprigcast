@@ -164,6 +164,9 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   bloom being held, so recordings, streams and the replay buffer keep their outputs through a switch.
   Move and stinger transitions (drawn by Python) keep them too: the recording takes Python's frames for the
   transition, then goes back to the engine's same textures.
+- New engine: cameras are read by the engine's own player on a thread of its own: decoding, shrinking and
+  mirroring happen there and the picture goes straight to the engine, never through Python. An unplugged camera
+  comes back by itself as before; SPRIGCAST_NO_NATIVE_CAMERA=1 reads cameras the old way.
 - A late frame of about 100 ms every few minutes with Move transitions (PC soak 2026-11-18): Python's minute
   cleanup freed 55-68 thousand objects each time, 65-72 ms holding everything else. It now runs every 10 seconds,
   each a sixth as long and inside a frame's idle time. SPRIGCAST_GC_TYPES=1 logs what each slow one freed.

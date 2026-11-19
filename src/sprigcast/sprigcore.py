@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 30  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 31  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 DLL_NAME = "sprigcore.dll"
 
 SC_OK = 0
@@ -1118,6 +1118,9 @@ def _media_sigs() -> dict:
         "sc_media_destroy": (None, [vp]),
         "sc_media_set_options": (c_int, [vp, ctypes.POINTER(MediaOptions)]),
         "sc_media_set_file": (c_int, [vp, text, c_int, c_int]),
+        "sc_media_ffmpeg_load_devices": (c_int, [text]),
+        "sc_media_set_device": (c_int, [vp, text, text, c_int, c_int]),
+        "sc_media_set_mirror": (c_int, [vp, c_int]),
         "sc_media_control": (c_int, [vp, c_int, ctypes.c_double]),
         "sc_media_set_shrink": (c_int, [vp, ctypes.c_float]),
         "sc_media_info_get": (c_int, [vp, ctypes.POINTER(MediaInfo)]),
@@ -1202,19 +1205,47 @@ def ffmpeg_libraries() -> list[str] | None:
         import av
     except Exception:  # noqa: BLE001 (no PyAV: the Python player can't play either)
         return None
+    found = [_ffmpeg_file(av, name) for name in FFMPEG_LIBRARIES]
+    return None if None in found else found
+
+
+def _ffmpeg_file(av, name: str) -> str | None:
     package = Path(av.__file__).resolve().parent
-    folders = [package.parent / "av.libs", package, package.parent]
-    found = []
-    for name in FFMPEG_LIBRARIES:
-        for folder in folders:
-            hits = sorted(str(p) for pattern in (f"{name}-*.dll", f"lib{name}-*.so*", f"lib{name}.*.dylib")
-                          for p in folder.glob(pattern))
-            if hits:
-                found.append(hits[0])
-                break
-        else:
-            return None
-    return found
+    for folder in (package.parent / "av.libs", package, package.parent):
+        hits = sorted(str(p) for pattern in (f"{name}-*.dll", f"lib{name}-*.so*", f"lib{name}.*.dylib")
+                      for p in folder.glob(pattern))
+        if hits:
+            return hits[0]
+    return None
+
+
+@functools.cache
+def camera_ready() -> bool:
+    """True once the engine's player can open cameras: FFmpeg's input devices (PyAV's libavdevice) loaded."""
+    if not media_ready():
+        return False
+    try:
+        import av
+    except Exception:  # noqa: BLE001
+        return False
+    path = _ffmpeg_file(av, "avdevice")
+    if path is None:
+        log.warning("native camera: PyAV's libavdevice wasn't found; cameras are read in Python")
+        return False
+    lib = _media_lib()
+    code = lib.sc_media_ffmpeg_load_devices(path.encode("utf-8"))
+    if code != SC_OK:
+        log.warning("native camera: %s; cameras are read in Python",
+                    lib.sc_last_error().decode("utf-8", "replace") or ERRORS.get(code, code))
+    drain_log()
+    return code == SC_OK
+
+
+def use_native_camera() -> bool:
+    """True when cameras are read by the engine's own player (SPRIGCAST_ENGINE=native, on Windows);
+    SPRIGCAST_NO_NATIVE_CAMERA=1 keeps reading them in Python."""
+    return (sys.platform == "win32" and engine_choice() == "native" and not os.environ.get(
+        "SPRIGCAST_NO_NATIVE_CAMERA") and camera_ready())
 
 
 @functools.cache
@@ -1291,6 +1322,20 @@ class MediaPlayer:
 
     def set_file(self, path: str, video: bool, playing: bool) -> None:
         _check(self._call(self._lib.sc_media_set_file, str(path).encode("utf-8"), int(video), int(playing)))
+
+    def set_device(self, format_name: str, choices, fps: int = 0, mirror: bool = False) -> None:
+        """A camera instead of a file (sc_media_set_device): ``choices`` are (input name, options) to try in turn,
+        best first, options as {"video_size": "1280x720", ...} or "key=value:key=value"."""
+        lines = []
+        for name, options in choices:
+            if isinstance(options, dict):
+                options = ":".join(f"{k}={v}" for k, v in options.items())
+            lines.append(f"{name}\t{options}" if options else str(name))
+        _check(self._call(self._lib.sc_media_set_device, format_name.encode("utf-8"), "\n".join(lines).encode("utf-8"),
+                          max(0, int(fps)), int(bool(mirror))))
+
+    def set_mirror(self, mirror: bool) -> None:
+        self._call(self._lib.sc_media_set_mirror, int(bool(mirror)))
 
     def control(self, what: int, value: float = 0.0) -> None:
         _check(self._call(self._lib.sc_media_control, what, float(value)))
