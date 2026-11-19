@@ -53,6 +53,11 @@ with `tests/native_golden/`, today's compositor's drawing of the same cases. If 
 `render/compositor.py` is meant, remake those pictures with `python tests/native_cases.py` and change the engine's
 shader (`native/core/src/shader_compositor.h`) to match.
 
+Every shader lives in its own `native/core/src/shader_*.h` and is compiled when the engine is built
+(`native/core/tools/shader_bake.cpp` writes `baked_shaders.h`), so nothing is compiled while SprigCast runs: one
+compiled at run time held a frame 3.4 s on the CI runner. A shader whose source no longer matches what was baked
+is compiled at run time, off the frame thread where it can be (`warm_shaders`).
+
 The checks draw with Windows' software renderer (WARP), so they give the same answer on every PC and in CI
 (`.github/workflows/core.yml`). The installer build puts the DLL in `sprigcast\engine\`.
 

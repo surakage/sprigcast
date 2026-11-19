@@ -26,6 +26,25 @@ target_include_directories(sprigcore SYSTEM PRIVATE ../third_party/ffmpeg/includ
 target_compile_definitions(sprigcore PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
 target_link_libraries(sprigcore PRIVATE d3d11 dxgi d3dcompiler winmm ole32 windowsapp)
 
+# The shaders, compiled when the engine is built (tools/shader_bake.cpp): compiling them at run time held frames up
+# to 3.4 s on slow PCs. Built and run on Windows; elsewhere (a syntax check) they compile at run time as before.
+if(CMAKE_HOST_WIN32)
+  add_executable(shader_bake tools/shader_bake.cpp)
+  target_include_directories(shader_bake PRIVATE src)
+  target_compile_definitions(shader_bake PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_link_libraries(shader_bake PRIVATE d3dcompiler)
+  set(BAKED_DIR ${CMAKE_BINARY_DIR}/baked)
+  file(GLOB SHADER_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/src/shader_*.h)
+  add_custom_command(OUTPUT ${BAKED_DIR}/baked_shaders.h
+                     COMMAND ${CMAKE_COMMAND} -E make_directory ${BAKED_DIR}
+                     COMMAND shader_bake ${BAKED_DIR}/baked_shaders.h
+                     DEPENDS shader_bake ${SHADER_SOURCES}
+                     COMMENT "Baking the engine's shaders")
+  target_sources(sprigcore PRIVATE ${BAKED_DIR}/baked_shaders.h)
+  target_include_directories(sprigcore PRIVATE ${BAKED_DIR})
+  target_compile_definitions(sprigcore PRIVATE SPRIGCORE_BAKED)
+endif()
+
 add_executable(sprigcore_tests tests/core_tests.cpp)
 target_link_libraries(sprigcore_tests PRIVATE sprigcore)
 

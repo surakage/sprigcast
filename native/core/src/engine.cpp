@@ -1614,8 +1614,13 @@ DWORD WINAPI warm_main(void *) {
         const int64_t start = qpc();
         warm_shaders();
         char line[96];
-        std::snprintf(line, sizeof line, "engine: shaders ready in %.0f ms",
-                      1000.0 * static_cast<double>(qpc() - start) / static_cast<double>(qpf()));
+#ifdef SPRIGCORE_BAKED
+        const char *how = "baked when built";
+#else
+        const char *how = "compiled here";
+#endif
+        std::snprintf(line, sizeof line, "engine: shaders ready in %.0f ms (%s)",
+                      1000.0 * static_cast<double>(qpc() - start) / static_cast<double>(qpf()), how);
         log_line(SC_LOG_INFO, line);
     } catch (...) {
         log_line(SC_LOG_WARNING, "engine: compiling shaders ahead failed; each compiles when first used");
