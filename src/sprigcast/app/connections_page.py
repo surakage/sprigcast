@@ -171,6 +171,37 @@ def paired_on(added: str) -> str:
     return f"Paired {day.strftime('%b')} {day.day}"
 
 
+SEEN_MS = 30_000  # "Last seen" is worked out again this often, and only while the page is on screen
+
+
+def last_seen(seen: str, now=None) -> str:
+    """"Last seen 2 min ago" from a paired device's last_seen (UTC, "2026-11-19T15:29:50Z"); "" when never."""
+    from datetime import datetime, timezone
+
+    try:
+        when = datetime.fromisoformat(seen.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return ""
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    seconds = max(0.0, (now - when).total_seconds())  # (a clock set back never reads "in the future")
+    if seconds < 60:
+        ago = "just now"
+    elif seconds < 3600:
+        ago = f"{int(seconds // 60)} min ago"
+    elif seconds < 86400:
+        ago = f"{int(seconds // 3600)} h ago"
+    elif seconds < 2 * 86400:
+        ago = "yesterday"
+    else:
+        local = when.astimezone()
+        ago = f"{local.strftime('%b')} {local.day}"
+        if local.year != now.astimezone().year:
+            ago += f", {local.year}"
+    return f"Last seen {ago}"
+
+
 class ConnectionsPage(QWidget):
     def __init__(self, server=None, parent: QWidget | None = None):
         super().__init__(parent)
@@ -178,6 +209,8 @@ class ConnectionsPage(QWidget):
         s = saved_settings()
 
         self.setStyleSheet(page_style())
+        self._seen_timer = QTimer(self, interval=SEEN_MS)
+        self._seen_timer.timeout.connect(self._seen_tick)
         main = self.remote = BadgedGroup("Remote control", "", theme.SELECT_TEXT)
         self.status = main.badge  # "On · 2 apps connected", at the right of the title
         box = QVBoxLayout(main)
@@ -382,6 +415,7 @@ class ConnectionsPage(QWidget):
 
     def _fill_devices(self) -> None:
         _empty(self.device_rows)
+        self._seen_labels: dict[str, QLabel] = {}
         pairing = self._pairing
         self.pair_button.setEnabled(pairing is not None)
         devices = sorted(pairing.devices, key=lambda d: d.name.lower()) if pairing else []
@@ -398,8 +432,31 @@ class ConnectionsPage(QWidget):
             remove = _pill("Remove")
             remove.setToolTip("It can't connect any more (pair it again to bring it back)")
             remove.clicked.connect(lambda _=False, d=device.id: self._remove_device(d))
-            right = [_connected(), remove] if device.key in here else [remove]
+            if device.key in here:
+                right = [_connected(), remove]
+            else:
+                seen = QLabel(last_seen(getattr(device, "last_seen", "")))
+                seen.setObjectName("appNote")
+                self._seen_labels[device.id] = seen
+                right = [seen, remove]
             self.device_rows.addWidget(_app_row(device.name, paired_on(device.added), *right))
+
+    def _seen_tick(self) -> None:
+        """"Last seen 2 min ago" moves on (the server keeps each device's last_seen current, and tells nobody)."""
+        pairing = self._pairing
+        for device in (pairing.devices if pairing else []):
+            label = self._seen_labels.get(device.id)
+            if label is not None:
+                label.setText(last_seen(getattr(device, "last_seen", "")))
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._seen_tick()
+        self._seen_timer.start()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        super().hideEvent(event)
+        self._seen_timer.stop()
 
     def _fill_connected(self) -> None:
         """The apps connected now (made again only when the list changed)."""

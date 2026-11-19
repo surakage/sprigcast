@@ -581,3 +581,48 @@ def test_connections_names_the_apps_connected_now_and_marks_paired_ones():
     page.enabled.setChecked(False)
     assert page.status.text() == "Off" and not page.block.isEnabled()
     QSettings().clear()
+
+
+def test_paired_devices_say_when_they_were_last_seen_and_only_tick_on_screen():
+    _qt()
+    from datetime import datetime, timezone
+
+    from PySide6.QtCore import QCoreApplication, QSettings
+    from PySide6.QtWidgets import QApplication
+
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("ConnectionsPageTest")
+    from sprigcast.app.connections_page import ConnectionsPage, last_seen
+    from sprigcast.control.pairing import Device, Pairing
+
+    now = datetime(2026, 11, 19, 15, 30, tzinfo=timezone.utc)
+    assert last_seen("2026-11-19T15:29:50Z", now) == "Last seen just now"
+    assert last_seen("2026-11-19T15:28:00Z", now) == "Last seen 2 min ago"
+    assert last_seen("2026-11-19T12:10:00Z", now) == "Last seen 3 h ago"
+    assert last_seen("2026-11-18T12:10:00Z", now) == "Last seen yesterday"
+    assert last_seen("2026-11-02T12:10:00Z", now) == "Last seen Nov 2"
+    assert last_seen("2026-11-19T15:40:00Z", now) == "Last seen just now"  # a clock set back: never "in the future"
+    assert last_seen("", now) == "" and last_seen("soon", now) == "" and last_seen(None, now) == ""
+
+    class Server:
+        listening, error = True, ""
+        on_clients_changed = None
+        sessions: dict = {}
+        pairing = Pairing([Device(id="a", name="StreamBridge", key="k1", added="2026-11-18",
+                                  last_seen="2020-01-05T00:00:00Z"),
+                           Device(id="b", name="Old", key="k2", added="2026-11-12")])  # an older saved list
+
+    server = Server()
+    page = ConnectionsPage(server)
+    assert page._seen_labels["a"].text() == "Last seen Jan 5, 2020" and page._seen_labels["b"].text() == ""
+    assert not page._seen_timer.isActive()
+    page.show()
+    QApplication.processEvents()
+    assert page._seen_timer.isActive()
+    server.pairing.devices[1].last_seen = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    page._seen_tick()
+    assert page._seen_labels["b"].text() == "Last seen just now"
+    page.hide()
+    assert not page._seen_timer.isActive()
+    page.close()
+    QSettings().clear()
