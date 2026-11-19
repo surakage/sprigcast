@@ -59,6 +59,7 @@ GRAPHICS_RETRY_S = 2.0  # while a new start of the graphics fails, try again thi
 GRAPHICS_RESTART_CALM_S = 120.0  # a start this long after the last one counts as the first again
 GRAPHICS_RESTART_MAX_S = 60.0
 FIRST_UPLOAD_BYTES = 24 * 1024 * 1024  # first pictures after a wake copied to the card per tick, at most (+1)
+WAKE_BUDGET_S = 0.004  # waking sources takes at most about this of one tick; the rest wake on the next ticks
 WAKE_LOG_S = 0.003  # a source this slow on a frame that woke some is named in the "waking frame" log line
 SLOW_STEP_S = 0.008  # a step of a frame this long: note where the window's thread is (the late-frame line says)
 LATE_LOG_EVERY_S = 10.0  # late-frame log lines at most this often (the rest are counted in the next one)
@@ -1243,17 +1244,25 @@ class Engine:
         self._visible_fresh = True
         slowest = ("", "", 0.0)  # (source, wake or sleep, seconds): named in the late-frame line
         self._woke = 0
+        waking_spent = 0.0
         for source_id, source in self._sources.items():
             began = time.perf_counter()
             if source_id in visible or not self._may_sleep(source):
                 self._last_shown[source_id] = now
                 if source.asleep:
+                    # A bloom's sources woken all in one tick held that frame 17-58 ms, on every canvas (PC soak
+                    # 2026-11-19: a vertical-only switch made the streamed horizontal canvas late). Once this
+                    # tick's waking has taken WAKE_BUDGET_S, the rest stay asleep one more tick (a switch that
+                    # waits for their pictures waits for these too: _wait_for_waking).
+                    if waking_spent >= WAKE_BUDGET_S:
+                        continue
                     source.asleep = False
                     if source.kind == "camera":
                         self._camera_back(source_id, now)
                     self._failing.pop(source_id, None)  # asked for a picture straight away
                     self._safely(source_id, source, "wake", source.wake)
                     self._woke += 1
+                    waking_spent += time.perf_counter() - began
             elif not source.asleep and now - self._last_shown.setdefault(source_id, now) >= (
                     self._camera_wait.get(source_id, CAMERA_SLEEP_AFTER) if source.kind == "camera"
                     else SLEEP_AFTER if source_id in shown else 0.0):
@@ -1727,7 +1736,10 @@ class Engine:
         doesn't show)? If not, it skips the sprigs too."""
         from sprigcast.render.native_bridge import native_transition
 
-        if self._waking or self.editing_part or self._grabs:
+        # (A switch waiting for a picture isn't a reason: the engine draws the bloom held, and the sources waited
+        # for are copied for Python's compositor on their own, see `awaited` in _tick. Counting it as one had
+        # Python draw every sprig and copy every source of every canvas for the whole wait.)
+        if self.editing_part or self._grabs:
             return True
         canvases = {c.id for c in self._collection.canvases if c.enabled}
         riding = {f"view:{name}" for names in self._riders.values() for name in names}
@@ -1985,6 +1997,10 @@ class Engine:
         frozen = self._freezes(compositor)
         textures = getattr(compositor, "textures", {})
         woke = bool(self._woke or self._waking)  # a bloom is coming back: first pictures are spread out
+        # Sources a switch is waiting on: only these are copied for Python's compositor while it waits (their
+        # textures there are what ends the wait). Every other source stays with the engine: copying them all
+        # made a switch on one canvas cost the other canvas a read-back of each video (media 10.8 ms a frame).
+        awaited = set().union(*(ids for _o, _t, ids in self._waking.values())) if self._waking else ()
         first_bytes, waking = 0, []
         native = self._native if self._native is not None and not self._native.failed else None
         for source_id, source in self._sources.items():
@@ -2007,7 +2023,7 @@ class Engine:
             began = time.perf_counter()
             missed = self._missed.pop(source_id, None) if self._missed and freeze is None else None
             try:
-                if direct and not self._python_drew and not self._waking:
+                if direct and not self._python_drew and source_id not in awaited:
                     source.engine_tick()  # nothing of Python's shows it this tick: no picture is copied at all
                     frame = None
                 else:
@@ -2038,7 +2054,7 @@ class Engine:
                     first_bytes += getattr(frame, "nbytes", 0)
             if frame is not None:
                 layout = source.size if getattr(source, "sharp", False) or getattr(source, "shrinks", False) else None
-                if native is not None and not self._python_drew and not self._waking and freeze is None:
+                if native is not None and not self._python_drew and source_id not in awaited and freeze is None:
                     # Python's compositor drew nothing last tick: only the engine gets it. Python's copy waits
                     # here (the newest only) for a tick it draws again. The native simple run (2026-11-17) had
                     # every camera picture sent to both, ~3x the default engine's CPU.

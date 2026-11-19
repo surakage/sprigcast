@@ -2981,9 +2981,14 @@ class MainWindow(QMainWindow):
             watched = frozenset(k for k in watched if k not in self.previews and not k.startswith("next:"))
         if watched != self.engine.previews:
             self.engine.previews = watched
-        sizes = self._preview_pixel_sizes()
-        if sizes != self.engine.preview_sizes:
-            self.engine.preview_sizes = sizes
+        # Measured four times a second, not on every poll: it asks Qt for each preview's size and screen scale
+        # while holding Python's lock, which the render thread was seen waiting for (PC soak 2026-11-19).
+        measured = time.monotonic()
+        if measured - getattr(self, "_sizes_measured", 0.0) >= 0.25:
+            self._sizes_measured = measured
+            sizes = self._preview_pixel_sizes()
+            if sizes != self.engine.preview_sizes:
+                self.engine.preview_sizes = sizes
         for canvas_id, mailbox in list(self.engine.frames.items()):
             frame = mailbox.take()
             if frame is None:
