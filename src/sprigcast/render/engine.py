@@ -32,7 +32,7 @@ from sprigcast.core.events import (
 from sprigcast.core.filters import SOUND_LEVELS, AudioChain, video_effects
 from sprigcast.core import drawn, pacing, retire
 from sprigcast.core.mailbox import Mailbox
-from sprigcast.core.scene import PART_KIND, STATE_FADE_S, Scene, SceneCollection, SceneItem
+from sprigcast.core.scene import PART_KIND, STATE_FADE_S, Scene, SceneCollection, SceneItem, drawing_fps
 from sprigcast.core.source import Source, create_source, source_class
 from sprigcast.render import move
 from sprigcast.render.stinger import StingerPlayer, open_stinger
@@ -508,10 +508,11 @@ class Engine:
             log.info("render thread priority raised")
         self._sync_sources(compositor)
         self._warm_up(compositor)
-        fps = max(c.fps for c in self._collection.canvases)
+        fps = drawing_fps(self._collection.canvases)
         interval = 1.0 / fps
         next_tick = time.perf_counter()
         render_times: deque[float] = deque(maxlen=fps)
+        log.info("drawing %d times a second", fps)
         ticks, dropped, stats_at = 0, 0, time.perf_counter()
         last_problem = None
         readbacks_at = 0
@@ -614,6 +615,12 @@ class Engine:
                     time.sleep(next_tick - now)
 
                 if now - stats_at >= 1.0:
+                    wanted = drawing_fps(self._collection.canvases)
+                    if wanted != fps:  # a canvas's frame rate changed, or one was turned on or off
+                        log.info("drawing %d times a second (was %d)", wanted, fps)
+                        fps, interval = wanted, 1.0 / wanted
+                        render_times = deque(render_times, maxlen=fps)
+                        self._follow_rate(fps)
                     avg_ms = 1000 * sum(render_times) / max(1, len(render_times))
                     self.events.put(Stats(fps=ticks / (now - stats_at), render_ms=avg_ms, dropped_ticks=dropped,
                                            readbacks=(self.readbacks - readbacks_at) / (now - stats_at)))
@@ -1017,7 +1024,7 @@ class Engine:
                 try:
                     source = create_source(config.kind, config.id, config.settings)
                     if hasattr(source, "canvas_fps"):  # captures ask Windows for no more pictures than this
-                        source.canvas_fps = max((c.fps for c in self._collection.canvases), default=60)
+                        source.canvas_fps = drawing_fps(self._collection.canvases)
                     if getattr(source, "wants_engine", False):  # plugins that tap frames or sound (Instant replay)
                         source.engine = self
                     if self._may_sleep(source) and source_id not in self._shown_sources():
@@ -1968,6 +1975,19 @@ class Engine:
             # itself: it waited for Python's lock. Where the window's thread is right after says who held it.
             self._window_at = pacing.window_at()
         marks.append((name, now))
+
+    def _follow_rate(self, fps: int) -> None:
+        """The native engine and captures follow the drawing rate when it changes."""
+        native = self._native
+        if native is not None and not native.failed and getattr(native, "fps", fps) != fps:
+            try:
+                native.engine.set_rate(fps, 1)
+                native.fps = fps
+            except Exception as exc:  # noqa: BLE001 (it keeps its old rate; drawing still follows)
+                log.warning("native engine: couldn't change its rate to %d fps: %s", fps, exc)
+        for source in list(self._sources.values()):
+            if hasattr(source, "canvas_fps"):
+                source.canvas_fps = fps
 
     def _where(self) -> str:
         """The last frame's slowest steps, for the late-frame log line."""

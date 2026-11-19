@@ -7036,7 +7036,9 @@ class MainWindow(QMainWindow):
         health = getattr(self, "_health", None)
         if health is not None:
             health.render(event)
-        target = max((c.fps for c in self.collection.canvases), default=60)
+        from sprigcast.core.scene import drawing_fps
+
+        target = drawing_fps(self.collection.canvases)
         late = max(0, event.dropped_ticks - getattr(self, "_late_before", 0))  # the engine counts them up
         self._late_before = event.dropped_ticks
         budget = 1000 / target

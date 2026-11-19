@@ -205,8 +205,10 @@ class NativeCanvases:
     and the Python compositor carries on alone."""
 
     def __init__(self, collection: SceneCollection, warp: bool = False):
-        fps = max((c.fps for c in collection.canvases), default=60)
-        self.engine = sprigcore.Engine(warp=warp, fps=(int(fps), 1))
+        from sprigcast.core.scene import drawing_fps
+
+        self.fps = drawing_fps(collection.canvases)
+        self.engine = sprigcore.Engine(warp=warp, fps=(self.fps, 1))
         self.resources = native_snapshot.Resources()
         self.failed = False
         self._slots: dict[str, int] = {}
