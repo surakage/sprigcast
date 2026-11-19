@@ -6975,9 +6975,9 @@ class MainWindow(QMainWindow):
             commands.append(Command(f"Pop out {canvas.id.capitalize()}", "Canvas",
                                     lambda cid=canvas.id: self.open_projector(cid, None)))
         for tab, label in (("General", "General"), ("Stream/Places", "Places to stream"),
-                           ("Stream/Quality", "Stream quality"), ("Recording", "Recording"),
-                           ("Recording/Clips", "Clips"), ("Audio", "Audio devices"), ("Video", "Canvases"),
-                           ("Video/Virtual camera", "Virtual camera"), ("Hotkeys", "Hotkeys"),
+                           ("Stream/Quality", "Stream quality"), ("Audio", "Audio devices"), ("Video", "Canvases"),
+                           ("Video/Virtual camera", "Virtual camera"), ("Recording", "Recording"),
+                           ("Recording/Clips", "Clips"), ("Hotkeys", "Hotkeys"),
                            ("Connections", "Connections"), ("Plugins", "Plugin store")):
             commands.append(Command(f"Settings: {label}", "Settings", lambda t=tab: self._open_settings(t),
                                     "Ctrl+," if tab == "General" else ""))

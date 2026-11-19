@@ -1,8 +1,8 @@
 """The Settings window: one place for every option, a page for each topic picked from the side.
 
 Six pages, each answering one question: General (how the app behaves, and This PC), Stream (where you go
-live and how good), Recording (where recordings and clips go, and how good), Audio, Video (canvases and
-the virtual camera) and Connections. Hotkeys and the plugin store have windows of their own (Tools menu).
+live and how good), Audio, Video (canvases and the virtual camera), Recording (where recordings and clips
+go, and how good) and Connections. Hotkeys and the plugin store have windows of their own (Tools menu).
 
 Rows most people never need (encoder internals, output scaling, ports...) show only with Expert settings
 on, a tick at the bottom that's remembered. OK and Apply write the changes into the scene collection and
@@ -55,7 +55,7 @@ from sprigcast.core.scene import SceneCollection
 
 log = logging.getLogger(__name__)
 
-TABS = ["General", "Stream", "Accounts", "Recording", "Audio", "Video", "Connections"]
+TABS = ["General", "Stream", "Accounts", "Audio", "Video", "Recording", "Connections"]
 # Older names, and the windows that left Settings, land somewhere sensible ("Tab/Sub": a page's own tab).
 TAB_ALIASES = {"Output": "Stream/Quality", "Clips": "Recording/Clips", "Replay": "Recording/Clips",
                "Advanced": "General", "Camera": "Video/Virtual camera", "Hotkeys": "General", "Plugins": "General"}
