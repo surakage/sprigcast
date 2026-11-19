@@ -324,9 +324,13 @@ def test_build_edits_a_bloom_without_putting_it_on_air(app, tmp_path, monkeypatc
         w._on_inside_moved(1, 0)
         assert [i.source for i in col.scene("h2").items] == ["b", "a"]
         assert w.source_list.currentRow() == 0 and w._item().source == "a"
-        w._put_on_air()
+        # Build never changes what's on air (user, 2026-11-19): no Put on air button, double-click or menu item.
+        assert col.active_scenes["horizontal"] != "h2" and not hasattr(w, "on_air_button")
+        w.scene_tree.itemDoubleClicked.emit(w.scene_tree.selectedItems()[0] if w.scene_tree.selectedItems()
+                                            else w.scene_tree.topLevelItem(0), 0)
+        assert col.active_scenes["horizontal"] != "h2"
+        w._make_active()  # what Live's tile does
         assert col.active_scenes["horizontal"] == "h2" and w.engine.staged == {}
-        assert not w.on_air_button.isVisibleTo(w)
         w._set_mode("live")
         assert w.engine.staged == {}  # Live's Next is Studio mode's alone
     finally:
