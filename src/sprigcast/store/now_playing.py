@@ -44,7 +44,7 @@ from sprigcast.core.source import Source, register
 
 log = logging.getLogger(__name__)
 
-PLUGIN = {"id": "now_playing", "name": "Now playing", "version": 7, "adds": "Source",
+PLUGIN = {"id": "now_playing", "name": "Now playing", "version": 8, "adds": "Source",
           "about": "The song you're playing in Spotify, YouTube Music or a browser, with its cover, a time bar and "
                    "sound bars. No keys needed.",
           "new": "Sound bars move with quiet music too, and Cover glow's dots move at all."}
@@ -1044,6 +1044,7 @@ class NowPlayingSource(Source):
         self._turn = 0  # goes up when it sleeps: frames asked for before then are dropped
         self._busy = False
         self._linger: threading.Timer | None = None  # stops the watcher a while after it went to sleep
+        self._linger_turn = 0  # which sleep the waiting timer belongs to
         self._ready = None  # a finished frame (QImage, or a drawn.Drawn for the engine) for the next video_frame
         self._memo: dict = {}  # frame_listed's time part, made again only when it changes
         self._last = 0.0  # when the last frame was asked for
@@ -1083,11 +1084,15 @@ class NowPlayingSource(Source):
         self._ready = None
         self._shown = None
         if self._watcher is not None:
-            timer = threading.Timer(LINGER_S, self._quiet_if_asleep)
-            timer.args = (timer,)
-            timer.daemon = True
-            timer.name = "now-playing-linger"
+            # The timer is told which sleep it belongs to by a number, never by itself: a timer that held itself
+            # was a cycle only Python's cleanup could free, and one that had waited through a cleanup (every 10 s,
+            # core/pacing.py tidy: survivors are set aside) was never looked at again. Each bloom switch back
+            # then left a cancelled timer and its locks behind: 3 Windows handles a wake (PC soak, 2026-11-19).
             with self._lock:
+                self._linger_turn += 1
+                timer = threading.Timer(LINGER_S, self._quiet_if_asleep, (self._linger_turn,))
+                timer.daemon = True
+                timer.name = "now-playing-linger"
                 old, self._linger = self._linger, timer
             if old is not None:
                 old.cancel()
@@ -1101,13 +1106,14 @@ class NowPlayingSource(Source):
         """Called back (or closed): the stop waiting to happen after a sleep doesn't."""
         with self._lock:
             timer, self._linger = self._linger, None
+            self._linger_turn += 1
         if timer is not None:
             timer.cancel()
 
-    def _quiet_if_asleep(self, timer) -> None:
+    def _quiet_if_asleep(self, turn: int) -> None:
         """LINGER_S after it went to sleep (its own thread): asleep all that time, it stops listening."""
         with self._lock:
-            if self._linger is not timer:
+            if self._linger is None or self._linger_turn != turn:
                 return  # woke meanwhile
             self._linger = None
             watcher, self._watcher = self._watcher, None
