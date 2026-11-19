@@ -379,9 +379,9 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   A capture whose source goes to sleep is parked, not closed, for as long as the source exists: one picture a
   second, and the same capture goes on when the source wakes. Each capture Windows starts leaves about one
   picture of graphics memory behind for good (PC 2026-11-19), so starting one per bloom switch is avoided.
-- **Capture helper** (in progress, `capture_feed.cpp`): every capture Windows starts keeps about one picture of
-  graphics memory until the program that started it ends (PC 2026-11-19, the same in OBS), so captures are to move
-  into a small helper program that can be ended while nothing is captured. First piece: `sc_capture_feed_*` runs a
+- **Capture helper** (`capture_feed.cpp`): every capture Windows starts keeps about one picture of
+  graphics memory until the program that started it ends (PC 2026-11-19, the same in OBS), so captures run
+  in a small helper program that can be ended while nothing is captured. First piece: `sc_capture_feed_*` runs a
   capture on a device of its own on the engine's card and shares each picture as a browser page is shared (a
   keyed-mutex texture `<block>-tex<n>` in B8G8R8A8, a 64-byte header in shared memory whose fifth number says
   `SHARED_STRAIGHT`/`SHARED_OPAQUE`); the engine takes it with `sc_engine_source_shared`. Second piece: the program,
@@ -393,6 +393,10 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   and Windows frees what its captures kept. The helper dying ends its feeds: each source asks again, which starts
   a new helper, and keeps its picture meanwhile. When the helper can't (not there, didn't start, refused), the
   engine captures itself as before, parked while asleep. `SPRIGCAST_CAPTURE_IN_ENGINE=1` turns the helper off.
+  Measured on the PC (2026-11-19, one 640x360 window): the helper holds about 50 MB of memory and 14 MB of
+  graphics memory while it captures, SprigCast's graphics memory stays flat over ten switches, the picture shows
+  about 0.3 s after a switch back, and a helper ended from outside is replaced in 1.2 s. The user chose to keep
+  it.
 - A frame stuck anyway: Python's calls that wait for the frame (`sc_engine_capture_read`, `sc_engine_canvas_read`)
   give up after 0.5 s, and once no frame has finished for 3 s after the watchdog's report, the bridge turns the
   engine off and Python's compositor draws everything again.
@@ -413,14 +417,18 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
 
 Ordered by how much heavy-run stalling each removes. The plan: https://claude.ai/artifact/3zTFrUsXtNhCzszAczL7r7
 
+The move is complete (2026-11-19): the engine is the default on Windows (#619), and two 60-minute soaks on the
+user's PC, streaming and recording with a bloom switch every 15 s, sent every frame (0 skipped of 213,857 and of
+217,067). "Behind the switch" below means `SPRIGCAST_ENGINE`, which now defaults to the engine.
+
 | Phase | What moves | State |
 | --- | --- | --- |
 | 1 | Groundwork: build, checks, Python link, engine switch, first canvas | Done |
-| 2 | Frozen scene snapshot; Direct3D 11 compositor and previews, feeding NVENC, AMF and QSV on the graphics card | In progress: compositor, snapshot, transitions and NV12 drawn like today's (pixel-checked); behind the switch the engine's own frame loop draws previews and makes recording and stream frames. NVENC takes the engine's frames on the card. Next: the PC test with the switch on |
-| 3 | Media and GIF decode and reformatting, browser pages as shared textures | In progress: the engine plays video, GIF and sound files itself behind the switch (`sc_media_*`, below). and its compositor takes their pictures straight from the player. Stinger clips and instant replays play through it too, and it decodes on the graphics card when asked. Pictures from the card's decoder stay on the card; browser pages go from the helper's memory straight to the engine |
-| 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | Code done behind the switch (writer, packets mode, links, virtual camera); waits on the PC test |
-| 5 | Sound: devices, mixer, filters, sync | Done behind the switch: the mixer, device capture, built-in filters and monitor/Sound out playback; PC-tested |
+| 2 | Frozen scene snapshot; Direct3D 11 compositor and previews, feeding NVENC, AMF and QSV on the graphics card | Done: compositor, snapshot, transitions and NV12 drawn like today's (pixel-checked); behind the switch the engine's own frame loop draws previews and makes recording and stream frames. NVENC takes the engine's frames on the card. Next: the PC test with the switch on |
+| 3 | Media and GIF decode and reformatting, browser pages as shared textures | Done: the engine plays video, GIF and sound files itself behind the switch (`sc_media_*`, below). and its compositor takes their pictures straight from the player. Stinger clips and instant replays play through it too, and it decodes on the graphics card when asked. Pictures from the card's decoder stay on the card; browser pages go from the helper's memory straight to the engine |
+| 4 | Recording, replay (with its sound writing), streaming, Enhanced Broadcasting, virtual camera | Done (writer, packets mode, links, virtual camera); PC-tested |
+| 5 | Sound: devices, mixer, filters, sync | Done: the mixer, device capture, built-in filters and monitor/Sound out playback; PC-tested |
 | 6 | Per-frame plugin painting (store plugins native, your Python plugins in a helper process) | Done: the audio visualizer is heard and drawn in the engine; Snap's, Death count's, Now playing's and PNGtuber's animations are drawn by the engine from lists of pictures; your own plugins' sources draw in the plugin helper process (`app/plugin_helper.py`) and reach the engine through shared memory |
-| 7 | Capture and camera inside the engine | In progress: display, window and game capture and cameras in the engine (behind the switch); PC test next |
+| 7 | Capture and camera inside the engine | Done: cameras in the engine; display, window and game capture in the capture helper (the engine itself when the helper can't); PC-tested |
 | 8 | Old Python engine kept only for PCs without a graphics card | Decided by the user 2026-11-19: the old engine stays so older systems (software renderer only) can run SprigCast. On a PC whose graphics card could run the new engine, the window warns when the old one draws (`app/engine_warning.py`: safe mode, `SPRIGCAST_ENGINE=python`, `sprigcore.dll` missing, or the engine stopped) |
-| 9 | Only if needed: Control API into the engine, screens to Qt C++ | |
+| 9 | Only if needed: Control API into the engine, screens to Qt C++ | On hold |
