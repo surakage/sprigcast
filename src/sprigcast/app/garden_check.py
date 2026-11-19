@@ -69,16 +69,19 @@ class GardenSnapshot:
         return "warning" if "warning" in levels or self.dropped else "good"
 
 
-def _tile(label: str) -> tuple[QFrame, QLabel]:
-    """Styled by the page (ROW_STYLE): three style sheets of its own per tile were 24 for the eight."""
-    tile = QFrame()
+def _tile(label: str, parent: QWidget | None = None) -> tuple[QFrame, QLabel]:
+    """Styled by the page (ROW_STYLE): three style sheets of its own per tile were 24 for the eight.
+    Made as children of where they end up, like everything on the page: a part made on its own and put in after
+    gets the page's look handed to it on the spot, one wait for Python's lock each while live (22 of them were
+    most of the 53-67 ms this pop-up stood still as it opened, PC 2026-11-19)."""
+    tile = QFrame(parent)
     tile.setObjectName("gardenTile")
     box = QVBoxLayout(tile)
     box.setContentsMargins(14, 10, 14, 12)
     box.setSpacing(2)
-    small = QLabel(label)
+    small = QLabel(label, tile)
     small.setObjectName("tileName")
-    big = QLabel("–")
+    big = QLabel("–", tile)
     big.setObjectName("tileValue")
     big.setProperty("tone", "bright")
     box.addWidget(small)
@@ -86,8 +89,8 @@ def _tile(label: str) -> tuple[QFrame, QLabel]:
     return tile, big
 
 
-def _section(text: str) -> QLabel:
-    label = QLabel(text)
+def _section(text: str, parent: QWidget | None = None) -> QLabel:
+    label = QLabel(text, parent)
     label.setObjectName("gardenSection")  # styled by the page (ROW_STYLE)
     return label
 
@@ -130,20 +133,20 @@ class GardenCheckPage(QWidget):
         root.setSpacing(16)
         head = QHBoxLayout()
         head.setSpacing(14)
-        self.sloth = ArtPicture("happy", 64, height=64)
+        self.sloth = ArtPicture("happy", 64, height=64, parent=self)
         head.addWidget(self.sloth)
         words = QVBoxLayout()
         words.setSpacing(2)
-        title = QLabel("Garden check")
+        title = QLabel("Garden check", self)
         title.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-size: 22px; font-weight: 700; background: transparent;")
-        self.mood = QLabel("")
+        self.mood = QLabel("", self)
         self.mood.setObjectName("gardenMood")
         words.addStretch(1)
         words.addWidget(title)
         words.addWidget(self.mood)
         words.addStretch(1)
         head.addLayout(words, 1)
-        self.close_button = QPushButton("×")
+        self.close_button = QPushButton("×", self)
         self.close_button.setStyleSheet(
             theme.button_style(13, "0", extra="font-size: 15px; min-height: 0;"))
         self.close_button.setFixedSize(28, 28)
@@ -152,9 +155,9 @@ class GardenCheckPage(QWidget):
         head.addWidget(self.close_button, 0, Qt.AlignmentFlag.AlignTop)
         root.addLayout(head)
 
-        self.stack = QStackedWidget()
+        self.stack = QStackedWidget(self)
         root.addWidget(self.stack, 1)
-        now = QWidget()
+        now = self._now = QWidget(self.stack)
         body = QVBoxLayout(now)
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(12)
@@ -163,18 +166,18 @@ class GardenCheckPage(QWidget):
         self.values: dict[str, QLabel] = {}
         self._shown: dict[str, tuple[str, str]] = {}
         for i, (key, label) in enumerate(self.TILES):
-            tile, value = _tile(label)
+            tile, value = _tile(label, now)
             grid.addWidget(tile, i // 4, i % 4)
             self.values[key] = value
         body.addLayout(grid)
         body.addSpacing(4)
-        body.addWidget(_section("Stream health"))
+        body.addWidget(_section("Stream health", now))
         self.rows = QVBoxLayout()
         self.rows.setSpacing(0)
         body.addLayout(self.rows)
-        body.addWidget(self._overload_bar())
+        body.addWidget(self._overload_bar(now))
         body.addSpacing(4)
-        body.addWidget(_section("Things we checked"))
+        body.addWidget(_section("Things we checked", now))
         self.checks = QGridLayout()
         self.checks.setHorizontalSpacing(8)
         self.checks.setVerticalSpacing(8)
@@ -190,19 +193,19 @@ class GardenCheckPage(QWidget):
 
         buttons = QHBoxLayout()
         buttons.setSpacing(10)
-        self.history = QPushButton("Last streams")
+        self.history = QPushButton("Last streams", self)
         self.history.setStyleSheet(theme.LINK_STYLE)
         self.history.setCursor(Qt.CursorShape.PointingHandCursor)
         self.history.setToolTip("Dropped frames, reconnects, peak memory and hitches from your last few streams")
         self.history.clicked.connect(lambda: self.show_view("health" if self.stack.currentIndex() == 0 else "now"))
         buttons.addWidget(self.history)
         buttons.addStretch(1)
-        self.again = QPushButton("Check again")
+        self.again = QPushButton("Check again", self)
         self.again.setStyleSheet(theme.PILL_STYLE)
         self.again.setCursor(Qt.CursorShape.PointingHandCursor)
         self.again.clicked.connect(self.refresh)
         buttons.addWidget(self.again)
-        self.done = QPushButton("Done")
+        self.done = QPushButton("Done", self)
         self.done.setStyleSheet(theme.PRIMARY_STYLE)
         self.done.setCursor(Qt.CursorShape.PointingHandCursor)
         buttons.addWidget(self.done)
@@ -303,11 +306,11 @@ class GardenCheckPage(QWidget):
                 widget.setParent(None)
                 widget.deleteLater()
         for i, (name, detail, row_level, word) in enumerate(s.rows):
-            row = self._row(name, detail, row_level, word, first=i == 0)
+            row = self._row(name, detail, row_level, word, first=i == 0, parent=self._now)
             self._row_parts.append(row.parts)
             self.rows.addWidget(row)  # shown with the rest when the layout next runs: once, not once per row
         if not s.rows:
-            none = QLabel("No places to stream yet.")
+            none = QLabel("No places to stream yet.", self._now)
             none.setStyleSheet(f"color: {theme.MUTED}; background: transparent; padding: 6px 0;")
             self.rows.addWidget(none)
 
@@ -320,25 +323,25 @@ class GardenCheckPage(QWidget):
                 widget.setParent(None)
                 widget.deleteLater()
         for i, (label, ok, tip) in enumerate(s.checks):
-            chip = QLabel(("✓  " if ok else "!  " if ok is False else "–  ") + label)
+            chip = QLabel(("✓  " if ok else "!  " if ok is False else "–  ") + label, self._now)
             chip.setObjectName("checkChip")  # styled by the page (ROW_STYLE), not a style sheet of its own
             chip.setProperty("state", "ok" if ok else "warn" if ok is False else "quiet")
             chip.setToolTip(tip)
             self.checks.addWidget(chip, i // 4, i % 4)
 
-    def _overload_bar(self) -> QFrame:
+    def _overload_bar(self, parent: QWidget | None = None) -> QFrame:
         """Shown while the encoder can't keep up: says so, with one tap to make encoding lighter."""
-        bar = self.overload_bar = QFrame()
+        bar = self.overload_bar = QFrame(parent)
         bar.setObjectName("overloadBar")
         bar.setStyleSheet(f"#overloadBar {{ background: {theme.RAISED}; border-radius: 14px; }}")
         line = QHBoxLayout(bar)
         line.setContentsMargins(14, 10, 10, 10)
         line.setSpacing(12)
-        self.overload_text = QLabel("")
+        self.overload_text = QLabel("", bar)
         self.overload_text.setWordWrap(True)
         self.overload_text.setStyleSheet(f"color: {theme.WARN}; font-weight: 600; background: transparent;")
         line.addWidget(self.overload_text, 1)
-        self.lighter = QPushButton("Make it lighter")
+        self.lighter = QPushButton("Make it lighter", bar)
         self.lighter.setStyleSheet(theme.PILL_STYLE)
         self.lighter.setCursor(Qt.CursorShape.PointingHandCursor)
         self.lighter.setToolTip("A faster encoder preset, with no look-ahead or B-frames")
@@ -366,31 +369,32 @@ class GardenCheckPage(QWidget):
         self.overload_bar.show()
 
     @staticmethod
-    def _row(name: str, detail: str, level: str, word: str, first: bool) -> QWidget:
+    def _row(name: str, detail: str, level: str, word: str, first: bool,
+             parent: QWidget | None = None) -> QWidget:
         """One place's line. Styled by the page's ROW_STYLE (object names and a "level" property): five style
         sheets of its own per row made the first open 140 ms on the PC while live (2026-11-18)."""
         from sprigcast.app.live_stage import Elided
 
         level = level if level in LEVEL_COLOURS else "idle"
-        row = QFrame()
+        row = QFrame(parent)  # a child of the page from the start (see _tile)
         row.setObjectName("healthRow")
         row.setProperty("ruled", not first)  # a line above every row but the first
         line = QHBoxLayout(row)
         line.setContentsMargins(2, 8, 2, 8)
         line.setSpacing(12)
-        dot = QLabel("●")
+        dot = QLabel("●", row)
         dot.setObjectName("healthDot")
         dot.setProperty("level", level)
-        title = Elided(name)
+        title = Elided(name, row)
         title.setObjectName("healthTitle")
         title.setFixedWidth(110)
         # Fixed, not Elided's usual Ignored: a layout gives an Ignored label no room at all, which drew the
         # name over its detail.
         title.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Preferred)
-        info = Elided(detail)  # one line: a long one (reconnects, auto-pilot) ends in "…", the whole of it on hover
+        info = Elided(detail, row)  # one line: a long one (reconnects, auto-pilot) ends in "…", the whole of it on hover
         info.setObjectName("healthInfo")
         info.setMinimumWidth(0)
-        state = QLabel(word)
+        state = QLabel(word, row)
         state.setObjectName("healthState")
         state.setProperty("level", level)
         line.addWidget(dot)
