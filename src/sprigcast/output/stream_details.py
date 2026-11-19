@@ -165,7 +165,8 @@ def save_tokens(service: str, reply: dict, name: str) -> None:
     if not reply.get("refresh_token"):
         raise DetailsError(f"{LABELS[service]} didn't let SprigCast stay signed in. Sign in again.")
     tokens = {"access_token": reply["access_token"], "refresh_token": reply["refresh_token"],
-              "expires_at": time.time() + int(reply.get("expires_in") or 3600) - 60, "account": name}
+              "expires_at": time.time() + int(reply.get("expires_in") or 3600) - 60, "account": name,
+              "scope": str(reply.get("scope") or "")}  # what the sign-in allowed (Kick: chat and moderation)
     set_key(TOKEN_REF[service], json.dumps(tokens))
     _remember(service, name)
     log.info("stream details: %s signed in", service)
@@ -232,6 +233,8 @@ def _refresh(service: str, old: dict) -> dict:
                 raise NeedsSignIn(f"Your {LABELS[service]} sign-in ran out. Sign in again.")
             raise DetailsError(f"Couldn't renew the {LABELS[service]} sign-in right now. Try again in a minute.")
         reply.setdefault("refresh_token", latest.get("refresh_token", ""))  # Google keeps the same one
+        if not reply.get("scope"):
+            reply["scope"] = latest.get("scope", "")
         save_tokens(service, reply, latest.get("account", ""))
         return _tokens(service)
 
@@ -241,6 +244,14 @@ def _access(service: str) -> dict:
     if time.time() >= float(tokens.get("expires_at", 0)):
         tokens = _refresh(service, tokens)
     return tokens
+
+
+def allowed(service: str, scope: str) -> bool:
+    """Did the kept sign-in allow `scope`? Reads the credential store: use a worker."""
+    try:
+        return scope in str(_tokens(service).get("scope") or "").split()
+    except DetailsError:
+        return False
 
 
 def access_token(service: str) -> str:

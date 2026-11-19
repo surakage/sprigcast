@@ -57,6 +57,26 @@ KICK_API = "https://api.kick.com/public/v1"
 # One Kick sign-in serves the destination (stream key) and Stream details (title, category, tags).
 KICK_SCOPES = "user:read channel:read channel:write streamkey:read"
 KICK_DETAILS_SCOPES = KICK_SCOPES
+# Chat back and moderation on Kick are asked for only once you choose them in the Chat panel (KICK_POWERS on):
+# a sign-in that asks for more than the Kick app allows fails, and the stream key must never depend on chat.
+KICK_CHAT_SCOPES = "chat:write moderation:ban"
+KICK_POWERS = "kick/chat_powers"  # QSettings
+
+
+def kick_scopes() -> str:
+    from PySide6.QtCore import QSettings
+
+    on = QSettings().value(KICK_POWERS, False, type=bool)
+    return f"{KICK_SCOPES} {KICK_CHAT_SCOPES}" if on else KICK_SCOPES
+
+
+def _powers_refused(service: str) -> None:
+    """A Kick sign-in that asked for chat and moderation didn't finish: the next one asks for the usual only."""
+    from PySide6.QtCore import QSettings
+
+    if service == "kick" and QSettings().value(KICK_POWERS, False, type=bool):
+        QSettings().setValue(KICK_POWERS, False)
+        log.info("sign-in: kick didn't finish with chat and moderation asked for; next sign-in asks without them")
 CHAT_NAMES = "chat/names"  # QSettings, as app/chat_panel.NAMES: the channels the Chat panel reads
 KICK_PORT = 51587  # Kick matches the redirect URL exactly, so it's always this one
 KICK_REDIRECT = f"http://localhost:{KICK_PORT}/callback"
@@ -128,10 +148,12 @@ class Flow:
             else:
                 fetched = (_youtube_rest if self.service == "youtube" else _kick_rest)(self, code)
         except Cancelled:
-            log.info("sign-in: %s cancelled", self.service)
+            log.info("sign-in: %s canceled", self.service)
+            _powers_refused(self.service)
             raise
         except SignInError as exc:
             log.info("sign-in: %s failed: %s", self.service, exc)
+            _powers_refused(self.service)
             raise
         except Exception:
             log.exception("sign-in: %s failed", self.service)
@@ -161,7 +183,7 @@ def begin(service: str, keep: bool = False, vertical: bool = False) -> Flow:
     else:
         waiter = Waiter(KICK_PORT, host="localhost", label="Kick")
         params = {"response_type": "code", "client_id": cid, "redirect_uri": waiter.url,
-                  "scope": KICK_SCOPES,
+                  "scope": kick_scopes(),
                   "code_challenge": challenge, "code_challenge_method": "S256", "state": waiter.state}
         auth = KICK_AUTH
     try:

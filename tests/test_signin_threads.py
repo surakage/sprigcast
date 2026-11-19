@@ -126,7 +126,7 @@ def test_sign_in_steps_are_logged(monkeypatch, caplog):
     with pytest.raises(Cancelled):
         flow.finish(cancel)
     text = caplog.text
-    assert "sign-in: youtube started" in text and "sign-in: youtube cancelled" in text
+    assert "sign-in: youtube started" in text and "sign-in: youtube canceled" in text
     assert "yt-id" not in text  # nothing private in the log
 
 

@@ -48,6 +48,9 @@ domain: `slothbloom.com` (verify it in Google Search Console first).
    - Scopes: **Read user information**, **Read channel information**, **Read stream URL and stream key**,
      **Update livestream metadata** (`user:read channel:read streamkey:read channel:write`; the last one is
      for Stream details).
+   - For chat back and moderation from the Chat panel, also tick **Write to chat** and the ban permission
+     (`chat:write moderation:ban`). SprigCast asks for these two only after someone chooses to chat or moderate
+     on Kick, so a sign-in for the stream key never depends on them.
 3. The **Client ID** goes in `DEFAULTS` and `wrangler.toml`. The **Client Secret** goes only into the helper:
    `npx wrangler secret put KICK_CLIENT_SECRET`.
 

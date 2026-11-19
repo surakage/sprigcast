@@ -525,6 +525,12 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 - Hidden accounts: right-click a chat line to hide its sender, or edit the list under ⋯ → Hidden accounts… (common
   bots one click away). Hidden accounts never show in the Chat panel or in chat on your stream. Right-click also
   offers Reply (starts your message with @name, Twitch) and Copy.
+- Moderate from the Chat panel: right-click a chat line to Timeout (1 minute to 1 day), Ban, Delete message or Block
+  on Twitch, and to Timeout or Ban on Kick, as the account you signed in with (your own chat, or one you moderate).
+  The lines leave the panel and chat on your stream at once. You can write in Kick chat too: a chip beside the
+  message box picks Twitch or Kick, and Reply picks the line's own chat. Sign-ins made before this need one more
+  sign-in to allow it; Kick is asked for chat and moderation only after you choose to use them. YouTube waits for
+  Google's review.
 
 ### Gardens and paths
 
