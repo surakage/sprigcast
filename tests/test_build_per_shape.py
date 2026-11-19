@@ -94,3 +94,44 @@ def test_leaves_tags_are_icons():
     assert tag_badges("2 hidden here · filters · problem") == [
         ("eye-off", theme.MUTED), ("sliders", theme.MUTED), ("warning", theme.BAD)]
     assert tag_badges("waiting") == [("clock", theme.MUTED)]
+
+
+def test_a_capture_card_is_called_one_and_fills_the_canvas(tmp_path, monkeypatch):
+    """Adding the Elgato HD60 X from Video capture: titled Video capture, full HD, filling the canvas, its own
+    icon (PC, 2026-11-19)."""
+    import keyring
+    from PySide6.QtCore import QCoreApplication, QSettings
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(keyring, "get_password", lambda *a: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("CaptureCardTest")
+    QSettings().clear()
+    from sprigcast.app.build_stage import ROLE_KIND
+    from sprigcast.app.camera_dialog import CameraDialog
+    from sprigcast.app.main_window import MainWindow
+    from sprigcast.sources.camera import CameraDevice
+
+    card, cam = CameraDevice(0, "Elgato HD60 X", "card"), CameraDevice(1, "Facecam MK.2", "cam")
+    dialog = CameraDialog([card], {"name": card.name, "path": card.path})
+    assert dialog.heading.text() == "Video capture" and dialog.settings()["width"] == 1920
+    dialog.deleteLater()
+    dialog = CameraDialog([cam], {"name": cam.name, "path": cam.path})
+    assert dialog.heading.text() == "Camera" and dialog.settings()["width"] == 1280
+    dialog.deleteLater()
+
+    col = SceneCollection(canvases=[Canvas(id=H, width=1920, height=1080)],
+                          scenes=[Scene(id="b", name="Main", canvas=H)])
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        w._pick_bloom("b")
+        w._add_camera(card)
+        item = w._item()  # in the bloom's sprig
+        assert (item.x, item.y, item.scale) == (0, 0, 1)
+        assert w._kind_and_swatch(col.source(item.source), H)[0] == "capture_card"
+        w._add_camera(cam)
+        assert w._item().x > 1000  # a webcam still starts small in the corner
+    finally:
+        w.close()
+        QSettings().clear()

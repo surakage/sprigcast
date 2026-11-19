@@ -542,7 +542,10 @@ class GettingStartedDialog(QDialog):
         self.step.setText("2 of 2" if gear else "1 of 2")
         self.pages.currentWidget().adjustSize()
         self.pages.setFixedHeight(self.pages.currentWidget().sizeHint().height())
-        self.adjustSize()
+        # Taller or shorter as rows come and go, never narrower: adjustSize() shrank the card (and every chip
+        # with it) to its smallest width on the first pick (PC, 2026-11-19).
+        hint = self.sizeHint()
+        self.resize(max(self.width(), hint.width(), self.minimumWidth()), max(hint.height(), self.minimumHeight()))
 
     def _place_toggled(self, key: str, on: bool) -> None:
         place = self.places[key]

@@ -164,7 +164,7 @@ from sprigcast.render.engine import Engine
 from sprigcast.core.device_makers import label as camera_label
 from sprigcast.sources.audio import device_label as sound_label
 from sprigcast.sources.audio import list_audio_devices
-from sprigcast.sources.camera import list_cameras
+from sprigcast.sources.camera import is_capture_card, list_cameras
 from sprigcast.sources.media import file_filter as media_file_filter, is_sound_file
 from sprigcast.sources.win32_enum import list_monitors, list_windows
 
@@ -3426,7 +3426,7 @@ class MainWindow(QMainWindow):
                 child.setIcon(0, icons.icon("sprig", theme.ACCENT))
                 child.setData(0, ROLE_ID, part.id)
                 child.setData(0, ROLE_ROW, "sprig")
-                kind = self.collection.sprig_kind(part, canvas_id)
+                kind = self.collection.sprig_kind(part, canvas_id, look=self._look_kind)
                 child.setData(0, ROLE_SOURCE_KIND, kind)  # what it shows: camera, chat, game...
                 child.setData(0, ROLE_COLOUR, self._sprig_colour(part, canvas_id) if kind == "color" else None)
                 child.setData(0, LIB_NAME, part.name)
@@ -3537,14 +3537,22 @@ class MainWindow(QMainWindow):
             detail += f"\n{hidden} hidden here"
         if "filters" in tags:
             detail += "\nHas filters"
-        row.setToolTip(f"{config.name}  ({PART if config.kind == PART_KIND else config.kind}){detail}")
+        what = PART if config.kind == PART_KIND else KIND_NAMES.get(self._look_kind(config), config.kind)
+        row.setToolTip(f"{config.name}  ({what}){detail}")
+
+    @staticmethod
+    def _look_kind(config) -> str:
+        """The kind a row's icon shows: a camera that is a capture card (Elgato HD60 X...) shows as one."""
+        if config.kind == "camera" and is_capture_card(str(config.settings.get("name") or config.name)):
+            return "capture_card"
+        return config.kind
 
     def _kind_and_swatch(self, config, canvas_id: str | None) -> tuple[str, str | None]:
         """The kind a row's icon shows, and a colour source's colour. A sprig shows what it holds."""
-        kind = config.kind
+        kind = self._look_kind(config)
         part = self.collection.part_of(config) if kind == PART_KIND else None
         if part is not None:
-            kind = self.collection.sprig_kind(part, canvas_id)
+            kind = self.collection.sprig_kind(part, canvas_id, look=self._look_kind)
             return kind, self._sprig_colour(part, canvas_id) if kind == "color" else None
         return kind, config.settings.get("color") if kind == "color" else None
 
@@ -5044,9 +5052,15 @@ class MainWindow(QMainWindow):
                 return
             name = ask_name(self, short_name(settings["name"], "Camera"), settings["name"])
         self._add_item(SourceConfig(id=self.collection.new_id("camera"), kind="camera", name=name, settings=settings))
-        # Start as a quarter-width overlay in the bottom-right corner, like a typical facecam.
         item, canvas = self._item(), self.collection.canvas(scene.canvas)
-        if item is not None:
+        if item is not None and is_capture_card(settings["name"]):
+            # A capture card is a console or another PC: it fills the canvas, centred (PC, 2026-11-19).
+            item.scale = min(canvas.width / settings["width"], canvas.height / settings["height"])
+            item.x = (canvas.width - settings["width"] * item.scale) / 2
+            item.y = (canvas.height - settings["height"] * item.scale) / 2
+            self._changed()
+            self._refresh_properties()
+        elif item is not None:  # a quarter-width overlay in the bottom-right corner, like a typical facecam
             item.scale = (canvas.width * 0.25) / settings["width"]
             item.x = canvas.width - settings["width"] * item.scale - 32
             item.y = canvas.height - settings["height"] * item.scale - 32

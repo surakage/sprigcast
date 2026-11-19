@@ -661,11 +661,13 @@ class SceneCollection(BaseModel):
                 return True
         return False
 
-    def sprig_kind(self, part: Scene, canvas_id: str | None = None, _seen: frozenset = frozenset()) -> str:
+    def sprig_kind(self, part: Scene, canvas_id: str | None = None, _seen: frozenset = frozenset(),
+                   look=None) -> str:
         """What a sprig shows, as a source kind for its icon: "camera" for a webcam sprig, "chat" for a chat
         one... A colour behind something else and its sound don't count; nested sprigs count as what they
         show. "empty" when it holds nothing yet, "nested" when it holds two or more sprigs (and nothing else),
-        "scene" when it mixes kinds: the sprig icon."""
+        "scene" when it mixes kinds: the sprig icon. look(source) may name a source's kind more closely
+        ("capture_card" for a camera that is one)."""
         part = self.main_part(part)
         if part.id in _seen:
             return "scene"
@@ -680,12 +682,12 @@ class SceneCollection(BaseModel):
             inner = self.part_of(source) if source.kind == PART_KIND else None
             if inner is not None:
                 sprigs += 1
-                kind = self.sprig_kind(inner, canvas_id, _seen | {part.id})
+                kind = self.sprig_kind(inner, canvas_id, _seen | {part.id}, look)
                 if kind != "empty":  # an empty sprig inside shows nothing
                     kinds.append(kind)
             else:
                 others += 1
-                kinds.append(source.kind)
+                kinds.append(look(source) if look is not None else source.kind)
         if sprigs >= 2 and not others:
             return "nested"
         if not kinds:
