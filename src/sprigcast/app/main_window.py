@@ -2973,8 +2973,9 @@ class MainWindow(QMainWindow):
         if self.isMinimized() or not self.isVisible():
             return frozenset(projected)  # a projector keeps showing while the main window is down
         keys = projected | {cid for cid, p in self.previews.items() if p.isVisible() and p.width() > 1}
-        if self.mode == "build":
-            keys |= {f"next:{cid}" for cid in self.engine.staged if self.previews[cid].isVisible()}
+        if self.mode == "build":  # a canvas showing the bloom being edited doesn't show its on-air picture:
+            edited = {cid for cid in self.engine.staged if self.previews[cid].isVisible()}  # that one isn't copied
+            keys = (keys - (edited - projected)) | {f"next:{cid}" for cid in edited}
         if self.part_preview.isVisible() or self.in_place is not None:
             keys.add("part")
         return frozenset(keys)

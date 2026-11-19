@@ -17,6 +17,16 @@ Found with a big garden brought over from OBS (88 scenes, 61 web pages, about 78
 - Build's sprig list and "used in" counts walk the garden once, not once per sprig (0.8 to 1.1 s freezes with that
   garden).
 - Build's list: a click on a row at the moment the list is made again no longer raises an error.
+- The engine draws a canvas only when something takes its picture: a canvas with no preview, recording or stream
+  on it isn't drawn at all, and one only a preview shows is drawn 30 times a second (15 with Preview while live:
+  Light), not 60. Recordings and streams still get every frame.
+- Build shows the engine's picture of the bloom being edited and of the sprig that is open. SprigCast's older
+  drawing code used to make them, which meant every sprig in use was drawn a second time and every page was copied
+  through memory while Build was open.
+- In Build, a canvas showing the bloom being edited no longer also copies back its on-air picture that nobody sees.
+- A stinger waiting for its clip to open stays with the engine, which shows the old bloom until the clip is there.
+  The wait used to hand the canvas and its stream frames to the older drawing code and back at every switch (frames
+  of 55 to 114 ms and a jump of the picture with the imported garden).
 - Pages brought over from OBS sleep while not on screen, like any SprigCast page. OBS keeps every page running
   unless told otherwise, and that was carried over. One note after the import says so.
 

@@ -332,7 +332,8 @@ typedef struct sc_engine_stats {
     int32_t canvases;
     int32_t previews;
     int32_t sources;
-    int32_t reserved;
+    int32_t canvas_draws;    /* canvases drawn so far, over all frames (one nobody takes a picture of isn't drawn);
+                                starts again from 0 past 2^31 */
 } sc_engine_stats;
 
 /* sc_engine_source_upload flags. */
