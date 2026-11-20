@@ -22,7 +22,7 @@ def screen_label(index: int, screen: QScreen) -> str:
     return f"Full screen on Screen {index + 1}{main}  ({size.width()}×{size.height()})"
 
 
-HIDE_POINTER = "projector/hide_pointer"  # Settings → General → Pop-out views (full-screen ones)
+HIDE_POINTER = "projector/hide_pointer"  # Settings → General → Projectors (full-screen ones)
 ON_TOP = "projector/on_top"
 
 
@@ -38,7 +38,7 @@ def on_top() -> bool:
     return QSettings().value(ON_TOP, False, type=bool)
 
 
-REOPEN = "projector/reopen"  # Settings → General → Pop-out views → Reopen them next time
+REOPEN = "projector/reopen"  # Settings → General → Projectors → Reopen them next time
 OPEN_LIST = "projector/open"  # the pop-outs that were open when SprigCast closed (JSON), kept only with REOPEN on
 
 

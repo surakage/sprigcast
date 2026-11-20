@@ -1037,9 +1037,11 @@ class NativeApi:
     def filter_toggle(self, data):
         on: list[bool] = []  # the first one decides, so a sprig's placements end up the same
 
+        from sprigcast.core.filters import active
+
         def one(source):
             found = self._filter(source, data)
-            on.append(not found.enabled)
+            on.append(not active(found))  # a Freeze whose time ran out freezes again
             return self._set_filter(source, data, on[0], None)
 
         return self._each_owner(data, one)

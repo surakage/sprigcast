@@ -79,7 +79,7 @@ def test_main_window_menus(app, tmp_path, monkeypatch):
         assert "Properties…" in on_item and "Remove" in on_item and "Transform" in on_item
         # most used first, Remove last (user, 2026-11-20); no Barrel roll entry (it's a filter)
         assert on_item.index("Properties…") < on_item.index("Transform") < on_item.index("Order") \
-            < on_item.index("Hide") < on_item.index("Pop out") < on_item.index("Remove")
+            < on_item.index("Hide") < on_item.index("Projector") < on_item.index("Remove")
         assert on_item[-1] == "Remove"
         # no filters or effects listed: Filters… shows them (user, 2026-11-20)
         assert not {"Shape", "Color look"} & set(on_item)
@@ -88,7 +88,7 @@ def test_main_window_menus(app, tmp_path, monkeypatch):
         size_menu = next(a.menu() for a in menu.actions() if a.text() == "Transform")
         fit = next(a for a in size_menu.actions() if a.text() == "Fit to canvas")
         assert fit.shortcut().toString() == "Ctrl+F"  # the shortcut shows in the menu
-        assert _texts(w._preview_menu("horizontal", -1)) == ["Add", "Pop out", "Snapping", "Canvas size and frame rate…"]
+        assert _texts(w._preview_menu("horizontal", -1)) == ["Add", "Projector", "Snapping", "Canvas size and frame rate…"]
         w._set_mode("live")
         w._edit_in_build("h2")
         assert w.mode == "build" and w.selected_scene_id == "h2"

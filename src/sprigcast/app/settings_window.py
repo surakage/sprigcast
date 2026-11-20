@@ -85,8 +85,8 @@ SEARCH: list[tuple[str, str, bool]] = [
     ("Ask before going live", "General", False), ("Keep recording when the stream ends", "General", False),
     ("Start Instant replay when I go live", "General", False), ("Snapping", "General", False),
     ("Snap distance", "General", False),
-    ("Show what's outside the canvas", "General", False), ("Pop-out views", "General", False), ("Projectors", "General", False),
-    ("Always on top", "General", False), ("Reopen pop-outs", "General", False), ("Hide the mouse pointer", "General", False),
+    ("Show what's outside the canvas", "General", False), ("Projectors", "General", False),
+    ("Always on top", "General", False), ("Reopen projectors", "General", False), ("Hide the mouse pointer", "General", False),
     ("Hide from screen capture", "General", False), ("Privacy", "General", False),
     ("System tray", "General", False), ("Import from OBS", "General", False),
     ("Import from Streamlabs", "General", False), ("Import from Meld", "General", False), ("Minimize to the tray", "General", False),
@@ -898,18 +898,18 @@ class SettingsWindow(QDialog):
 
             from sprigcast.app import projector, privacy
 
-            popouts = QGroupBox("Pop-out views")
+            popouts = QGroupBox("Projectors")
             pbox = QVBoxLayout(popouts)
             self.projector_hide_pointer = QCheckBox("Hide the mouse pointer")
-            self.projector_hide_pointer.setToolTip("On full-screen pop-outs")
+            self.projector_hide_pointer.setToolTip("On full-screen projectors")
             self.projector_hide_pointer.setChecked(projector.hide_pointer())
             pbox.addWidget(self.projector_hide_pointer)
             self.projector_on_top = QCheckBox("Always on top")
-            self.projector_on_top.setToolTip("Pop-out windows stay above other windows")
+            self.projector_on_top.setToolTip("Projector windows stay above other windows")
             self.projector_on_top.setChecked(projector.on_top())
             pbox.addWidget(self.projector_on_top)
             self.projector_reopen = QCheckBox("Reopen them next time")
-            self.projector_reopen.setToolTip("The pop-outs open when you close SprigCast come back when it starts")
+            self.projector_reopen.setToolTip("The projectors open when you close SprigCast come back when it starts")
             self.projector_reopen.setChecked(projector.reopen())
             pbox.addWidget(self.projector_reopen)
 
@@ -949,7 +949,7 @@ class SettingsWindow(QDialog):
             prbox = QVBoxLayout(private)
             self.hide_from_capture = QCheckBox("Hide SprigCast from screen capture")
             self.hide_from_capture.setToolTip("Display captures and screen sharing leave out SprigCast's own windows."
-                                              "\nPop-out views still show.")
+                                              "\nProjectors still show.")
             self.hide_from_capture.setChecked(privacy.hidden())
             self.hide_from_capture.setEnabled(privacy.supported())
             prbox.addWidget(self.hide_from_capture)
@@ -1127,7 +1127,7 @@ class SettingsWindow(QDialog):
             self.preview_live.addItem(label, key)
         self.preview_live.setCurrentIndex(max(0, self.preview_live.findData(preview_choice())))
         self.preview_live.setToolTip("Light or Off leaves more of the graphics card for the stream on a "
-                                     "slower PC.\nPop-out projectors keep drawing.")
+                                     "slower PC.\nProjectors keep drawing.")
         form.addRow("Preview while live", self.preview_live)
         return card
 

@@ -970,7 +970,7 @@ class MainWindow(QMainWindow):
 
     def _preview_menu(self, canvas_id: str, index: int) -> QMenu:
         """Right-click in a preview: the same menu as the Sources list for what's under the mouse.
-        In Live (nothing to edit) it offers Pop out and this canvas's settings."""
+        In Live (nothing to edit) it offers Projector and this canvas's settings."""
         part = canvas_id.startswith("part:")
         if part and index < 0:  # an open sprig's empty space: just Snapping
             menu = QMenu(self)
@@ -1067,7 +1067,7 @@ class MainWindow(QMainWindow):
             lambda: self.open_projector(canvas_id, None, kind, ref))
         if any(p.target == target for p in self.projectors):
             menu.addSeparator()
-            menu.addAction("Close pop-outs").triggered.connect(
+            menu.addAction("Close projectors").triggered.connect(
                 lambda: [p.close() for p in list(self.projectors) if p.target == target])
 
     def _live_bloom_menu(self, menu: QMenu, scene_id: str) -> None:
@@ -1161,13 +1161,14 @@ class MainWindow(QMainWindow):
             self._refresh_all()
 
     def _pop_out_menu(self, menu: QMenu) -> QMenu:
-        """ "Pop out": show it big on another screen, or in its own window (a projector)."""
-        sub = menu.addMenu(icons.icon("monitor", theme.MUTED), "Pop out")
+        """ "Projector" (user, 2026-11-20: one professional word, not "Pop out"): show it big on another screen,
+        or in its own window."""
+        sub = menu.addMenu(icons.icon("monitor", theme.MUTED), "Projector")
         sub.menuAction().setToolTip("Show it on its own: full screen on a monitor, or in a window")
         return sub
 
     def _projector_menu(self, menu: QMenu, kind: str, ref: str) -> None:
-        """Add "Pop out" for a bloom, sprig or source."""
+        """Add "Projector" for a bloom, sprig or source."""
         if kind == "bloom":
             scene = next((sc for sc in self.collection.scenes if sc.id == ref), None)
             if scene is None:
@@ -7067,7 +7068,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(1500, self, self.reopen_projectors)  # once the window is up and drawn
 
     def reopen_projectors(self) -> list:
-        """Open the pop-outs that were open last time (Settings → General → Pop-out views → Reopen them next
+        """Open the pop-outs that were open last time (Settings → General → Projectors → Reopen them next
         time). One whose bloom, source, canvas or screen is gone is left out: nothing opens somewhere else."""
         from sprigcast.app import projector as pop_outs
 
@@ -7190,7 +7191,7 @@ class MainWindow(QMainWindow):
             commands.append(Command(f"Show {label.lower()}", "Canvas",
                                     lambda k=key: self.show_canvases(k), checked=key == choice))
         for canvas in self.collection.canvases:
-            commands.append(Command(f"Pop out {canvas.id.capitalize()}", "Canvas",
+            commands.append(Command(f"{canvas.id.capitalize()} projector", "Canvas",
                                     lambda cid=canvas.id: self.open_projector(cid, None)))
         for tab, label in (("General", "General"), ("Appearance", "Appearance"),
                            ("Stream/Places", "Places to stream"),
