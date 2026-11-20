@@ -331,8 +331,10 @@ def test_the_upload_can_be_tested_again_by_hand_and_shows_in_a_rounded_field(mon
         assert isinstance(w.upload_row, QGroupBox) and w.upload_row.title() == "Upload speed"
         assert "border-radius: 13px" in w.upload.styleSheet() and "width: 0px" in w.upload.styleSheet()
         assert w.plan.quality == (720, 30)
+        assert w.grow_label.text() == "YOUR UPLOAD CAN CARRY" and "2600 kbps" in w.stage_title.text()
         w.test_again.click()  # by hand, without starting over
         assert w.upload.value() == 24.3 and w.profile.upload_kbps == 24300
+        assert w.grow_label.text() == "YOUR PC CAN GROW TO"
         assert w.plan.quality == (1080, 60) and w.test_again.isEnabled() and w.test_again.text() == "Test again"
         w.test_again.click()  # offline now: what was measured stays
         assert w.profile.upload_kbps == 24300 and "Couldn't measure" in w.upload_label.text()
@@ -365,3 +367,65 @@ def _with(c, outputs):
     copy = c.model_copy(deep=True)
     copy.outputs = outputs
     return copy
+
+
+def _three_places():
+    c = _collection()
+    c.outputs = [Output(id=i, type="stream", service=i, canvas="horizontal", enabled=True)
+                 for i in ("twitch", "youtube", "kick")]
+    return c
+
+
+def test_a_small_upload_is_named_as_the_limit_not_the_pc():
+    """User 2026-11-19: "saying my computer is not good enough at 10.6 up speed". Three places share what the
+    upload carries; the note says so and what fewer places would get."""
+    c = _three_places()
+    p = optimize.PcProfile(**STRONG, upload_kbps=10600)
+    assert optimize.pc_step(p, c) == (1080, 60) and optimize.upload_is_the_limit(p, c)
+    plan = optimize.plan(p, c)
+    assert plan.quality == (720, 30)
+    note = next(n for n in plan.notes if n.startswith("Your upload"))
+    assert "10.6 Mbps" in note and "not your PC" in note and "7950 kbps, shared by 3 places" in note
+    assert "2 places would get 720p · 60 fps." in note and "One place alone would get 1080p · 60 fps." in note
+
+    c.outputs = c.outputs[:1]  # one place: the same upload carries all the PC can do
+    assert not optimize.upload_is_the_limit(p, c) and optimize.upload_note(p, c) == ""
+    assert optimize.plan(p, c).quality == (1080, 60)
+
+    c = _three_places()
+    fast = optimize.PcProfile(**STRONG, upload_kbps=30000)
+    assert not optimize.upload_is_the_limit(fast, c) and not [n for n in optimize.plan(fast, c).notes
+                                                              if n.startswith("Your upload")]
+
+
+def test_the_upload_test_says_who_it_is_and_tries_a_second_shape_when_refused(monkeypatch):
+    """PC check 2026-11-19: "upload test stopped: HTTP Error 403: Forbidden" on all four connections, with
+    Python's own name on the request."""
+    import urllib.error
+    import urllib.request
+
+    seen = []
+
+    class Reply:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b""
+
+    def urlopen(request, timeout=None):
+        headers = {k.lower(): v for k, v in request.header_items()}
+        seen.append(headers)
+        assert "python" not in headers["user-agent"].lower()
+        if "origin" not in headers:  # the plain shape is refused: the second one is taken
+            raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", None, None)
+        return Reply()
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    kbps = optimize.upload_speed(seconds=0.4, connections=1)
+    assert kbps and kbps > 0
+    assert "origin" not in seen[0] and "origin" in seen[1]
+    assert all("origin" in h for h in seen[2:])  # the shape that works goes first from then on

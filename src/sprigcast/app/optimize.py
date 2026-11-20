@@ -215,6 +215,16 @@ def _check_x264(p: PcProfile) -> str:
 
 UPLOAD_URL = "https://speed.cloudflare.com/__up"  # Cloudflare's public speed test: takes bytes, keeps nothing
 UPLOAD_SECONDS = 8.0
+# Python's own "Python-urllib" name is refused by the test site (HTTP 403 on every connection, 2026-11-19): the
+# test says who it is. A second shape, the one the site's own page sends, is tried when the first is refused.
+UPLOAD_HEADERS = (
+    {"User-Agent": "SprigCast upload test", "Accept": "*/*", "Content-Type": "application/octet-stream"},
+    {"User-Agent": "SprigCast upload test", "Accept": "*/*", "Content-Type": "text/plain;charset=UTF-8",
+     "Origin": "https://speed.cloudflare.com", "Referer": "https://speed.cloudflare.com/"},
+    {"User-Agent": "Mozilla/5.0 (compatible; SprigCast upload test)", "Accept": "*/*",
+     "Content-Type": "text/plain;charset=UTF-8",
+     "Origin": "https://speed.cloudflare.com", "Referer": "https://speed.cloudflare.com/"},
+)
 UPLOAD_WARMUP_S = 1.5  # connecting and each connection's slow start don't count
 UPLOAD_CONNECTIONS = 4  # at once, like streaming to several places: one connection alone reads the line low
 
@@ -228,13 +238,25 @@ def upload_speed(url: str = UPLOAD_URL, seconds: float = UPLOAD_SECONDS, post=No
     streams of 23 Mbps for an hour, 2026-11-19), and several streams are several connections.
     """
     import threading
+    import urllib.error
     import urllib.request
 
+    shapes = [dict(h) for h in UPLOAD_HEADERS]  # the request shapes to try; the one that's taken goes first
+
     def default_post(data: bytes) -> None:
-        request = urllib.request.Request(url, data=data, method="POST",
-                                         headers={"Content-Type": "application/octet-stream"})
-        with urllib.request.urlopen(request, timeout=seconds + 5) as reply:
-            reply.read()
+        for n, headers in enumerate(list(shapes)):
+            request = urllib.request.Request(url, data=data, method="POST", headers=headers)
+            try:
+                with urllib.request.urlopen(request, timeout=seconds + 5) as reply:
+                    reply.read()
+            except urllib.error.HTTPError as exc:
+                if exc.code in (401, 403) and n + 1 < len(shapes):
+                    continue  # refused as it is: the next shape
+                raise
+            if n and headers in shapes:  # this one works: first from now on (list changes are safe across threads)
+                shapes.remove(headers)
+                shapes.insert(0, headers)
+            return
 
     post = post or default_post
     began = time.monotonic()
@@ -471,6 +493,43 @@ def recommended_step(p: PcProfile, c: SceneCollection) -> tuple[int, int]:
     return _best_step(t, SERVICES["custom"], _Canvas1080, budget)
 
 
+def pc_step(p: PcProfile, c: SceneCollection) -> tuple[int, int]:
+    """What this PC could carry with all the upload in the world."""
+    return pc_target(p, _encodes(p, c)).step
+
+
+def upload_is_the_limit(p: PcProfile, c: SceneCollection) -> bool:
+    """The suggestion sits below what the PC can do because of the upload, not the PC."""
+    return p.wants_stream and LADDER.index(recommended_step(p, c)) > LADDER.index(pc_step(p, c))
+
+
+def upload_note(p: PcProfile, c: SceneCollection) -> str:
+    """With the upload as the limit: what it carries in all, shared by how many places, and what fewer
+    places would get. The sites' own numbers (Twitch 6000 kbps at 1080p60, 4500 at 720p60, 3000 at 720p30;
+    YouTube at least 6000, 5000 and 3000; Kick up to 8000) each take their own share of the upload, and the
+    usual advice is to send no more than 70 to 80% of it."""
+    from sprigcast.output.stream import SERVICES
+
+    places = len(_stream_outputs(c))
+    upload = usable_upload(p)
+    if not upload or not places or not upload_is_the_limit(p, c):
+        return ""
+    video = int(upload * UPLOAD_SHARE)
+    t = pc_target(p, _encodes(p, c))
+    text = f"Your upload ({upload / 1000:.1f} Mbps) is the limit, not your PC: it safely carries about {video} kbps"
+    if places == 1:
+        return text + "."
+    text += f", shared by {places} places."
+    for fewer in range(places - 1, 0, -1):
+        step = _best_step(t, SERVICES["custom"], _Canvas1080, video / fewer - c.stream_encoder.audio_kbps)
+        if LADDER.index(step) < LADDER.index(recommended_step(p, c)):
+            what = "One place alone" if fewer == 1 else f"{fewer} places"
+            text += f" {what} would get {step_text(step)}."
+            if step == pc_step(p, c):
+                break
+    return text
+
+
 def _best_step(t: Target, service, canvas, budget_kbps: float) -> tuple[int, int]:
     service_short = min(service.long_side * 9 // 16, min(canvas.width, canvas.height))
     for step in LADDER:
@@ -675,6 +734,9 @@ def plan(p: PcProfile, c: SceneCollection, waiting_fps: dict[str, int] | None = 
         except Exception:
             log.exception("optimize rule %s failed", getattr(rule, "__name__", rule))
     notes = []
+    limit = upload_note(p, c) if not p.extra.get(QUALITY) else ""
+    if limit:
+        notes.append(limit)
     if p.wants_stream and not p.upload_kbps:
         notes.append("Upload not tested: stream bitrates use each site's usual value. Auto bitrate lowers it if needed.")
     if p.wants_stream and not _stream_outputs(c):
