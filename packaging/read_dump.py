@@ -82,3 +82,7 @@ def main(path: str, folder: str) -> int:
                     f"{struct.unpack_from('<Q', blob, i)[0]:x}" for i in range(0, 0x40, 8))
             print(f"  stack +0x{offset:05x} {value:016x} {note}")
     return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1], sys.argv[2]))
