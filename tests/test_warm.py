@@ -32,7 +32,7 @@ def test_the_window_watch_names_a_module_being_loaded(tmp_path, monkeypatch):
     worker.start()
     try:
         assert started.wait(5)
-        where = pacing._where(sys._current_frames()[worker.ident])
+        where = pacing._where(pacing.thread_stacks()[worker.ident])
     finally:
         go.set()
         worker.join()

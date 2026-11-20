@@ -1016,6 +1016,10 @@ def _shadow_picture(ratio: float, colour: str) -> tuple:
     path = QPainterPath()
     path.addRoundedRect(QRectF(0, 0, side, side), CARD_RADIUS, CARD_RADIUS)
     scene = QGraphicsScene()
+    # No index: a scene with one keeps a 2-second timer going after an item is added, for a scene that lives a
+    # few milliseconds. That timer's tick, handed to the scene's freed index, was the start-up check's rare
+    # access violation (2026-11-19/20; the scene had been freed on another thread, see pacing.thread_stacks).
+    scene.setItemIndexMethod(QGraphicsScene.ItemIndexMethod.NoIndex)
     item = QGraphicsPathItem(path)
     item.setPen(QPen(Qt.PenStyle.NoPen))
     item.setBrush(QBrush(QColor(colour)))

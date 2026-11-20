@@ -207,20 +207,62 @@ def housekeeping(name: str, work) -> None:
         log.info("housekeeping: %s took %.1f ms", name, ms)
 
 
+# Where threads are, without ever holding one of their frames. A frame object taken from another thread
+# (sys._current_frames) keeps that function's local objects alive: when the function returns while the frame is
+# still held, they are freed by whoever lets the frame go, on that thread. The stall watch held the window's
+# frame inside theme._shadow_picture, so its graphics scene was freed on the watch's thread, where Qt can't stop
+# the scene's 2-second timer; the timer's tick then went to the freed object: the "access violation" about one
+# start in 40 had on GitHub, 2 s after the card shadow was warmed (2026-11-19/20), and a risk for any Qt object a
+# busy function of the window's holds. Python's fault handler writes the same lines while this thread holds
+# Python's lock, straight from the interpreter's own records: no frame objects, nothing kept alive.
+_stack_file = None
+_stack_lock = threading.Lock()
+
+
+def thread_stacks() -> dict[int, list[tuple[str, int, str]]]:
+    """Thread ident -> [(file, line, function), ...], innermost first, for every Python thread."""
+    import faulthandler
+    import re
+    import tempfile
+
+    global _stack_file
+    with _stack_lock:
+        try:
+            if _stack_file is None:
+                _stack_file = tempfile.TemporaryFile()  # noqa: SIM115 (kept open for the whole run)
+            _stack_file.seek(0)
+            _stack_file.truncate()
+            faulthandler.dump_traceback(_stack_file, all_threads=True)
+            _stack_file.seek(0)
+            text = _stack_file.read().decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001 - no temp folder, a closed file: nothing to say then
+            return {}
+    stacks: dict[int, list[tuple[str, int, str]]] = {}
+    current: list[tuple[str, int, str]] | None = None
+    for line in text.splitlines():
+        head = re.match(r"(?:Current thread|Thread) 0x([0-9a-fA-F]+)", line)
+        if head:
+            current = stacks.setdefault(int(head.group(1), 16), [])
+            continue
+        at = re.match(r'\s+File "(.*)", line (\d+) in (.*)$', line)
+        if at and current is not None:
+            current.append((at.group(1), int(at.group(2)), at.group(3)))
+    mine = stacks.get(threading.get_ident())
+    if mine and mine[0][2] == "thread_stacks":
+        del mine[0]  # (the asking thread: not this function itself)
+    return stacks
+
+
+def _told(stack, depth: int) -> str:
+    import os
+
+    return " <- ".join(f"{os.path.basename(file)}:{line} {name}" for file, line, name in stack[:depth])
+
+
 def window_at() -> str:
     """Where the window's thread is right now (its three innermost lines), or "" when unknown."""
-    import os
-    import traceback
-
     ident = _ui.get("ident")
-    frame = sys._current_frames().get(ident) if ident is not None else None
-    if frame is None:
-        return ""
-    try:
-        stack = traceback.extract_stack(frame, limit=None)[::-1][:3]
-    finally:
-        del frame
-    return " <- ".join(f"{os.path.basename(f.filename)}:{f.lineno} {f.name}" for f in stack)
+    return _told(thread_stacks().get(ident, []), 3) if ident is not None else ""
 
 
 THREADS_MOVED = 20  # log the thread count when it moved this much since the last line
@@ -371,7 +413,8 @@ STALL_EVERY_S = 10.0
 # of its own while the lock was held (SPRIGCAST_STALL_DUMPS=1): that reads the stacks of threads that are still
 # running, and it killed SprigCast three times on the PC (2026-11-17 20:57, 2026-11-18 12:21 and twice on
 # 2026-11-19 09:52, each an access violation in python312.dll reading a frame that was going away). It is gone:
-# nothing reads a running thread's stack any more, except the exit guard below when SprigCast is ending anyway.
+# nothing reads a running thread's stack without holding Python's lock any more, except the exit guard below when
+# SprigCast is ending anyway. (thread_stacks holds the lock while the lines are written: no thread runs Python then.)
 STALL_DUMPS_ENV = ("SPRIGCAST_STALL_DUMPS", "SPRIGCAST_STALL_DUMP_MS")  # no longer read: said once at start
 _IDLE_CALLS = {"wait", "sleep", "get", "select", "_wait_for_tstate_lock", "join", "acquire", "run_forever",
                "_run_once", "_poll", "accept", "recv", "read", "readinto", "wait_for", "exec", "_worker"}
@@ -379,20 +422,16 @@ _IDLE_CALLS = {"wait", "sleep", "get", "select", "_wait_for_tstate_lock", "join"
 
 def busy_stacks(skip: set[int] | None = None) -> str:
     """"name at file.py:line func <- file.py:line func" for each thread not waiting, newest call first."""
-    import os
     import threading
-    import traceback
 
     names = {t.ident: t.name for t in threading.enumerate()}
     parts = []
-    for ident, frame in sys._current_frames().items():
+    for ident, stack in thread_stacks().items():
         if skip and ident in skip:
             continue
-        stack = traceback.extract_stack(frame)[::-1]
-        if not stack or stack[0].name in _IDLE_CALLS:
+        if not stack or stack[0][2] in _IDLE_CALLS:
             continue
-        where = " <- ".join(f"{os.path.basename(f.filename)}:{f.lineno} {f.name}" for f in stack[:3])
-        parts.append(f"{names.get(ident, ident)} at {where}")
+        parts.append(f"{names.get(ident, ident)} at {_told(stack, 3)}")
     return "; ".join(parts) or "no Python thread busy (native code or the system)"
 
 
@@ -433,6 +472,7 @@ def watch_stalls(clock=time.perf_counter, interval: float = 0.05) -> None:
 
     def run():
         me = {threading.get_ident()}
+        thread_stacks()  # its file made now, not in the middle of the first stall
         logged = float("-inf")
         last = clock()
         failed_at = float("-inf")
@@ -524,15 +564,10 @@ def _check_busy(now: float) -> None:
     for entry in list(_busy.values()):
         if entry[2] is not None or now - entry[1] < BUSY_STALL_S:
             continue
-        frame = sys._current_frames().get(entry[0])
-        if frame is None:
+        stack = thread_stacks().get(entry[0])
+        if stack is None:
             continue
-        import os
-        import traceback
-
-        stack = traceback.extract_stack(frame)[::-1][:4]
-        del frame
-        entry[2] = " <- ".join(f"{os.path.basename(f.filename)}:{f.lineno} {f.name}" for f in stack) or "?"
+        entry[2] = _told(stack, 4) or "?"
 
 
 # The window's own thread: a timer on it beats every UI_BEAT_MS; when the beat stops for UI_STALL_MS the stall
@@ -605,11 +640,10 @@ def _check_window(now: float) -> None:
     limit = UI_STALL_MS if fine is None else fine / 2
     if beat is None or _ui["where"] is not None or 1000 * (now - beat) < limit:
         return
-    frame = sys._current_frames().get(ident)
-    if frame is None:
+    stack = thread_stacks().get(ident)
+    if stack is None:
         return
-    where = _where(frame)
-    del frame
+    where = _where(stack)
     # Who else is running right then: a window held up on a trivial line is waiting for Python's lock, and
     # the thread holding it is among these (PC test 2026-11-17: 328 ms on a one-line check).
     others = busy_stacks({ident, threading.get_ident()})
@@ -620,29 +654,20 @@ def _check_window(now: float) -> None:
     _ui["since"], _ui["where"] = beat, f"{where}; meanwhile {others}"
 
 
-def _where(frame, depth: int = 12) -> str:
+def _where(stack, depth: int = 12) -> str:
     """Where a thread is: its innermost frames, file:line name, innermost first. Inside an import, Python's
-    own import machinery is left out and the module being loaded is named (the PC saw 2.4 s and 5.7 s in
-    "<frozen importlib…>" with no clue which module)."""
+    own import machinery is left out and the modules being loaded are named (the PC saw 2.4 s and 5.7 s in
+    "<frozen importlib…>" with no clue which module). A module still being found or read has no line of its own
+    yet: then only the ones that asked for it are named."""
     import os
-    import traceback
 
-    importing = []
-    walk = frame
-    while walk is not None:
-        if walk.f_code.co_name == "_find_and_load" and walk.f_code.co_filename.startswith("<frozen"):
-            name = walk.f_locals.get("name")
-            if isinstance(name, str):
-                importing.append(name)
-        walk = walk.f_back
-    del walk
-    stack = traceback.extract_stack(frame)[::-1]
-    if importing:
-        stack = [f for f in stack if not f.filename.startswith("<frozen")]
-    text = " <- ".join(f"{os.path.basename(f.filename)}:{f.lineno} {f.name}" for f in stack[:depth]) or "?"
-    if importing:  # outermost first: what the code asked for, then what that pulled in
-        text = f"loading {' > '.join(importing[::-1])}: {text}"
-    return text
+    if not any(name == "_find_and_load" and file.startswith("<frozen") for file, _line, name in stack):
+        return _told(stack, depth) or "?"
+    loading = [os.path.splitext(os.path.basename(file))[0] for i, (file, _line, name) in enumerate(stack)
+               if name == "<module>" and i + 1 < len(stack) and stack[i + 1][0].startswith("<frozen")]
+    text = _told([f for f in stack if not f[0].startswith("<frozen")], depth) or "?"
+    # outermost first: what the code asked for, then what that pulled in
+    return f"loading {' > '.join(loading[::-1]) or 'a module'}: {text}"
 
 
 def raise_thread_priority(level: int = HIGHEST) -> bool:
