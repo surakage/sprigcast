@@ -8,7 +8,10 @@ its own in SprigCast's memory just for one percentage in the status bar.
 from __future__ import annotations
 
 import functools
+import logging
 import sys
+import threading
+import time
 from collections import defaultdict
 
 COUNTER = r"\GPU Engine(*)\Utilization Percentage"
@@ -29,6 +32,39 @@ def busiest_engine(samples: list[tuple[str, float]], kind: str = "") -> float:
             continue
         engines[engine] += value
     return min(100.0, max(engines.values(), default=0.0))
+
+
+def busiest_processes(samples: list[tuple[str, float]], top: int = 4) -> list[tuple[int, str, float]]:
+    """The processes using the card most: [(pid, engine type, %)], each process at its busiest engine."""
+    best: dict[int, tuple[str, float]] = {}
+    for name, value in samples:
+        if not name.startswith("pid_"):
+            continue
+        try:
+            pid = int(name.split("_", 2)[1])
+        except ValueError:
+            continue
+        kind = name.rsplit("engtype_", 1)[-1] if "engtype_" in name else "?"
+        if value > best.get(pid, ("", -1.0))[1]:
+            best[pid] = (kind, value)
+    ranked = sorted(((pid, kind, value) for pid, (kind, value) in best.items() if value >= 1.0), key=lambda r: -r[2])
+    return ranked[:top]
+
+
+def describe_processes(ranked: list[tuple[int, str, float]]) -> str:
+    """"msedge.exe (pid 4242) 3D 85%, SprigCast.exe (pid 10) 3D 20%" or "nothing busy"."""
+    import os
+
+    parts = []
+    for pid, kind, value in ranked:
+        try:
+            import psutil
+
+            name = psutil.Process(pid).name()
+        except Exception:  # noqa: BLE001 (gone already, or not allowed to look)
+            name = "?"
+        parts.append(f"{name} (pid {pid}{', this app' if pid == os.getpid() else ''}) {kind} {value:.0f}%")
+    return ", ".join(parts) or "nothing busy"
 
 
 @functools.cache
@@ -73,6 +109,8 @@ class GpuCounter:
             raise OSError("this Windows has no GPU Engine counters")
         pdh.PdhCollectQueryData(self._query)  # a rate needs two samples: this is the first
         self.encode: float | None = None  # the video encoder's load at the last read
+        self.processes: list[tuple[int, str, float]] = []  # the busiest processes at the last read
+        self.read_at = 0.0
 
     def read(self) -> float:
         """Percent busy since the last read (0 until there are two samples)."""
@@ -93,6 +131,8 @@ class GpuCounter:
         items = ctypes.cast(buffer, ctypes.POINTER(self._item))
         samples = [(items[i].name or "", items[i].value) for i in range(count.value) if items[i].status in (0, 1)]
         self.encode = busiest_engine(samples, "VideoEncode")
+        self.processes = busiest_processes(samples)
+        self.read_at = time.monotonic()
         return busiest_engine(samples)
 
     def close(self) -> None:
@@ -136,3 +176,36 @@ def windows_gpu_load() -> float | None:
 def windows_encoder_load() -> float | None:
     """The video encoder's busy % at the GPU meter's last read, or None when unknown."""
     return getattr(_counter, "encode", None) if _counter else None
+
+
+log = logging.getLogger(__name__)
+STALL_LOOK_S = 3.5  # a little over the GPU meter's interval (app/resources.py GPU_EVERY_S): its next read covers it
+_stall_logged = 0.0
+
+
+def log_gpu_users_later(stalled_ms: float) -> None:
+    """The graphics card stopped for this whole app (the render loop and the window waited ~0.75 s at once, a few
+    times a day on the PC since 2026-11-17, idle or live, either engine): log which programs were using the card
+    then, from Windows' own per-process counters. The meter's next read covers the stall; without the meter, a
+    query of its own over the next second. At most once a minute, from a thread of its own."""
+    global _stall_logged
+    now = time.monotonic()
+    if sys.platform != "win32" or now - _stall_logged < 60.0:
+        return
+    _stall_logged = now
+
+    def look() -> None:
+        try:
+            time.sleep(STALL_LOOK_S)
+            counter = _counter if _counter and getattr(_counter, "read_at", 0.0) > now else None
+            if counter is None:
+                counter = GpuCounter()
+                time.sleep(1.0)
+                counter.read()
+                counter.close()
+            log.info("graphics card stalled %.0f ms; programs using it then: %s", stalled_ms,
+                     describe_processes(counter.processes))
+        except Exception as exc:  # noqa: BLE001 (a diagnostic: never in the way)
+            log.info("graphics card stalled %.0f ms; couldn't see who used it: %s", stalled_ms, exc)
+
+    threading.Thread(target=look, name="sprigcast-gpu-stall", daemon=True).start()
