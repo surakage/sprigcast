@@ -77,7 +77,7 @@ runs:
         "QTDIR=$qtdir" | Out-File C:\qtwe\qtdir.txt
         # Qt WebEngine's source release (official_releases, archive or mirrors), checked against Qt's checksums.
         python packaging\qt_sdk.py source ${{ inputs.webengine }} qtwebengine C:\qtwe\src
-        if ($LASTEXITCODE -ne 0) { throw "Couldn't download Qt WebEngine $qt's source" }
+        if ($LASTEXITCODE -ne 0) { throw "Couldn't download Qt WebEngine ${{ inputs.webengine }} source" }
         $archive = (Get-Content C:\qtwe\src\source.txt -Raw).Trim()
         # Qt 6.12 has no qtwebengine submodule tarball: then it's the whole qt-everywhere-src, and only its
         # qtwebengine folder is unpacked.

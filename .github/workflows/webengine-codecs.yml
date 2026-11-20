@@ -22,8 +22,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Build stages run on windows-2022: MSVC 2022 like Qt 6.12's own build. MSVC 14.52 (VS 18, windows-latest)
+  # stops on dav1d's stdatomic.h shim ("__has_include_next is not defined", run 44694380973).
   stage1:
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 350
     outputs: {done: "${{ steps.s.outputs.done }}"}
     steps:
@@ -34,7 +36,7 @@ jobs:
   stage2:
     needs: stage1
     if: needs.stage1.outputs.done != 'true'
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 350
     outputs: {done: "${{ steps.s.outputs.done }}"}
     steps:
@@ -45,7 +47,7 @@ jobs:
   stage3:
     needs: stage2
     if: needs.stage2.outputs.done != 'true'
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 350
     outputs: {done: "${{ steps.s.outputs.done }}"}
     steps:
@@ -56,7 +58,7 @@ jobs:
   stage4:
     needs: stage3
     if: needs.stage3.outputs.done != 'true'
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 350
     outputs: {done: "${{ steps.s.outputs.done }}"}
     steps:
@@ -67,7 +69,7 @@ jobs:
   stage5:
     needs: stage4
     if: needs.stage4.outputs.done != 'true'
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 350
     outputs: {done: "${{ steps.s.outputs.done }}"}
     steps:
@@ -78,7 +80,7 @@ jobs:
   stage6:
     needs: stage5
     if: needs.stage5.outputs.done != 'true'
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 350
     outputs: {done: "${{ steps.s.outputs.done }}"}
     steps:

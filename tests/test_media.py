@@ -954,3 +954,55 @@ def test_a_closed_file_is_held_by_nothing(tmp_path, monkeypatch, caplog):
         finally:
             source.stop()
     assert "still held" not in caplog.text
+
+
+def test_a_sound_file_placed_in_a_bloom_plays_while_that_bloom_is_on_air(tmp_path):
+    """An OBS import's Starting Soon music (a WAV two sprigs deep) never played (PC 2026-11-20)."""
+    from sprigcast.core.scene import Canvas, Scene, SceneCollection, SceneItem, SourceConfig
+    from sprigcast.render.engine import Engine
+
+    wav = _sound(tmp_path / "music.wav")
+    col = SceneCollection(
+        canvases=[Canvas(id="h", width=64, height=36)],
+        sources=[SourceConfig(id="bgm", kind="media", name="BG Music", settings={"path": wav, "loop": True}),
+                 SourceConfig(id="pad", kind="media", name="Ding", settings={"path": wav}),
+                 SourceConfig(id="outer", kind="scene", name="Starting Soon", settings={"scene": "p1"}),
+                 SourceConfig(id="inner", kind="scene", name="BG Music", settings={"scene": "p2"})],
+        scenes=[Scene(id="soon", name="Starting Soon", canvas="h", items=[SceneItem(source="outer")]),
+                Scene(id="game", name="Gameplay", canvas="h"),
+                Scene(id="p1", name="Starting Soon", canvas="h", kind="part", items=[SceneItem(source="inner")]),
+                Scene(id="p2", name="BG Music", canvas="h", kind="part", items=[SceneItem(source="bgm")])],
+        active_scenes={"h": "game"},
+    )
+    engine = Engine(col)
+    told: dict[str, list] = {"bgm": [], "pad": []}
+    try:
+        engine._sync_sources(type("C", (), {"forget": lambda *_: None, "targets": {}, "parts": {},
+                                            "downscale": {}, "effects": {}})())
+        for sid in told:
+            engine._sources[sid].set_hidden = told[sid].append
+        engine._show_hidden()
+        engine.staged["h"] = "soon"  # staged in Build: still quiet
+        engine._show_hidden()
+        engine._collection.active_scenes["h"] = "soon"
+        engine._show_hidden()
+        engine._collection.active_scenes["h"] = "game"
+        engine._show_hidden()
+        assert told["bgm"] == [True, False, True]
+        assert told["pad"] == []  # only in the Sound list: plays when you press play
+    finally:
+        for source in engine._sources.values():
+            source.stop()
+
+
+def test_a_shown_sound_file_starts_and_a_hidden_one_pauses(tmp_path):
+    source = MediaSource("bgm", {"path": _sound(tmp_path / "m.wav", seconds=2.0), "loop": True})
+    source.start()
+    try:
+        assert source.state == "stopped"
+        source.set_hidden(False)
+        assert _until(lambda: source.state == "playing")
+        source.set_hidden(True)
+        assert _until(lambda: source.state == "paused")
+    finally:
+        source.stop()

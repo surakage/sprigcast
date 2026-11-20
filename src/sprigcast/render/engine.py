@@ -1331,17 +1331,46 @@ class Engine:
             _walk_visible(collection, configs, visible, scene, set(), (scene.id,))
         return visible
 
+    def _on_air_visible(self) -> set[str]:
+        """Like _visible_sources, for what's on air only (and a bloom fading out): no staged bloom, no sprig being
+        edited."""
+        collection = self._collection
+        configs = {s.id: s for s in collection.sources}
+        visible: set[str] = set()
+        for canvas in collection.canvases:
+            if not canvas.enabled:
+                continue
+            scenes = [next((s for s in collection.scenes if s.id == collection.active_scenes.get(canvas.id)), None)]
+            running = self._transitions.get(canvas.id)
+            if running is not None:
+                scenes.append(running.outgoing)
+            for scene in scenes:
+                if scene is not None:
+                    _walk_visible(collection, configs, visible, scene, set(), (scene.id,))
+        return visible
+
     def _show_hidden(self, visible: set[str] | None = None) -> None:
         """Tell each awake source when its eye goes off or on (a video pauses, then starts over or carries on)."""
         if visible is None:  # worked out by _rest_sources this tick, else now
             visible = self._visible if self._visible_fresh else self._visible_sources()
         self._visible_fresh = False
         told = self._told_hidden
+        on_air = placed = None  # worked out only if a sound file is about (below)
         for source_id, source in self._sources.items():
             if source.asleep:
                 told.pop(source_id, None)  # said again once it wakes
                 continue
             hidden = source_id not in visible
+            if getattr(source, "follows_air", False):
+                # A sound file placed in a bloom plays while that bloom is on air, like a video (an OBS import's
+                # Starting Soon music never played, PC 2026-11-20); a staged bloom in Build stays quiet. One only
+                # in the Sound list isn't told at all: it plays when you press play.
+                if placed is None:
+                    on_air, placed = self._on_air_visible(), {i.source for sc in self._collection.scenes
+                                                              for i in sc.items}
+                if source_id not in placed:
+                    continue
+                hidden = source_id not in on_air
             if told.get(source_id) != hidden:
                 told[source_id] = hidden
                 tell = getattr(source, "set_hidden", None)

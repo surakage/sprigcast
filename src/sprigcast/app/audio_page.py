@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
 from sprigcast.app import theme
 from sprigcast.app.live_stage import Switch
 from sprigcast.app.segmented import Segmented
-from sprigcast.audio.mixer import is_monitor_only, is_music, source_tracks
+from sprigcast.audio.mixer import is_monitor_only, is_music, planned_tracks, source_tracks
 from sprigcast.core.scene import AUDIO_DEVICE_KINDS, AUDIO_TRACKS, TRACK_NAMES, SceneCollection, SourceConfig
 from sprigcast.sources.audio import device_label as nice_device_name
 from sprigcast.sources.audio import is_mixer_app_device
@@ -661,7 +661,7 @@ class AudioPage(QWidget):
 
     # Sounds: one row per sound ---------------------------------------------------------------
 
-    HEAR = (("Stream", False), ("Both", True), ("Just me", "only"))
+    HEAR = (("Stream", False), ("Stream + me", True), ("Just me", "only"))  # as the Live sound card says
 
     def _grid(self) -> QWidget:
         group = QGroupBox("Sounds")
@@ -770,10 +770,10 @@ class AudioPage(QWidget):
             hear.addItem(text, value)
         hear.setCurrentIndex(2 if current == "only" else 1 if current else 0)
         hear.setEnabled(source.kind != "audio_output")  # desktop sound already plays on your speakers
-        hear.setFixedWidth(104)
+        hear.setFixedWidth(124)
         grid.addWidget(hear, 2 * row, 5)
         ticks = []
-        have = source_tracks(source)  # once a row, not once a tick (on_track asks for all of them each time)
+        have = planned_tracks(source)  # (Just me shows where it goes once it's back) once a row, not once a tick (on_track asks for all of them each time)
         names = self._track_names(tracks)
         pills = QHBoxLayout()
         pills.setSpacing(4)

@@ -71,14 +71,20 @@ def hrefs(listing: str) -> list[str]:
 
 
 def download(url: str, target: Path, algos: tuple[str, ...]) -> dict[str, str]:
-    """Stream url to target; returns {algo: hexdigest}."""
-    digests = {a: hashlib.new(a) for a in algos}
-    with urllib.request.urlopen(url, timeout=600) as reply, open(target, "wb") as f:
-        for block in iter(lambda: reply.read(1 << 20), b""):
-            f.write(block)
-            for d in digests.values():
-                d.update(block)
-    return {a: d.hexdigest() for a, d in digests.items()}
+    """Stream url to target; returns {algo: hexdigest}. Three tries (run 44736478013 timed out once)."""
+    for attempt in range(3):
+        digests = {a: hashlib.new(a) for a in algos}
+        try:
+            with urllib.request.urlopen(url, timeout=120) as reply, open(target, "wb") as f:
+                for block in iter(lambda: reply.read(1 << 20), b""):
+                    f.write(block)
+                    for d in digests.values():
+                        d.update(block)
+            return {a: d.hexdigest() for a, d in digests.items()}
+        except OSError as exc:  # timeouts, resets (URLError is an OSError)
+            print(f"  {url}: {exc}, trying again")
+            time.sleep(10 * (attempt + 1))
+    raise OSError(f"couldn't download {url}")
 
 
 def listing(url: str) -> tuple[list[str], list[str]]:
@@ -130,28 +136,35 @@ def source(version: str, module: str, out: Path) -> Path:
                     queue += [(f"{folder}{d}/", depth + 1) for d in folders if d in follow or module in d]
                 continue
             name = next((n for n in found if n.endswith(".tar.xz")), found[0])
-            check = None
-            for algo, sums in (("sha256", f"{name}.sha256"), ("md5", "md5sums.txt"), ("sha1", f"{name}.sha1")):
-                if sums not in files:
-                    continue
-                text = urllib.request.urlopen(f"{base}/{folder}{sums}", timeout=60).read().decode()
-                lines = [ln.split() for ln in text.splitlines() if ln.split()]
-                line = next((ln for ln in lines if name in ln[-1]), None) if sums == "md5sums.txt" else lines[0]
-                if line:
-                    check = (algo, line[0].lower())
-                    break
-            if check is None:
-                tried.append(f"{base}/{folder}{name}: no checksum published next to it")
-                continue
-            target = out / name
-            url = f"{base}/{folder}{name}"
-            got = download(url, target, (check[0], "sha256"))
-            if got[check[0]] != check[1]:
-                target.unlink()
-                raise RuntimeError(f"{name}: {check[0]} {got[check[0]]} isn't Qt's {check[1]}")
-            print(f"source {url} ({target.stat().st_size / 1e6:.0f} MB, {check[0]} matches), sha256 {got['sha256']}")
-            return target
+            try:
+                return fetch_checked(base, folder, name, files, out)
+            except OSError as exc:  # this mirror is having a bad moment: the next one
+                tried.append(f"{base}/{folder}{name}: {exc}")
     raise RuntimeError(f"no {module} {version} source release found:\n  " + "\n  ".join(tried))
+
+
+def fetch_checked(base: str, folder: str, name: str, files: list[str], out: Path) -> Path:
+    """Download name from base/folder, checked against the checksum Qt publishes next to it."""
+    check = None
+    for algo, sums in (("sha256", f"{name}.sha256"), ("md5", "md5sums.txt"), ("sha1", f"{name}.sha1")):
+        if sums not in files:
+            continue
+        text = urllib.request.urlopen(f"{base}/{folder}{sums}", timeout=60).read().decode()
+        lines = [ln.split() for ln in text.splitlines() if ln.split()]
+        line = next((ln for ln in lines if name in ln[-1]), None) if sums == "md5sums.txt" else lines[0]
+        if line:
+            check = (algo, line[0].lower())
+            break
+    if check is None:
+        raise OSError("no checksum published next to it")
+    target = out / name
+    url = f"{base}/{folder}{name}"
+    got = download(url, target, (check[0], "sha256"))
+    if got[check[0]] != check[1]:
+        target.unlink()
+        raise RuntimeError(f"{name}: {check[0]} {got[check[0]]} isn't Qt's {check[1]}")
+    print(f"source {url} ({target.stat().st_size / 1e6:.0f} MB, {check[0]} matches), sha256 {got['sha256']}")
+    return target
 
 
 def main(argv: list[str]) -> int:
