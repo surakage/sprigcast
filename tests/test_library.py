@@ -360,3 +360,37 @@ def test_leaves_show_a_sprig_as_one_row_and_add_offers_only_this_shapes_sprigs(t
         assert "Tall chat" in [a.text() for a in sprigs.actions()]
     finally:
         w.close()
+
+
+def test_a_sprig_folder_sorts_a_to_z_or_z_to_a(tmp_path, monkeypatch):
+    """User, 2026-11-20: "add the option to organize your sprig folders in alphabetic order either a-z or z-a"."""
+    from PySide6.QtWidgets import QMenu
+
+    col, w = _window(tmp_path, monkeypatch, "LibrarySortFolder")
+    try:
+        folder = col.add_folder("horizontal", "Browser Scenes", holds="part")
+        for i, name in enumerate(("chat 10", "Clips", "Chat 2", "alerts box")):
+            col.scenes.append(Scene(id=f"x{i}", name=name, canvas="horizontal", kind="part", folder=folder.id))
+        col.scene("p2").folder = folder.id
+        w._changed()
+        menu = QMenu()
+        w._folder_menu(menu, folder)
+        texts = [a.text() for a in menu.actions() if not a.isSeparator()]
+        assert texts.index("Rename…") < texts.index("Sort A–Z") < texts.index("Sort Z–A") < texts.index("Remove folder")
+
+        def names():
+            return [s.name for s in w.collection.scenes if s.folder == folder.id]
+        others = [s.id for s in col.scenes if s.folder != folder.id]
+        next(a for a in menu.actions() if a.text() == "Sort A–Z").trigger()
+        assert names() == ["Alerts", "alerts box", "Chat 2", "chat 10", "Clips"]  # numbers count as numbers
+        next(a for a in menu.actions() if a.text() == "Sort Z–A").trigger()
+        assert names() == ["Clips", "chat 10", "Chat 2", "alerts box", "Alerts"]
+        assert [s.id for s in col.scenes if s.folder != folder.id] == others  # everything else stays put
+        before = w.collection.to_text()
+        next(a for a in menu.actions() if a.text() == "Sort Z–A").trigger()  # sorted already: nothing changes
+        assert w.collection.to_text() == before
+        bloom_menu = QMenu()
+        w._folder_menu(bloom_menu, w.collection.add_folder("horizontal", "Main Scenes"))
+        assert "Sort A–Z" not in [a.text() for a in bloom_menu.actions()]
+    finally:
+        w.close()

@@ -1566,6 +1566,10 @@ class MainWindow(QMainWindow):
             live.setToolTip(f"Its {SHOWS} become the buttons in Live mode")
             live.toggled.connect(lambda on: self._set_folder_live(folder.id, on))
         menu.addAction("Rename…").triggered.connect(lambda: self._rename_folder(folder.id))
+        if sprigs:  # user, 2026-11-20: "organize your sprig folders in alphabetic order either a-z or z-a"
+            menu.addSeparator()
+            menu.addAction("Sort A–Z").triggered.connect(lambda: self._sort_folder(folder.id, False))
+            menu.addAction("Sort Z–A").triggered.connect(lambda: self._sort_folder(folder.id, True))
         menu.addSeparator()
         menu.addAction(colour_row(menu, folder.colour, lambda c: self._recolour_folder(folder.id, c)))
         menu.addSeparator()
@@ -1625,6 +1629,25 @@ class MainWindow(QMainWindow):
                                   lambda c: self._recolour_folder(folder_id, c)))
         menu.exec(at)
         menu.deleteLater()  # a new menu each time: kept, each held a window handle for good
+
+    def _sort_folder(self, folder_id: str, backwards: bool = False) -> None:
+        """A folder's contents in name order (A–Z, or Z–A). They keep the places they held among all scenes, so
+        other lists stay put. Numbers count as numbers: "Chat 2" comes before "Chat 10"."""
+        import re
+
+        def key(scene) -> list:
+            return [(0, int(part), "") if part.isdigit() else (1, 0, part)
+                    for part in re.split(r"(\d+)", scene.name.casefold()) if part]
+
+        scenes = self.collection.scenes
+        slots = [i for i, sc in enumerate(scenes) if sc.folder == folder_id]
+        ordered = sorted((scenes[i] for i in slots), key=key, reverse=backwards)
+        if [scenes[i].id for i in slots] == [sc.id for sc in ordered]:
+            return  # in that order already: nothing to save or undo
+        for slot, scene in zip(slots, ordered, strict=True):
+            scenes[slot] = scene
+        self._changed()
+        self._refresh_scenes()
 
     def _recolour_folder(self, folder_id: str, colour: str) -> None:
         self.collection.folder(folder_id).colour = colour
