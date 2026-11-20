@@ -66,17 +66,24 @@ def grab(engine, canvas_ids: list[str], timeout: float = WAIT_S) -> dict[str, QI
                     done.set()
 
         taps[canvas_id] = tap
-        engine.add_frame_tap(f"shot:{canvas_id}", tap)  # what's on air, without Snap's polaroid (see Engine)
+        engine.add_frame_tap(_tap_key(canvas_id), tap)
     try:
         done.wait(timeout)
     finally:
         for canvas_id, tap in taps.items():
-            engine.remove_frame_tap(f"shot:{canvas_id}", tap)
+            engine.remove_frame_tap(_tap_key(canvas_id), tap)
     with lock:
         frames = dict(got)
     return {**read, **{canvas_id: QImage(f.data, f.width, f.height, f.width * 4,
                                          QImage.Format.Format_RGBA8888_Premultiplied).copy()
                        for canvas_id, f in frames.items()}}
+
+
+def _tap_key(canvas_id: str) -> str:
+    """What to tap for a picture: a canvas as on air without Snap's polaroid ("shot:<id>", see Engine), or a view
+    ("view:<name>") as it is. A view tapped as "shot:view:<name>" was never drawn: every bloom pictured off air
+    waited out the timeout and answered "Nothing is drawing right now" (PC 2026-11-20, build 44785036541)."""
+    return canvas_id if canvas_id.startswith("view:") else f"shot:{canvas_id}"
 
 
 def grab_one(engine, source_id: str, timeout: float = WAIT_S * 2) -> QImage | None:

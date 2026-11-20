@@ -16,7 +16,8 @@ import json
 import os
 import time
 import logging
-from collections.abc import Iterator
+from collections import deque
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -51,6 +52,7 @@ LAN = "control/lan"  # let phones and other PCs connect, not just apps on this P
 DEFAULT_PORT = 4455  # OBS's port, so apps find SprigCast without changes (use another if OBS runs too)
 NATIVE_PATH = "/sprigcast"  # ws://127.0.0.1:4455/sprigcast is the SprigCast API; any other path, the OBS door
 WEB_TIMEOUT_MS = 5000  # a connection that hasn't said what it is by then is dropped
+MAX_WAITING = 32  # messages from one connection waiting their turn; past that it's asking faster than answers come
 FULL_EVERY = 6  # every this many watches (3 s) the settings are written out and compared anyway
 WATCH_MS = 500  # how often stream and record states are compared while an app is connected
 
@@ -452,6 +454,11 @@ class ControlServer(QObject):
         self.pairing.on_seen = self.keep_devices  # a paired key signed in or left: last_seen saved (throttled there)
         self._signed_in: set[int] = set()  # sessions whose sign-in was already marked on their device
         self.local_key = ""  # set by start() while a password is in use
+        # Everything apps ask is answered here, one at a time, in the order it came (_queue).
+        self._inbox: deque[tuple[object | None, Callable[[], None]]] = deque()
+        self._answering = False
+        self._drain_queued = False
+        self._waiting: dict[object, int] = {}  # connection -> its messages in the inbox
 
     def _stored_devices(self) -> tuple[str, list | None]:
         """The saved value as it is now, and its devices (None if it can't be read here)."""
@@ -656,7 +663,7 @@ class ControlServer(QObject):
             return  # the body is still arriving
         sock.setProperty("sprigcast_door", "web")
         sock.readAll()
-        QTimer.singleShot(0, lambda: self._answer_web(sock, request))  # outside the socket's signal: see _arrived
+        self._queue(None, lambda: self._answer_web(sock, request))  # outside the socket's signal: see _arrived
 
     def _answer_web(self, sock: QTcpSocket, request) -> None:
         status, body = web.handle(self.native, request, enabled=self.web_door, password=self.password,
@@ -741,7 +748,52 @@ class ControlServer(QObject):
         which crashed in Qt6Core once the answer came back (PC, build 44779596950, 2026-11-20 17:22 UTC, Settings
         opened and closed during the wait). Queued, a closed connection is simply skipped: _gone drops its
         session first, and _pump answers only sessions still here."""
-        QTimer.singleShot(0, lambda: self._received(socket, text))
+        if self._waiting.get(socket, 0) >= MAX_WAITING:
+            if socket in self.sessions:
+                log.info("control: closing a connection: %d messages waiting for an answer", MAX_WAITING)
+                socket.close(QWebSocketProtocol.CloseCode(4008),
+                             "Too many messages waiting for an answer: wait for each answer before asking again.")
+            return
+        self._waiting[socket] = self._waiting.get(socket, 0) + 1
+        self._queue(socket, lambda: self._received(socket, text))
+
+    def _queue(self, socket, answer: Callable[[], None]) -> None:
+        """Answer one thing apps asked, after everything asked before it, never inside another answer.
+
+        A screenshot's answer keeps the window answering while its picture is made (workers.wait_answering), and
+        every message that arrived meanwhile was answered right there, inside it: each next screenshot nested in
+        the one before, until the window's thread ran out of stack (PC 2026-11-20 12:05, build 44785036541,
+        asked twice a second with each picture taking 1.7 s). Now what arrives meanwhile waits its turn."""
+        self._inbox.append((socket, answer))
+        if not self._answering and not self._drain_queued:
+            self._drain_queued = True
+            QTimer.singleShot(0, self._drain)
+
+    def _drain(self) -> None:
+        self._drain_queued = False
+        if self._answering:
+            return  # inside an answer's wait: the answer under it carries on with the inbox when it's done
+        if not self._inbox:
+            return
+        socket, answer = self._inbox.popleft()
+        if socket is not None:
+            left = self._waiting.get(socket, 1) - 1
+            if left > 0:
+                self._waiting[socket] = left
+            else:
+                self._waiting.pop(socket, None)
+        self._answering = True
+        try:
+            answer()
+        except Exception:  # noqa: BLE001  one answer going wrong never stops the ones after it
+            log.exception("control: answering an app failed")
+        finally:
+            self._answering = False
+            if self._inbox and not self._drain_queued:
+                # The next one a turn of the event loop later: what was held back for the end of this answer's
+                # wait (Settings from the Sound gear, workers.when_free) goes first, not after the whole inbox.
+                self._drain_queued = True
+                QTimer.singleShot(0, self._drain)
 
     def _received(self, socket: QWebSocket, text: str) -> None:
         session = self.sessions.get(socket)
@@ -756,7 +808,8 @@ class ControlServer(QObject):
             if socket not in self.sessions:
                 return
             if isinstance(step, Sleep):
-                QTimer.singleShot(int(step.seconds * 1000), lambda: self._pump(socket, steps))
+                QTimer.singleShot(int(step.seconds * 1000),
+                                  lambda: self._queue(None, lambda: self._pump(socket, steps)))
                 return
             if isinstance(step, Close):
                 log.info("control: closing a connection: %s%s", step.reason,

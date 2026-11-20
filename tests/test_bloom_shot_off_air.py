@@ -82,3 +82,45 @@ def test_the_api_pictures_a_bloom_off_air_on_the_shape_asked_but_not_while_live(
     with pytest.raises(ApiError):
         api.run("screenshot.take", {"bloom": "BRB", "save": False, "data": True})
     assert "screenshot.bloom_off_air" in api.run("app.info", {})["features"]
+
+
+def test_a_bloom_off_air_is_really_drawn_by_the_engine():
+    """Through a real engine, not a stand-in grab: the view's picture comes back (it was tapped under a name
+    nothing draws, and every off-air bloom answered "Nothing is drawing" after the timeout, PC 2026-11-20)."""
+    pytest.importorskip("PySide6.QtGui")
+    import threading
+
+    from sprigcast.app import screenshot
+    from sprigcast.core.scene import Canvas, Scene, SceneCollection, SceneItem, SourceConfig
+    from sprigcast.render.compositor import Compositor
+    from sprigcast.render.engine import Engine
+
+    try:
+        compositor = Compositor()
+    except Exception as exc:
+        pytest.skip(f"no OpenGL context: {exc}")
+    try:
+        col = SceneCollection(
+            canvases=[Canvas(id="h", width=64, height=36)],
+            sources=[SourceConfig(id="red", kind="color", name="Red",
+                                  settings={"color": "#ff0000ff", "width": 64, "height": 36})],
+            scenes=[Scene(id="live", name="Live", canvas="h"),
+                    Scene(id="brb", name="BRB", canvas="h", items=[SceneItem(source="red")])],
+            active_scenes={"h": "live"})
+        engine = Engine(col)
+        engine._sync_sources(compositor)
+        got = []
+        worker = threading.Thread(target=lambda: got.append(screenshot.grab_scene(engine, col.scene("brb"))))
+        worker.start()
+        t = 0.0
+        while worker.is_alive():  # the render loop's ticks, here
+            t += 1 / 30
+            engine._tick(compositor, t)
+            worker.join(0.01)
+        image = got[0]
+        assert image is not None and (image.width(), image.height()) == (64, 36)
+        pixel = image.pixelColor(32, 18)
+        assert (pixel.red(), pixel.green(), pixel.blue()) == (255, 0, 0)  # BRB, though Live is on air
+        assert engine.views == {}
+    finally:
+        compositor.release()
