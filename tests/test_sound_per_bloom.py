@@ -127,7 +127,7 @@ def test_sound_list_is_a_to_z_and_has_its_own_menu(window):
     assert names == ["Desktop", "Game", "Mic"]
     menu = QMenu(w)
     w._fill_sound_menu(menu, "game")
-    assert _texts(menu) == ["Rename…", "Mute", "Plays in", "Volume and sound…", "Filters…", "Tracks and sync…",
+    assert _texts(menu) == ["Rename…", "Mute", "Plays in", "Type", "Volume and sound…", "Filters…", "Tracks and sync…",
                             "Remove"]
     plays_in = next(a.menu() for a in menu.actions() if a.text() == "Plays in")
     assert _texts(plays_in) == ["Every bloom", "Gaming", "Just Chatting", "Starting soon"]

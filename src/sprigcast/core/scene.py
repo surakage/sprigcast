@@ -397,6 +397,11 @@ class RecordingSettings(BaseModel):
         return tuple(AUDIO_TRACKS[t - 1] for t in self.audio_tracks)
 
 
+SOUND_TYPES = ({"name": "Voice", "color": "green"}, {"name": "Game", "color": "blue"},
+               {"name": "Alerts", "color": "yellow"}, {"name": "Music", "color": "violet"},
+               {"name": "Other", "color": "grey"})
+
+
 class AudioSettings(BaseModel):
     """Mixer-wide audio options. Per-source ones (volume, mute, monitor, hidden, duck_voice) live in
     each audio source's settings."""
@@ -408,6 +413,9 @@ class AudioSettings(BaseModel):
     duck_release_ms: float = 900.0
     duck_hold_ms: float = 400.0
     track_names: list[str] = Field(default_factory=lambda: list(TRACK_NAMES))  # names of tracks 1-5 in files
+    # Sound types, in order: the Sound card's groups and Build's Type filter. Each sound's settings["group"]
+    # names one; a sound whose type is gone shows under the last. Five to start; you add, rename and remove them.
+    sound_types: list[dict[str, str]] = Field(default_factory=lambda: [dict(t) for t in SOUND_TYPES])
     # Global devices: the Desktop audio and Mic set in Settings → Audio. Off: they are not opened at all
     # and leave the Sound list, so only the mics and desktop sounds you add yourself play.
     global_devices: bool = True

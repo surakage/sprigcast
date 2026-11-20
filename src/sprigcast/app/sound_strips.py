@@ -36,19 +36,20 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import icons, theme
+from sprigcast.app.sound_card import (  # the garden's sound types: these change in place
+    GROUP_COLOURS,
+    GROUPS,
+)
 
 LOW, HIGH = -60.0, 12.0  # the fader's range, as on the Tune page
 STRIP_W, STRIP_H = 104, 220
 FOLD_KEY = "build/sound_strips_open"
 SHOW_KEY = "build/sound_strips_show"  # "all" or "here" (this bloom): the chip you last picked
 TYPE_KEY = "build/sound_strips_type"  # "" (all types) or a group: the type you last picked
-GROUPS = ("Voice", "Game", "Alerts", "Music", "Other")
 
 
 def group_colour(group: str) -> str:
-    """The same colour a group has on Live's Sound card."""
-    from sprigcast.app.sound_card import GROUP_COLOURS
-
+    """The same colour a type has on Live's Sound card."""
     return GROUP_COLOURS.get(group, theme.MUTED)
 
 
@@ -294,8 +295,10 @@ class SoundStrips(QFrame):
     away (remembered), where they play, and +."""
 
     def __init__(self, on_change: Callable[[str, dict], None], on_open: Callable[[str], None],
-                 on_menu: Callable[[str | None, object], None] | None = None):
+                 on_menu: Callable[[str | None, object], None] | None = None,
+                 on_types: Callable[[str | None], None] | None = None):
         super().__init__()
+        self.on_types = on_types or (lambda _name: None)  # None: New type; a name: Edit that type
         self.setObjectName("soundCard")
         self.setStyleSheet(f"#soundCard {{ background: {theme.PANEL}; border-radius: 24px; }}")
         self.on_change, self.on_open = on_change, on_open
@@ -361,10 +364,7 @@ class SoundStrips(QFrame):
                                 + "QPushButton::menu-indicator { width: 0; image: none; }")
         self.kind_menu = QMenu(self.kind)
         theme.rounded_menus(self.kind_menu)
-        self.kind_actions = {"": self.kind_menu.addAction("All types", lambda: self._pick_type(""))}
-        for g in GROUPS:
-            self.kind_actions[g] = self.kind_menu.addAction(_dot(group_colour(g)), g,
-                                                            lambda g=g: self._pick_type(g))
+        self.kind_actions: dict[str, object] = {}
         self.kind.setMenu(self.kind_menu)
         find.addSpacing(4)
         find.addWidget(self.kind)
@@ -375,8 +375,7 @@ class SoundStrips(QFrame):
             self.showing = "all"
         self.chips[self.showing].setChecked(True)
         self.type_shown = str(QSettings().value(TYPE_KEY, ""))
-        if self.type_shown not in GROUPS:
-            self.type_shown = ""
+        self._types_shown: tuple = ()
         self.here: set[str] | None = None  # the sounds heard in the bloom you're building ("This bloom")
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -433,6 +432,28 @@ class SoundStrips(QFrame):
         QSettings().setValue(SHOW_KEY, key)
         self._filter()
 
+    def _fill_types(self) -> None:
+        """The Type pill's list: every type (with how many sounds it has), then New type and Edit."""
+        counts = {g: sum(s.group == g for s in self.strips.values()) for g in GROUPS}
+        if self.type_shown and self.type_shown not in GROUPS:
+            self.type_shown = ""  # it was removed or renamed
+        key = (tuple((g, group_colour(g), counts[g]) for g in GROUPS), self.type_shown)
+        if key == self._types_shown:
+            return
+        self._types_shown = key
+        menu = self.kind_menu
+        menu.clear()
+        self.kind_actions = {"": menu.addAction("All types", lambda: self._pick_type(""))}
+        for g in GROUPS:
+            self.kind_actions[g] = menu.addAction(_dot(group_colour(g)), f"{g} ({counts[g]})",
+                                                  lambda g=g: self._pick_type(g))
+        menu.addSeparator()
+        menu.addAction("New type…", lambda: self.on_types(None))
+        if self.type_shown:
+            menu.addAction(f"Edit {self.type_shown}…", lambda g=self.type_shown: self.on_types(g))
+        self.kind.setText(f"{self.type_shown or 'All types'}  ▾")
+        self.kind.setIcon(_dot(group_colour(self.type_shown)) if self.type_shown else QIcon())
+
     def _pick_type(self, group: str) -> None:
         self.type_shown = group
         QSettings().setValue(TYPE_KEY, group)
@@ -448,7 +469,7 @@ class SoundStrips(QFrame):
         if text and text not in strip.full_name.casefold():
             return False
         group = getattr(self, "type_shown", "")
-        if group and strip.group != group:
+        if group and group in GROUPS and strip.group != group:
             return False
         return getattr(self, "showing", "all") != "here" or self.here is None or sid in self.here
 
@@ -461,12 +482,7 @@ class SoundStrips(QFrame):
             keep = self.matches(sid, strip)
             strip.setVisible(keep)
             shown += keep
-        counts = {g: sum(s.group == g for s in self.strips.values()) for g in GROUPS}
-        for g in GROUPS:
-            self.kind_actions[g].setText(f"{g} ({counts[g]})")
-        picked = self.type_shown
-        self.kind.setText(f"{picked or 'All types'}  ▾")
-        self.kind.setIcon(_dot(group_colour(picked)) if picked else QIcon())
+        self._fill_types()
         self.chips["all"].setText(f"All {len(self.strips)}")
         open_ = getattr(self, "is_open", True)
         self.none_found.setVisible(open_ and bool(self.strips) and not shown)
@@ -499,8 +515,9 @@ class SoundStrips(QFrame):
         for sound in sounds:
             strip = self.strips[sound.id]
             group = getattr(sound, "group", "Other") or "Other"
-            if group != strip.group:  # its colour follows a new group
+            if (group, group_colour(group)) != (strip.group, getattr(strip, "colour", None)):  # follows its type
                 strip.group = group
+                strip.colour = group_colour(group)
                 strip.name.setIcon(icons.icon(_kind_icon(kinds.get(sound.id, "")), group_colour(group), 14))
                 strip._selected = None
             strip.show_sound(sound)

@@ -90,18 +90,19 @@ class DuckingDialog(CardDialog):
         self.body.addWidget(sound)
         self.ok = self.add_buttons("Save")
 
-    def settings(self) -> AudioSettings:
-        return AudioSettings(
-            ducking=self.enabled.isChecked(),
-            duck_amount_db=-float(self.amount.value()),
-            duck_threshold_db=float(self.threshold.value()),
-            duck_attack_ms=float(self.attack.value()),
-            duck_release_ms=float(self.release.value()),
-            duck_hold_ms=float(self.hold.value()),
-        )
+    def settings(self, keep: AudioSettings | None = None) -> AudioSettings:
+        """The ducking options, on top of the rest of the audio settings (track names, sound types...)."""
+        return (keep or AudioSettings()).model_copy(update={
+            "ducking": self.enabled.isChecked(),
+            "duck_amount_db": -float(self.amount.value()),
+            "duck_threshold_db": float(self.threshold.value()),
+            "duck_attack_ms": float(self.attack.value()),
+            "duck_release_ms": float(self.release.value()),
+            "duck_hold_ms": float(self.hold.value()),
+        })
 
     def apply_to(self, collection: SceneCollection) -> None:
-        collection.audio = self.settings()
+        collection.audio = self.settings(collection.audio)
         for source in collection.sources:
             box = self.voice_boxes.get(source.id)
             if box is not None:
