@@ -101,7 +101,10 @@ def fake_pyaudio(monkeypatch):
 
         def is_active(self):
             if self.active:
-                frames = self.rate // 100
+                # Half a second of sound a call, as a real device gives between the source's checks (every
+                # 0.5 s). A hundredth of a second each made "> 2000 samples" take five or six checks, about 3 s,
+                # the whole of wait_for's time: test_mono_44k_mic_becomes_48k_stereo failed under load.
+                frames = self.rate // 2
                 self.callback(np.full((frames, self.channels), 0.5, dtype=np.float32).tobytes(), frames, None, 0)
             return self.active
 
