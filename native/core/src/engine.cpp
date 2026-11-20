@@ -526,11 +526,13 @@ struct sc_engine {
     ComPtr<ID3D11Device> device_out;  // the device as encoders get it (sc_engine_device); none while rebuilding
     uint64_t detach_asked = 0, detach_done = 0;
     sc_engine_stats stats{};
+    int read_asks[SC_ENGINE_CANVASES] = {};  // frames each canvas is still drawn for a sc_engine_canvas_read
 
     // ---- the frame thread's own (canvas reads borrow them under `frame`) ----
     std::timed_mutex frame;  // held by a frame; Python's calls that need it wait 0.5 s at most
     sc_device *dev = nullptr;
     sc_canvas *gpu[SC_ENGINE_CANVASES] = {};
+    uint32_t canvas_draws = 0;  // canvases drawn so far, over all frames (stats.canvas_draws)
     std::unordered_map<int, PreviewGpu> shown;
     Reader readers[SC_ENGINE_CANVASES];
     OutReader out_readers[SC_ENGINE_CANVASES][SC_ENGINE_OUTPUTS];
@@ -754,6 +756,12 @@ bool is_lost(HRESULT hr) {
     return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG;
 }
 
+// Whether a preview limited to max_fps pictures a second, last given one at `last`, takes one now. The one rule
+// for read_back, show_preview and canvas_taken, so a canvas is drawn on exactly the frames its picture is taken.
+bool picture_due(int max_fps, int64_t last, int64_t now) {
+    return !(max_fps > 0 && last && (now - last) < qpf() * 9 / (10 * max_fps));
+}
+
 // One preview window: fit the canvas inside it and show it, never waiting on the window.
 void show_preview(sc_engine &e, const PreviewCfg &cfg, PreviewGpu &pg, int64_t now, uint64_t &presented,
                   uint64_t &skipped) {
@@ -763,7 +771,7 @@ void show_preview(sc_engine &e, const PreviewCfg &cfg, PreviewGpu &pg, int64_t n
         pg.retry_at = now + qpf();
         return;
     }
-    if (cfg.max_fps > 0 && pg.last && (now - pg.last) < qpf() * 9 / (10 * cfg.max_fps)) return;
+    if (!picture_due(cfg.max_fps, pg.last, now)) return;
     RECT rc;
     if (!GetClientRect(cfg.hwnd, &rc)) return;
     const int w = rc.right - rc.left, h = rc.bottom - rc.top;
@@ -884,7 +892,7 @@ void read_back(sc_engine &e, int index, const sc_canvas *canvas, const Watch &wa
         out.drawn = r.drawn[s];
         ++out.seq;
     }
-    if (want.max_fps > 0 && r.last && (now - r.last) < qpf() * 9 / (10 * want.max_fps)) return;
+    if (!picture_due(want.max_fps, r.last, now)) return;
     if (r.target.width != want.width || r.target.height != want.height) {
         r = Reader();
         check(make_target(dev.device.Get(), want.width, want.height, r.target));
@@ -1170,7 +1178,25 @@ int hand_over_texture(Link &l, const std::shared_ptr<Alive> &alive, int index, i
     }
 }
 
-// One frame: take Python's work, send it to the card, draw every canvas, show the previews.
+// Whether anything takes this canvas's picture this frame: an output (a recording, stream or the virtual camera
+// takes every frame), a watch whose next copy is due, or a preview window whose next picture is due.
+bool canvas_taken(sc_engine &e, int index, const Watch &watch, const OutputWant *outs,
+                  const std::vector<PreviewCfg> &previews, int64_t now) {
+    for (int o = 0; o < SC_ENGINE_OUTPUTS; ++o) {
+        if (outs[o].width > 0) return true;
+    }
+    if (watch.width > 0 && picture_due(watch.max_fps, e.readers[index].last, now)) return true;
+    for (const PreviewCfg &cfg : previews) {
+        if (cfg.canvas != index) continue;
+        const auto found = e.shown.find(cfg.id);
+        if (found == e.shown.end()) return true;
+        if (now >= found->second.retry_at && picture_due(cfg.max_fps, found->second.last, now)) return true;
+    }
+    return false;
+}
+
+// One frame: take Python's work, send it to the card, draw every canvas something takes a picture of, show the
+// previews.
 void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, uint64_t &skipped) {
     int fault;
     {
@@ -1215,9 +1241,14 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     std::set<uint64_t> captures_held;
     std::vector<std::pair<uint64_t, CaptureShown>> capture_news;
     uint64_t detach_seen;
+    bool read_asked[SC_ENGINE_CANVASES] = {};
     at(e, "taking what Python sent");
     {
         std::lock_guard<std::mutex> lock(e.state);
+        for (int i = 0; i < SC_ENGINE_CANVASES; ++i) {
+            read_asked[i] = e.read_asks[i] > 0;
+            if (read_asked[i]) --e.read_asks[i];
+        }
         medias.assign(e.medias.begin(), e.medias.end());
         visuals.assign(e.visuals.begin(), e.visuals.end());
         shareds.assign(e.shareds.begin(), e.shareds.end());
@@ -1520,6 +1551,12 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
             run.start = seconds;
             run.on = run.from != 0;
         }
+        // A canvas nobody takes a picture of this frame isn't drawn: one no preview, recording or stream uses (the
+        // other canvas of a garden shown on one), and one only a preview takes on the frames between its pictures
+        // (a preview takes 30 a second or fewer; the engine draws 60). The imported garden's two canvases were
+        // both drawn 60 times a second with one preview at 30 watching: 71% of the graphics card (2026-11-19).
+        if (!read_asked[i] && !canvas_taken(e, i, watches[i], outputs[i], previews, now)) continue;
+        ++e.canvas_draws;
         if (run.on) {
             const double progress = (seconds - run.start) / std::max(0.001, static_cast<double>(run.how.seconds));
             if (progress < 1.0 && run.how.mode == SC_TRANSITION_MOVE) {
@@ -1630,6 +1667,7 @@ void tick(sc_engine &e) {
         s.canvases = static_cast<int>(std::count_if(std::begin(e.gpu), std::end(e.gpu), [](sc_canvas *c) { return c != nullptr; }));
         s.previews = static_cast<int>(e.shown.size());
         s.sources = sources;
+        s.canvas_draws = static_cast<int32_t>(e.canvas_draws & 0x7fffffffu);
     }
     e.changed.notify_all();
 }
@@ -2227,6 +2265,7 @@ SC_API int sc_engine_canvas_read(sc_engine *engine, int index, uint8_t *out, int
             if (cfg.width != width || cfg.height != height)
                 return fail(SC_ERR_ARGUMENT, "sc_engine_canvas_read: that isn't the canvas's size");
             // Two frames on: a frame already under way may have taken its work before this call's changes.
+            engine->read_asks[index] = 3;  // drawn on those frames even with nobody else taking its picture
             const uint64_t want = engine->stats.ticks + 2;
             const bool drawn = engine->changed.wait_for(lock, std::chrono::milliseconds(WAIT_MS), [&] {
                 return engine->stats.ticks >= want || engine->dead.load() || !engine->stats.running;

@@ -267,11 +267,11 @@ class EngineStats(ctypes.Structure):
         ("render_ms_avg", ctypes.c_double), ("render_ms_max", ctypes.c_double), ("running", ctypes.c_int32),
         ("faulted", ctypes.c_int32), ("hung", ctypes.c_int32), ("rebuilds", ctypes.c_int32),
         ("canvases", ctypes.c_int32), ("previews", ctypes.c_int32), ("sources", ctypes.c_int32),
-        ("reserved", ctypes.c_int32),
+        ("canvas_draws", ctypes.c_int32),
     ]
 
     def as_dict(self) -> dict:
-        d = {name: getattr(self, name) for name, _ in self._fields_ if name != "reserved"}
+        d = {name: getattr(self, name) for name, _ in self._fields_}
         for flag in ("running", "faulted", "hung"):
             d[flag] = bool(d[flag])
         return d

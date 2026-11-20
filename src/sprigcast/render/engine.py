@@ -68,6 +68,8 @@ SOURCE_BUDGET_MS = 5.0  # a source averaging more than this per frame is drawn l
 CHARGE_CAP_MS = 4 * SOURCE_BUDGET_MS  # the most one frame adds to a source's average (_charge)
 BUDGET_MARGIN = 0.8  # ...and drawn more often again only under this share of the lower step's budget
 WAKE_WAIT_S = 2.0  # a switch to a bloom whose camera is closed shows the old bloom until it opens, at most this
+STAGED_VIEW = "~next:"  # + canvas id: the engine's view of the bloom Build edits there (Engine._native_views)
+PART_VIEW = "~part"  # the engine's view of the sprig open in Build
 PREVIEW_FPS = 30  # the UI draws previews about 30 times a second; copying more is wasted
 FAIL_RETRY_S = 1.0  # a source whose picture keeps failing is asked again about once a second, not every frame
 CLOSE_ALL_S = 4.0  # quitting: sources close side by side for at most this long
@@ -234,6 +236,7 @@ class Engine:
         self._failed_said: dict[str, tuple[str, str]] = {}
         # SPRIGCAST_ENGINE=native: the native engine draws the canvases for the previews (render/native_bridge.py).
         self._native = None
+        self._engine_edits = False  # this tick the native engine draws the sprig open in Build (PART_VIEW)
         self._python_drew = True  # last tick Python's compositor drew something (always, without the native engine)
         self._refresh_outputs = False  # refresh_outputs() asked: outputs are made again next tick
         self._refresh_waiting = False  # ...and is waiting for the native engine's stuck frame
@@ -387,7 +390,67 @@ class Engine:
             canvas, scene = self._view_scene(name, sizes)
             if canvas is not None and scene is not None:
                 views[name] = (canvas, scene)
+        # Build's own pictures: the bloom being edited when it isn't the one on air, and the sprig that is open.
+        # The engine draws them like any other view (Python's compositor drawing them meant it drew every sprig
+        # in use a second time and had every page copied through memory: the imported garden's Build sat at 86%
+        # of the graphics card, 2026-11-19).
+        collection = self._collection
+        for canvas in collection.canvases:
+            scene_id = self.staged.get(canvas.id)
+            if not canvas.enabled or scene_id is None or scene_id == active.get(canvas.id):
+                continue
+            scene = next((s for s in collection.scenes if s.id == scene_id), None)
+            if scene is not None:
+                views[STAGED_VIEW + canvas.id] = (canvas, scene)
+        editing = self.editing_part
+        if editing:
+            part = next((p for p in collection.part_scenes() if p.id == editing), None)
+            canvas = next((c for c in collection.canvases if part is not None and c.id == part.canvas), None)
+            if canvas is not None:
+                views[PART_VIEW] = (canvas, part)  # the sprig itself: every item, whatever its Live state
         return views, riders
+
+    def _engine_shows(self, native, name: str) -> bool:
+        """Whether the native engine draws this view of Build's (STAGED_VIEW + canvas id, PART_VIEW) this tick:
+        it was handed over and got a canvas slot."""
+        from sprigcast.render.native_bridge import view_key
+
+        return native is not None and name in self._engine_views and native.draws(view_key(name))
+
+    def _engine_staged(self, native, canvas, now: float) -> bool:
+        """Build's edited bloom on this canvas from the native engine: its preview is the engine's picture. False
+        when the engine doesn't draw it (Python's compositor does, _render_staged)."""
+        from sprigcast.render.native_bridge import view_key
+
+        name = STAGED_VIEW + canvas.id
+        key, target = view_key(name), f"next:{canvas.id}"
+        if not self._engine_shows(native, name):
+            return False
+        full = (canvas.width, canvas.height)
+        wanted = self.previews is None or target in self.previews
+        native.watch(key, (self._preview_size(target, full) or full) if wanted else None, self.preview_fps)
+        if self._preview_due(target, now):
+            got = native.take(key)
+            if got is not None:
+                data, w, h = got
+                self.frames.setdefault(target, Mailbox()).put(Frame(target, w, h, data, now, canvas_size=full))
+        return True
+
+    def _engine_part(self, native, now: float) -> None:
+        """The sprig open in Build from the native engine, at full size, as the Part editor takes it."""
+        from sprigcast.render.native_bridge import view_key
+
+        if not self._engine_shows(native, PART_VIEW):
+            return
+        canvas, part = self._engine_views[PART_VIEW]
+        key = view_key(PART_VIEW)
+        wanted = self.previews is None or "part" in self.previews
+        native.watch(key, (canvas.width, canvas.height) if wanted else None, self.preview_fps)
+        if self._preview_due("part", now):
+            got = native.take(key)
+            if got is not None:
+                data, w, h = got
+                self.part_frames.put(Frame(f"part:{part.id}", w, h, data, now))
 
     def _rider_outputs(self, canvas_id: str, taps: dict) -> list:
         """The outputs of the views of the bloom on air that ride on this canvas (_native_views)."""
@@ -1482,9 +1545,10 @@ class Engine:
         used: set[str] = set()
         held = self._sprigs_held = frozenset(cid for cid in self._waking if self._switch_waits(compositor, cid, now))
         stack = self._move_light(collection, self._drawn_scenes(collection, held))
-        if self.editing_part:
-            stack += [p for p in collection.part_scenes() if p.id == self.editing_part]
-            used.add(self.editing_part)
+        editing = None if self._engine_edits else self.editing_part  # the engine shows the open sprig itself
+        if editing:
+            stack += [p for p in collection.part_scenes() if p.id == editing]
+            used.add(editing)
         while stack:
             for inner in collection.inner_shapes(stack.pop()):
                 if inner.id not in used:
@@ -1496,12 +1560,12 @@ class Engine:
             if part.id not in used:
                 continue
             compositor.parts = self._part_sources(textures, compositor)
-            if part.id == self.editing_part:
+            if part.id == editing:
                 view, fades = part, None  # being edited: show every item, whatever its Live state
             else:
                 view, fades = self._sprig_view(plan, collection, part)
             textures[part.id] = compositor.render_part(part.id, size, view, sizes, fades)
-            if part.id == self.editing_part and self._preview_due("part", now):
+            if part.id == editing and self._preview_due("part", now):
                 self.readbacks += 1
                 data, drawn = self._read_full(compositor, f"part:{part.id}", now)
                 if data is not None:
@@ -1771,12 +1835,12 @@ class Engine:
         """With the native engine drawing the previews: does Python's compositor still draw anything this tick
         (an output, a screenshot, a transition, Build's edited bloom, the Part editor, a canvas the native engine
         doesn't show)? If not, it skips the sprigs too."""
-        from sprigcast.render.native_bridge import native_transition
+        from sprigcast.render.native_bridge import native_soon, native_transition
 
         # (A switch waiting for a picture isn't a reason: the engine draws the bloom held, and the sources waited
         # for are copied for Python's compositor on their own, see `awaited` in _tick. Counting it as one had
         # Python draw every sprig and copy every source of every canvas for the whole wait.)
-        if self.editing_part or self._grabs:
+        if self._grabs or (self.editing_part and not self._engine_shows(native, PART_VIEW)):
             return True
         canvases = {c.id for c in self._collection.canvases if c.enabled}
         riding = {f"view:{name}" for names in self._riders.values() for name in names}
@@ -1788,11 +1852,12 @@ class Engine:
                 return True  # a screenshot, source record, or the like
             if not native.serves(key, self._output_keys(native, outputs)):
                 return True  # a projector, or an output only Python can make
-        if any(not native_transition(r) for r in self._transitions.values()):
-            return True  # a stinger or move transition: still Python's
+        if any(not native_transition(r) and not native_soon(r) for r in self._transitions.values()):
+            return True  # a stinger or move transition that is Python's
         active = self._collection.active_scenes
-        if any(scene_id != active.get(canvas_id) for canvas_id, scene_id in self.staged.items()):
-            return True
+        if any(scene_id != active.get(canvas_id) and not self._engine_shows(native, STAGED_VIEW + canvas_id)
+               for canvas_id, scene_id in self.staged.items()):
+            return True  # Build's edited bloom, when the engine has no canvas slot left for it
         return any(c.enabled and not native.draws(c.id) for c in self._collection.canvases)
 
     def _preview_size(self, key: str, canvas_size: tuple[int, int]) -> tuple[int, int] | None:
@@ -2136,22 +2201,25 @@ class Engine:
         self._served_views = set()
         if native is not None:
             self._engine_views, self._riders = self._native_views(taps, sizes)
-            from sprigcast.render.native_bridge import native_transition
+            from sprigcast.render.native_bridge import native_soon, native_transition
 
             stingers = {r.stinger.id: r.stinger.engine_player for r in self._transitions.values()
                         if r.stinger is not None and native_transition(r)}
             for sting_id, player in stingers.items():  # a stinger's clip: drawn by the engine from its player
                 native.attach_media(sting_id, player)
             native.forget_gone({*self._sources, *stingers})
+            # A stinger waiting for its clip: the engine goes on showing the bloom it changes from (native_soon).
+            kept = {cid: r.outgoing for cid, r in self._transitions.items() if native_soon(r)}
+            kept.update({cid: w[0] for cid, w in self._waking.items()})
             native.sync(self._collection, getattr(compositor, "effects", {}), self._state_view, bool(self._state_fades),
                         {cid: r for cid, r in self._transitions.items() if cid not in self._waking}, self._wipe_map,
-                        views=self._engine_views, held={cid: w[0] for cid, w in self._waking.items()},
-                        move_pieces=self._move_layout)
+                        views=self._engine_views, held=kept, move_pieces=self._move_layout)
             native.check(now)
             sprigcore_drain()
             self._mark("native engine")
         else:
             self._engine_views, self._riders = {}, {}
+        self._engine_edits = self._engine_shows(native, PART_VIEW)
         self._python_drew = native is None or self._python_draws(native, taps)
         if self._held_back:
             if self._python_drew or native is None:  # it draws again: it gets the newest pictures it skipped
@@ -2189,7 +2257,8 @@ class Engine:
                 # go on: dropping them each switch made new texture pools every time, and the writer on the card
                 # keeps every texture it was ever handed (NVENC knows them by pointer): ~10 MB of graphics memory a
                 # minute with a switch every 15 s (PC soak 2026-11-18).
-                native_shows = (not extra or native.handles(extra)) and native.draws(canvas.id)
+                waits = held is None and native_soon(self._transitions.get(canvas.id))  # its clip isn't there yet
+                native_shows = (not extra or waits or native.handles(extra)) and native.draws(canvas.id)
                 wanted = self.previews is None or canvas.id in self.previews
                 size = self._preview_size(canvas.id, (canvas.width, canvas.height)) or (canvas.width, canvas.height)
                 native.watch(canvas.id, size if native_shows and wanted else None, self.preview_fps)
@@ -2214,7 +2283,8 @@ class Engine:
                     self._served_views.update(self._riders.get(canvas.id, ()))
                     self._mark(f"{canvas.id} native outputs")
                     outputs = ()
-            self._render_staged(compositor, canvas, sizes, now)
+            if not self._engine_staged(native, canvas, now):
+                self._render_staged(compositor, canvas, sizes, now)
             self._render_clean(compositor, canvas, sizes, now, taps.get(f"clean:{canvas.id}", ()))
             if not outputs and not preview:
                 continue  # nobody is watching or recording this canvas right now
@@ -2245,6 +2315,7 @@ class Engine:
                     log.exception("frame tap for %s failed", canvas.id)
                 self._mark(f"{canvas.id} {getattr(callback, '__qualname__', 'output')}")
         self._mark("canvases")
+        self._engine_part(native, now)
         self._render_views(compositor, sizes, now, taps, drawn_now, native)
         self._mark("virtual camera")
         if self._grabs:

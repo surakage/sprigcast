@@ -257,6 +257,72 @@ def test_recordings_and_streams_take_the_native_engines_frames():
     assert engine._native.outputs["v"] == ([], "bicubic")
 
 
+def _build_engine():
+    col = _collection()
+    col.scenes.append(Scene(id="next-h", name="Chatting", canvas="h", items=[SceneItem(source="cam")]))
+    engine = Engine(col)
+    engine._native = FakeNative()
+    return engine
+
+
+def test_the_bloom_build_edits_comes_from_the_native_engine():
+    """Build with a bloom open that isn't on air: Python's compositor drew it, and with it every sprig in use a
+    second time (the imported garden's Build, 86% of the graphics card, 2026-11-19)."""
+    engine, fake = _build_engine(), FakeCompositor()
+    engine.previews = frozenset({"h", "next:h"})
+    engine.preview_sizes = {"next:h": (32, 18)}
+    engine.staged = {"h": "next-h"}
+    _run(engine, fake, 0.5)
+    native = engine._native
+    assert fake.rendered == [] and engine.readbacks == 0 and not engine._python_drew
+    canvas, scene = native.views["~next:h"]
+    assert (canvas.id, scene.id) == ("h", "next-h")
+    assert native.watching["view:~next:h"] == (32, 18)  # copied back at the size Build shows it
+    frame = engine.frames["next:h"].take()
+    assert frame.data[:1] == b"n" and (frame.width, frame.height) == (32, 18) and frame.canvas_size == (64, 36)
+    engine.previews = frozenset({"h"})  # Build's preview out of sight: no copy back
+    _run(engine, fake, 0.1)
+    assert native.watching["view:~next:h"] is None
+    engine.staged = {"h": "show-h"}  # the bloom on air is open in Build: its canvas's own picture, no view
+    _run(engine, fake, 0.1)
+    assert "~next:h" not in native.views and fake.rendered == []
+
+
+def test_the_sprig_open_in_build_comes_from_the_native_engine():
+    engine, fake = _build_engine(), FakeCompositor()
+    engine.previews = frozenset({"h", "part"})
+    engine.editing_part = "p-cam"
+    _run(engine, fake, 0.5)
+    native = engine._native
+    assert fake.rendered == [] and engine.readbacks == 0 and not engine._python_drew
+    canvas, scene = native.views["~part"]
+    assert canvas.id == "h" and scene is next(s for s in engine._collection.scenes if s.id == "p-cam")
+    assert native.watching["view:~part"] == (64, 36)
+    frame = engine.part_frames.take()
+    assert frame.canvas_id == "part:p-cam" and (frame.width, frame.height) == (64, 36) and frame.data[:1] == b"n"
+    engine.editing_part = None
+    _run(engine, fake, 0.1)
+    assert "~part" not in native.views
+
+
+def test_python_still_draws_builds_pictures_when_the_engine_has_no_slot_for_them():
+    class Full(FakeNative):
+        def draws(self, canvas_id):
+            return not canvas_id.startswith("view:")
+
+    class Sprigs(FakeCompositor):
+        def render_part(self, part_id, size, scene, sizes, fades=None):
+            return part_id
+
+    engine, fake = _build_engine(), Sprigs()
+    engine._native = Full()
+    engine.previews = frozenset({"h", "next:h"})
+    engine.staged = {"h": "next-h"}
+    engine._tick(fake, 10.0)
+    assert engine._python_drew and "next:h" in fake.rendered
+    assert "view:~next:h" not in engine._native.watching
+
+
 class CardRecorder:
     """Stands in for a Recorder whose NVENC takes frames on the card."""
 
@@ -778,6 +844,29 @@ def test_a_stinger_is_drawn_by_the_native_engine_from_its_player(monkeypatch):
     assert clip.closed and "h" not in engine._transitions
 
 
+def test_a_stinger_waiting_for_its_clip_stays_with_the_native_engine(monkeypatch):
+    """Until the clip's first picture is there the engine shows the old bloom; Python's compositor drew it (and
+    every sprig) for that wait and took the outputs over, at every switch."""
+    engine, fake = _engine(), FakeCompositor()
+    engine.previews = frozenset({"h"})
+    got = []
+    engine.add_frame_tap("h", got.append, nv12_size=(64, 36))
+    clip = _EngineClip()
+    clip.ready.clear()
+    _stinger_switch(engine, monkeypatch, clip)
+    _run(engine, fake, seconds=0.25)
+    native = engine._native
+    assert fake.rendered == [] and not engine._python_drew and getattr(native, "paused", 0) == 0
+    assert native.held["h"].id == "a" and clip.played == 0
+    assert not native_bridge.native_transition(native.transitions["h"])  # not handed to the engine yet
+    assert len(got) == 15 and native.outputs["h"][0] == [((64, 36), False)]  # the stream's frames go on
+    clip.ready.set()  # the clip is there: the engine draws the transition
+    for i in range(6):
+        engine._tick(fake, 10.25 + i / 60)
+    assert fake.rendered == [] and "h" not in native.held and clip.played > 0
+    assert native_bridge.native_transition(native.transitions["h"])
+
+
 def test_a_stinger_is_drawn_by_python_when_asked(monkeypatch):
     monkeypatch.setenv("SPRIGCAST_NO_NATIVE_STINGER", "1")
     engine, fake = _engine(), FakeCompositor()
@@ -1087,6 +1176,44 @@ def test_the_bridge_draws_a_collection_like_the_device():
             assert device
             sprigcore.com_release(device)
         del frames
+    finally:
+        bridge.close()
+
+
+@needs_engine
+def test_a_canvas_nobody_takes_a_picture_of_is_not_drawn():
+    """The engine drew every canvas 60 times a second, watched or not (the imported garden: two canvases, one
+    preview at 30 a second, 71% of the graphics card with nothing going on, 2026-11-19)."""
+    import time
+
+    col = SceneCollection(
+        canvases=[Canvas(id="h", width=32, height=18), Canvas(id="v", width=18, height=32)],
+        scenes=[Scene(id="a", name="A", canvas="h"), Scene(id="b", name="B", canvas="v")],
+        active_scenes={"h": "a", "v": "b"},
+    )
+    bridge = native_bridge.NativeCanvases(col, warp=True)
+
+    def span(seconds):
+        before = bridge.engine.stats()
+        time.sleep(seconds)
+        after = bridge.engine.stats()
+        return after["ticks"] - before["ticks"], after["canvas_draws"] - before["canvas_draws"]
+
+    try:
+        bridge.sync(col, {}, _plain_state, False)
+        time.sleep(0.3)
+        ticks, draws = span(0.5)
+        assert ticks > 5 and draws == 0  # nobody looks at either canvas: frames go by, nothing is drawn
+        bridge.watch("h", (32, 18), 5)
+        time.sleep(0.3)
+        ticks, draws = span(1.0)
+        assert 2 <= draws <= 8 and ticks > 3 * draws  # a preview at 5 a second: drawn for those pictures only
+        assert bridge.take("h") is not None
+        bridge.set_outputs("v", [((18, 32), False)])
+        time.sleep(0.3)
+        ticks, draws = span(0.5)
+        assert ticks > 5 and draws >= ticks - 2  # a recording or stream takes every frame
+        assert not bridge.failed
     finally:
         bridge.close()
 

@@ -92,6 +92,17 @@ def native_transition(running) -> bool:
     return running.stinger is None
 
 
+def native_soon(running) -> bool:
+    """A stinger still waiting for its clip's first picture (render/engine.py Running.began is None) that the
+    native engine draws once it starts. Until then the engine keeps showing the bloom it changes from: counting
+    the wait as a transition only Python draws had Python's compositor draw every sprig of both blooms, take
+    the canvas's outputs over and hand them back, at every switch (the imported garden's stinger, 55-114 ms
+    frames and a jump of the picture, 2026-11-19)."""
+    if running is None or running.began is not None or running.settings.kind != "stinger":
+        return False
+    return engine_kind("stinger") and getattr(running.stinger, "engine_player", None) is not None
+
+
 def snapshot_draws(collection: SceneCollection, state_view, outgoing: dict[str, Scene] | None = None,
                    views: dict | None = None, held: dict[str, Scene] | None = None
                    ) -> tuple[list[SceneDraw], dict, dict[str, str | None]]:
