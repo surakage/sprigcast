@@ -308,11 +308,15 @@ def line_up_labels(root: QWidget) -> None:
 
 
 EVERYDAY_FPS = (30, 60)
-CANVAS_SIZES = ((1280, 720, "720p"), (1920, 1080, "1080p"), (2560, 1440, "1440p"), (3840, 2160, "4K"))
+# A canvas runs from 720p up to 1440p, picked from a list, and is 1080p unless you pick another (user, 2026-11-20).
+# Lighter output sizes for viewers and recordings are picked under Output, below.
+CANVAS_SIZES = ((1280, 720, "720p"), (1366, 768, ""), (1600, 900, ""), (1920, 1080, "1080p"),
+                (2048, 1152, ""), (2560, 1440, "1440p"))
+DEFAULT_CANVAS = "1080p"
 
 
 def canvas_sizes(width: int, height: int) -> list[tuple[int, int, str]]:
-    """The sizes offered for a canvas of this shape: the usual four, turned on their side for a tall canvas."""
+    """The sizes offered for a canvas of this shape, 720p to 1440p, turned on their side for a tall canvas."""
     if height > width:
         return [(h, w, name) for w, h, name in CANVAS_SIZES]
     return list(CANVAS_SIZES)
@@ -1305,8 +1309,7 @@ class SettingsWindow(QDialog):
             form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             size = QComboBox()
             for w, h, name in canvas_sizes(int(values["width"]), int(values["height"])):
-                size.addItem(f"{w}×{h} ({name})", f"{w}x{h}")
-            size.addItem("Custom", None)
+                size.addItem(f"{w}×{h} ({name})" if name else f"{w}×{h}", f"{w}x{h}")
             form.addRow("Size", size)
             width, height = QSpinBox(), QSpinBox()
             for number, value in ((width, values["width"]), (height, values["height"])):
@@ -1378,16 +1381,18 @@ class SettingsWindow(QDialog):
                 small.setText(f"{'Landscape' if w > h else 'Portrait' if h > w else 'Square'} · {fps.value()} fps")
                 scaling_needed()
 
-            def picked(_=None, size=size, width=width, height=height, form=form, custom=custom):
+            def picked(_=None, size=size, width=width, height=height):
                 wanted = size.currentData()
-                form.setRowVisible(custom, wanted is None)
                 if wanted is not None:
                     w, h = wanted.split("x")
                     width.setValue(int(w))
                     height.setValue(int(h))
 
+            form.setRowVisible(custom, False)  # no sizes of your own: the boxes only carry the picked size
             at = size.findData(f"{int(values['width'])}x{int(values['height'])}")
-            size.setCurrentIndex(at if at >= 0 else size.count() - 1)  # a size of your own: Custom, with its boxes
+            if at < 0:  # any other size (4K, an old custom one) comes back to 1080p when you save
+                at = next(i for i in range(size.count()) if size.itemText(i).endswith(f"({DEFAULT_CANVAS})"))
+            size.setCurrentIndex(at)
             size.currentIndexChanged.connect(picked)
             width.valueChanged.connect(fill)
             height.valueChanged.connect(fill)
