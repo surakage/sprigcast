@@ -761,7 +761,7 @@ class AudioPage(QWidget):
         if self._rows_waiting:
             from PySide6.QtCore import QTimer
 
-            QTimer.singleShot(0, self, self._more_rows)
+            QTimer.singleShot(self.ROW_GAP_MS, self, self._more_rows)
         grid.setColumnStretch(0, 1)
         box.addWidget(table)
         return group
@@ -770,12 +770,17 @@ class AudioPage(QWidget):
     # made with the page were most of the 61 ms the Sound gear took to open on the PC while live (2026-11-19).
     ROWS_NOW = 0
     ROWS_PER_TICK = 1  # three were 136 ms a tick on the PC while live (2026-11-18): each row is ~50 calls into Qt
-    TICK_MS = 4  # more halves in a tick while they're quick; a slow PC still makes one a tick
+    TICK_MS = 8  # more halves in a tick while they're quick; a slow PC still makes one a tick
+    # Never 0 between ticks. On Windows a 0 ms timer is a posted event, handled ahead of the window's paints and
+    # every real timer, so a chain of them held the whole list: Settings from the Sound gear didn't answer for
+    # 285-340 ms every open (PC 2026-11-20, build 44785036541), the beat that watches the window starved with it.
+    # A 1 ms timer is a real timer: paints, clicks and other timers go first, then the next tick.
+    ROW_GAP_MS = 1
     SCREEN_ROWS = 12  # about what the Sounds tab shows without scrolling
 
     def _more_rows(self) -> None:
-        """More sound rows, a little at a time with no wait in between (a 15 ms gap after every half row made a
-        long list take seconds). All of them at once (6 boxes and up to 5 ticks each) held the window 263 ms on
+        """More sound rows, a little at a time with only a timer tick in between (a 15 ms gap after every half row
+        made a long list take seconds; none at all froze the window while the list was made, see ROW_GAP_MS). All of them at once (6 boxes and up to 5 ticks each) held the window 263 ms on
         the PC while live (2026-11-18 pop-up sweep)."""
         import time
 
@@ -792,7 +797,7 @@ class AudioPage(QWidget):
         if waiting:
             from PySide6.QtCore import QTimer
 
-            QTimer.singleShot(0, self, self._more_rows)
+            QTimer.singleShot(self.ROW_GAP_MS, self, self._more_rows)
 
     def _sound_row(self, grid: QGridLayout, row: int, source: SourceConfig, tracks: int, half: int = 0) -> None:
         """A sound's row; half 1 or 2: its first boxes (name to sync offset) or the rest (listeners, tracks)."""

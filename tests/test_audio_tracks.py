@@ -580,3 +580,32 @@ def test_sounds_list_shows_all_at_once_and_fits_beside_settings_menu():
     page.show_tab("Tracks")
     page.show_tab("Sounds")
     assert page.minimumSizeHint().width() == sounds  # the wider Tracks tab doesn't widen Sounds
+
+
+def test_sound_rows_leave_the_window_a_tick_between_parts(monkeypatch):
+    """Never a 0 ms chain: on Windows each 0 ms timer goes ahead of the window's paints and timers, and Settings
+    from the Sound gear didn't answer for ~300 ms every open while the list was made (PC 2026-11-20)."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import AudioPage
+
+    app = QApplication.instance() or QApplication([])
+    asked = []
+    real = QTimer.singleShot
+
+    def single_shot(ms, *args):
+        if any(getattr(a, "__name__", "") == "_more_rows" for a in args):
+            asked.append(ms)
+        return real(ms, *args)
+
+    monkeypatch.setattr(QTimer, "singleShot", single_shot)
+    col = _collection()
+    col.sources += [SourceConfig(id=f"m{i}", kind="audio_input", name=f"Mic {i}") for i in range(20)]
+    page = AudioPage(col, {}, first="Sounds")
+    while page._rows_waiting:
+        app.processEvents()
+    assert len(asked) > 1 and min(asked) >= 1
+    page.finish()
