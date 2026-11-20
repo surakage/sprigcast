@@ -263,3 +263,43 @@ def test_color_swatches_say_their_color():
 
     tips = [b.toolTip() for b in d.colors.buttons()]
     assert tips == list(theme.type_color_names().values())
+
+
+def test_double_click_a_mic_or_desktop_sound_picks_its_device(window, monkeypatch):
+    """It said "'audio_input' sources have no settings to edit" (user 2026-11-20)."""
+    from sprigcast.core.scene import SceneItem
+
+    w = window
+    asked = []
+
+    def pick(kind, current, title="", primary="OK"):
+        asked.append((kind, current, title, primary))
+        return "Microphone (Voicemod)"
+
+    monkeypatch.setattr(w, "_pick_audio_device", pick)
+    monkeypatch.setattr(w, "_item", lambda: SceneItem(source="mic"))
+    w._edit_source_settings()
+    assert asked == [("audio_input", "default", "Mic", "Save")]
+    assert w.collection.source("mic").settings["device"] == "Microphone (Voicemod)"
+    assert w.collection.source("mic").name == "Microphone"  # the made-up name follows the device
+    w.collection.source("desk").name = "[AOC] Game"
+    monkeypatch.setattr(w, "_item", lambda: SceneItem(source="desk"))
+    w._edit_source_settings()
+    assert w.collection.source("desk").settings["device"] == "Microphone (Voicemod)"
+    assert w.collection.source("desk").name == "[AOC] Game"  # a name you chose stays
+
+
+def test_volume_and_sound_is_left_out_while_that_sound_is_open(window):
+    from PySide6.QtWidgets import QMenu
+
+    w = window
+
+    def texts():
+        menu = QMenu(w)
+        w._fill_sound_menu(menu, "game")
+        return [a.text() for a in menu.actions()]
+
+    assert "Volume and sound…" in texts()
+    w._select_sound("game")
+    assert w.build_stage.right_stack.currentIndex() == 1
+    assert "Volume and sound…" not in texts()
