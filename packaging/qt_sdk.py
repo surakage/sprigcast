@@ -45,7 +45,22 @@ def wanted(name: str, short: str, modules: list[str]) -> bool:
     if not name.startswith(f"qt.qt6.{short}.") or "msvc20" not in name or "arm64" in name or not name.endswith("_64"):
         return False
     middle = name[len(f"qt.qt6.{short}."):]
+    if "debug_information" in middle:
+        return False
     return "." not in middle or any(middle.startswith(f"addons.{m}.") for m in modules)
+
+
+def extract_targets(package: ET.Element, out: Path) -> dict[str, Path]:
+    """Archive -> folder, from the package's Extract operations (@TargetDir@/6.12.0/msvc2022_64 in Qt 6.8+)."""
+    targets: dict[str, Path] = {}
+    for op in package.iter("Operation"):
+        if op.get("name") != "Extract":
+            continue
+        args = [a.text or "" for a in op.iter("Argument")]
+        if len(args) >= 2:
+            where = args[0].replace("@TargetDir@", str(out)).replace("@ApplicationsDir@", str(out))
+            targets[args[1].strip()] = Path(where)
+    return targets
 
 
 def main(argv: list[str]) -> int:
@@ -70,7 +85,7 @@ def main(argv: list[str]) -> int:
     if not packages:
         raise RuntimeError(f"Qt {version}: no MSVC 64-bit packages in {folders}")
     archs = {p.findtext("Name", "").rsplit(".", 1)[-1] for _, p in packages}
-    arch = sorted(archs)[-1]  # the newest MSVC
+    arch = max(archs)  # the newest MSVC
     packages = [(f, p) for f, p in packages if p.findtext("Name", "").endswith("." + arch)]
     print(f"Qt {version} {arch}: {', '.join(p.findtext('Name') for _, p in packages)}")
     missing = [m for m in modules if not any(f".addons.{m}." in p.findtext("Name", "") for _, p in packages)]
@@ -81,7 +96,10 @@ def main(argv: list[str]) -> int:
     for folder, package in packages:
         name, ver = package.findtext("Name"), package.findtext("Version")
         archives = [a.strip() for a in (package.findtext("DownloadableArchives") or "").split(",") if a.strip()]
+        targets = extract_targets(package, out)
         for archive in archives:
+            if "debug-symbols" in archive:
+                continue
             path = f"{REPO}/{folder}/{name}/{ver}{archive}"
             data = fetch(path)
             want = fetch(path + ".sha1").decode().split()[0].lower()
@@ -90,12 +108,19 @@ def main(argv: list[str]) -> int:
                 raise RuntimeError(f"{archive}: SHA-1 {got} isn't Qt's {want}")
             local = out / archive
             local.write_bytes(data)
-            subprocess.run([seven, "x", "-y", "-bso0", "-bsp0", f"-o{out}", str(local)], check=True)
+            target = targets.get(archive, out)
+            target.mkdir(parents=True, exist_ok=True)
+            subprocess.run([seven, "x", "-y", "-bso0", "-bsp0", f"-o{target}", str(local)], check=True)
             local.unlink()
-            print(f"  {archive} ({len(data) / 1e6:.0f} MB)")
-    prefix = next((d for d in (out / version).iterdir() if d.is_dir()), None) if (out / version).is_dir() else None
-    if prefix is None or not (prefix / "bin" / "qt-configure-module.bat").is_file():
-        raise RuntimeError(f"Qt didn't unpack where expected under {out}")
+            print(f"  {archive} ({len(data) / 1e6:.0f} MB) -> {target}")
+    found = sorted(out.rglob("qt-configure-module.bat"), key=lambda f: len(f.parts))
+    prefix = found[0].parent.parent if found else None
+    if prefix is None:
+        for d in sorted(out.rglob("*")):
+            if d.is_dir() and len(d.relative_to(out).parts) <= 3:
+                print("   ", d.relative_to(out))
+        raise RuntimeError(f"Qt didn't unpack where expected under {out} (no qt-configure-module.bat)")
+    (out / "prefix.txt").write_text(str(prefix), "utf-8")
     print(f"QTDIR {prefix}")
     return 0
 

@@ -58,7 +58,7 @@ runs:
         # read Qt 6.12's), each archive checked against Qt's SHA-1.
         python packaging\qt_sdk.py $qt C:\qtwe\qt qtwebchannel qtpositioning qtwebsockets
         if ($LASTEXITCODE -ne 0) { throw "Couldn't install Qt $qt" }
-        $qtdir = (Get-ChildItem C:\qtwe\qt\$qt -Directory | Select-Object -First 1).FullName
+        $qtdir = (Get-Content C:\qtwe\qt\prefix.txt -Raw).Trim()
         "QTDIR=$qtdir" | Out-File C:\qtwe\qtdir.txt
         # Qt WebEngine's source release, checked against Qt's own list of checksums.
         $base = "https://download.qt.io/official_releases/qt/$($qt.Substring(0, $qt.LastIndexOf('.')))/$qt/submodules"
