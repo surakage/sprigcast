@@ -6,7 +6,7 @@ an MP4 (by its name, or any video on this computer's own servers) is sent to a s
 
 - An MP4 the engine can't play is converted to WebM once (AV1 on the graphics card when it has an encoder, else
   VP8; the sound to Opus) by another program, so SprigCast and its pages never wait on it. The copy is kept
-  (CACHE_BYTES at most, least recently played first out) and served from then on.
+  (CACHE_BYTES at most, least recently played first out, in the local cache folder) and served from then on.
 - Anything else (WebM, MP3, an MP4 with VP9/AV1/Opus inside) goes straight back to where the page asked for it.
 - If converting fails, the page gets the original back and says the video can't play, as before.
 
@@ -43,7 +43,8 @@ PLAYABLE_AUDIO = {"opus", "vorbis", "flac", "mp3"}
 # Converted, played as is, not a video or broken (the page gets the original back), and the converter's crash.
 CONVERTED, AS_IS, CANT = 0, 3, 4
 MAX_W, MAX_H = 1920, 1080
-HW_ENCODERS = (("av1_nvenc", {"preset": "p2", "tune": "hq"}), ("av1_amf", {"usage": "transcoding", "quality": "speed"}),
+MIN_RATE, HW_MAX_RATE, SW_MAX_RATE = 1_500_000, 6_000_000, 8_000_000
+HW_ENCODERS = (("av1_nvenc", {"preset": "p1", "tune": "hq"}), ("av1_amf", {"usage": "transcoding", "quality": "speed"}),
                ("av1_qsv", {"preset": "veryfast"}))
 SW_ENCODER = ("libvpx", {"deadline": "realtime", "cpu-used": "8", "lag-in-frames": "0", "auto-alt-ref": "0"})
 
@@ -99,13 +100,61 @@ def file_path(url: str) -> Path | None:
 # The converter (another program) -------------------------------------------------------------------------------
 
 
-def convert(src: str, out: Path, encoders=None) -> int:
+def convert(src: str, out: Path, encoders=None, hw_decode: bool = True) -> int:
     """src (a file or URL) to out (WebM): CONVERTED, AS_IS (the engine plays it already) or CANT."""
+    if "://" in src and not src.startswith("file:"):
+        # Read once into a local file first: decoding straight from a server seeks there for every jump between
+        # the picture and the sound (3,702 requests and 50 s for a one-minute clip on the PC, 2026-11-20).
+        local = out.with_name(out.name + ".src")
+        try:
+            started = time.monotonic()
+            _download(src, local)
+            log.info("page video: read %d MB in %.1f s", local.stat().st_size // (1024 * 1024),
+                     time.monotonic() - started)
+            return convert(str(local), out, encoders, hw_decode)
+        except OSError as e:
+            log.info("page video %s: can't read it (%s)", src[:200], e)
+            return CANT
+        finally:
+            local.unlink(missing_ok=True)
+    return _convert_file(src, out, encoders, hw_decode)
+
+
+def _download(url: str, to: Path) -> None:
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({})) if host in LOCAL_HOSTS \
+        else urllib.request.build_opener()
+    with opener.open(urllib.request.Request(url), timeout=20) as r, open(to, "wb") as f:
+        while True:
+            chunk = r.read(1 << 20)
+            if not chunk:
+                break
+            f.write(chunk)
+
+
+def _open(src: str, hw_decode: bool):
+    """The file, decoded on the graphics card when it can (D3D11, any card): the pictures come back as NV12,
+    which the card's encoder takes as they are. (container, decoded on the card)"""
+    import av
+
+    if hw_decode:
+        try:
+            from av.codec.hwaccel import HWAccel, hwdevices_available
+
+            kind = next((k for k in ("d3d11va", "cuda", "vaapi", "videotoolbox") if k in hwdevices_available()), None)
+            if kind:
+                return av.open(src, hwaccel=HWAccel(kind, allow_software_fallback=True)), True
+        except Exception as e:  # noqa: BLE001  (no card, no driver: decoded by the processor)
+            log.info("page video: no decoding on the card (%s)", e)
+    return av.open(src), False
+
+
+def _convert_file(src: str, out: Path, encoders, hw_decode: bool) -> int:
     import av
 
     try:
-        inp = av.open(src, options={"timeout": "15000000"} if "://" in src else None)
-    except Exception as e:  # not a media file at all
+        inp, on_card = _open(src, hw_decode)
+    except Exception as e:  # noqa: BLE001  (not a media file at all)
         log.info("page video %s: can't open (%s)", src[:200], e)
         return CANT
     with inp:
@@ -120,9 +169,13 @@ def convert(src: str, out: Path, encoders=None) -> int:
         if v_ok and a_ok:
             return AS_IS
         part = out.with_name(out.name + ".part")
+        started, frames = time.monotonic(), 0
         try:
             with av.open(str(part), "w", format="webm") as dst:
-                vout, venc = (_video_out(dst, v, encoders) if v is not None and not v_ok else (None, None))
+                source_rate = (v.bit_rate or inp.bit_rate or 0) if v is not None else 0
+                vout, venc = (_video_out(dst, v, encoders, "nv12" if on_card else (v.codec_context.pix_fmt or ""),
+                                         source_rate)
+                              if v is not None and not v_ok else (None, None))
                 vcopy = dst.add_stream_from_template(v) if v is not None and v_ok else None
                 sound = _Sound(dst) if a is not None and not a_ok else None
                 acopy = dst.add_stream_from_template(a) if a is not None and a_ok else None
@@ -139,6 +192,7 @@ def convert(src: str, out: Path, encoders=None) -> int:
                             continue
                         for frame in packet.decode():
                             _encode_video(dst, vout, venc, frame)
+                            frames += 1
                         if packet.size == 0:
                             _encode_video(dst, vout, venc, None)
                     elif packet.stream is a:
@@ -152,9 +206,15 @@ def convert(src: str, out: Path, encoders=None) -> int:
                         if packet.size == 0:
                             sound.add(None)
         except Exception:
-            log.exception("page video %s: converting failed", src[:200])
             part.unlink(missing_ok=True)
+            if on_card:  # the card's decoder gave up part way: once more on the processor
+                log.info("page video %s: decoding on the card failed, again on the processor", src[:200])
+                return _convert_file(src, out, encoders, False)
+            log.exception("page video %s: converting failed", src[:200])
             return CANT
+        seconds = time.monotonic() - started
+        log.info("page video: %d pictures in %.1f s (%.0f a second), decoded on the %s", frames, seconds,
+                 frames / max(seconds, 1e-3), "card" if on_card else "processor")
         part.replace(out)
         return CONVERTED
 
@@ -163,7 +223,7 @@ def _even(n: int) -> int:
     return max(2, n - n % 2)
 
 
-def _video_out(dst, v, encoders):
+def _video_out(dst, v, encoders, frames_format: str = "", source_rate: int = 0):
     import av
 
     w, h = v.codec_context.width, v.codec_context.height
@@ -172,12 +232,25 @@ def _video_out(dst, v, encoders):
     scale = min(1.0, MAX_W / w, MAX_H / h)
     w, h = _even(round(w * scale)), _even(round(h * scale))
     rate = v.average_rate or v.guessed_rate or Fraction(30)
-    bit_rate = int(min(12_000_000, max(2_500_000, w * h * float(rate) * 0.09)))
     for name, options in (encoders if encoders is not None else (*HW_ENCODERS, SW_ENCODER)):
         opts = dict(options)
         if name == "libvpx":
             opts["threads"] = str(max(1, min(8, (os.cpu_count() or 2) - 1)))
-        settings = {"width": w, "height": h, "pix_fmt": "yuv420p" if name == "libvpx" else "nv12",
+        # About the clip's own size (AV1 needs less than H.264 for the same look): a page buffers a big file
+        # slowly, and the copy stays small. 12 Mbps made a 47 MB clip 87 MB (2026-11-20).
+        guess = w * h * float(rate) * 0.05
+        bit_rate = int(min(SW_MAX_RATE if name == "libvpx" else HW_MAX_RATE,
+                           max(MIN_RATE, (source_rate * (1.0 if name == "libvpx" else 0.8)) or guess)))
+        opts.update(maxrate=str(bit_rate * 3 // 2), bufsize=str(bit_rate * 2))
+        try:
+            formats = [f.name for f in (av.Codec(name, "w").video_formats or [])]
+        except Exception:  # noqa: BLE001  (no such encoder in this FFmpeg)
+            continue
+        # The pictures' own format when the encoder takes it: nothing to convert per picture.
+        pix_fmt = next((f for f in (frames_format, "nv12", "yuv420p") if f and f in formats), None)
+        if pix_fmt is None:
+            continue
+        settings = {"width": w, "height": h, "pix_fmt": pix_fmt,
                     "time_base": v.time_base or Fraction(1, 1000), "bit_rate": bit_rate,
                     "gop_size": max(1, round(float(rate) * 2))}
         try:  # tried on its own first: a stream added to the file stays there even if its encoder won't open
@@ -195,16 +268,17 @@ def _video_out(dst, v, encoders):
         for key, value in settings.items():
             setattr(out.codec_context, key, value)
         out.codec_context.options = opts
-        log.info("page video: %s, %dx%d", name, w, h)
+        log.info("page video: %s, %dx%d %s, %d kbps", name, w, h, pix_fmt, bit_rate // 1000)
         return out, out.codec_context
     return None, None
 
 
 def _encode_video(dst, out, cc, frame) -> None:
     if frame is not None:
-        pts, tb = frame.pts, frame.time_base
-        frame = frame.reformat(width=cc.width, height=cc.height, format=cc.pix_fmt)
-        frame.pts, frame.time_base = pts, tb
+        if (frame.format.name, frame.width, frame.height) != (cc.pix_fmt, cc.width, cc.height):
+            pts, tb = frame.pts, frame.time_base
+            frame = frame.reformat(width=cc.width, height=cc.height, format=cc.pix_fmt)
+            frame.pts, frame.time_base = pts, tb
         try:
             frame.pict_type = type(frame.pict_type).NONE  # the encoder picks its own key frames
         except Exception:
@@ -297,8 +371,15 @@ class PageVideos:
             def do_HEAD(self):
                 owner._answer(self, body=False)
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.server.daemon_threads = True
+        class Server(ThreadingHTTPServer):
+            daemon_threads = True
+
+            def handle_error(self, request, client_address):
+                # The page engine drops a request it no longer needs (a seek, a clip that changed): no traceback.
+                if not isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError)):
+                    log.exception("page video: a request")
+
+        self.server = Server(("127.0.0.1", 0), Handler)
         self.port = self.server.server_address[1]
         threading.Thread(target=self.server.serve_forever, name="page-videos", daemon=True).start()
 
@@ -519,7 +600,11 @@ def install(profile, base: str | None) -> bool:
         )
 
         if _videos is None:
-            _videos = PageVideos(Path(base) / "page-videos")
+            from PySide6.QtCore import QStandardPaths
+
+            # The local cache folder (%LOCALAPPDATA%), not the roaming profile: up to CACHE_BYTES of clips.
+            cache = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation) or base
+            _videos = PageVideos(Path(cache) / "page-videos")
         videos = _videos
         media = QWebEngineUrlRequestInfo.ResourceType.ResourceTypeMedia
 

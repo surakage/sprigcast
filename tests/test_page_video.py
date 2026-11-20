@@ -149,3 +149,45 @@ def test_a_playable_file_on_a_local_server_goes_back_to_it(tmp_path):
 def test_nothing_is_installed_when_the_engine_plays_h264(monkeypatch):
     monkeypatch.setattr(pv, "engine_plays_h264", lambda: True)
     assert pv.install(object(), "/tmp") is False
+
+
+def test_a_dropped_request_leaves_no_traceback(tmp_path, caplog):
+    import socket
+
+    videos = pv.PageVideos(tmp_path / "cache", run=lambda src, out: pv.CANT)
+    try:
+        s = socket.create_connection(("127.0.0.1", videos.port))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
+        s.close()  # reset, as the page engine does with a request it no longer needs
+        assert _get(videos.port, "/nope")[0] == 404  # still answering
+    finally:
+        videos.close()
+    assert "page video: a request" not in caplog.text
+
+
+@pytest.mark.skipif(not (_has("libx264") and _has("libvpx") and _has("libopus")), reason="needs x264, VP8, Opus")
+def test_a_clip_on_a_server_is_read_once_then_converted(tmp_path):
+    import functools
+    import threading
+    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+    _clip(tmp_path / "clip.mp4")
+    asked = []
+
+    class Handler(SimpleHTTPRequestHandler):
+        def log_message(self, *args):
+            asked.append(self.path)
+
+    site = ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Handler, directory=str(tmp_path)))
+    threading.Thread(target=site.serve_forever, daemon=True).start()
+    try:
+        out = tmp_path / "out.webm"
+        url = f"http://127.0.0.1:{site.server_address[1]}/clip.mp4"
+        assert pv.convert(url, out, encoders=[pv.SW_ENCODER], hw_decode=False) == pv.CONVERTED
+        assert len(asked) == 1  # one read, no jumping about on the server
+        assert not out.with_name(out.name + ".src").exists()
+        with av.open(str(out)) as i:
+            assert [s.codec_context.name for s in i.streams] == ["vp8", "opus"]
+    finally:
+        site.shutdown()
+

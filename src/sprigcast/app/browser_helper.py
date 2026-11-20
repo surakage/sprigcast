@@ -315,7 +315,9 @@ class RemoteHost:
                 else:
                     self._notes.pop(source_id, None)
         elif kind == "log":
-            log.log(int(header.get("level", logging.INFO)), "browser helper: %s", header.get("text", ""))
+            # The text as the message itself: the log's flood guard counts each kind of message (logbook.Floods), and
+            # with one template every helper line was one kind, so busy pages crowded the rest out of today's log.
+            log.log(int(header.get("level", logging.INFO)), "browser helper: " + str(header.get("text", "")).replace("%", "%%"))
 
     def use_card(self, luid: tuple[int, int] | None) -> None:
         """The native engine draws on this card (None: no engine): pages are drawn on it from now on. A helper
