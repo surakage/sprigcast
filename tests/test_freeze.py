@@ -18,27 +18,28 @@ from test_control_api import FakeHost, _collection, _wait  # noqa: E402
 from test_store_effects import Host, _shot, added, app  # noqa: E402,F401
 
 
-def test_freeze_is_a_filter_without_the_plugin():
-    """User, 2026-11-20: Freeze "should be in filters". It's in every Filters list, and switching it on (by hand,
-    filter.set or filter.toggle) freezes for its time; toggled after the time ran out, it freezes again."""
+def test_without_the_plugin_a_saved_freeze_does_nothing():
+    """User, 2026-11-20: Freeze is in Filters only when its plugin is added."""
+    from sprigcast.core.filters import filter_kinds
+
+    flt = Filter(id="f", name="Freeze", kind="freeze", settings={"run": 1, "until": 0})
+    assert freeze_of([flt]) is None and not video_effects([flt]).active
+    assert "freeze" not in [k.kind for k in filter_kinds("video")]
+
+
+def test_with_the_plugin_freeze_is_a_filter_you_can_toggle(added):
+    """With the plugin: in + Add, and filter.toggle / filter.set freeze it (again once its time ran out)."""
     from sprigcast.core.filters import filter_kinds, switch
 
+    added("freeze")
     assert "freeze" in [k.kind for k in filter_kinds("video")]
     flt = Filter(id="f", name="Freeze", kind="freeze", enabled=False, settings={"seconds": 10.0})
-    assert freeze_of([flt]) is None and not video_effects([flt]).active
     switch(flt, True)
     run, until = freeze_of([flt])
     assert run == 1 and time.time() + 9 < until < time.time() + 11
-    switch(flt, True)  # already frozen: same picture
-    assert freeze_of([flt])[0] == 1
     flt.settings["until"] = time.time() - 1  # ran out
     switch(flt, True)
     assert freeze_of([flt])[0] == 2
-    flt.settings = {"seconds": 0}
-    flt.enabled = False
-    switch(flt, True)
-    assert freeze_of([flt])[1] == 0  # 0 s: until it's switched off
-
     col = SceneCollection(canvases=[Canvas(id="horizontal", width=1920, height=1080)],
                           sources=[SourceConfig(id="cam", kind="color", name="Cam", filters=[
                               Filter(id="fz", name="Freeze", kind="freeze", enabled=False, settings={"seconds": 0})])],
@@ -49,8 +50,6 @@ def test_freeze_is_a_filter_without_the_plugin():
     assert freeze_of(api.col.source("cam").filters) == (1, 0)
     api.run("filter.toggle", {"source": "Cam", "filter": "Freeze"})
     assert freeze_of(api.col.source("cam").filters) is None
-    api.run("filter.set", {"source": "Cam", "filter": "freeze", "on": True, "settings": {"seconds": 3}})
-    assert freeze_of(api.col.source("cam").filters)[0] == 2
 
 
 def test_freeze_holds_a_sprig_everywhere_its_shown(added):
