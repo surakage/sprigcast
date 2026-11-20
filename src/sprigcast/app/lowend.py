@@ -339,6 +339,9 @@ def store_fps(fps: dict[str, int]) -> None:
     for canvas_id, value in fps.items():
         pending.setdefault(canvas_id, {})["fps"] = value
     QSettings().setValue(PENDING_VIDEO, json.dumps(pending))
+    import logging
+
+    logging.getLogger(__name__).info("video: canvas frame rates queued for the next start: %s", pending)
 
 
 def waiting_fps() -> dict[str, int]:

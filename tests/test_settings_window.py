@@ -988,3 +988,27 @@ def test_appearance_picks_a_theme_from_its_tile_and_previews_it(app):
     assert QSettings().value(theme.THEME_KEY) == "orchid" and theme.theme_in_use == "slothbloom"
     assert appearance_waiting() and w.restart_note.isVisible() and "Theme" in w.restart_note.text()
     w.close()
+
+
+def test_saving_settings_keeps_a_frame_rate_optimize_queued(app):
+    """PC 2026-11-19: Optimize queued the horizontal canvas for 30 fps and it never arrived. Saving Settings,
+    from any page, is not what drops it."""
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.app import lowend
+    from sprigcast.app.settings_window import PENDING_VIDEO, apply_pending_video, pending_video
+
+    QSettings().remove(PENDING_VIDEO)
+    try:
+        lowend.store_fps({"horizontal": 30})
+        col = _collection()
+        for tab in ("Video", "Stream", "General", "Video"):
+            w = _window(col, tab=tab)
+            w.show()
+            app.processEvents()
+            assert w.apply()
+            w.close()
+            assert pending_video()["horizontal"]["fps"] == 30, tab
+        assert apply_pending_video(col) and col.canvases[0].fps == 30
+    finally:
+        QSettings().remove(PENDING_VIDEO)
