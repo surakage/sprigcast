@@ -31,8 +31,13 @@ from PySide6.QtWidgets import (
 from sprigcast.app import theme
 from sprigcast.app.card import CardWindow
 from sprigcast.core import looks
-from sprigcast.core.filters import Field, filter_kind, filter_kinds, settings_for
+from sprigcast.core.filters import Field, filter_kind, filter_kinds, settings_for, switch
 from sprigcast.core.scene import Filter, SourceConfig
+
+def _unshown(flt: Filter) -> dict:
+    """What a filter keeps that isn't a field in its form (a barrel roll's count of runs): editing keeps it."""
+    return {k: v for k, v in flt.settings.items() if k == "run"}
+
 
 AUDIO_KINDS = {"audio_input", "audio_output", "app_audio"}
 
@@ -436,7 +441,7 @@ class FiltersDialog(CardWindow):
     def _toggled(self, item: QListWidgetItem) -> None:
         row, shown = self.list.row(item), self._shown()
         if 0 <= row < len(shown):
-            shown[row].enabled = item.checkState() == Qt.CheckState.Checked
+            switch(shown[row], item.checkState() == Qt.CheckState.Checked)
             self.on_change(save=False)
 
     # Settings -----------------------------------------------------------------
@@ -485,7 +490,7 @@ class FiltersDialog(CardWindow):
     def _edited(self) -> None:
         flt = self._current()
         if flt is not None and self.form is not None:
-            flt.settings = self.form.values()
+            flt.settings = {**_unshown(flt), **self.form.values()}
             self.on_change(save=False)
 
     def _save_look(self, path: str | None = None) -> Path | None:
@@ -515,7 +520,7 @@ class FiltersDialog(CardWindow):
         if info is None or self.form is None:
             return
         self.form.set_values(info.defaults)
-        flt.settings = dict(info.defaults)
+        flt.settings = {**_unshown(flt), **info.defaults}
         self.on_change(save=False)
 
     def done(self, result: int) -> None:  # Qt override

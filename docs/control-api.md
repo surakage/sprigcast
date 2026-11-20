@@ -377,7 +377,7 @@ Pages shown by a Web page source get `window.sprigcast` (the same object as `win
 
 Plugins added from **Tools → Plugin store** bring their own actions. They're in `app.actions` only while the plugin is added; without it they answer `plugin_missing`, naming the plugin to add. `plugins.list` shows every store plugin with `enabled` true or false. Timed effects (`hide.blackout`, `hide.pixelate`, `roll.spin`, `freeze.start`, `seconds` up to 600) end by themselves, and a new call on the same thing restarts the time.
 
-Hide it and Barrel Roll take `in` (a bloom's or sprig's name or id): then only the item in there changes, and the same source elsewhere stays as it is. `{"source": "Facecam", "in": "Gameplay"}` is the camera in Gameplay; `{"sprig": "Cam frame", "in": "Gameplay"}` is that sprig placed in Gameplay. Without `in`, it's the source everywhere it shows.
+Hide it and Barrel Roll take `in` (a bloom's or sprig's name or id): then only the item in there changes, and the same source elsewhere stays as it is. `{"source": "Facecam", "in": "Gameplay"}` is the camera in Gameplay; `{"sprig": "Cam frame", "in": "Gameplay"}` is that sprig placed in Gameplay. Without `in`, it's the source everywhere it shows. Switching a Barrel roll filter on (`filter.set` with `on: true`, `filter.toggle`, or its tick in Filters) rolls once with the filter's own time and turns; `roll.spin` rolls every time it's called and switches the filter off again when it lands.
 
 | Action | Plugin | What it does | Fields |
 | --- | --- | --- | --- |
