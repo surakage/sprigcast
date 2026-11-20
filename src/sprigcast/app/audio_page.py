@@ -733,6 +733,7 @@ class AudioPage(QWidget):
         name.setMinimumWidth(70)  # a long name is cut short, never wider than the window; the tip has all of it
         name.setToolTip(source.name)
         grid.addWidget(name, at, 0)
+        self.__dict__.setdefault("name_labels", {})[source.id] = name  # renamed in place when its device changes
         volume = DbSlider(float(st.get("volume_db", 0.0) or 0.0))
         grid.addWidget(volume, at, 1)
         balance = QSlider(Qt.Orientation.Horizontal)
@@ -877,6 +878,10 @@ class AudioPage(QWidget):
                 source.settings = {**source.settings, "device": device}
                 base = device_label(source.kind)
                 source.name = base if device == "default" else f"{base} ({device})"
+                label = getattr(self, "name_labels", {}).get(source.id)
+                if label is not None:  # the Sounds row says the new name now, not after the page is made again
+                    label.setText(source.name)
+                    label.setToolTip(source.name)
             row = self.sound_rows.get(source.id)
             if row is not None:
                 wanted = {"volume_db": round(row["volume"].value(), 1), "mono": row["mono"].isChecked(),
