@@ -157,6 +157,34 @@ float sd_star(float2 p, float r, float rf) {
     return length(p - ba * h) * fsign(p.y * ba.x - p.x * ba.y);
 }
 
+float sd_octagon(float2 p, float r) {
+    const float3 k = float3(-0.9238795325, 0.3826834323, 0.4142135623);
+    p = abs(p);
+    p -= 2.0 * min(dot(float2(k.x, k.y), p), 0.0) * float2(k.x, k.y);
+    p -= 2.0 * min(dot(float2(-k.x, k.y), p), 0.0) * float2(-k.x, k.y);
+    p -= float2(clamp(p.x, -k.z * r, k.z * r), r);
+    return length(p) * fsign(p.y);
+}
+
+float sd_pentagon(float2 p, float r) {
+    const float3 k = float3(0.809016994, 0.587785252, 0.726542528);
+    p.x = abs(p.x);
+    p -= 2.0 * min(dot(float2(-k.x, k.y), p), 0.0) * float2(-k.x, k.y);
+    p -= 2.0 * min(dot(float2(k.x, k.y), p), 0.0) * float2(k.x, k.y);
+    p -= float2(clamp(p.x, -r * k.z, r * k.z), r);
+    return length(p) * fsign(p.y);
+}
+
+float sd_triangle(float2 p, float r) {
+    const float k = 1.7320508;
+    p.x = abs(p.x) - r;
+    p.y = p.y + r / k;
+    if (p.x + k * p.y > 0.0) p = float2(p.x - k * p.y, -k * p.x - p.y) / 2.0;
+    p.x -= clamp(p.x, -2.0 * r, 0.0);
+    return -length(p) * fsign(p.y);
+}
+
+
 float shape_distance(float2 l) {
     float2 size = max(quad_size, float2(1.0, 1.0));
     float side = min(size.x, size.y);
@@ -176,8 +204,27 @@ float shape_distance(float2 l) {
     } else if (shape == 5) {
         float s = r * 1.62;
         d = sd_heart(float2(p.x, -p.y) / s + float2(0.0, 0.53)) * s;
-    } else {
+    } else if (shape == 6) {
         d = sd_star(float2(p.x, -p.y + r * 0.1), r, 0.45);
+    } else if (shape == 8) {   // diamond
+        d = (abs(p.x) + abs(p.y) - r) * 0.70710678;
+    } else if (shape == 9) {   // octagon
+        d = sd_octagon(p, r * 0.92);
+    } else if (shape == 10) {  // pentagon, a point at the top
+        d = sd_pentagon(float2(p.x, p.y - r * 0.1), r * 0.8);
+    } else if (shape == 11) {  // triangle, a point at the top
+        d = sd_triangle(float2(p.x, -p.y + r * 0.245), r * 0.85);
+    } else if (shape == 12) {  // arch: a round top on a straight-sided bottom
+        float2 q = float2(p.x, -p.y);
+        float top = length(q - float2(0.0, r * 0.15)) - r * 0.75;
+        float2 b = abs(q - float2(0.0, -r * 0.3)) - float2(r * 0.75, r * 0.45);
+        d = min(top, length(max(b, 0.0)) + min(max(b.x, b.y), 0.0));
+    } else if (shape == 13) {  // flower: five round petals, one at the top
+        float a = atan2(p.y, p.x);
+        d = (length(p) - r * (0.8 + 0.17 * cos(5.0 * a + 7.853982))) * 0.75;
+    } else {                   // squircle
+        float2 q = abs(p) / r;
+        d = (pow(pow(q.x, 4.0) + pow(q.y, 4.0), 0.25) - 0.98) * r;
     }
     if (stretch) {
         d *= min(size.x, size.y) / side;
@@ -268,7 +315,7 @@ float hash(float2 p) {
 float4 halo(float2 local, float2 frag) {
     float2 l = local * sil_map.xy + sil_map.zw;
     float a;
-    if (shape >= 1 && shape <= 6) {
+    if (shape >= 1 && shape != 7) {   // drawn shapes (7 is a picture)
         float d = shape_distance(l);
         float r = max(sil_px, 0.75);
         a = sil == 1 ? saturate((1.0 - smoothstep(-r, r, d)) * sil_boost)

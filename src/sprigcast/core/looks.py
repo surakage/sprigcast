@@ -29,16 +29,25 @@ LOOKS: tuple[tuple[str, str], ...] = (
 )
 FROM_FILE = "file"
 
-SHAPES: tuple[tuple[str, str], ...] = (
+SHAPES: tuple[tuple[str, str], ...] = (  # the Shape filter's presets, as listed (user, 2026-11-20: more shapes)
     ("rounded", "Rounded rectangle"),
     ("circle", "Circle"),
-    ("hexagon", "Hexagon"),
-    ("leaf", "Leaf"),
+    ("squircle", "Squircle"),
+    ("arch", "Arch"),
     ("heart", "Heart"),
     ("star", "Star"),
+    ("flower", "Flower"),
+    ("leaf", "Leaf"),
+    ("diamond", "Diamond"),
+    ("triangle", "Triangle"),
+    ("pentagon", "Pentagon"),
+    ("hexagon", "Hexagon"),
+    ("octagon", "Octagon"),
     ("image", "My own shape (image)"),
 )
-SHAPE_IDS = {name: i + 1 for i, (name, _label) in enumerate(SHAPES)}  # 0 = no shape
+# The number each shape has in the shaders (both engines). Fixed: new shapes take new numbers; 7 is the picture.
+SHAPE_IDS = {"rounded": 1, "circle": 2, "hexagon": 3, "leaf": 4, "heart": 5, "star": 6, "image": 7,
+             "diamond": 8, "octagon": 9, "pentagon": 10, "triangle": 11, "arch": 12, "flower": 13, "squircle": 14}
 
 LUMA = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 
