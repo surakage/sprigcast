@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -38,6 +39,15 @@ from sprigcast.app import icons, theme
 LOW, HIGH = -60.0, 12.0  # the fader's range, as on the Tune page
 STRIP_W, STRIP_H = 104, 220
 FOLD_KEY = "build/sound_strips_open"
+SHOW_KEY = "build/sound_strips_show"  # "all", "here" (this bloom) or a group: the chip you last picked
+GROUPS = ("Voice", "Game", "Alerts", "Music", "Other")
+
+
+def group_colour(group: str) -> str:
+    """The same colour a group has on Live's Sound card."""
+    from sprigcast.app.sound_card import GROUP_COLOURS
+
+    return GROUP_COLOURS.get(group, theme.MUTED)
 
 
 class Fader(QWidget):
@@ -123,6 +133,7 @@ class Strip(QFrame):
                  on_menu: Callable[[str | None, object], None] | None = None):
         super().__init__()
         self.sound_id = sound.id
+        self.group = getattr(sound, "group", "Other") or "Other"
         self.on_change, self.on_open = on_change, on_open
         self.on_menu = on_menu or (lambda _sid, _at: None)
         self.setObjectName("soundStrip")
@@ -135,7 +146,7 @@ class Strip(QFrame):
         col.setSpacing(4)
         self.name = QPushButton()
         self.name.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.name.setIcon(icons.icon(_kind_icon(kind), theme.MUTED, 14))
+        self.name.setIcon(icons.icon(_kind_icon(kind), group_colour(self.group), 14))  # coloured by its group
         self.name.setStyleSheet(f"QPushButton {{ background: transparent; border: none; color: {theme.TEXT};"
                                 " font-weight: 600; font-size: 12px; padding: 0; text-align: center; }"
                                 f"QPushButton:hover {{ color: {theme.TEXT_BRIGHT}; }}")
@@ -191,7 +202,8 @@ class Strip(QFrame):
         self._selected = on
         edge = theme.ACCENT if on else theme.CARD
         self.setStyleSheet(f"#soundStrip {{ background: {theme.SELECT_BG if on else theme.CARD};"
-                           f" border: 1px solid {edge}; border-radius: 18px; }}")
+                           f" border: 1px solid {edge}; border-top: 3px solid {group_colour(self.group)};"
+                           " border-radius: 18px; }")
 
     def set_tag(self, text: str) -> None:
         """Where it plays, when that isn't every bloom ("Gaming", "2 blooms")."""
@@ -230,6 +242,21 @@ class Strip(QFrame):
         self.mute.setIcon(icons.icon("speaker-off" if sound.muted else "speaker",
                                      theme.SELECT_TEXT if sound.muted else theme.TEXT, 16))
         self.mute.setToolTip("Unmute" if sound.muted else "Mute")
+
+
+def _dot(colour: str):
+    """A small round dot in a group's colour, for its chip."""
+    from PySide6.QtGui import QIcon, QPixmap
+
+    pix = QPixmap(16, 16)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(colour))
+    p.drawEllipse(QRectF(4, 4, 8, 8))
+    p.end()
+    return QIcon(pix)
 
 
 def _bold(font: QFont) -> QFont:
@@ -299,6 +326,40 @@ class SoundStrips(QFrame):
         self.add.clicked.connect(lambda: self.on_menu(None, self.add.mapToGlobal(self.add.rect().bottomLeft())))
         head.addWidget(self.add)
         col.addLayout(head)
+        # A long list: find one by name, or show one group (coloured as on Live) or this bloom's sounds only.
+        self.finder = QWidget()
+        find = QHBoxLayout(self.finder)
+        find.setContentsMargins(0, 0, 0, 0)
+        find.setSpacing(6)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Find a sound")
+        self.search.setClearButtonEnabled(True)
+        self.search.setFixedSize(180, 26)
+        self.search.setStyleSheet(f"QLineEdit {{ background: {theme.CARD}; border: 1px solid {theme.EDGE_STRONG};"
+                                  f" border-radius: 13px; padding: 0px 12px; color: {theme.TEXT}; }}"
+                                  f"QLineEdit:focus {{ border-color: {theme.ACCENT}; }}")
+        self.search.textChanged.connect(lambda _t: self._filter())
+        find.addWidget(self.search)
+        self.chips: dict[str, QPushButton] = {}
+        for key, text in (("all", "All"), ("here", "This bloom"), *((g, g) for g in GROUPS)):
+            chip = QPushButton(text)
+            chip.setCheckable(True)
+            chip.setAutoExclusive(True)
+            chip.setCursor(Qt.CursorShape.PointingHandCursor)
+            if key in GROUPS:
+                chip.setIcon(_dot(group_colour(key)))
+            chip.setFixedHeight(26)  # every chip as tall, so each keeps its round ends
+            chip.setStyleSheet(theme.button_style(12, "0px 11px", extra="font-size: 12px;"))
+            chip.clicked.connect(lambda _on=False, k=key: self._pick(k))
+            self.chips[key] = chip
+            find.addWidget(chip)
+        find.addStretch(1)
+        col.addWidget(self.finder)
+        self.showing = str(QSettings().value(SHOW_KEY, "all"))
+        if self.showing not in self.chips:
+            self.showing = "all"
+        self.chips[self.showing].setChecked(True)
+        self.here: set[str] | None = None  # the sounds heard in the bloom you're building ("This bloom")
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -316,6 +377,9 @@ class SoundStrips(QFrame):
         self.fade.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.scroll.horizontalScrollBar().rangeChanged.connect(lambda *_: self._place_fade())
         self.scroll.horizontalScrollBar().valueChanged.connect(lambda *_: self._place_fade())
+        self.none_found = QLabel("No sound matches.")
+        self.none_found.setStyleSheet(f"color: {theme.MUTED}; padding: 4px;")
+        col.addWidget(self.none_found)
         self.empty = QLabel("No sounds yet: + adds a mic, desktop sound or app sound.")
         self.empty.setStyleSheet(f"color: {theme.MUTED}; padding: 4px;")
         col.addWidget(self.empty)
@@ -343,6 +407,44 @@ class SoundStrips(QFrame):
         self.toggle.setText("Sound" + ("" if on else "  ▸"))
         self.scroll.setVisible(on and bool(self.strips))
         self.empty.setVisible(on and not self.strips)
+        self.finder.setVisible(on and bool(self.strips))
+        self._filter()
+
+    def _pick(self, key: str) -> None:
+        self.showing = key
+        QSettings().setValue(SHOW_KEY, key)
+        self._filter()
+
+    def set_here(self, ids: set[str] | None) -> None:
+        """The sounds heard in the bloom you're building (for "This bloom")."""
+        self.here = set(ids) if ids is not None else None
+        self._filter()
+
+    def matches(self, sid: str, strip: "Strip") -> bool:
+        text = self.search.text().strip().casefold() if hasattr(self, "search") else ""
+        if text and text not in strip.full_name.casefold():
+            return False
+        showing = getattr(self, "showing", "all")
+        if showing == "here":
+            return self.here is None or sid in self.here
+        return showing == "all" or strip.group == showing
+
+    def _filter(self) -> None:
+        """Show the strips the search and chip let through; the chips count what's in each group."""
+        if not hasattr(self, "chips"):
+            return
+        shown = 0
+        for sid, strip in self.strips.items():
+            keep = self.matches(sid, strip)
+            strip.setVisible(keep)
+            shown += keep
+        counts = {g: sum(s.group == g for s in self.strips.values()) for g in GROUPS}
+        for g in GROUPS:
+            self.chips[g].setText(f"{g} {counts[g]}" if counts[g] else g)
+            self.chips[g].setVisible(bool(counts[g]) or self.showing == g)
+        self.chips["all"].setText(f"All {len(self.strips)}")
+        open_ = getattr(self, "is_open", True)
+        self.none_found.setVisible(open_ and bool(self.strips) and not shown)
 
     def show_sound(self, sounds: list, kinds: dict[str, str], tags: dict[str, str] | None = None) -> None:
         """Sound items (app/sound_card.Sound), each one's source kind (for its icon) and where it plays."""
@@ -370,9 +472,16 @@ class SoundStrips(QFrame):
             self.set_open(self.is_open)
         self._kinds = dict(kinds)
         for sound in sounds:
-            self.strips[sound.id].show_sound(sound)
-            self.strips[sound.id].set_tag((tags or {}).get(sound.id, ""))
+            strip = self.strips[sound.id]
+            group = getattr(sound, "group", "Other") or "Other"
+            if group != strip.group:  # its colour follows a new group
+                strip.group = group
+                strip.name.setIcon(icons.icon(_kind_icon(kinds.get(sound.id, "")), group_colour(group), 14))
+                strip._selected = None
+            strip.show_sound(sound)
+            strip.set_tag((tags or {}).get(sound.id, ""))
         self.set_selected(self.selected)
+        self._filter()
 
     def set_selected(self, source_id: str | None) -> None:
         """Ring the strip whose controls are open on the right."""

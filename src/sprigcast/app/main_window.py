@@ -3830,6 +3830,7 @@ class MainWindow(QMainWindow):
             return
         bloom = next((s for s in self.collection.scenes if s.id == getattr(self, "last_bloom_id", None)), None)
         self.sound_strips.set_where(bloom.name if bloom else "")
+        self.sound_strips.set_here(self.collection.sounds_in(bloom.id) if bloom else None)
 
     def _sound_item(self, config) -> Sound:
         st = config.settings
