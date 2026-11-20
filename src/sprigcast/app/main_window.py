@@ -1416,7 +1416,10 @@ class MainWindow(QMainWindow):
         self._fill_plays_in_menu(menu.addMenu("Plays in"), source_id)
         self._fill_type_menu(menu.addMenu("Type"), source_id)
         menu.addSeparator()
-        menu.addAction("Volume and sound…").triggered.connect(lambda _=False: self._select_sound(source_id))
+        # Opens the sound's page on the right. Left out while that page is already open (user 2026-11-20: picked
+        # then, it seemed to do nothing).
+        if not (self.selected_sound_id == source_id and self.build_stage.right_stack.currentIndex() == 1):
+            menu.addAction("Volume and sound…").triggered.connect(lambda _=False: self._select_sound(source_id))
         menu.addAction("Filters…").triggered.connect(lambda _=False: self._open_filters(source_id, "audio"))
         menu.addAction("Tracks and sync…").triggered.connect(lambda _=False: self._open_settings("Audio/Sounds"))
         if config.kind == "media":
@@ -1756,8 +1759,20 @@ class MainWindow(QMainWindow):
         self.build_tune = TunePage(self._build_tune_changed, lambda sid: self._open_filters(sid, "audio"),
                                    self._close_build_sound, self._pick_app_sound_apps,
                                    on_blooms=lambda _sid: self._plays_in_popup())
-        self.build_stage.sound_slot.addWidget(self.build_tune)
-        self.build_stage.sound_slot.addStretch(1)
+        # In a scroll area: the titled sections are taller than a short window (a 768 px laptop screen).
+        tune_scroll = QScrollArea()
+        tune_scroll.setWidgetResizable(True)
+        tune_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        tune_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        tune_scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        tune_holder = QWidget()
+        tune_col = QVBoxLayout(tune_holder)
+        tune_col.setContentsMargins(0, 0, 6, 0)  # room for the scroll bar
+        tune_col.addWidget(self.build_tune)
+        tune_col.addStretch(1)
+        tune_scroll.setWidget(tune_holder)
+        self.build_tune_scroll = tune_scroll
+        self.build_stage.sound_slot.addWidget(tune_scroll, 1)
         right = self.build_stage.right
         panel = QWidget()
         panel.setStyleSheet(theme.SOFT_FIELD_STYLE)
@@ -4020,16 +4035,19 @@ class MainWindow(QMainWindow):
             self._changed()
             self._refresh_audio()
 
-    def _pick_audio_device(self, kind: str, current: str = "default") -> str | None:
+    def _pick_audio_device(self, kind: str, current: str = "default", title: str = "",
+                           primary: str = "OK") -> str | None:
         devices = list_audio_devices(loopback=(kind == "audio_output"))
         if not devices:
             msgbox.information(self, "SprigCast", "Audio capture is only available on Windows.")
             return None
         names = ["default"] + [d.name for d in devices]
-        labels = ["Default (follows Windows)"] + [sound_label(d.name) for d in devices]
+        if current not in names:  # not plugged in right now: still listed, and picked
+            names.append(current)
+        labels = ["Default (follows Windows)"] + [sound_label(n) for n in names[1:]]
         start = names.index(current) if current in names else 0
-        title = "Desktop audio" if kind == "audio_output" else "Microphone"
-        at = popups.ask_choice(self, title, "Device", labels, start)
+        title = title or ("Desktop audio" if kind == "audio_output" else "Microphone")
+        at = popups.ask_choice(self, title, "Device", labels, start, primary)
         return None if at is None else names[at]
 
     def _add_audio(self, kind: str, device: str | None = None) -> None:
@@ -4380,6 +4398,8 @@ class MainWindow(QMainWindow):
         config = next((c for c in self.collection.sources if c.id == source_id), None)
         if config is None:
             return
+        if self.selected_sound_id != source_id and hasattr(self, "build_tune_scroll"):
+            self.build_tune_scroll.verticalScrollBar().setValue(0)  # another sound: from its top
         self.selected_sound_id = source_id
         self.sound_strips.set_selected(source_id)
         blooms = self.collection.sound_blooms(config)
@@ -5538,6 +5558,17 @@ class MainWindow(QMainWindow):
             if sound != (capture_sound(self.collection, config.id) is not None):
                 set_capture_sound(self.collection, config, APP if sound else None)
             follow_capture(self.collection, config)
+            self._refresh_audio()
+        elif config.kind in ("audio_input", "audio_output"):
+            # Pick the device, as + Add did (user 2026-11-20: double-click said "no settings to edit").
+            old = str(config.settings.get("device", "default") or "default")
+            device = self._pick_audio_device(config.kind, old, config.name, "Save")
+            if device is None or device == old:
+                return
+            base = "Desktop audio" if config.kind == "audio_output" else "Mic"
+            if config.name in (base, f"{base} ({old})", short_name(old, base)):  # a name you chose stays
+                config.name = base if device == "default" else short_name(device, base)
+            config.settings = {**config.settings, "device": device}
             self._refresh_audio()
         elif config.kind == "window_capture":
             from sprigcast.core.capture_sound import APP, capture_sound, follow_capture, set_capture_sound

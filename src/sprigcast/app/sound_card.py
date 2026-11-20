@@ -25,8 +25,8 @@ from dataclasses import dataclass, field
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
-    QFrame,
-    QGridLayout,
+    QCheckBox,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMenu,
@@ -40,7 +40,9 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import icons, theme
+from sprigcast.app.card import field_label
 from sprigcast.app.live_stage import Elided, Switch, ThinMeter, heading
+from sprigcast.app.segmented import Segmented
 
 # Sound types (the Sound card's groups and Build's Type filter). You can add, rename, recolor and remove them;
 # they're kept in the garden (AudioSettings.sound_types). These lists change in place, so every importer sees it.
@@ -214,6 +216,19 @@ def _section_title(text: str) -> QLabel:
     label = QLabel(text)
     label.setStyleSheet(f"color: {theme.TEXT}; background: transparent; font-weight: 600;")
     return label
+
+
+def _value_label(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setStyleSheet(f"color: {theme.LABEL}; background: transparent; font-weight: 600;")
+    return label
+
+
+GOES_STYLE = (f"QPushButton#goesPill {{ background: {theme.RAISED}; color: {theme.LABEL}; border: none;"
+              " border-radius: 11px; min-height: 22px; max-height: 22px; padding: 0px 10px; font-weight: 600; }"
+              f"QPushButton#goesPill:hover {{ background: {theme.RAISED_HOVER}; }}"
+              f"QPushButton#goesPill:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}"
+              f"QPushButton#goesPill:disabled {{ color: {theme.EDGE_STRONG}; }}")  # as Settings → Audio's pills
 
 
 def _muted_label(text: str) -> QLabel:
@@ -724,143 +739,130 @@ class TunePage(QWidget):
         self.meter = ThinMeter()
         col.addWidget(self.meter)
 
+        # Titled section cards with a leaf, as in Settings (user 2026-11-20: the soft untitled boxes looked dated).
         # Sound per bloom (Build only): which blooms it plays in, and a way to pick them.
-        self.blooms_card, box = self._section(col)
-        blooms_top = QHBoxLayout()
-        blooms_top.addWidget(_section_title("Plays in"), 1)
-        pick = QPushButton("Change")
-        pick.setStyleSheet(theme.LINK_STYLE)
-        pick.setCursor(Qt.CursorShape.PointingHandCursor)
-        pick.setToolTip("Pick the blooms this sound plays in")
-        pick.clicked.connect(lambda: on_blooms and on_blooms(self.sound_id))
-        blooms_top.addWidget(pick)
-        box.addLayout(blooms_top)
+        self.blooms_card, box = self._section(col, "Plays in")
         self.blooms = _muted_label("")
         self.blooms.setWordWrap(True)
-        box.addWidget(self.blooms)
+        box.addLayout(self._with_button(self.blooms, "Change", "Pick the blooms this sound plays in",
+                                        lambda: on_blooms and on_blooms(self.sound_id)))
         self.blooms_card.setVisible(on_blooms is not None)
 
         # An app sound (Games, Music, Voice chat...): which apps it catches, and a way to change them.
-        self.apps_card, box = self._section(col)
-        apps_top = QHBoxLayout()
-        apps_top.addWidget(_section_title("Comes from"), 1)
-        change = QPushButton("Change")
-        change.setStyleSheet(theme.LINK_STYLE)
-        change.setCursor(Qt.CursorShape.PointingHandCursor)
-        change.setToolTip("Pick the apps this sound catches")
-        change.clicked.connect(lambda: on_apps and on_apps(self.sound_id))
-        change.setVisible(on_apps is not None)
-        apps_top.addWidget(change)
-        box.addLayout(apps_top)
+        self.apps_card, box = self._section(col, "Comes from")
         self.apps = _muted_label("")
         self.apps.setWordWrap(True)
-        box.addWidget(self.apps)
+        change = self._with_button(self.apps, "Change", "Pick the apps this sound catches",
+                                   lambda: on_apps and on_apps(self.sound_id))
+        change.itemAt(1).widget().setVisible(on_apps is not None)
+        box.addLayout(change)
         self.apps_card.hide()
 
-        # Four calm sections, each its own soft card with room inside: how loud, where it goes,
-        # filters, and the rest. Nothing touches an edge.
-        level, box = self._section(col)
-        self.volume_label = _muted_label("")
+        _level, box = self._section(col, "Volume")
+        self.volume_label = _value_label("")
         self.volume = QSlider(Qt.Orientation.Horizontal)
         self.volume.setRange(-60, 12)
+        self.volume.setAccessibleName("Volume")
         self.volume.valueChanged.connect(self._volume_moved)
-        box.addLayout(self._labelled("Volume", self.volume_label))
+        box.addLayout(self._labelled("Loudness", self.volume_label))
         box.addWidget(self.volume)
-        box.addSpacing(4)
-        self.balance_label = _muted_label("")
+        box.addSpacing(2)
+        self.balance_label = _value_label("")
         self.balance = QSlider(Qt.Orientation.Horizontal)
         self.balance.setRange(-100, 100)
         self.balance.setPageStep(10)
+        self.balance.setAccessibleName("Left and right")
         self.balance.valueChanged.connect(self._balance_moved)
         box.addLayout(self._labelled("Left · Right", self.balance_label))
         box.addWidget(self.balance)
-        box.addSpacing(4)
+        box.addSpacing(2)
         pair = QHBoxLayout()
         pair.setSpacing(10)
-        self.mono = _chip("Mono", checkable=True)
+        self.mono = QCheckBox("Mono")
         self.mono.setToolTip("Both ears hear the same: for a mic that only comes out of one side")
+        self.mono.setCursor(Qt.CursorShape.PointingHandCursor)
         self.mono.toggled.connect(lambda on: self._send({"mono": on}))
-        self.mono.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)  # shares a narrow card
-        self.mono.setMinimumWidth(56)
-        pair.addWidget(self.mono, 1)
-        pair.addWidget(_muted_label("Delay"))
+        pair.addWidget(self.mono)
+        pair.addStretch(1)
+        pair.addWidget(field_label("Delay"))
         self.delay = QSpinBox()
+        self.delay.setObjectName("tuneDelay")
         self.delay.setRange(0, 2000)
         self.delay.setSingleStep(10)
         self.delay.setSuffix(" ms")
         self.delay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.delay.setAccessibleName("Delay")
         self.delay.setToolTip("Hold this sound back to line it up with a camera that runs late")
         self.delay.setStyleSheet(
-            f"QSpinBox {{ background: {theme.RAISED}; border: none; border-radius: 13px; padding: 6px 12px;"
-            f" color: {theme.TEXT}; }} QSpinBox:hover, QSpinBox:focus {{ background: {theme.RAISED_HOVER}; }}"
-            "QSpinBox::up-button, QSpinBox::down-button { subcontrol-origin: margin; width: 0px; height: 0px;"
-            " border: none; }")
+            f"QSpinBox#tuneDelay {{ background: {theme.FIELD}; border: 1px solid {theme.FIELD_EDGE};"
+            f" border-radius: 12px; padding: 4px 10px; color: {theme.TEXT}; }}"
+            f"QSpinBox#tuneDelay:focus {{ border-color: {theme.ACCENT}; }}"
+            "QSpinBox#tuneDelay::up-button, QSpinBox#tuneDelay::down-button { subcontrol-origin: margin;"
+            " width: 0px; height: 0px; border: none; }")
         self.delay.valueChanged.connect(lambda v: self._send({"delay_ms": v}))
-        self.delay.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        self.delay.setMinimumWidth(76)
-        pair.addWidget(self.delay, 1)
+        self.delay.setFixedWidth(84)
+        pair.addWidget(self.delay)
         box.addLayout(pair)
 
         _route, box = self._section(col, "Who hears it")
-        hear = QHBoxLayout()
-        hear.setSpacing(6)
-        self.hear: dict[object, QPushButton] = {}
-        for value, text, tip in ((False, "Stream", "On the stream and recordings, not your headphones"),
-                                 (True, "Stream + me", "On the stream and in your headphones"),
-                                 ("only", "Just me", "Only your headphones: never on the stream")):
-            b = _chip(text, checkable=True)
-            b.setToolTip(tip)
-            b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)  # share the width, never overflow
-            b.clicked.connect(lambda _=False, v=value: self._send({"monitor": v}))
-            self.hear[value] = b
-            hear.addWidget(b, 1)
-        box.addLayout(hear)
-        box.addSpacing(6)
-        box.addWidget(_section_title("Goes to"))
-        goes = QGridLayout()
+        self.hear_pick = Segmented([(False, "Stream"), (True, "Stream + me"), ("only", "Just me")])
+        self.hear_pick.setAccessibleName("Who hears it")
+        self.hear_pick.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.hear: dict[object, QPushButton] = self.hear_pick.buttons
+        for value, tip in ((False, "On the stream and recordings, not your headphones"),
+                           (True, "On the stream and in your headphones"),
+                           ("only", "Only your headphones: never on the stream")):
+            button = self.hear[value]
+            button.setToolTip(tip)
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.hear_pick.picked.connect(lambda v: self._send({"monitor": v}))
+        box.addWidget(self.hear_pick)
+        box.addSpacing(4)
+        box.addWidget(field_label("Goes to"))
+        goes = QHBoxLayout()
         goes.setSpacing(6)
         self.goes: dict[str, QPushButton] = {}
-        for i, (track, text, tip) in enumerate((("stream", "Stream", "Your live stream"),
-                                                ("recording", "Recording", "The recording's main sound"),
-                                                ("voice", "Voice", "The recording's voice-only track (Settings → Recording)"),
-                                                ("clips", "Clips", "Saved clips"))):
-            b = _chip(text, checkable=True)
+        for track, text, tip in (("stream", "Stream", "Your live stream"),
+                                 ("recording", "Recording", "The recording's main sound"),
+                                 ("voice", "Voice", "The recording's voice-only track (Settings → Recording)"),
+                                 ("clips", "Clips", "Saved clips")):
+            b = QPushButton(text)
+            b.setObjectName("goesPill")
+            b.setCheckable(True)
+            b.setAutoDefault(False)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setToolTip(tip)
-            b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            b.setStyleSheet(GOES_STYLE)
             b.clicked.connect(self._tracks_clicked)
             self.goes[track] = b
-            goes.addWidget(b, i // 2, i % 2)
+            goes.addWidget(b)
+        goes.addStretch(1)
         box.addLayout(goes)
 
-        _filters, box = self._section(col)
-        filters_top = QHBoxLayout()
-        filters_top.addWidget(_section_title("Filters"), 1)
-        edit_filters = QPushButton("Edit")
-        edit_filters.setStyleSheet(theme.LINK_STYLE)
-        edit_filters.setCursor(Qt.CursorShape.PointingHandCursor)
-        edit_filters.setToolTip("Noise gate, compressor, EQ...")
-        edit_filters.clicked.connect(lambda: on_filters(self.sound_id))
-        filters_top.addWidget(edit_filters)
-        box.addLayout(filters_top)
+        _filters, box = self._section(col, "Filters")
         # One filter per row, in the order they run, so five to eight of them still read at a glance.
-        self.filters = QLabel("None yet")
-        self.filters.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
-        box.addWidget(self.filters)
+        self.filters = _muted_label("None yet")
         self.filter_rows = QVBoxLayout()
         self.filter_rows.setSpacing(4)
+        edit_row = self._with_button(self.filters, "Edit", "Noise gate, compressor, EQ...",
+                                     lambda: on_filters(self.sound_id))
         box.addLayout(self.filter_rows)
+        box.addLayout(edit_row)
 
-        _more, box = self._section(col)
+        _more, box = self._section(col, "More")
         group_row = QHBoxLayout()
-        group_row.addWidget(_muted_label("Type"), 1)
+        group_row.addWidget(field_label("Type"), 1)
         self.group = PillPick(GROUPS)
+        self.group.setAccessibleName("Type")
         self.group.currentTextChanged.connect(lambda g: self._send({"group": g}))
         group_row.addWidget(self.group)
         box.addLayout(group_row)
         self.pin = Switch()
+        self.pin.setAccessibleName("Always show")
         self.pin.toggled.connect(lambda on: self._send({"pinned": on}))
         box.addLayout(self._switch_row("Always show", self.pin))
         self.duck = Switch()
+        self.duck.setAccessibleName("Lowers others when it talks")
         self.duck.toggled.connect(lambda on: self._send({"duck_voice": on}))
         box.addLayout(self._switch_row("Lowers others when it talks", self.duck))
 
@@ -869,28 +871,41 @@ class TunePage(QWidget):
         self.blooms.setText(text)
 
     @staticmethod
-    def _section(col: QVBoxLayout, title: str = "") -> tuple[QFrame, QVBoxLayout]:
-        """A soft card inside the Sound card, padded so nothing touches its edges."""
-        frame = QFrame()
-        frame.setObjectName("tuneSection")
-        frame.setStyleSheet(f"#tuneSection {{ background: {theme.CARD}; border-radius: 14px; }}")
+    def _section(col: QVBoxLayout, title: str) -> tuple[QGroupBox, QVBoxLayout]:
+        """A titled section card (the app's QGroupBox look: leaf, title, edge), padded inside."""
+        frame = QGroupBox(title)
         box = QVBoxLayout(frame)
-        box.setContentsMargins(14, 12, 14, 14)
+        box.setContentsMargins(4, 8, 4, 4)
         box.setSpacing(8)
-        if title:
-            box.addWidget(_section_title(title))
         col.addWidget(frame)
         return frame, box
 
+    @staticmethod
+    def _with_button(label: QLabel, text: str, tip: str, clicked: Callable[[], None]) -> QHBoxLayout:
+        """A line of text with a small pill button at its right (Change, Edit)."""
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(label, 1)
+        button = QPushButton(text)
+        button.setStyleSheet(theme.button_style(13, "3px 14px", extra="min-height: 22px;"))
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setAutoDefault(False)
+        button.setToolTip(tip)
+        button.clicked.connect(clicked)
+        button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)  # stays at the right when the text hides
+        row.addWidget(button, 0, Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
+        return row
+
     def _labelled(self, text: str, value: QLabel) -> QHBoxLayout:
         row = QHBoxLayout()
-        row.addWidget(_muted_label(text), 1)
+        row.addWidget(field_label(text), 1)
         row.addWidget(value)
         return row
 
     def _switch_row(self, text: str, switch: Switch) -> QHBoxLayout:
         row = QHBoxLayout()
-        label = _muted_label(text)
+        label = QLabel(text)
+        label.setStyleSheet(f"color: {theme.LABEL}; background: transparent;")
         label.setWordWrap(True)
         row.addWidget(label, 1)
         row.addWidget(switch)
@@ -911,8 +926,8 @@ class TunePage(QWidget):
         self.balance_label.setText(self._balance_text(sound.balance))
         self.mono.setChecked(sound.mono)
         self.delay.setValue(int(sound.delay_ms))
+        self.hear_pick.set_value("only" if sound.monitor == "only" else bool(sound.monitor))
         for value, button in self.hear.items():
-            button.setChecked(sound.monitor == value or (value is True and sound.monitor is True))
             if value is not False:
                 button.setEnabled(sound.can_monitor)
         for track, button in self.goes.items():
@@ -936,8 +951,8 @@ class TunePage(QWidget):
         for i, name in enumerate(names, 1):
             row = QLabel(f"{i}   {name}")
             row.setToolTip("Filters run top to bottom")
-            row.setStyleSheet(f"background: {theme.RAISED}; color: {theme.TEXT}; border-radius: 10px;"
-                              " padding: 6px 10px;")
+            row.setStyleSheet(f"background: {theme.FIELD}; color: {theme.TEXT}; border: 1px solid {theme.SECTION_EDGE};"
+                              " border-radius: 10px; padding: 6px 10px;")
             self.filter_rows.addWidget(row)
 
     def _tracks_clicked(self) -> None:
