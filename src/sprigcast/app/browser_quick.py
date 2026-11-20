@@ -129,6 +129,9 @@ def _shared():
             _profile.setCachePath(f"{base}/web-sources-cache")
         _profile.setPersistentCookiesPolicy(QQuickWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
         _profile.setHttpCacheMaximumSize(64 * 1024 * 1024)
+        from sprigcast.app import page_video
+
+        page_video.install(_profile, base)  # MP4 clips this engine can't play, converted to WebM
     return _engine, _component, _profile
 
 

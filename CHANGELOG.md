@@ -6,6 +6,12 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- Web pages play MP4 videos: a page's H.264 MP4 (StreamBridge's Random Clip Player plays Twitch clips like that)
+  is turned into WebM the first time it's asked for, on the graphics card when it can (AV1), else VP8, and the
+  copy is kept for next time (1.5 GB at most). The page engine can't play H.264 itself, so these clips showed an
+  empty player. Streaming players (MSE) asking for H.264 still can't play and say so in the source's status.
+  Tried in the automated tests with a real page; not tried on a PC yet.
+
 - The window no longer stops answering for 2 to 3 seconds when the settings copy is made (30 seconds after
   start and after every Settings Save): the copying program is now started from a side thread. Seen in a PC log
   on three starts. Not tried on a PC yet.

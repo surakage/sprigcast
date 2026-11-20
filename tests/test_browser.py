@@ -380,7 +380,8 @@ def _wait_note(app, host, source_id: str, seconds: float) -> str:
 
 def test_a_video_the_page_engine_cant_play_shows_in_the_status(tmp_path):
     """The pip PySide6 page engine has no H.264/AAC: a clip player's MP4 used to show nothing, silently
-    (StreamBridge's Random Clip Player, 2026-11-20). The source's status says so now, logged once per page."""
+    (StreamBridge's Random Clip Player, 2026-11-20). An MP4 file is converted to WebM now (app/page_video.py) and
+    plays; what can't be converted (a streaming player asking for H.264) says so in the status, once per page."""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--no-sandbox")
     pytest.importorskip("PySide6.QtWebEngineWidgets")
@@ -394,8 +395,9 @@ def test_a_video_the_page_engine_cant_play_shows_in_the_status(tmp_path):
     _clip(tmp_path / "clip.mp4", "libx264", "mp4")
     _clip(tmp_path / "clip.webm", "libvpx-vp9", "webm")
     (tmp_path / "mp4.html").write_text(
-        "<body><video autoplay muted src='clip.mp4'></video><script>document.title ="
-        " document.createElement('video').canPlayType('video/mp4; codecs=\"avc1.42E01E\"') || 'no'</script></body>")
+        "<body><video autoplay muted src='clip.mp4' onplaying='document.title += \" playing\"'></video><script>"
+        "document.title = document.createElement('video').canPlayType('video/mp4; codecs=\"avc1.42E01E\"') || 'no'"
+        "</script></body>")
     (tmp_path / "frame.html").write_text("<body><iframe src='mp4.html'></iframe></body>")
     (tmp_path / "mse.html").write_text(  # a streaming player (MSE) asking for H.264
         "<body><video></video><script>const ms = new MediaSource(); document.querySelector('video').src ="
@@ -408,26 +410,30 @@ def test_a_video_the_page_engine_cant_play_shows_in_the_status(tmp_path):
         host.open("m", {"file": str(tmp_path / "mp4.html"), "width": 64, "height": 64, "fps": 10})
         host.open("f", {"file": str(tmp_path / "frame.html"), "width": 200, "height": 200, "fps": 10})
         host.open("s", {"file": str(tmp_path / "mse.html"), "width": 64, "height": 64, "fps": 10})
-        note = _wait_note(app, host, "m", 20)
-        if host.pages["m"].page.title() not in ("", "no"):
-            assert note == "", "a page engine that plays H.264 blamed an MP4 on it"
+        note = _wait_note(app, host, "s", 20)
+        if host.pages["m"].page.title().split(" ")[0] not in ("", "no"):
+            assert note == "" and host.page_note("m") == "", "a page engine that plays H.264 blamed an MP4 on it"
             return
-        assert note == MEDIA_NOTES["h264"]
-        assert _wait_note(app, host, "f", 10) == MEDIA_NOTES["h264"]  # a clip player inside an iframe too
-        assert _wait_note(app, host, "s", 10) == MEDIA_NOTES["h264"]
+        assert note == MEDIA_NOTES["h264"]  # a streaming player (MSE) asking for H.264: nothing to convert
+        deadline = time.monotonic() + 30
+        while "playing" not in host.pages["m"].page.title() and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.05)
+        assert host.pages["m"].page.title() == "no playing"  # the MP4 plays, converted to WebM
+        assert host.page_note("m") == "" and _wait_note(app, host, "f", 5) == ""  # an iframe's clip too
         assert _wait_note(app, host, "w", 1) == ""  # VP9 plays: nothing to say
 
-        source = BrowserSource("m", {"file": str(tmp_path / "mp4.html")})
+        source = BrowserSource("s", {"file": str(tmp_path / "mse.html")})
         source._open, source.status = True, "ok"
         source.video_frame()
         assert source.status == MEDIA_NOTES["h264"]
 
-        host.reload("m")  # loaded again: the note goes until the page says it again
+        host.reload("s")  # loaded again: the note goes until the page says it again
         app.processEvents()
-        assert host.page_note("m") == ""
-        assert _wait_note(app, host, "m", 20) == MEDIA_NOTES["h264"]
-        host.close("m")
+        assert host.page_note("s") == ""
+        assert _wait_note(app, host, "s", 20) == MEDIA_NOTES["h264"]
+        host.close("s")
         app.processEvents()
-        assert host.page_note("m") == ""
+        assert host.page_note("s") == ""
     finally:
         host.shutdown()

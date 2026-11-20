@@ -138,6 +138,8 @@ def overlay(archive: Path, pyside: Path, expected: str | None = None, version=fi
                 changed.append(Path(name).name)
             else:
                 new.unlink()
+    # SprigCast's page_video.MARKER: this engine plays H.264/AAC, so page MP4s aren't converted to WebM.
+    (pyside / "webengine-codecs.txt").write_text(f"{archive.name}\n", "utf-8")
     return changed
 
 
