@@ -8,7 +8,6 @@ import os
 import queue
 import re
 import time
-import uuid
 import sys
 import threading
 from pathlib import Path
@@ -143,11 +142,8 @@ from sprigcast.core.events import (
 from sprigcast.core import awake
 from sprigcast.core.capture_sound import CAPTURE_KINDS
 from sprigcast.core.edit import cover
-from sprigcast.core.filters import filter_kind, settings_for
-from sprigcast.core.looks import LOOKS, SHAPES
 from sprigcast.core.scene import (
     FOLDER_COLOURS,
-    Filter,
     Output,
     PART_KIND,
     PORTRAIT_TOP,
@@ -1318,10 +1314,8 @@ class MainWindow(QMainWindow):
             menu.addAction(acts["hide"])
             menu.addAction(acts["lock"])
             visual = item is not None and self.collection.source(item.source).kind not in self.AUDIO_KINDS
-            if visual:
-                menu.addSeparator()
-                self._fill_quick_filter_menu(menu.addMenu("Shape"), item.source, "shape", "shape", SHAPES)
-                self._fill_quick_filter_menu(menu.addMenu("Color look"), item.source, "lut", "look", LOOKS)
+            # No filters or effects listed here (Shape, Color look, Pixelate, Black out, Freeze...): Filters…
+            # opens them all (user, 2026-11-20). A plugin's own actions on its source (Add a minute...) stay.
             if item is not None:
                 self._fill_plugin_menu(menu, item.source)
             menu.addSeparator()
@@ -4004,49 +3998,6 @@ class MainWindow(QMainWindow):
         self._refresh_audio()
         self._refresh_scenes()
 
-    def _fill_quick_filter_menu(self, menu: QMenu, source_id: str, kind: str, key: str,
-                                choices: tuple[tuple[str, str], ...]) -> None:
-        """A tick list for the Shape or Color look filter: pick one, or None to take it off."""
-        source = self.collection.source(source_id)
-        current = next((f for f in source.filters if f.kind == kind and f.enabled), None)
-        value = settings_for(kind, current.settings)[key] if current else None
-        none = menu.addAction("Rectangle (none)" if kind == "shape" else "None")
-        none.setCheckable(True)
-        none.setChecked(value is None)
-        none.triggered.connect(lambda _=False: self._set_quick_filter(source_id, kind, key, None))
-        menu.addSeparator()
-        for data, label in choices:
-            if data == "image":
-                continue
-            action = menu.addAction(label)
-            action.setCheckable(True)
-            action.setChecked(value == data)
-            action.triggered.connect(lambda _=False, d=data: self._set_quick_filter(source_id, kind, key, d))
-        menu.addSeparator()
-        more = "My own shape, border, soft edge…" if kind == "shape" else "From a .cube file, strength…"
-        menu.addAction(more).triggered.connect(
-            lambda _=False: self._set_quick_filter(source_id, kind, key, value or choices[0][0], open_filters=True))
-
-    def _set_quick_filter(self, source_id: str, kind: str, key: str, value: str | None,
-                          open_filters: bool = False) -> None:
-        """Turn a source's Shape / Color look filter on with `value`, or remove it (None)."""
-        source = self.collection.source(source_id)
-        existing = next((f for f in source.filters if f.kind == kind), None)
-        if value is None:
-            if existing is not None:
-                source.filters.remove(existing)
-        else:
-            if existing is None:
-                info = filter_kind(kind)
-                existing = Filter(id=uuid.uuid4().hex[:8], kind=kind, name=info.label, settings=dict(info.defaults))
-                source.filters.append(existing)
-            existing.enabled = True
-            existing.settings = {**settings_for(kind, existing.settings), key: value}
-        self.collection.share_filters(source)
-        self._changed()
-        if open_filters:
-            self._open_filters(source_id)
-
     def _edit_filters(self) -> None:
         item = self._item()
         if item is None:
@@ -4990,11 +4941,11 @@ class MainWindow(QMainWindow):
         return self.control.native
 
     def _fill_plugin_menu(self, menu: QMenu, source_id: str) -> None:
-        """Right-click entries plugins add (Barrel roll, Hide it, Snap...)."""
+        """Right-click entries plugins add for their own sources (Add a minute, Reset to 0, Stop replay...).
+        Effects on one item (Pixelate, Black out, Freeze) are not listed: they're filters (user, 2026-11-20)."""
         entries: list[tuple[str, object]] = []
-        place = plugin_hooks.Place.of(self.collection, self._scene(), source_id)  # effects on this item alone
-        plugin_hooks.fill_item_menu(self.api, self.collection.source(source_id), lambda label, fn: entries.append((label, fn)),
-                                    place)
+        plugin_hooks.fill_item_menu(self.api, self.collection.source(source_id),
+                                    lambda label, fn: entries.append((label, fn)))
         if entries:
             menu.addSeparator()
         for label, fn in entries:
