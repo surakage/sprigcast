@@ -19,7 +19,7 @@ import numpy as np
 from sprigcast import sprigcore
 from sprigcast.core import looks
 from sprigcast.core.filters import VideoEffects
-from sprigcast.core.scene import ALIGNS, BOUNDS, Scene, SceneItem
+from sprigcast.core.scene import ALIGNS, BOUNDS, Scene, SceneItem, item_key
 
 log = logging.getLogger(__name__)
 
@@ -110,7 +110,8 @@ def build(scenes: list[SceneDraw], effects: dict[str, VideoEffects],
         for item in draw.scene.items:
             if not item.visible:
                 continue
-            fx = effects.get(item.source)
+            fx = (effects.get(item_key(draw.scene.id, item.source)) if item.effects else None) or \
+                effects.get(item.source)  # an item's own effects, else its source's
             index = -1
             if fx is not None and fx != NO_EFFECTS:
                 index = fx_index.get(id(fx))

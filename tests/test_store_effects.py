@@ -127,9 +127,64 @@ def test_plugin_hotkeys_and_right_click_entries(added):
     assert plugin_hooks.run_hotkey(api, "plugin:roll:p-frame")
     assert video_effects(col.source("frame-h").filters).spin[2] == 1
     col.sources.append(SourceConfig(id="fc", kind="camera", name="Facecam"))
+    col.scene("chat-h").items.append(__import__("sprigcast.core.scene", fromlist=["SceneItem"]).SceneItem(source="fc"))
     entries = []
-    plugin_hooks.fill_item_menu(api, col.source("fc"), lambda label, fn: entries.append(label))
-    assert any(e.startswith("Pixelate") for e in entries) and any(e.startswith("Barrel roll") for e in entries)
+    place = plugin_hooks.Place.of(col, col.scene("chat-h"), "fc")
+    plugin_hooks.fill_item_menu(api, col.source("fc"), lambda label, fn: entries.append((label, fn)), place)
+    assert any(e.startswith("Pixelate") for e, _ in entries) and any(e.startswith("Barrel roll") for e, _ in entries)
+    next(fn for e, fn in entries if e.startswith("Pixelate"))()
+    assert not col.source("fc").filters and place.item.effects[0].kind == "pixelate"  # that item only
+    assert "plugin:hide:pixelate:chat-h/fc" in dict(hotkeys.actions(col))  # a key for that one item
+
+
+def test_effects_on_one_item_leave_the_same_source_elsewhere_alone(added):
+    """Pixelate, Blackout and Barrel roll on one item, not the source wherever it shows (user 2026-11-20)."""
+    from sprigcast.app import hotkeys
+
+    added("hide_it")
+    added("barrel_roll")
+    col = _collection()
+    api = NativeApi(FakeHost(col))
+    out = api.run("hide.pixelate", {"source": "Cam", "in": "Frame", "seconds": 0})
+    frame_cam = col.scene("p-frame").items[0]
+    assert out["source"] == "Cam in Frame" and frame_cam.effects[0].kind == "pixelate" and frame_cam.effects[0].enabled
+    assert not col.source("cam").filters and not col.scene("chat-h").items[0].effects
+    api.run("hide.show", {"source": "Cam", "in": "Frame"})
+    assert not frame_cam.effects[0].enabled
+    # In a bloom: each shape of it (Chatting on both canvases), nothing else.
+    api.run("hide.blackout", {"source": "Cam", "in": "Chatting"})
+    assert col.scene("chat-h").items[0].effects and col.scene("chat-v").items[0].effects
+    assert not any(e.enabled for e in frame_cam.effects)
+    # A sprig placed in a bloom.
+    api.run("roll.spin", {"sprig": "Frame", "in": "Chatting", "seconds": 2})
+    rolled = col.scene("chat-h").items[1].effects[0]
+    assert rolled.kind == "barrel_roll" and rolled.settings["run"] > 1000 and not col.source("frame-h").filters
+    with pytest.raises(ApiError):
+        api.run("hide.pixelate", {"source": "Alert", "in": "Frame"})  # not in there
+    keys = dict(hotkeys.actions(col))
+    assert "plugin:hide:pixelate:p-frame/cam" in keys and "plugin:roll:chat-h/frame-h" in keys
+    said = []
+    assert plugin_hooks.run_hotkey(api, "plugin:hide:pixelate:p-frame/cam", said.append) and said == []
+    col.active_scenes = {"horizontal": "brb-h", "vertical": "brb-v"}
+    assert plugin_hooks.run_hotkey(api, "plugin:hide:pixelate:chat-h/cam", said.append)
+    assert said == ["Not in this bloom: Cam in Chatting"]
+
+
+def test_gpu_an_items_own_effect_draws_on_that_item_only(added, compositor):
+    from sprigcast.core.filters import with_item
+    from sprigcast.core.scene import Canvas, Scene, SceneItem, item_key
+
+    added("hide_it")
+    picture = np.full((8, 8, 4), (200, 120, 40, 255), dtype=np.uint8)
+    compositor.upload("src", picture)
+    black = Filter(id="b", name="x", kind="blackout", settings={"amount": 100})
+    scene = Scene(id="s", name="s", canvas="f", items=[SceneItem(source="src", x=0, effects=[black]),
+                                                       SceneItem(source="src", x=8)])
+    scene.items[1].effects = []
+    compositor.effects = {item_key("s", "src"): with_item(video_effects(()), video_effects([black]))}
+    compositor.render(Canvas(id="f", width=16, height=8), scene, {"src": (8, 8)})
+    out = np.frombuffer(compositor.read("f"), dtype=np.uint8).reshape(8, 16, 4)
+    assert not out[4, 2, :3].any() and tuple(out[4, 12]) == (200, 120, 40, 255)
 
 
 def test_removing_a_plugin_takes_its_filters_actions_and_hotkeys(added, tmp_path):
@@ -645,12 +700,13 @@ def test_plugin_hotkeys_explain_themselves(added):
     said = []
     assert plugin_hooks.on_air(col, "frame-h") and plugin_hooks.on_air(col, "cam")  # cam is inside the Frame sprig too
     assert not plugin_hooks.on_air(col, "fc")  # only in BRB, which isn't on air
-    assert plugin_hooks.run_hotkey(api, "plugin:hide:pixelate:fc", said.append)
-    assert said == ["Not in this bloom: Facecam"] and not plugin_hooks.find_filter(col.source("fc"), "pixelate")
+    assert plugin_hooks.run_hotkey(api, "plugin:hide:pixelate:brb-h/fc", said.append)
+    item = col.scene("brb-h").items[-1]
+    assert said == ["Not in this bloom: Facecam in BRB"] and not item.effects
     col.active_scenes["horizontal"] = "brb-h"
     said.clear()
-    assert plugin_hooks.run_hotkey(api, "plugin:hide:pixelate:fc", said.append) and said == []
-    assert plugin_hooks.find_filter(col.source("fc"), "pixelate").enabled
+    assert plugin_hooks.run_hotkey(api, "plugin:hide:pixelate:brb-h/fc", said.append) and said == []
+    assert item.effects[0].kind == "pixelate" and item.effects[0].enabled
     # The Frame sprig is placed (so its key is listed), but not in BRB: say so rather than spin unseen.
     col.active_scenes["vertical"] = "brb-v"
     assert plugin_hooks.run_hotkey(api, "plugin:roll:p-frame", said.append)

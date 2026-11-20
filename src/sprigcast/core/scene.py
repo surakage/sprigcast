@@ -80,6 +80,12 @@ def align_share(align: str) -> tuple[float, float]:
 CARD_W = "card_w"  # a clock card's settings: the box width its places are laid out for (keep_cards_put)
 
 
+def item_key(scene_id: str, source_id: str) -> str:
+    """How an item is told apart from its source in the engines' effect tables: the bloom or sprig it sits in
+    and its source (a scene shows a source once)."""
+    return f"{scene_id}/{source_id}"
+
+
 class SceneItem(BaseModel):
     source: str
     x: float = 0.0  # top-left corner of its box (unrotated), canvas pixels
@@ -95,6 +101,9 @@ class SceneItem(BaseModel):
     bounds_align: str = "center"  # where the picture sits in its box when it doesn't fill it
     visible: bool = True
     locked: bool = False
+    # Effects on this item only (Pixelate, Blackout, Barrel roll, Freeze), not on its source wherever else it
+    # shows (user 2026-11-20). Plugin kinds; they do nothing while their plugin isn't added.
+    effects: list[Filter] = Field(default_factory=list)
 
     @property
     def sy(self) -> float:

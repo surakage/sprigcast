@@ -29,10 +29,10 @@ from sprigcast.core.events import (
     Stats,
     UpdateSourceSettings,
 )
-from sprigcast.core.filters import SOUND_LEVELS, AudioChain, video_effects
+from sprigcast.core.filters import SOUND_LEVELS, AudioChain, video_effects, with_item
 from sprigcast.core import drawn, pacing, retire
 from sprigcast.core.mailbox import Mailbox
-from sprigcast.core.scene import PART_KIND, STATE_FADE_S, Scene, SceneCollection, SceneItem, drawing_fps
+from sprigcast.core.scene import PART_KIND, STATE_FADE_S, Scene, SceneCollection, SceneItem, drawing_fps, item_key
 from sprigcast.core.source import Source, create_source, source_class
 from sprigcast.render import move
 from sprigcast.render.stinger import StingerPlayer, open_stinger
@@ -1239,9 +1239,16 @@ class Engine:
                 continue
             new_chain = AudioChain(filters)
             source.audio_chain = new_chain if new_chain.processors else None
+        self._filtered = frozenset(effects)  # sources with video filters (a Move draws such a sprig whole)
+        for scene in self._collection.scenes:  # effects on one item only, under its item key
+            for item in scene.items:
+                if item.effects:
+                    own = video_effects(item.effects)
+                    if own.active:
+                        base = effects.get(item.source) or video_effects(())
+                        effects[item_key(scene.id, item.source)] = with_item(base, own)
         compositor.effects = effects
         self._freeze_filters = freezes
-        self._filtered = frozenset(effects)  # sources with video filters (a Move draws such a sprig whole)
 
     def _sync_parts(self, compositor) -> None:
         """Tell each nested-part source the size of the layout it shows, and drop textures of layouts that are gone.

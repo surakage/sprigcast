@@ -4922,7 +4922,9 @@ class MainWindow(QMainWindow):
     def _fill_plugin_menu(self, menu: QMenu, source_id: str) -> None:
         """Right-click entries plugins add (Barrel roll, Hide it, Snap...)."""
         entries: list[tuple[str, object]] = []
-        plugin_hooks.fill_item_menu(self.api, self.collection.source(source_id), lambda label, fn: entries.append((label, fn)))
+        place = plugin_hooks.Place.of(self.collection, self._scene(), source_id)  # effects on this item alone
+        plugin_hooks.fill_item_menu(self.api, self.collection.source(source_id), lambda label, fn: entries.append((label, fn)),
+                                    place)
         if entries:
             menu.addSeparator()
         for label, fn in entries:

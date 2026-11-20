@@ -360,3 +360,26 @@ def test_a_source_that_only_sends_changes_shows_its_newest_after_a_freeze(compos
     engine.let_go(token)
     engine._tick(compositor, 1.4)
     assert _pixel(engine, compositor, 44, 4)[1] > 200 and not engine._missed
+
+
+def test_an_items_own_blackout_draws_through_the_engine(compositor):
+    """The engine hands an item's own effects to the drawing under its item key (user 2026-11-20)."""
+    from sprigcast import plugin_store
+    from sprigcast.core.scene import item_key
+
+    hide = next(p for p in plugin_store.catalog() if p.id == "hide_it")
+    col = _world()
+    col.scene("show").items[1].effects = [Filter(id="b", kind="blackout", name="Blackout", settings={"amount": 100})]
+    import tempfile
+    from pathlib import Path
+
+    folder = Path(tempfile.mkdtemp()) / "plugins"
+    assert plugin_store.install(folder, hide) is None
+    try:
+        engine = _engine(compositor, col)
+        engine._sync_filters(compositor, {s.id: s for s in col.sources})
+        assert item_key("show", "cam") in compositor.effects and "cam" not in compositor.effects
+        engine._tick(compositor, 1.0)
+        assert _pixel(engine, compositor, 44, 4) == (0, 0, 0) and _pixel(engine, compositor, 4, 4)[0] > 200
+    finally:
+        plugin_store.remove(folder, "hide_it")

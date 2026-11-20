@@ -14,13 +14,15 @@ from __future__ import annotations
 
 from sprigcast.control.native import ApiError, register_action
 from sprigcast.core.filters import Field, register_filter
-from sprigcast.plugin_hooks import filter_on, find_filter, not_here, on_air, register_hotkeys, register_item_menu
+from sprigcast.plugin_hooks import (Place, filter_on, find_filter, not_here, on_air, place_on_air, place_targets,
+                                    register_hotkeys, register_place_menu, target_by_id)
 
-PLUGIN = {"id": "barrel_roll", "name": "Barrel Roll", "version": 3, "adds": "Effect",
+PLUGIN = {"id": "barrel_roll", "name": "Barrel Roll", "version": 4, "adds": "Effect",
           "about": "Spin a sprig round and round for a few seconds, then it lands back exactly where it was.",
           "new": "Apps can't ask for more than 10 minutes."}
 
 TURNS_PER_SECOND = 1.0  # when a trigger gives seconds but no turns
+ITEM_RUNS = 1_000_000  # an item's own rolls count from here
 
 register_filter("barrel_roll", "Barrel roll", "video", [
     Field("seconds", "Spin for", 3.0, 0.5, 120.0, 0.5, " s"),
@@ -60,7 +62,10 @@ def spin(api, sources, seconds: float | None = None, turns: int | None = None, d
             n = int(usual.get("turns", 3)) if seconds is None else max(1, round(secs * TURNS_PER_SECOND))
         else:
             n = max(1, int(turns))
-        settings = {"seconds": secs, "turns": n, "run": int(usual.get("run", 0)) + 1}
+        run = int(usual.get("run", 0)) + 1
+        if isinstance(source, Place) and run < ITEM_RUNS:
+            run += ITEM_RUNS  # the engine times a roll by (source, run): an item's own never shares its source's
+        settings = {"seconds": secs, "turns": n, "run": run}
         if direction in ("clockwise", "anticlockwise"):
             settings["direction"] = direction
         filter_on(api, source, "barrel_roll", "Barrel roll", settings, secs + 0.25)  # off just after it lands
@@ -76,7 +81,9 @@ def _spin_action(api, data):
     direction = data.get("direction")
     if direction is not None and direction not in ("clockwise", "anticlockwise"):
         raise ApiError("bad_request", "direction must be clockwise or anticlockwise.")
-    if data.get("sprig") is not None:
+    if data.get("in") is not None:
+        sources = place_targets(api, data, "sprig" if data.get("sprig") is not None else "source")
+    elif data.get("sprig") is not None:
         sources = _placements(api, api._sprig(data))
     elif data.get("source") is not None:
         sources = [api._source(data, "source")]
@@ -86,19 +93,41 @@ def _spin_action(api, data):
 
 
 register_action("roll.spin", "Barrel roll a sprig (every place it's shown) or one thing in a bloom.",
-                {"sprig": "?name or id", "source": "?name or id (instead of sprig)", "seconds": "?how long",
+                {"sprig": "?name or id", "source": "?name or id (instead of sprig)",
+                 "in": "?a bloom or sprig: only the one in there", "seconds": "?how long",
                  "turns": "?whole turns (default: one a second)", "direction": "?clockwise or anticlockwise"},
                 _spin_action)
 
 
+CAPTURES = ("camera", "display_capture", "window_capture", "game_capture")
+
+
 def _hotkeys(collection):
-    """A Barrel roll key for each sprig that's placed in a bloom (an unused sprig has nothing to spin)."""
-    return [(f"roll:{part.id}", f"Barrel roll {part.name}") for part in collection.parts() if _placed_in(collection, part)]
+    """A Barrel roll key for each sprig that's placed in a bloom (every place it shows; an unused sprig has
+    nothing to spin), and one for each camera or capture in each bloom or sprig, or anything rolled there once,
+    that rolls only that one."""
+    out = [(f"roll:{part.id}", f"Barrel roll {part.name}") for part in collection.parts() if _placed_in(collection, part)]
+    sources = {s.id: s for s in collection.sources}
+    for scene in collection.scenes:
+        for item in scene.items:
+            source = sources.get(item.source)
+            if source is not None and (source.kind in CAPTURES or any(e.kind == "barrel_roll" for e in item.effects)):
+                place = Place(scene, item, source)
+                out.append((f"roll:{place.id}", f"Barrel roll {place.name}"))
+    return out
 
 
 def _run_hotkey(api, hid):
-    part_id = hid.split(":", 1)[1]
-    sprig = next((p for p in api.col.parts() if p.id == part_id), None)
+    ref = hid.split(":", 1)[1]
+    if "/" in ref:  # one item
+        place = target_by_id(api.col, ref)
+        if place is None:
+            return "That's gone."
+        if not place_on_air(api.col, place):
+            return not_here(place.name)
+        spin(api, [place])
+        return None
+    sprig = next((p for p in api.col.parts() if p.id == ref), None)
     placed = _placements(api, sprig) if sprig is not None else []
     if sprig is None:
         return "That sprig is gone."
@@ -111,12 +140,12 @@ def _run_hotkey(api, hid):
 register_hotkeys(_hotkeys, _run_hotkey)
 
 
-def _menu(api, source, add):
-    if source is None or source.kind in ("audio_input", "audio_output", "app_audio"):
+def _menu(api, place, add):
+    if place is None or place.kind in ("audio_input", "audio_output", "app_audio"):
         return
-    flt = find_filter(source, "barrel_roll")
+    flt = find_filter(place, "barrel_roll")
     secs = float((flt.settings if flt else {}).get("seconds", 3.0))
-    add(f"Barrel roll ({secs:g} s)", lambda: spin(api, [source]))
+    add(f"Barrel roll ({secs:g} s)", lambda: spin(api, [place]))
 
 
-register_item_menu(_menu)
+register_place_menu(_menu)

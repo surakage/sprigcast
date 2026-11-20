@@ -277,6 +277,15 @@ def freeze_of(filters) -> tuple[int, float] | None:
     return int(flt.settings.get("run", 0) or 0), until
 
 
+def with_item(base: VideoEffects, item: VideoEffects) -> VideoEffects:
+    """A source's effects with an item's own on top (Pixelate, Blackout, Barrel roll on that item only)."""
+    import dataclasses
+
+    return dataclasses.replace(base, pixelate=item.pixelate or base.pixelate,
+                               blackout=max(item.blackout, base.blackout),
+                               spin=item.spin if item.spin[0] else base.spin, active=True)
+
+
 def video_effects(filters) -> VideoEffects:
     """Fold a source's enabled video filters into shader uniforms."""
     fx = VideoEffects()

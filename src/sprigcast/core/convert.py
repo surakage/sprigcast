@@ -593,7 +593,7 @@ def from_obs(data: dict[str, Any], like: SceneCollection, size_of: SizeOf | None
         col.active_scenes[canvas_id] = on.id
 
     _transitions(data, col, by_name, made, notes)
-    _scene_filters(scenes, by_name, sources, notes)
+    _scene_filters(scenes, by_name, sources, made, notes)
     _hotkeys(raw, made, sources, col)
     col.wrap_blooms()
     set_aside_unused(col, notes)
@@ -892,26 +892,30 @@ def vertical_twin(path: str) -> str:
 
 
 def _scene_filters(scenes: list[dict[str, Any]], by_name: dict[str, dict], sources: dict[int, SourceConfig],
-                   notes: list[str]) -> None:
+                   made: dict[int, Scene], notes: list[str]) -> None:
     """Filters on OBS scenes. A Move filter that only turns one thing in the scene (a barrel roll) becomes a
-    Barrel roll filter on that thing, off until triggered like in OBS; anything else is noted, not dropped
-    quietly (PC, 2026-11-19: "THSV Barrel Roll" on the Elgato scene went missing without a word)."""
+    Barrel roll on that item there (its own effect: the same source elsewhere doesn't spin, like in OBS), off
+    until triggered; anything else is noted, not dropped quietly (PC, 2026-11-19: "THSV Barrel Roll" on the
+    Elgato scene went missing without a word)."""
     for scene in scenes:
         for f in scene.get("filters") or []:
             if not isinstance(f, dict):
                 continue
             kind, s, label = str(f.get("id", "")), f.get("settings") or {}, f.get("name") or f.get("id")
             target = sources.get(id(by_name.get(str(s.get("source", "")), {})))
+            here = made.get(id(scene))
+            item = next((i for i in here.items if target is not None and i.source == target.id), None) \
+                if here is not None else None
             moves = any(_num((s.get(k) or {}).get(a)) for k in ("pos", "scale", "bounds") for a in ("x", "y"))
             turn = _num(s.get("rot"))
-            if kind == "move_source_filter" and target is not None and turn and not moves:
+            if kind == "move_source_filter" and item is not None and turn and not moves:
                 ms = _num(s.get("duration"), 300) if s.get("custom_duration", True) else 300
-                target.filters.append(Filter(
-                    id=f"f-{len(target.filters)}", kind="barrel_roll", name=str(label), enabled=False,
+                item.effects.append(Filter(
+                    id=f"f-{len(item.effects)}", kind="barrel_roll", name=str(label), enabled=False,
                     settings={"seconds": max(0.5, min(120.0, ms / 1000)), "turns": max(1, round(abs(turn) / 360)),
                               "direction": "anticlockwise" if s.get("rot_sign") == "-" else "clockwise"}))
-                notes.append(f"{label}: now a Barrel roll on {target.name} (add Barrel Roll from the Plugin store "
-                             f"to use it).")
+                notes.append(f"{label}: now a Barrel roll on {target.name} in {here.name} (add Barrel Roll from "
+                             f"the Plugin store to use it).")
                 continue
             notes.append(f"{scene.get('name')}: the {label} filter has no match yet.")
 

@@ -13,6 +13,8 @@
 
     # Right-click on something in a bloom: add(menu_label, callback) for each entry you want there.
     register_item_menu(lambda api, source, add: add("Barrel roll", lambda: ...))
+    # The same, given that one item (a Place: its effects list, id, name and kind) to act on it alone.
+    register_place_menu(lambda api, place, add: add("Pixelate", lambda: ...))
 
     # Sound levels, about 15 times a second: {source id: (peak dBFS, RMS dBFS)}, plus "master".
     register_level_watcher(lambda api, levels: ...)
@@ -36,6 +38,7 @@ PREFIX = "plugin:"
 _HOTKEYS: list[tuple[Callable[[Any], list[tuple[str, str]]], Callable[[Any, str], None]]] = []
 _ON_SCREENSHOT: list[Callable[[Any, list[dict]], None]] = []
 _ITEM_MENUS: list[Callable[[Any, Any, Callable[[str, Callable[[], None]], None]], None]] = []
+_PLACE_MENUS: list[Callable[[Any, Any, Callable[[str, Callable[[], None]], None]], None]] = []
 
 
 def _same(a, b) -> bool:
@@ -56,6 +59,12 @@ def register_hotkeys(list_fn: Callable[[Any], list[tuple[str, str]]], run_fn: Ca
 def register_item_menu(fn: Callable[[Any, Any, Callable[[str, Callable[[], None]], None]], None]) -> None:
     _ITEM_MENUS[:] = [f for f in _ITEM_MENUS if not _same(f, fn)]
     _ITEM_MENUS.append(fn)
+
+
+def register_place_menu(fn: Callable[[Any, Any, Callable[[str, Callable[[], None]], None]], None]) -> None:
+    """Right-click entries that act on the one item clicked (a Place), not its source everywhere it shows."""
+    _PLACE_MENUS[:] = [f for f in _PLACE_MENUS if not _same(f, fn)]
+    _PLACE_MENUS.append(fn)
 
 
 _LEVEL_WATCHERS: list[Callable[[Any, dict], None]] = []
@@ -211,6 +220,10 @@ def on_air(col, source_id: str) -> bool:
 
 
 def on_air_sources(col) -> set[str]:
+    return _walk_on_air(col)[0]
+
+
+def _walk_on_air(col) -> tuple[set[str], set[str]]:
     """Every source showing in a bloom on air now, however deep in sprigs. Each bloom and sprig is walked once,
     with lookups by id: the walk it replaces went through every sprig again for each path to it, looking each
     item's source up in the whole list, and a Freeze hotkey on a big sprig held the window 1 s (PC 2026-11-18)."""
@@ -232,7 +245,7 @@ def on_air_sources(col) -> set[str]:
             part = col.part_of(config) if config is not None else None
             if part is not None:
                 stack.append(col.shape_for(part, scene.canvas))
-    return found
+    return found, walked
 
 
 def not_here(name: str) -> str:
@@ -240,14 +253,91 @@ def not_here(name: str) -> str:
     return f"Not in this bloom: {name}"
 
 
-def fill_item_menu(api, source, add: Callable[[str, Callable[[], None]], None]) -> None:
-    for fn in _ITEM_MENUS:
+def fill_item_menu(api, source, add: Callable[[str, Callable[[], None]], None], place=None) -> None:
+    """place: the Place clicked (Place.of), for the entries that act on that item alone."""
+    for fn, what in [*((f, source) for f in _ITEM_MENUS), *((f, place) for f in (_PLACE_MENUS if place else ()))]:
         if not _alive(fn):
             continue
         try:
-            fn(api, source, add)
+            fn(api, what, add)
         except Exception:
             log.exception("a plugin's right-click entries failed")
+
+
+# One item in a bloom or sprig: effects on it alone ------------------------------------------------
+
+class Place:
+    """One item in a bloom or sprig, for effects on it alone (Pixelate, Blackout, Barrel roll): the same
+    camera elsewhere is left alone (user 2026-11-20). It looks like a source to filter_on, filter_off and
+    find_filter: id is its item key, filters is the item's own effects list."""
+
+    def __init__(self, scene, item, source):
+        from sprigcast.core.scene import item_key
+
+        self.scene, self.item, self.source = scene, item, source
+        self.id = item_key(scene.id, source.id)
+        self.kind = source.kind
+        self.name = f"{source.name} in {scene.name}"
+
+    @property
+    def filters(self):
+        return self.item.effects
+
+    @staticmethod
+    def of(col, scene, source_id: str):
+        item = next((i for i in scene.items if i.source == source_id), None) if scene is not None else None
+        source = col.source(source_id) if item is not None else None
+        return Place(scene, item, source) if source is not None else None
+
+
+def target_by_id(col, target_id: str):
+    """A source by id, or a Place by its item key ("scene id/source id"); None when it's gone."""
+    if "/" in target_id:
+        scene_id, source_id = target_id.split("/", 1)
+        scene = next((s for s in col.scenes if s.id == scene_id), None)
+        return Place.of(col, scene, source_id)
+    return next((s for s in col.sources if s.id == target_id), None)
+
+
+def places_in(col, holder_ids: set[str], source_ids: set[str]) -> list[Place]:
+    """The items showing any of these sources in these blooms or sprigs (each of their shapes)."""
+    out = []
+    for scene in col.scenes:
+        if scene.id in holder_ids or scene.shape_of in holder_ids or scene.linked_to in holder_ids:
+            for item in scene.items:
+                if item.source in source_ids:
+                    out.append(Place(scene, item, col.source(item.source)))
+    return out
+
+
+def place_targets(api, data: dict, what: str = "source") -> list:
+    """What an app's call names: {"source": ...} alone is that source everywhere; with "in" (a bloom's or a
+    sprig's name or id) it's only the items in there. {"sprig": ..., "in": ...} is that sprig placed in there."""
+    holder = data.get("in")
+    if holder is None:
+        return []
+    from sprigcast.control.native import ApiError
+
+    col = api.col
+    scene = next((s for s in col.scenes if s.id == holder), None) or \
+        next((s for s in col.scenes if s.name == holder and s.shape_of is None), None)
+    if scene is None:
+        raise ApiError("not_found", f"No bloom or sprig called {holder!r}.")
+    if what == "sprig":
+        sprig = api._sprig(data)
+        ids = {s.id for s in col.shapes(sprig)} | {sprig.id}
+        sources = {c.id for c in col.sources if c.kind == "scene" and c.settings.get("scene") in ids}
+    else:
+        sources = {api._source(data, "source").id}
+    found = places_in(col, {scene.id}, sources)
+    if not found:
+        raise ApiError("not_allowed", f"That isn't in {scene.name}.")
+    return found
+
+
+def place_on_air(col, place) -> bool:
+    """Is this item's bloom or sprig showing in a bloom on air now?"""
+    return place.scene.id in _walk_on_air(col)[1]
 
 
 # Timed filters: "pixelate the camera for 15 seconds" -----------------------------------------------
@@ -271,7 +361,7 @@ def filter_on(api, source, kind: str, name: str, settings: dict | None = None, s
 
     flt = find_filter(source, kind)
     if flt is None:
-        taken = {f.id for s in api.col.sources for f in s.filters}
+        taken = {f.id for s in api.col.sources for f in s.filters} | {f.id for f in source.filters}
         n = 1
         while f"filter-{n}" in taken:
             n += 1
@@ -291,7 +381,7 @@ def filter_on(api, source, kind: str, name: str, settings: dict | None = None, s
         def later():
             if _RUNS.get(key) != run:
                 return  # triggered again (or switched off) since
-            now = next((s for s in api.col.sources if s.id == key[0]), None)  # the collection may be a new copy now
+            now = target_by_id(api.col, key[0])  # the collection may be a new copy now
             if now is not None:
                 filter_off(api, now, kind)
 
