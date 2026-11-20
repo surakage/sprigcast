@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 34
+#define SC_INTERFACE_VERSION 35
 
 enum {
     SC_OK = 0,
