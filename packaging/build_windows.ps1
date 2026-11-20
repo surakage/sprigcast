@@ -32,6 +32,23 @@ Pop-Location
 uv pip install --python $python --break-system-packages -r (Join-Path $build "requirements.txt")
 uv pip install --python $python --break-system-packages --no-deps $root
 
+# 2-. Qt WebEngine with H.264/AAC laid over PySide6's (web page sources play MP4 clips; webengine_codecs.py). Its
+#     zip is pinned with the Qt version it was built for: a different PySide6 needs a new build first.
+$pin = Join-Path $PSScriptRoot "webengine_codecs.json"
+if (Test-Path $pin) {
+    $codecs = Get-Content $pin -Raw | ConvertFrom-Json
+    $pyside = (& $python -c "import PySide6, os; print(PySide6.__version__ + '|' + os.path.dirname(PySide6.__file__))").Trim().Split("|")
+    if ($pyside[0] -ne $codecs.qt) {
+        throw "PySide6 is $($pyside[0]) but the page engine with H.264/AAC is built for $($codecs.qt): run the 'Page engine with H.264/AAC' workflow for $($pyside[0]) and pin it in webengine_codecs.json"
+    }
+    $zip = Join-Path $build "qtwebengine-codecs.zip"
+    Invoke-WebRequest $codecs.url -OutFile $zip
+    & $python (Join-Path $PSScriptRoot "webengine_codecs.py") overlay $zip $pyside[1] $codecs.sha256
+    Remove-Item $zip
+} else {
+    Write-Warning "No page engine with H.264/AAC pinned (webengine_codecs.json): web pages can't play MP4 video"
+}
+
 # 2a. The command-line tools (pyproject [project.scripts]). uv's .exe launchers hold this build folder's path to
 #     python.exe, so on a user's PC they fail with "uv trampoline failed to canonicalize script path" (PC test,
 #     2026-11-17). Small .cmd files run the Python next to them instead, wherever SprigCast is installed.
