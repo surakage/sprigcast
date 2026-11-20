@@ -8,6 +8,10 @@ another dialog. OBS deletes its properties and settings windows on close; modal(
 
 from __future__ import annotations
 
+import logging
+
+log = logging.getLogger(__name__)
+
 
 def modal(dialog) -> int:
     """dialog.exec(), then delete it once control returns to the window's event loop. Reading its answers right
@@ -19,18 +23,28 @@ def modal(dialog) -> int:
 
     if privacy.hidden():  # Settings → General → Privacy: kept out of screen captures like the main window
         privacy.apply_to(dialog, True)
-    watch = _CloseWatch.start(dialog)
+    global _depth
+    watch = _CloseWatch.start(dialog) if _depth == 0 else None  # one watch covers pop-ups opened from pop-ups
+    _depth += 1
     try:
         return dialog.exec()
     finally:
+        _depth -= 1
         if watch is not None:
             watch.stop()
         delete = getattr(dialog, "deleteLater", None)  # stand-ins in tests may not have it
         if delete is not None:
             delete()
+        if _depth == 0 and _closing is not None:
+            _close_when_free()
+
+
+_depth = 0  # pop-ups open through modal() right now (one opened from another counts twice)
+_closing = None  # the main window, once its × was clicked while a pop-up was up
 
 
 WM_CLOSE = 0x0010
+WM_SYSCOMMAND, SC_CLOSE = 0x0112, 0xF060
 
 
 def _main_window():
@@ -40,27 +54,61 @@ def _main_window():
 
 
 def close_main_after(dialog, window) -> None:
-    """The main window's × was clicked while `dialog` was open: cancel the pop-up, then close the window the
-    usual way. Windows drops that click while a pop-up is up, so closing waited until the pop-up was closed
-    by hand (PC, 2026-11-20: 92 s)."""
+    """The main window's × was clicked while `dialog` was open: cancel every pop-up, inner first, then close the
+    window the usual way once the last one has really returned (PC, 2026-11-20: Windows drops that click while
+    a pop-up is up, so closing waited until it was closed by hand: 92 s; with Filters open the first try was
+    lost because the window was asked to close from inside the pop-up's own loop)."""
+    global _closing
+    from PySide6.QtCore import QTimer
+
+    log.info("main window closed while a pop-up was open: closing the pop-up first")
+    _closing = window
+    _cancel_all(dialog)
+    if _depth == 0:  # not opened through modal() (tests, or a stand-in): nothing will say when it's done
+        QTimer.singleShot(0, _close_when_free)
+
+
+def _cancel(widget) -> None:
+    reject = getattr(widget, "reject", None) or getattr(widget, "close", None)
+    if reject is not None:
+        try:
+            reject()
+        except Exception:  # noqa: BLE001 (a pop-up that won't cancel still mustn't stop the window closing)
+            log.exception("couldn't cancel a pop-up while closing")
+
+
+def _cancel_all(dialog, left: int = 10) -> None:
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
 
-    def cancel(widget) -> None:
-        reject = getattr(widget, "reject", None) or getattr(widget, "close", None)
-        if reject is not None:
-            reject()
+    still = QApplication.activeModalWidget()
+    if still is not None and still is not _closing and left > 0:
+        _cancel(still)  # the innermost first: a message box over Filters, then Filters
+        QTimer.singleShot(0, lambda: _cancel_all(dialog, left - 1))
+    elif dialog is not None and dialog.isVisible():
+        _cancel(dialog)
 
-    def next_one(left: int = 10) -> None:  # a pop-up opened from a pop-up: each one goes, inner first
-        still = QApplication.activeModalWidget()
-        if still is not None and still is not window and left > 0:
-            cancel(still)
-            QTimer.singleShot(0, lambda: next_one(left - 1))
-            return
-        window.request_close()
 
-    cancel(dialog)
-    QTimer.singleShot(0, next_one)  # after exec() has returned and the caller has moved on
+def _close_when_free(left: int = 50) -> None:
+    """Close the window from the top level: once no pop-up is up, a turn of the window's own loop later."""
+    global _closing
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication
+
+    window = _closing
+    if window is None:
+        return
+    still = QApplication.activeModalWidget()
+    if (still is not None and still is not window or _depth > 0) and left > 0:
+        if still is not None and still is not window:
+            _cancel(still)
+        QTimer.singleShot(20, lambda: _close_when_free(left - 1))
+        return
+    _closing = None
+    from shiboken6 import isValid
+
+    if isValid(window):
+        QTimer.singleShot(0, window.request_close)
 
 
 class _CloseWatch:
@@ -105,7 +153,8 @@ class _CloseWatch:
             from ctypes import wintypes
 
             msg = wintypes.MSG.from_address(int(message))
-            if msg.message == WM_CLOSE and int(msg.hWnd or 0) == self.hwnd:
+            closing = msg.message == WM_CLOSE or (msg.message == WM_SYSCOMMAND and (int(msg.wParam) & 0xFFF0) == SC_CLOSE)
+            if closing and int(msg.hWnd or 0) == self.hwnd:
                 from PySide6.QtCore import QTimer
 
                 self.fired = True

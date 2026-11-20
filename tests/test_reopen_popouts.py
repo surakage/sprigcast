@@ -1,4 +1,4 @@
-"""Settings → General → Pop-out views → Reopen them next time."""
+"""Settings → General → Projectors → Reopen them next time."""
 
 import os
 

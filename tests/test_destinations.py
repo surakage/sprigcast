@@ -490,11 +490,11 @@ def test_projector_shows_a_canvas_full_size(app, tmp_path, monkeypatch):
         w.show()
         w._set_mode("live")
         menu = w._preview_menu("vertical", -1)
-        full = next(a for a in menu.actions() if a.text() == "Pop out").menu()
+        full = next(a for a in menu.actions() if a.text() == "Projector").menu()
         labels = [a.text() for a in full.actions() if a.text()]
         assert labels[0].startswith("Full screen on Screen 1") and "In a window" in labels
         texts = [a.text() for a in menu.actions() if a.text()]  # Live: this canvas only, no editing items
-        assert texts == ["Pop out", "Safe zones", "Canvas settings…  1080×1920, 60 fps"]
+        assert texts == ["Projector", "Safe zones", "Canvas settings…  1080×1920, 60 fps"]
         zones = next(a for a in menu.actions() if a.text() == "Safe zones").menu()
         next(a for a in zones.actions() if a.text() == "TikTok").trigger()
         assert w.previews["vertical"].live_safe_zones == "TikTok" and w.previews["vertical"].safe_zones == "All platforms"
@@ -548,7 +548,7 @@ def test_projector_shows_a_bloom_or_a_source_from_its_right_click_menu(app, tmp_
         w._set_mode("live")
         menu = w.live_panel.scene_menu("h2")  # a bloom tile that isn't on air
         texts = [a.text() for a in menu.actions() if a.text()]
-        assert texts == ["Comes in with", "Save screenshot", "Pop out", "Rename…", "Set a key…"]  # a click puts it on air
+        assert texts == ["Comes in with", "Save screenshot", "Projector", "Rename…", "Set a key…"]  # a click puts it on air
         into = next(a for a in menu.actions() if a.text() == "Comes in with").menu()
         next(a for a in into.actions() if a.text() == "Leaf").trigger()
         rule = w.collection.transition_rules[-1]
@@ -561,7 +561,7 @@ def test_projector_shows_a_bloom_or_a_source_from_its_right_click_menu(app, tmp_
         monkeypatch.setattr("sprigcast.app.screenshot.grab", lambda engine, ids: shots.append(dict(engine.views)) or {})
         w._bloom_screenshot("h2")  # drawn through a view for that moment only
         assert shots == [{"screenshot": ("horizontal", "bloom", "h2")}] and "screenshot" not in w.engine.views
-        full = next(a for a in menu.actions() if a.text() == "Pop out").menu()
+        full = next(a for a in menu.actions() if a.text() == "Projector").menu()
         next(a for a in full.actions() if a.text() == "In a window").trigger()
         bloom = w.projectors[-1]
         assert bloom.view and w.engine.views[bloom.view] == ("horizontal", "bloom", "h2")
@@ -631,7 +631,7 @@ def test_menu_bar_order_and_shortcut_list(app, tmp_path, monkeypatch):
         assert texts(0) == ["Open recordings folder", "Repot as MP4…", "Export settings…", "Import settings…", "Quit"]
         assert texts(1) == ["Undo", "Redo"]
         assert texts(2)[-2:] == ["Web panels…", "Reset panels"]
-        assert "Stats" not in texts(2) and "Pop out" not in texts(2)
+        assert "Stats" not in texts(2) and "Projector" not in texts(2)
         assert texts(3) == ["New…", "Duplicate…", "Rename…", "Remove", "Import", "Export", "Missing files…",
                             "Show file"]
         assert texts(4) == ["New…", "Duplicate…", "Rename…", "Remove", "Import…", "Export…"]

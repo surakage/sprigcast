@@ -798,7 +798,7 @@ def test_general_going_live_snapping_popouts_and_privacy_are_saved(app):
     from PySide6.QtWidgets import QGroupBox
 
     titles = [b.title() for b in w.findChildren(QGroupBox)]
-    for title in ("Going live", "Snapping", "Pop-out views", "Privacy"):
+    for title in ("Going live", "Snapping", "Projectors", "Privacy"):
         assert title in titles
     assert not w.confirm_go_live.isChecked() and w.snap_on.isChecked() and w.projector_hide_pointer.isChecked()
     w.confirm_go_live.setChecked(True)

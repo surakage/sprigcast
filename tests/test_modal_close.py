@@ -43,3 +43,28 @@ def test_the_watch_is_off_away_from_windows(app):
     from sprigcast.app.modal import _CloseWatch
 
     assert _CloseWatch.start(QDialog()) is None  # nothing runs per message here (only Windows drops the ×)
+
+
+def test_closing_waits_for_nested_pop_ups_opened_through_modal(app):
+    """PC test, 2026-11-20: with Filters open the first close was lost. Every pop-up is cancelled, inner first,
+    and the window is closed only after the outer one's exec() has returned."""
+    from sprigcast.app import modal as m
+
+    window = Window()
+    window.show()
+    outer = QDialog(window)
+    seen = []
+
+    def open_inner():
+        inner = QDialog(outer)
+        QTimer.singleShot(0, lambda: m.close_main_after(outer, window))
+        seen.append(("inner", m.modal(inner)))
+        seen.append(("asked while open", window.asked))
+
+    QTimer.singleShot(0, open_inner)
+    seen.append(("outer", m.modal(outer)))
+    seen.append(("asked after outer", window.asked))
+    for _ in range(20):
+        app.processEvents()
+    assert seen == [("inner", 0), ("asked while open", 0), ("outer", 0), ("asked after outer", 0)]
+    assert window.asked == 1 and not window.isVisible() and m._closing is None and m._depth == 0
