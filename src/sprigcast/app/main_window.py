@@ -5616,6 +5616,23 @@ class MainWindow(QMainWindow):
             self._tidy_saves()
         return shot
 
+    def _bloom_shot_for_apps(self, scene_id: str, name: str, width: int | None = None, save: bool = True,
+                             as_data: bool = False) -> dict | None:
+        """A PNG of a bloom that isn't on air, on its own canvas (apps: screenshot.take with bloom). Nothing on
+        air changes; its sources wake for the moment it takes (see screenshot.grab_scene)."""
+        from sprigcast.app import screenshot
+        from sprigcast.core import workers
+
+        scene = next((sc for sc in self.collection.scenes if sc.id == scene_id), None)
+        if scene is None:
+            return None
+        folder = self._recordings_folder() / "Screenshots" if save else None
+        shot = workers.wait_answering(screenshot.take_scene, self.engine, scene, name, folder, width, as_data)
+        if shot is not None and save:
+            self._saved_note("Screenshot saved", Path(shot["path"]).parent)
+            self._tidy_saves()
+        return shot
+
     def _screenshot_saved(self, shots: list[dict], images: dict, folder, afters=()) -> None:
         try:
             self._say(f"Screenshot saved to {folder}" if shots else "Couldn't take a screenshot: nothing is drawing.")

@@ -300,6 +300,9 @@ With `overlaps`, each shape also has `overlaps`: `[{"a", "a_name", "a_in", "b", 
 | --- | --- | --- |
 | `screenshot.take` | A picture of what's on air in each shape, or of one source or bloom. | `shape` (optional): both (default), horizontal or vertical, `source` (optional): just this source (a camera...), name or id, `bloom` (optional): just this bloom, name or id, `width` (optional): shrink to this width in pixels (keeps the shape), `save` (optional): true (default): save PNGs in the recordings folder, under Screenshots, `data` (optional): true: send the picture back as base64 PNG (for bots and pages; large) |
 
+
+`screenshot.take` with `bloom` pictures that bloom on the `shape` you name, whether it's on air or not. A bloom on air is pictured as its canvas. A bloom off air is drawn on its own canvas without being put on air: its sources wake for the moment it takes (up to about 4 seconds for cameras and web pages), then rest again, and its shot has `"on_air": false`. That isn't done while live or recording (`not_allowed`), so the stream never pays for it.
+
 ### sound
 
 | Action | What it does | Fields |
