@@ -183,3 +183,32 @@ def test_clear_all_my_data_ends_a_copy_being_made(tmp_path, live, monkeypatch):
     settings_keeper.forget(config)
     assert proc.poll() is not None and not settings_keeper.path(config).exists()
     assert not settings_keeper.keep_aside(config, live) and _wait_for_copies(5)
+
+
+def test_starting_the_copying_program_never_holds_the_caller(tmp_path, live, monkeypatch):
+    """Windows took 2.2 to 2.9 s to start the copying program on three starts on the PC (2026-11-19), with the
+    window waiting for it. The start is on a thread of its own; the copy is still made."""
+    import subprocess
+    import threading
+    import time
+
+    monkeypatch.delenv(settings_keeper.ENV_HERE, raising=False)
+    monkeypatch.setattr(settings_keeper, "stopped", False)
+    started_on = []
+    popen = subprocess.Popen
+
+    def slow_start(*args, **kwargs):
+        started_on.append(threading.current_thread().name)
+        time.sleep(0.5)
+        return popen(*args, **kwargs)
+
+    monkeypatch.setattr(settings_keeper.subprocess, "Popen", slow_start)
+    config = tmp_path / "config"
+    began = time.monotonic()
+    settings_keeper.keep_aside_soon(config, live)
+    assert time.monotonic() - began < 0.3
+    end = time.monotonic() + 30
+    while not settings_keeper.path(config).is_file() and time.monotonic() < end:
+        time.sleep(0.02)
+    assert _wait_for_copies() and settings_keeper.path(config).is_file()
+    assert started_on == ["sprigcast-settings-copy-start"]
