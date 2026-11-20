@@ -108,7 +108,10 @@ int main() {
         sc_mixer *clocked = nullptr;  // its own thread mixes, and stops cleanly
         CHECK(sc_mixer_create(1, &clocked) == SC_OK);
         int64_t now = 0;
-        CHECK(sc_mixer_wait(clocked, 2, 1000, &now) == 1 && now > 2);
+        // Waits on the ticks themselves: it returns as soon as the third one is mixed (about 64 ms), so the long
+        // limit costs nothing when all is well and only lets a slow runner (ASan on a shared CI machine missed
+        // 1 s in run 44769483034) catch up. A mixer thread that never ticks still fails here.
+        CHECK(sc_mixer_wait(clocked, 2, 15000, &now) == 1 && now > 2);
         sc_mixer_destroy(clocked);
     }
     {  // Built-in filters: a -6.02 dB gain then invert polarity, before the mix.

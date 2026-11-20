@@ -15,7 +15,7 @@ from __future__ import annotations
 import time
 
 from PySide6.QtCore import QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtGui import QColor, QIcon, QPainter
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QTabWidget,
@@ -101,7 +102,8 @@ PUSH_RELEASE_MS = (0, 100, 250, 500)
 DUCK_PICKS = ((-6.0, "-6 dB"), (-12.0, "-12 dB"), (-18.0, "-18 dB"))
 METER_MS = 80  # how often the Devices meters move, and only while that tab is on screen
 STALE_S = 0.5  # levels older than this are silence (the mixer stopped)
-CHIPS_SHOWN = 4  # sounds named on a track's row before "+2 more"
+CHIPS_SHOWN = 3  # sounds named on a track's row before "+2 more" (4 made Tracks wider than Settings)
+CHIP_TEXT_PX = 104  # a long sound name is cut short on its chip; the tip has all of it
 
 
 def page_style() -> str:
@@ -123,7 +125,8 @@ def page_style() -> str:
         f" min-height: 22px; max-height: 22px; padding: 0px 9px; font-weight: 600; }}"
         f"QPushButton#mixPill:checked {{ background: {t.SELECT_BG}; color: {t.SELECT_TEXT}; }}"
         f"QPushButton#mixPill:disabled {{ color: {t.EDGE_STRONG}; }}"
-        f"QSlider#balance::sub-page:horizontal {{ background: {t.EDGE_STRONG}; }}"
+        + _pick_style()
+        + f"QSlider#balance::sub-page:horizontal {{ background: {t.EDGE_STRONG}; }}"
         f"QSpinBox#audioDelay {{ background: transparent; border: 1px solid transparent; padding: 4px 0px;"
         f" min-height: 18px; }}"
         # No arrows (type, scroll or the arrow keys). NoButtons can't be used: with the app's style sheet it
@@ -132,6 +135,26 @@ def page_style() -> str:
         f" width: 0px; height: 0px; border: none; }}"
         f"QSpinBox#audioDelay:hover, QSpinBox#audioDelay:focus {{ background: {t.FIELD};"
         f" border: 1px solid {t.FIELD_EDGE}; }}"
+    )
+
+
+def _pick_style() -> str:
+    """Drop-downs on this page (Hear it, Music drops when) as the same rounded pill as the Type button beside
+    Find, with the soft chevron: the plain boxes looked like an older app (user 2026-11-20)."""
+    t = theme
+    try:
+        arrow = (f"QComboBox#audioPick::down-arrow {{ image: url({t.nature_pictures()['chevron']});"
+                 " width: 10px; height: 10px; }")
+    except OSError:
+        arrow = ""
+    return (
+        f"QComboBox#audioPick {{ background: {t.BUTTON}; color: {t.TEXT}; border: 1px solid {t.BUTTON_EDGE};"
+        f" border-top-color: {t.BUTTON_TOP}; border-radius: 14px; padding: 3px 12px; min-height: 22px;"
+        " font-weight: 600; }"
+        f"QComboBox#audioPick:hover, QComboBox#audioPick:focus {{ background: {t.BUTTON_HOVER};"
+        f" border-color: {t.ACCENT}; }}"
+        f"QComboBox#audioPick:disabled {{ color: {t.MUTED}; background: transparent; border-color: {t.EDGE}; }}"
+        "QComboBox#audioPick::drop-down { border: none; background: transparent; width: 24px; }" + arrow
     )
 
 
@@ -264,6 +287,21 @@ class AudioPage(QWidget):
         if first in self.TABS:
             self.show_tab(first)
         self.tabs.currentChanged.connect(self._tab_shown)
+        self._fit_tabs()
+
+    def _fit_tabs(self) -> None:
+        """The page is as wide as the tab showing, not the widest tab: Tracks' 922 px made Sounds wider than
+        Settings, cutting off its right side (PC 2026-11-20, Settings at 1076 px)."""
+        now = self.tabs.currentIndex()
+        if now == getattr(self, "_fitted", None):
+            return  # already fitted to this tab: every showing of the page (showEvent) asked again, and each
+            # asking laid out the whole page anew (377 ms in one on the PC as Settings opened, 2026-11-20)
+        self._fitted = now
+        for i in range(self.tabs.count()):
+            policy = QSizePolicy.Policy.Preferred if i == now else QSizePolicy.Policy.Ignored
+            if self.tabs.widget(i).sizePolicy().horizontalPolicy() != policy:
+                self.tabs.widget(i).setSizePolicy(policy, policy)
+        self.tabs.updateGeometry()
 
     def build_tab(self, name: str, later=None) -> None:
         """Make one tab's contents (once). later(call): the tab's first card is made now and each further card
@@ -316,29 +354,43 @@ class AudioPage(QWidget):
             self._make_part(part)
         while getattr(self, "_rows_waiting", None):
             self._sound_row(*self._rows_waiting.pop(0))
+        table = getattr(self, "_sound_table", None)
+        if table is not None:
+            table.setVisible(True)
 
     def _ducking(self) -> QWidget:
         """Ducking's everyday picks, under the sounds it lowers. More… opens the rest (voices, timing)."""
+        from sprigcast.app.card import field_label
+
         group = QGroupBox("Ducking")
-        form = QFormLayout(group)
-        form.setContentsMargins(0, 0, 0, 0)
-        form.setHorizontalSpacing(18)
-        form.setVerticalSpacing(10)
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        # Each pick under its own small label, side by side (as the New type window): a label column on the left
+        # sat off-line with the pills and read as an older form (user 2026-11-20).
+        grid = QGridLayout(group)
+        grid.setContentsMargins(4, 6, 4, 4)
+        grid.setHorizontalSpacing(28)
+        grid.setVerticalSpacing(8)
         self.duck_when = QComboBox()
+        self.duck_when.setObjectName("audioPick")
+        self.duck_when.setAccessibleName("Music drops when")
+        self.duck_when.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.duck_when.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.duck_when.addItem("Never", False)
         self.duck_when.addItem("Mic is talking", True)
-        form.addRow("Music drops when", self.duck_when)
-        row = QHBoxLayout()
-        row.setSpacing(12)
+        grid.addWidget(field_label("Music drops when"), 0, 0)
+        grid.addWidget(self.duck_when, 1, 0, Qt.AlignmentFlag.AlignVCenter)  # in line with the pills beside it
         self.duck_by = Segmented(list(DUCK_PICKS))
+        self.duck_by.setAccessibleName("Lower by")
         self.ducking_button = QPushButton("More…")
         self.ducking_button.setAutoDefault(False)
+        self.ducking_button.setAccessibleName("More ducking settings")
         self.ducking_button.clicked.connect(self._more_ducking)
-        row.addWidget(self.duck_by)
-        row.addWidget(self.ducking_button)
-        row.addStretch(1)
-        form.addRow("Lower by", row)
+        picks = QHBoxLayout()
+        picks.setSpacing(12)
+        picks.addWidget(self.duck_by)
+        picks.addWidget(self.ducking_button)
+        grid.addWidget(field_label("Lower by"), 0, 1)
+        grid.addLayout(picks, 1, 1)
+        grid.setColumnStretch(2, 1)
         self.duck_when.currentIndexChanged.connect(lambda _i: self.duck_by.setEnabled(bool(self.duck_when.currentData())))
         self._load_ducking()
         return group
@@ -359,6 +411,7 @@ class AudioPage(QWidget):
     # Meters (Devices): only while that tab is on screen ------------------------------------
 
     def _tab_shown(self, *_args) -> None:
+        self._fit_tabs()
         name = self.TABS[self.tabs.currentIndex()]
         want = bool(self.meters) and self._levels is not None and name == "Devices" and self.isVisible()
         if want != self._meter_timer.isActive():
@@ -596,7 +649,7 @@ class AudioPage(QWidget):
             name.setPlaceholderText(TRACK_NAMES[n - 1])
             name.setMaxLength(24)
             name.setToolTip(TRACK_TIPS[n - 1])
-            name.setFixedWidth(220)
+            name.setFixedWidth(150)
             grid.addWidget(name, 2 * n, 1)
             chips = QHBoxLayout()
             chips.setSpacing(6)
@@ -647,6 +700,10 @@ class AudioPage(QWidget):
             for text in shown or ["Nothing yet"]:
                 chip = QLabel(text, self)
                 if shown:
+                    cut = chip.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, CHIP_TEXT_PX)
+                    if cut != text:
+                        chip.setText(cut)
+                        chip.setToolTip(text)
                     chip.setObjectName("audioChip")
                     chip.setTextFormat(Qt.TextFormat.PlainText)
                 else:
@@ -674,6 +731,11 @@ class AudioPage(QWidget):
         if not sounds:
             box.addWidget(_hint("No sounds yet."))
             return group
+        self._sound_type = {s.id: self._type_of(s) for s in sounds}
+        self._sound_name = {s.id: s.name for s in sounds}
+        self._cells: dict[str, list[tuple[int, QWidget]]] = {}  # each row's boxes, with their column
+        self._lines: dict[str, QFrame] = {}
+        box.addLayout(self._sound_filter())
         table = QFrame()
         table.setObjectName("audioTable")
         grid = QGridLayout(table)
@@ -681,39 +743,62 @@ class AudioPage(QWidget):
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(6)
         tracks = len(AUDIO_TRACKS)
+        self._heads = []
         for col, text in enumerate(("Sound", "Volume", "Balance", "Mono", "Delay", "Hear it", "Goes to", "Mute")):
-            grid.addWidget(_head(text), 0, col)
-        for row in range(1, len(sounds) + 1):
-            grid.addWidget(_line(), 2 * row - 1, 0, 1, 8)
+            head = _head(text)
+            self._heads.append(head)
+            grid.addWidget(head, 0, col)
+        for row, source in enumerate(sounds, 1):
+            line = self._lines[source.id] = _line()
+            grid.addWidget(line, 2 * row - 1, 0, 1, 8)
+        self._filter_sounds()
         self._rows_waiting = [(grid, row, source, tracks) for row, source in enumerate(sounds, 1)]
         for _ in range(min(self.ROWS_NOW, len(self._rows_waiting))):
             self._sound_row(*self._rows_waiting.pop(0))
         # The rest half a row a tick: a whole row was still 57-78 ms a tick on the PC while live (2026-11-18).
         self._rows_waiting = [(*args, half) for args in self._rows_waiting for half in (1, 2)]
+        # The table shows once a screenful of rows is made, all at once: shown from the first row, the list was
+        # seen filling in one row at a time (user 2026-11-20). The rest are made below, off screen.
+        self._sound_table = table
+        self._rows_to_show = min(self.SCREEN_ROWS, len(sounds)) * 2 - self.ROWS_NOW * 2
+        if self._rows_waiting and self._rows_to_show > 0:
+            table.setVisible(False)
         if self._rows_waiting:
             from PySide6.QtCore import QTimer
 
             QTimer.singleShot(self.ROW_GAP_MS, self, self._more_rows)
         grid.setColumnStretch(0, 1)
         box.addWidget(table)
-        legend = " · ".join(f"{n} {self.collection.audio.track_name(n)}" for n in range(1, tracks + 1))
-        box.addWidget(_hint(f"Tracks: {legend}"))
         return group
 
     # Sound rows made with the tab; the rest a few per tick (ROWS_PER_TICK). None now: two rows (~100 calls into Qt)
     # made with the page were most of the 61 ms the Sound gear took to open on the PC while live (2026-11-19).
     ROWS_NOW = 0
     ROWS_PER_TICK = 1  # three were 136 ms a tick on the PC while live (2026-11-18): each row is ~50 calls into Qt
-    ROW_GAP_MS = 15
+    TICK_MS = 8  # more halves in a tick while they're quick; a slow PC still makes one a tick
+    # Never 0 between ticks. On Windows a 0 ms timer is a posted event, handled ahead of the window's paints and
+    # every real timer, so a chain of them held the whole list: Settings from the Sound gear didn't answer for
+    # 285-340 ms every open (PC 2026-11-20, build 44785036541), the beat that watches the window starved with it.
+    # A 1 ms timer is a real timer: paints, clicks and other timers go first, then the next tick.
+    ROW_GAP_MS = 1
+    SCREEN_ROWS = 12  # about what the Sounds tab shows without scrolling
 
     def _more_rows(self) -> None:
-        """A few more sound rows. All of them at once (6 boxes and up to 5 ticks each) held the window 263 ms on
+        """More sound rows, a little at a time with only a timer tick in between (a 15 ms gap after every half row
+        made a long list take seconds; none at all froze the window while the list was made, see ROW_GAP_MS). All of them at once (6 boxes and up to 5 ticks each) held the window 263 ms on
         the PC while live (2026-11-18 pop-up sweep)."""
+        import time
+
         waiting = self._rows_waiting
-        for _ in range(self.ROWS_PER_TICK):
-            if not waiting:
-                break
+        end = time.perf_counter() + self.TICK_MS / 1000
+        made = 0
+        while waiting and (made < self.ROWS_PER_TICK or time.perf_counter() < end):
             self._sound_row(*waiting.pop(0))
+            made += 1
+        self._rows_to_show = getattr(self, "_rows_to_show", 0) - made
+        table = getattr(self, "_sound_table", None)
+        if table is not None and table.isHidden() and (self._rows_to_show <= 0 or not waiting):
+            table.setVisible(True)
         if waiting:
             from PySide6.QtCore import QTimer
 
@@ -758,6 +843,8 @@ class AudioPage(QWidget):
         sync.setAlignment(Qt.AlignmentFlag.AlignHCenter)  # (the theme then gives the number room on both sides)
         sync.setToolTip("Hold this sound back to line it up with a camera that runs late")
         grid.addWidget(sync, at, 4)
+        self._cells[source.id] = [(0, name), (1, volume), (2, balance), (3, mono), (4, sync)]
+        self._show_row(source.id)
         if half == 1:
             self.__dict__.setdefault("_first_halves", {})[source.id] = (volume, mono, balance, sync)
             return
@@ -765,6 +852,8 @@ class AudioPage(QWidget):
 
     def _row_rest(self, grid, row, source, tracks, st, volume, mono, balance, sync) -> None:
         hear = QComboBox()
+        hear.setObjectName("audioPick")
+        hear.setCursor(Qt.CursorShape.PointingHandCursor)
         current = st.get("monitor", False)
         for text, value in self.HEAR:
             hear.addItem(text, value)
@@ -804,6 +893,9 @@ class AudioPage(QWidget):
         mute.setToolTip(f"Mute {source.name}")
         grid.addWidget(mute, 2 * row, 7, alignment=_CENTRE)
         self.track_ticks[source.id] = ticks
+        self._cells.setdefault(source.id, []).extend(
+            [(5, hear), *((6, w) for w in (*mixes.values(), *ticks)), (7, mute)])
+        self._show_row(source.id)
         self.sound_rows[source.id] = {"volume": volume, "mono": mono, "balance": balance, "sync": sync,
                                       "hear": hear, "mute": mute, **mixes,
                                       "vod": bool(st.get("vod", not is_music(source)))}
@@ -821,6 +913,109 @@ class AudioPage(QWidget):
                 tick.setEnabled(False)
             if n == 2 and not first:
                 tick.setChecked(False)  # VOD-safe is part of track 1: never shown on while it can't be
+
+    # Finding a sound ----------------------------------------------------------------------
+    # A long list (57 sounds on the PC, 2026-11-20) was "overwhelming": Find narrows it by name, Type to one sound
+    # type, and the columns come in two views so a row always fits the page (no sideways scrolling).
+    VIEWS = (("levels", "Volume and sync"), ("routing", "Where it goes"))
+    VIEW_COLUMNS = {"levels": {0, 1, 2, 3, 4, 7}, "routing": {0, 5, 6, 7}}
+    VIEW_KEY = "settings/audio_sounds_view"
+
+    @staticmethod
+    def _type_of(source: SourceConfig) -> str:
+        from sprigcast.app.sound_card import auto_group, type_of
+
+        st = source.settings
+        return type_of(str(st.get("group") or ("Alerts" if source.kind == "browser"
+                                               else auto_group(source.name, source.kind))))
+
+    def _sound_filter(self) -> QHBoxLayout:
+        from PySide6.QtCore import QSettings
+        from PySide6.QtWidgets import QMenu
+
+        from sprigcast.app.sound_card import GROUP_COLOURS, GROUPS
+        from sprigcast.app.sound_strips import _dot
+
+        bar = QHBoxLayout()
+        bar.setContentsMargins(0, 0, 0, 0)
+        bar.setSpacing(10)
+        self.sound_find = QLineEdit()
+        self.sound_find.setPlaceholderText("Find a sound")
+        self.sound_find.setClearButtonEnabled(True)
+        self.sound_find.setAccessibleName("Find a sound")
+        self.sound_find.setMinimumWidth(160)
+        self.sound_find.textChanged.connect(lambda _t: self._filter_sounds())
+        bar.addWidget(self.sound_find, 1)
+        self.sound_type = QPushButton()
+        self.sound_type.setAutoDefault(False)
+        self.sound_type.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.sound_type.setAccessibleName("Type")
+        self.sound_type.setStyleSheet(theme.button_style(13, "0px 12px", extra="min-height: 26px;"))
+        menu = QMenu(self.sound_type)
+        counts = {g: sum(t == g for t in self._sound_type.values()) for g in GROUPS}
+        self.sound_type_actions = {"": menu.addAction("All types", lambda: self._pick_sound_type(""))}
+        for g in GROUPS:
+            self.sound_type_actions[g] = menu.addAction(_dot(GROUP_COLOURS[g]), f"{g} ({counts[g]})",
+                                                        lambda g=g: self._pick_sound_type(g))
+        self.sound_type.setMenu(menu)
+        bar.addWidget(self.sound_type)
+        view = str(QSettings().value(self.VIEW_KEY, "levels"))
+        self.sound_view_shown = view if view in self.VIEW_COLUMNS else "levels"
+        self.sound_view = Segmented(list(self.VIEWS), self.sound_view_shown)
+        self.sound_view.picked.connect(self._pick_sound_view)
+        bar.addWidget(self.sound_view)
+        self.sound_count = QLabel()
+        self.sound_count.setObjectName("audioHead")
+        bar.addWidget(self.sound_count)
+        self._pick_sound_type("", filter_now=False)
+        return bar
+
+    def _pick_sound_type(self, group: str, filter_now: bool = True) -> None:
+        from sprigcast.app.sound_card import GROUP_COLOURS
+        from sprigcast.app.sound_strips import _dot
+
+        self.sound_type_shown = group
+        self.sound_type.setText(f"{group or 'All types'}  ▾")
+        self.sound_type.setIcon(_dot(GROUP_COLOURS[group]) if group else QIcon())
+        if filter_now:
+            self._filter_sounds()
+
+    def _pick_sound_view(self, view: str) -> None:
+        from PySide6.QtCore import QSettings
+
+        self.sound_view_shown = view
+        QSettings().setValue(self.VIEW_KEY, view)
+        self._filter_sounds()
+
+    def sound_shown(self, source_id: str) -> bool:
+        """Whether a sound's row passes Find and Type."""
+        text = self.sound_find.text().strip().casefold() if hasattr(self, "sound_find") else ""
+        if text and text not in self._sound_name.get(source_id, "").casefold():
+            return False
+        group = getattr(self, "sound_type_shown", "")
+        return not group or self._sound_type.get(source_id) == group
+
+    def _show_row(self, source_id: str) -> None:
+        keep = self.sound_shown(source_id)
+        columns = self.VIEW_COLUMNS[getattr(self, "sound_view_shown", "levels")]
+        for col, widget in self._cells.get(source_id, ()):
+            widget.setVisible(keep and col in columns)
+        line = self._lines.get(source_id)
+        if line is not None:
+            line.setVisible(keep)
+
+    def _filter_sounds(self) -> None:
+        if not hasattr(self, "_heads"):
+            return
+        columns = self.VIEW_COLUMNS[self.sound_view_shown]
+        for col, head in enumerate(self._heads):
+            head.setVisible(col in columns)
+        shown = 0
+        for source_id in self._sound_name:
+            self._show_row(source_id)
+            shown += self.sound_shown(source_id)
+        total = len(self._sound_name)
+        self.sound_count.setText(f"{shown} of {total}" if shown != total else f"{total} sounds")
 
     def _track_names(self, tracks: int) -> list[str]:
         """The tracks' names, worked out once a build of the page (each row's ticks asked again)."""

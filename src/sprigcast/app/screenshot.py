@@ -66,17 +66,24 @@ def grab(engine, canvas_ids: list[str], timeout: float = WAIT_S) -> dict[str, QI
                     done.set()
 
         taps[canvas_id] = tap
-        engine.add_frame_tap(f"shot:{canvas_id}", tap)  # what's on air, without Snap's polaroid (see Engine)
+        engine.add_frame_tap(_tap_key(canvas_id), tap)
     try:
         done.wait(timeout)
     finally:
         for canvas_id, tap in taps.items():
-            engine.remove_frame_tap(f"shot:{canvas_id}", tap)
+            engine.remove_frame_tap(_tap_key(canvas_id), tap)
     with lock:
         frames = dict(got)
     return {**read, **{canvas_id: QImage(f.data, f.width, f.height, f.width * 4,
                                          QImage.Format.Format_RGBA8888_Premultiplied).copy()
                        for canvas_id, f in frames.items()}}
+
+
+def _tap_key(canvas_id: str) -> str:
+    """What to tap for a picture: a canvas as on air without Snap's polaroid ("shot:<id>", see Engine), or a view
+    ("view:<name>") as it is. A view tapped as "shot:view:<name>" was never drawn: every bloom pictured off air
+    waited out the timeout and answered "Nothing is drawing right now" (PC 2026-11-20, build 44785036541)."""
+    return canvas_id if canvas_id.startswith("view:") else f"shot:{canvas_id}"
 
 
 def grab_one(engine, source_id: str, timeout: float = WAIT_S * 2) -> QImage | None:
@@ -124,22 +131,35 @@ def grab_scene(engine, scene, view: str = "apishot") -> QImage | None:
     """A picture of a bloom that isn't on air, on its own canvas, or None if it can't be made. It's drawn through
     an engine view for that moment only (as the bloom tile's Save screenshot is): nothing on air changes, its
     sources wake while the view is there and rest again once it's gone. Waits for them to wake first."""
-    engine.set_view(view, scene.canvas, "bloom", scene.id)
+    return grab_scenes(engine, [scene], view)[0]
+
+
+def grab_scenes(engine, scenes, view: str = "apishot") -> list[QImage | None]:
+    """grab_scene for several blooms at once (a bloom's horizontal and vertical shapes): their views are drawn
+    side by side, so they wake together and one wait covers them all, not one wait each."""
+    names = [view if i == 0 else f"{view}-{i + 1}" for i in range(len(scenes))]
+    asleep = any(scene is not None and _still_asleep(engine, scene) for scene in scenes)
+    for name, scene in zip(names, scenes):
+        if scene is not None:
+            engine.set_view(name, scene.canvas, "bloom", scene.id)
     try:
-        until = time.monotonic() + SCENE_WAKE_S
-        time.sleep(0.05)  # a tick or two, so the view is seen and its sources are told to wake
-        while _still_asleep(engine, scene) and time.monotonic() < until:
-            time.sleep(0.05)
-        time.sleep(SCENE_SETTLE_S)
-        return grab(engine, [f"view:{view}"]).get(f"view:{view}")
+        if asleep:  # sources to wake first; nothing asleep (all on air anyway): straight to the picture
+            until = time.monotonic() + SCENE_WAKE_S
+            time.sleep(0.05)  # a tick or two, so the views are seen and their sources are told to wake
+            while any(scene is not None and _still_asleep(engine, scene) for scene in scenes) \
+                    and time.monotonic() < until:
+                time.sleep(0.05)
+            time.sleep(SCENE_SETTLE_S)
+        ids = [f"view:{name}" for name, scene in zip(names, scenes) if scene is not None]
+        got = grab(engine, ids) if ids else {}
+        return [got.get(f"view:{name}") if scene is not None else None for name, scene in zip(names, scenes)]
     finally:
-        engine.set_view(view, None)
+        for name, scene in zip(names, scenes):
+            if scene is not None:
+                engine.set_view(name, None)
 
 
-def take_scene(engine, scene, name: str, folder: Path | None, width: int | None = None,
-               as_data: bool = False) -> dict | None:
-    """Like take_one, for a bloom off air: saved as "screenshot <name> <time>.png" and/or returned as base64."""
-    image = grab_scene(engine, scene)
+def _scene_shot(image: QImage | None, name: str, folder: Path | None, width: int | None, as_data: bool) -> dict | None:
     if image is None:
         return None
     image = shrink(image, width)
@@ -150,6 +170,18 @@ def take_scene(engine, scene, name: str, folder: Path | None, width: int | None 
     if as_data:
         shot["png"] = png_base64(image)
     return shot
+
+
+def take_scene(engine, scene, name: str, folder: Path | None, width: int | None = None,
+               as_data: bool = False) -> dict | None:
+    """Like take_one, for a bloom off air: saved as "screenshot <name> <time>.png" and/or returned as base64."""
+    return _scene_shot(grab_scene(engine, scene), name, folder, width, as_data)
+
+
+def take_scenes(engine, scenes, name: str, folder: Path | None, width: int | None = None,
+                as_data: bool = False) -> list[dict | None]:
+    """take_scene for several at once (see grab_scenes): one shot (or None) for each, in order."""
+    return [_scene_shot(image, name, folder, width, as_data) for image in grab_scenes(engine, scenes)]
 
 
 def take_one(engine, source_id: str, name: str, folder: Path | None, width: int | None = None,

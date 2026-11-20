@@ -44,6 +44,10 @@ class Segmented(QFrame):
         for data, label in choices:
             button = QPushButton(label)
             button.setCheckable(True)
+            # Told to screen readers and automation as a radio button, which is what it is: Qt calls a checkable
+            # button a check box unless it's auto-exclusive, and these couldn't be switched off like one (PC
+            # accessibility check, 2026-11-20). In a group the flag changes nothing else: the group decides.
+            button.setAutoExclusive(True)
             button.setAutoDefault(False)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.clicked.connect(lambda _=False, d=data: self._clicked(d))

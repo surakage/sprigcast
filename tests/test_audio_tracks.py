@@ -339,7 +339,10 @@ def test_tracks_name_the_sounds_on_each_as_ticked_in_sounds():
 
     def chips(n):
         row = page.track_chips[n - 1]
-        return [row.itemAt(i).widget().text() for i in range(row.count()) if isinstance(row.itemAt(i).widget(), QLabel)]
+        labels = [row.itemAt(i).widget() for i in range(row.count()) if isinstance(row.itemAt(i).widget(), QLabel)]
+        names = [w.text() for w in labels if not w.text().endswith(" more")]
+        more = [w.toolTip() for w in labels if w.text().endswith(" more")]  # the rest are in "+2 more"'s tip
+        return names + [n for tip in more for n in tip.split(", ")]
 
     assert "Song" in chips(1) and "Song" not in chips(2)  # music stays off VOD-safe
     assert chips(4) == ["Nothing yet"]
@@ -353,7 +356,7 @@ def test_tracks_name_the_sounds_on_each_as_ticked_in_sounds():
     col.sources += [SourceConfig(id=f"m{i}", kind="audio_input", name=f"Mic {i}") for i in range(6)]
     many = AudioPage(col, {})
     row = many.track_chips[0]
-    assert row.itemAt(4).widget().text().endswith("more")  # four named, the rest counted
+    assert row.itemAt(3).widget().text().endswith("more")  # three named, the rest counted
 
 
 def test_devices_set_listen_through_windows_ducking_and_push_to_talk():
@@ -517,3 +520,92 @@ def test_just_me_and_back_keeps_where_a_sound_goes():
     row["hear"].setCurrentIndex(0)  # back to Stream
     p.apply_to(col)
     assert source_tracks(col.source("bgm")) == before and col.source("bgm").settings["monitor"] is False
+
+
+def test_sounds_tab_finds_by_name_and_type_and_shows_one_set_of_columns_at_a_time(monkeypatch):
+    """57 sounds were a long list that also ran off the side (user 2026-11-20): Find, Type and two views."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import AudioPage
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(QSettings, "value", lambda self, key, default=None, *a, **k: default)
+    monkeypatch.setattr(QSettings, "setValue", lambda self, key, value: None)
+    col = _collection()
+    col.source("desktop").settings["group"] = "Game"
+    page = AudioPage(col, {})
+    page.finish()
+    assert page.sound_count.text() == "3 sounds"
+    page.sound_find.setText("wave")
+    assert [s for s in ("desktop", "mic", "mic-2") if page.sound_shown(s)] == ["mic-2"]
+    assert page.sound_count.text() == "1 of 3"
+    assert page.sound_rows["mic"]["volume"].isHidden() and not page.sound_rows["mic-2"]["volume"].isHidden()
+    page.sound_find.clear()
+    page.sound_type_actions["Game"].trigger()
+    assert [s for s in ("desktop", "mic", "mic-2") if page.sound_shown(s)] == ["desktop"]
+    assert "Game" in page.sound_type.text()
+    page.sound_type_actions[""].trigger()
+    assert page.sound_count.text() == "3 sounds"
+    # Volume and sync first; Where it goes swaps the columns, so the table never runs off the side.
+    mic = page.sound_rows["mic"]
+    assert not mic["volume"].isHidden() and mic["hear"].isHidden()
+    page.sound_view.buttons["routing"].click()
+    assert mic["volume"].isHidden() and not mic["hear"].isHidden()
+    assert not any(t.isHidden() for t in page.track_ticks["mic"])
+    page.apply_to(col)  # hidden rows and columns still save
+    assert col.source("desktop").settings["group"] == "Game"
+
+
+def test_sounds_list_shows_all_at_once_and_fits_beside_settings_menu():
+    """The list filled in row by row, and Tracks' width cut Sounds off at the right (PC 2026-11-20)."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import AudioPage
+
+    app = QApplication.instance() or QApplication([])
+    col = _collection()
+    col.sources += [SourceConfig(id=f"m{i}", kind="audio_input", name=f"Mic {i}") for i in range(20)]
+    page = AudioPage(col, {}, first="Sounds")
+    assert page._sound_table.isHidden()  # nothing shows until a screenful is made
+    while page._sound_table.isHidden():
+        app.processEvents()
+    assert len(page.sound_rows) >= AudioPage.SCREEN_ROWS
+    page.finish()
+    sounds = page.minimumSizeHint().width()
+    page.show_tab("Tracks")
+    page.show_tab("Sounds")
+    assert page.minimumSizeHint().width() == sounds  # the wider Tracks tab doesn't widen Sounds
+
+
+def test_sound_rows_leave_the_window_a_tick_between_parts(monkeypatch):
+    """Never a 0 ms chain: on Windows each 0 ms timer goes ahead of the window's paints and timers, and Settings
+    from the Sound gear didn't answer for ~300 ms every open while the list was made (PC 2026-11-20)."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import AudioPage
+
+    app = QApplication.instance() or QApplication([])
+    asked = []
+    real = QTimer.singleShot
+
+    def single_shot(ms, *args):
+        if any(getattr(a, "__name__", "") == "_more_rows" for a in args):
+            asked.append(ms)
+        return real(ms, *args)
+
+    monkeypatch.setattr(QTimer, "singleShot", single_shot)
+    col = _collection()
+    col.sources += [SourceConfig(id=f"m{i}", kind="audio_input", name=f"Mic {i}") for i in range(20)]
+    page = AudioPage(col, {}, first="Sounds")
+    while page._rows_waiting:
+        app.processEvents()
+    assert len(asked) > 1 and min(asked) >= 1
+    page.finish()

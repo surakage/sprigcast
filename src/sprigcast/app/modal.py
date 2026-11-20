@@ -26,6 +26,7 @@ def modal(dialog) -> int:
     global _depth
     watch = _CloseWatch.start(dialog) if _depth == 0 else None  # one watch covers pop-ups opened from pop-ups
     _depth += 1
+    _time_showing(dialog)
     try:
         return dialog.exec()
     finally:
@@ -37,6 +38,36 @@ def modal(dialog) -> int:
             delete()
         if _depth == 0 and _closing is not None:
             _close_when_free()
+
+
+SLOW_SHOW_MS = 100.0
+
+
+def _time_showing(dialog) -> None:
+    """Log a pop-up that took long to come up: from exec() to its first turn of events. That part is Qt's own
+    (making the window, styling and laying it out, telling screen readers), with no Python of ours to point at:
+    Settings spent ~300 ms there each open on the PC (2026-11-20), "it was at modal.py:30" all the log said."""
+    import time
+
+    try:
+        from PySide6.QtCore import QTimer
+    except ImportError:
+        return
+    started = time.perf_counter()
+
+    def shown() -> None:
+        took = 1000 * (time.perf_counter() - started)
+        if took >= SLOW_SHOW_MS:
+            try:
+                from PySide6.QtGui import QAccessible
+
+                reader = "on" if QAccessible.isActive() else "off"
+            except Exception:  # noqa: BLE001
+                reader = "?"
+            log.info("pop-up %s took %.0f ms to come up (screen reader support %s)", type(dialog).__name__, took,
+                     reader)
+
+    QTimer.singleShot(0, shown)
 
 
 _depth = 0  # pop-ups open through modal() right now (one opened from another counts twice)

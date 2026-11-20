@@ -1042,3 +1042,32 @@ def test_theme_tiles_work_their_colors_out_once(app, monkeypatch):
     first = look_preview.colors_for("slothbloom")
     first["BG"] = "#000000"  # a copy: changing it never reaches the next asker
     assert look_preview.colors_for("slothbloom")["BG"] != "#000000" and len(calls) == 1
+
+
+def test_appearance_choices_are_told_apart_by_screen_readers(app):
+    """PC accessibility check 2026-11-20: all six theme tiles were announced as "Theme", and the Colors choices
+    as check boxes that couldn't be switched off."""
+    from PySide6.QtGui import QAccessible
+
+    from sprigcast.app.segmented import Segmented
+    from sprigcast.app.settings_window import THEMES
+
+    w = _window(_collection(), tab="Appearance")
+    w.show()
+    app.processEvents()
+    try:
+        names = [QAccessible.queryAccessibleInterface(t).text(QAccessible.Text.Name) for t in w.theme_tiles.values()]
+        assert names == [f"{label} theme" for label in THEMES.values()] and len(set(names)) == len(names)
+        for tile in w.theme_tiles.values():
+            assert QAccessible.queryAccessibleInterface(tile).role() == QAccessible.Role.RadioButton
+        for button in w.color_preset.buttons.values():
+            face = QAccessible.queryAccessibleInterface(button)
+            assert face.role() == QAccessible.Role.RadioButton and face.text(QAccessible.Text.Name) == button.text()
+    finally:
+        w.close()
+    pick = Segmented([(1, "One"), (2, "Two")], None)  # still: none lit for a value no button stands for
+    assert pick.value() is None
+    pick.buttons[2].click()
+    assert pick.value() == 2 and not pick.buttons[1].isChecked()
+    pick.set_value(None)
+    assert pick.value() is None

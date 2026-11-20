@@ -94,6 +94,35 @@ class ApiError(Exception):
         self.extra = extra  # more for the app, e.g. doctor_warnings' list of warnings
 
 
+class Later:
+    """An answer that needs slow work first (a screenshot): job() runs on a worker thread, then then(future) on the
+    window's thread turns its outcome into the answer (future.result() raises what the job raised).
+
+    Only a connected app's single message is answered this way (NativeSession.receive): the window's thread never
+    waits for the picture. Waiting there for it, events still handled (workers.wait_answering), left the window not
+    answering for 514 ms on the PC (2026-11-20, build 44792233314)."""
+
+    def __init__(self, job: Callable[[], Any], then: Callable[[Any], Any]):
+        self.job, self.then = job, then
+
+    def map(self, after: Callable[[Any], Any]) -> Later:
+        first = self.then
+        return Later(self.job, lambda future: after(first(future)))
+
+
+def _saving(later: Later) -> Later:
+    """A screenshot's Later whose file couldn't be written answers "failed", as the direct call does."""
+    first = later.then
+
+    def then(future):
+        try:
+            return first(future)
+        except OSError as exc:
+            raise ApiError("failed", f"Couldn't save the screenshot: {exc}") from exc
+
+    return Later(later.job, then)
+
+
 def _bad(message: str) -> ApiError:
     return ApiError("bad_request", message)
 
@@ -231,6 +260,11 @@ class NativeApi:
         self.custom_event: Callable[[dict[str, Any]], None] = lambda data: None
         self.plugin_event: Callable[[str, dict[str, Any]], None] = lambda name, data: None  # set by the server
         self.last_clip: list[str] = []
+        self.later_ok = False  # set while a connected app's single message is answered: slow work may come Later
+
+    def _later(self, name: str):
+        """The host's Later version of a slow call, when one may be used now; else None."""
+        return getattr(self.host, name, None) if self.later_ok else None
 
     @property
     def col(self):
@@ -1615,13 +1649,23 @@ class NativeApi:
         if data.get("source") is not None or data.get("bloom") is not None:
             return self._one_shot(data, shape, width, save, as_data)
         shapes = self._shapes() if shape == "both" else [shape]
+        return self._canvas_shots(shapes, width, save, as_data, lambda shots: {"shots": shots})
+
+    def _canvas_shots(self, shapes, width, save, as_data, done):
+        """Pictures of what's on air in these shapes: done(shots), now or Later."""
+        def checked(shots):
+            if not shots:
+                raise ApiError("not_allowed", "Nothing is drawing right now, so there's nothing to picture.")
+            return done(shots)
+
+        later = self._later("screenshot_later")
+        if later is not None:
+            return _saving(later(shapes, width, save, as_data)).map(checked)
         try:
             shots = self.host.screenshot(shapes, width, save, as_data)
         except OSError as exc:
             raise ApiError("failed", f"Couldn't save the screenshot: {exc}") from exc
-        if not shots:
-            raise ApiError("not_allowed", "Nothing is drawing right now, so there's nothing to picture.")
-        return {"shots": shots}
+        return checked(shots)
 
     def _one_shot(self, data, shape: str, width: int | None, save: bool, as_data: bool):
         """screenshot.take of one source or bloom. A bloom on air is pictured as its canvas; one off air, as
@@ -1636,20 +1680,27 @@ class NativeApi:
                 family = [s for s in family if s.canvas == shape] or family
             on_air = [s.canvas for s in family if self.col.active_scenes.get(s.canvas) == s.id]
             if on_air:
-                try:
-                    shots = self.host.screenshot(on_air[:1], width, save, as_data)
-                except OSError as exc:
-                    raise ApiError("failed", f"Couldn't save the screenshot: {exc}") from exc
-                if not shots:
-                    raise ApiError("not_allowed", "Nothing is drawing right now, so there's nothing to picture.")
-                return {"shots": [{**shot, "bloom": bloom.name} for shot in shots]}
+                return self._canvas_shots(on_air[:1], width, save, as_data,
+                                          lambda shots: {"shots": [{**shot, "bloom": bloom.name} for shot in shots]})
             off_air = getattr(self.host, "bloom_screenshot", None)
             if off_air is not None:  # drawn on its own canvas, nothing on air changes; its sources wake for it
                 if self.host.stream_status() is not None or self.host.record_status() is not None:
                     raise ApiError("not_allowed", f"{bloom.name!r} isn't on air. A bloom off air can't be pictured "
                                                   "while live or recording: its sources would have to wake.")
+                layouts = family if shape == "both" else family[:1]
+                later = self._later("bloom_screenshots_later")
+                if later is not None:  # every shape at once, on a worker
+                    def collected(got, layouts=layouts, name=bloom.name):
+                        shots = [{"shape": layout.canvas, **shot, "bloom": name, "on_air": False}
+                                 for layout, shot in zip(layouts, got) if shot is not None]
+                        if not shots:
+                            raise ApiError("not_allowed", "Nothing is drawing right now, so there's nothing to picture.")
+                        return {"shots": shots}
+
+                    return _saving(later([layout.id for layout in layouts], bloom.name, width, save,
+                                         as_data)).map(collected)
                 shots = []
-                for layout in (family if shape == "both" else family[:1]):
+                for layout in layouts:
                     try:
                         shot = off_air(layout.id, bloom.name, width, save, as_data)
                     except OSError as exc:
@@ -1666,14 +1717,21 @@ class NativeApi:
         shoot = getattr(self.host, "source_screenshot", None)
         if shoot is None:
             raise ApiError("not_allowed", "Pictures of one source aren't possible here.")
+        key = "source" if data.get("source") is not None else "bloom"
+
+        def checked(shot):
+            if shot is None:
+                raise ApiError("not_allowed", f"{name!r} isn't drawing right now, so there's nothing to picture.")
+            return {"shots": [{**shot, key: name}]}
+
+        later = self._later("source_screenshot_later")
+        if later is not None:
+            return _saving(later(target, name, width, save, as_data)).map(checked)
         try:
             shot = shoot(target, name, width, save, as_data)
         except OSError as exc:
             raise ApiError("failed", f"Couldn't save the screenshot: {exc}") from exc
-        if shot is None:
-            raise ApiError("not_allowed", f"{name!r} isn't drawing right now, so there's nothing to picture.")
-        key = "source" if data.get("source") is not None else "bloom"
-        return {"shots": [{**shot, key: name}]}
+        return checked(shot)
 
     # Transitions ---------------------------------------------------------------------------------
 
@@ -2046,7 +2104,15 @@ class NativeSession:
         if "steps" in message:
             yield from self._steps(message)
             return
-        yield json.dumps(self.answer(message), default=str)
+        self.api.later_ok = True  # this app's own message: a screenshot is made off the window's thread
+        try:
+            out = self.answer(message)
+        finally:
+            self.api.later_ok = False
+        if isinstance(out, Later):
+            yield out.map(lambda done: json.dumps(done, default=str))
+            return
+        yield json.dumps(out, default=str)
 
     def _steps(self, message: dict[str, Any]) -> Iterator[str | Close | Sleep]:
         """{"steps": [{"do": ...}, {"wait": 5000}, ...]}: run them in order, waiting where asked.
@@ -2110,6 +2176,8 @@ def answer(api: NativeApi, message: dict[str, Any]) -> dict[str, Any]:
             raise _bad("do is missing: say which action, like {\"do\": \"bloom.show\", \"bloom\": \"BRB\"}.")
         data = {k: v for k, v in message.items() if k not in ("do", "id")}
         result = api.run(name, data)
+        if isinstance(result, Later):
+            return _answer_later(out, result)
     except ApiError as exc:
         out.update(ok=False, error={"code": exc.code, "message": exc.message, **getattr(exc, "extra", {})})
         return out
@@ -2120,6 +2188,26 @@ def answer(api: NativeApi, message: dict[str, Any]) -> dict[str, Any]:
     if result is not None:
         out["result"] = result
     return out
+
+
+def _answer_later(out: dict[str, Any], result: Later) -> Later:
+    """answer() for an action that answers Later: the same {"id", "ok", ...} once its work is done."""
+    def then(future):
+        done = dict(out)
+        try:
+            value = result.then(future)
+        except ApiError as exc:
+            done.update(ok=False, error={"code": exc.code, "message": exc.message, **getattr(exc, "extra", {})})
+            return done
+        except Exception as exc:  # noqa: BLE001  a bug must not drop the connection
+            done.update(ok=False, error={"code": "failed", "message": f"{type(exc).__name__}: {exc}"})
+            return done
+        done["ok"] = True
+        if value is not None:
+            done["result"] = value
+        return done
+
+    return Later(result.job, then)
 
 
 def commit_settings(host, sources, what: str = "sources") -> None:

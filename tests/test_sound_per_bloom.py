@@ -127,7 +127,7 @@ def test_sound_list_is_a_to_z_and_has_its_own_menu(window):
     assert names == ["Desktop", "Game", "Mic"]
     menu = QMenu(w)
     w._fill_sound_menu(menu, "game")
-    assert _texts(menu) == ["Rename…", "Mute", "Plays in", "Volume and sound…", "Filters…", "Tracks and sync…",
+    assert _texts(menu) == ["Rename…", "Mute", "Plays in", "Type", "Volume and sound…", "Filters…", "Tracks and sync…",
                             "Remove"]
     plays_in = next(a.menu() for a in menu.actions() if a.text() == "Plays in")
     assert _texts(plays_in) == ["Every bloom", "Gaming", "Just Chatting", "Starting soon"]
@@ -176,3 +176,30 @@ def test_build_sound_note_says_where_it_plays(window):
     assert w.build_tune.blooms.text() == "Gaming and Just Chatting"
     w._set_sound_blooms("mic", [])
     assert w.build_tune.blooms.text() == "Every bloom"
+
+
+def test_a_sound_placed_in_other_blooms_waits_off_air():
+    col = _collection()
+    col.sources.append(SourceConfig(id="bgm", kind="media", name="BG Music", settings={}))
+    col.sources.append(SourceConfig(id="wrap", kind="scene", name="Music", settings={"scene": "p"}))
+    col.scenes.append(Scene(id="p", name="Music", canvas="horizontal", kind="part", items=[SceneItem(source="bgm")]))
+    col.scenes[2].items.append(SceneItem(source="wrap"))  # in Starting soon, one sprig deep
+    assert "bgm" not in col.sounds_off_air()  # Starting soon is on air
+    assert not {"mic", "game", "desk"} & col.sounds_off_air()  # placed nowhere: always listed
+    col.set_active("chat")
+    assert "bgm" in col.sounds_off_air()
+
+
+def test_live_sound_card_lists_only_the_blooms_on_air(window):
+    w = window
+    col = w.collection
+    col.sources.append(SourceConfig(id="bgm", kind="media", name="BG Music", settings={}))
+    next(s for s in col.scenes if s.id == "soon").items.append(SceneItem(source="bgm"))
+    col.set_active("soon")
+    w._changed()
+    w._refresh_audio()
+    assert "bgm" in w.live_side.sound.sounds
+    col.set_active("chat")
+    w._changed()
+    w._refresh_audio()
+    assert "bgm" not in w.live_side.sound.sounds and "game" in w.live_side.sound.sounds

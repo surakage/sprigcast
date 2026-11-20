@@ -185,7 +185,7 @@ def _dot(colour: str, size: int = 12) -> QIcon:
     p.drawEllipse(1, 1, size - 2, size - 2)
     p.end()
     return QIcon(pix)
-from sprigcast.app.sound_card import Sound, auto_group
+from sprigcast.app.sound_card import GROUP_COLOURS, GROUPS, Sound, auto_group, type_of, use_types
 from sprigcast.app.names import ask_name, plain_problem, short_name, short_status, status_summary, window_name
 
 log = logging.getLogger(__name__)
@@ -459,7 +459,8 @@ class MainWindow(QMainWindow):
         self.build_stage.card_slot.addWidget(self.canvas_away)
         from sprigcast.app.sound_strips import SoundStrips
 
-        self.sound_strips = SoundStrips(self._on_sound_changed, self._open_build_sound, self._sound_strip_menu)
+        self.sound_strips = SoundStrips(self._on_sound_changed, self._open_build_sound, self._sound_strip_menu,
+                                        self._edit_sound_type)
         self.build_stage.below_card.addWidget(self.sound_strips)
         self.modes = QStackedWidget()
         self.modes.addWidget(self.build_stage)
@@ -1413,6 +1414,7 @@ class MainWindow(QMainWindow):
         menu.addAction("Unmute" if muted else "Mute").triggered.connect(
             lambda _=False: self._build_tune_changed(source_id, {"muted": not muted}))
         self._fill_plays_in_menu(menu.addMenu("Plays in"), source_id)
+        self._fill_type_menu(menu.addMenu("Type"), source_id)
         menu.addSeparator()
         menu.addAction("Volume and sound…").triggered.connect(lambda _=False: self._select_sound(source_id))
         menu.addAction("Filters…").triggered.connect(lambda _=False: self._open_filters(source_id, "audio"))
@@ -1427,6 +1429,46 @@ class MainWindow(QMainWindow):
             remove.setToolTip(f"It's in {self._names(placed)}: remove it there")
         else:
             remove.triggered.connect(lambda _=False: self._remove_sound(source_id))
+
+    def _fill_type_menu(self, menu: QMenu, source_id: str) -> None:
+        """Put a sound in one of your types (the Sound card's groups and Build's Type filter), or a new one."""
+        now = self._sound_item(self.collection.source(source_id)).group
+        for group in GROUPS:
+            action = menu.addAction(group)
+            action.setCheckable(True)
+            action.setChecked(group == now)
+            action.triggered.connect(lambda _=False, g=group: self._build_tune_changed(source_id, {"group": g}))
+        menu.addSeparator()
+        # After the menu has closed: a window opened from inside a closing menu could swallow the click.
+        menu.addAction("New type…").triggered.connect(
+            lambda _=False: QTimer.singleShot(0, self, lambda: self._edit_sound_type(None, source_id)))
+
+    def _edit_sound_type(self, name: str | None, ticked: str | None = None) -> None:
+        """New type (name None) or Edit <name>: its name, color and the sounds in it. Every sound's type is
+        saved by name afterwards, so a renamed or removed type takes its sounds along."""
+        from sprigcast.app.sound_type_dialog import SoundTypeDialog
+
+        audio = self.collection.audio
+        use_types(audio.sound_types)
+        sounds = sorted((s for s in self.collection.sources if self._has_sound(s)), key=lambda s: s.name.lower())
+        now = {s.id: self._sound_item(s).group for s in sounds}
+        dialog = SoundTypeDialog(audio.sound_types, [(s.id, s.name, now[s.id]) for s in sounds], name, self)
+        if ticked in dialog.ticks:
+            dialog.ticks[ticked].setChecked(True)
+        if not modal(dialog):
+            return
+        types, moves = dialog.result_types()
+        audio.sound_types = types
+        use_types(types)
+        for source in sounds:
+            source.settings = {**source.settings, "group": moves.get(source.id, now[source.id])}
+        strips = getattr(self, "sound_strips", None)
+        if strips is not None and name and strips.type_shown == name:
+            strips._pick_type("" if dialog.removed else dialog.chosen_name())  # follow the rename
+        self._changed()
+        self._refresh_audio()
+        if self.selected_sound_id and self.build_stage.right_stack.currentIndex() == 1:
+            self._open_build_sound(self.selected_sound_id)  # its Type pill lists the new types
 
     def _fill_plays_in_menu(self, menu: QMenu, source_id: str) -> None:
         """Tick the blooms a sound plays in. None ticked (or Every bloom) means it plays everywhere."""
@@ -2802,15 +2844,23 @@ class MainWindow(QMainWindow):
         help_menu.addAction("Support SprigCast").triggered.connect(lambda: self._open_tip_page())
 
     def _fill_plugin_tools(self) -> None:
-        """Tools menu entries that added plugins bring (register_tool), under Plugin store."""
+        """Tools menu entries that added plugins bring (register_tool), under Plugin store. Left as they are
+        when the plugins' tools haven't changed, so screen readers keep the items they were told about."""
+        from sprigcast.app.menu_refresh import announce
+
+        tools = list(plugin_hooks.tools())
+        if getattr(self, "_plugin_tools_shown", None) == tools:
+            return
+        self._plugin_tools_shown = tools
         for action in self._plugin_tool_actions:
             self._tools_menu.removeAction(action)
             action.deleteLater()
         self._plugin_tool_actions = []
-        for label, fn in plugin_hooks.tools():
+        for label, fn in tools:
             action = self._tools_menu.addAction(label)
             action.triggered.connect(lambda _=False, fn=fn: self._run_plugin_tool(fn))
             self._plugin_tool_actions.append(action)
+        announce(self._tools_menu)
 
     def _run_plugin_tool(self, fn) -> None:
         try:
@@ -3177,6 +3227,9 @@ class MainWindow(QMainWindow):
         self._remember_for_undo()
         self.engine.send(ReplaceCollection(self.collection.snapshot()))
         self._sync_push_key()
+        if getattr(self, "_audio_on_air", None) != self.collection.active_scenes:
+            self._audio_shown = None  # another bloom on air: Live's Sound card lists its sounds
+            self._refresh_audio_soon()
         self._chat_sources_changed()
         control = getattr(self, "control", None)
         if control is not None:
@@ -3795,16 +3848,23 @@ class MainWindow(QMainWindow):
         timer = getattr(self, "_audio_refresh", None)
         if timer is not None:
             timer.stop()  # this refresh covers any that were waiting
+        use_types(self.collection.audio.sound_types)  # the garden's sound types, before each sound is put in one
         sounds = [s for s in self.collection.sources if self._has_sound(s)]
         items = [self._sound_item(s) for s in sounds]
         ordered = sorted(sounds, key=lambda s: s.name.lower())  # A to Z, like the Sound list on the left
         kinds = {s.id: s.kind for s in ordered}
         tags = {s.id: self._plays_in_tag(s) for s in ordered}
-        shown = (items, kinds, tags, self.collection.audio.ducking, hasattr(self, "sound_strips"))
+        shown = (items, kinds, tags, self.collection.audio.ducking, hasattr(self, "sound_strips"),
+                 tuple(GROUP_COLOURS.items()))
         if shown == getattr(self, "_audio_shown", None):
             return  # nothing changed (Save in Settings redid every strip, holding SprigCast up ~0.7 s while live)
         self._audio_shown = shown
-        self.live_side.show_sound(items)
+        # Live lists the sounds of the blooms on air: one placed only in other blooms, or picked to play in
+        # other blooms only, waits for them (user 2026-11-20: Starting Soon's music showed on Ending Soon).
+        # "Always show" keeps one listed anyway.
+        away = self.collection.sounds_off_here() | self.collection.sounds_off_air()
+        self._audio_on_air = dict(self.collection.active_scenes)
+        self.live_side.show_sound([i for i in items if i.id not in away or i.pinned])
         if hasattr(self, "sound_strips"):
             by_id = {item.id: item for item in items}
             self.sound_strips.show_sound([by_id[s.id] for s in ordered], kinds, tags)
@@ -3822,14 +3882,15 @@ class MainWindow(QMainWindow):
             return
         bloom = next((s for s in self.collection.scenes if s.id == getattr(self, "last_bloom_id", None)), None)
         self.sound_strips.set_where(bloom.name if bloom else "")
+        self.sound_strips.set_here(self.collection.sounds_in(bloom.id) if bloom else None)
 
     def _sound_item(self, config) -> Sound:
         st = config.settings
         monitor = st.get("monitor", False)
         return Sound(
             id=config.id, name=config.name, muted=bool(st.get("muted", False)),
-            group=str(st.get("group") or ("Alerts" if config.kind == "browser"
-                                          else auto_group(config.name, config.kind))),
+            group=type_of(str(st.get("group") or ("Alerts" if config.kind == "browser"
+                                                  else auto_group(config.name, config.kind)))),
             pinned=bool(st.get("pinned", False)),
             volume_db=float(st.get("volume_db", 0.0)),
             monitor="only" if monitor == "only" else bool(monitor),
@@ -3951,7 +4012,9 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Hid {config.name!r} from the mixer. It still plays.", 5000)
 
     def _open_ducking(self, parent: QWidget | None = None) -> None:
-        dialog = DuckingDialog(self.collection, parent or self)
+        # Owned by a window, never a widget inside one (Settings → Audio's page): owned by the page it was missing
+        # for Windows' UI Automation (PC 2026-11-20).
+        dialog = DuckingDialog(self.collection, parent.window() if parent is not None else self)
         if modal(dialog):
             dialog.apply_to(self.collection)
             self._changed()
@@ -5616,6 +5679,70 @@ class MainWindow(QMainWindow):
             self._tidy_saves()
         return shot
 
+    # For the Control API (control/native.Later): the picture is made on a worker and handed back later; the
+    # window's thread never waits for it (waiting there, events still handled, left the window not answering for
+    # 514 ms on the PC, 2026-11-20).
+
+    def _screenshot_later(self, shapes: list[str] | None, width: int | None, save: bool, as_data: bool):
+        from functools import partial
+
+        from sprigcast.app import screenshot
+        from sprigcast.control.native import Later
+
+        ids = [c.id for c in self.collection.canvases if c.enabled and (not shapes or c.id in shapes)]
+        folder = self._recordings_folder() / "Screenshots" if save else None
+        afters = plugin_hooks.screenshot_starting(self.api, ids) if save else []
+        images: dict = {}
+
+        def then(future):
+            try:
+                shots = future.result()
+            except Exception:
+                plugin_hooks.screenshot_done(afters, [])
+                raise
+            if save:
+                self._screenshot_saved(shots, images, folder, afters)
+            return shots
+
+        return Later(partial(screenshot.take, self.engine, ids, folder, width, as_data, images), then)
+
+    def _source_shot_later(self, source_id: str, name: str, width: int | None, save: bool, as_data: bool):
+        from functools import partial
+
+        from sprigcast.app import screenshot
+        from sprigcast.control.native import Later
+
+        folder = self._recordings_folder() / "Screenshots" if save else None
+
+        def then(future):
+            shot = future.result()
+            if shot is not None and save:
+                self._saved_note("Screenshot saved", Path(shot["path"]).parent)
+                self._tidy_saves()
+            return shot
+
+        return Later(partial(screenshot.take_one, self.engine, source_id, name, folder, width, as_data), then)
+
+    def _bloom_shots_later(self, scene_ids: list[str], name: str, width: int | None, save: bool, as_data: bool):
+        """Blooms off air (each shape of one bloom), pictured together: one wait for their sources to wake."""
+        from functools import partial
+
+        from sprigcast.app import screenshot
+        from sprigcast.control.native import Later
+
+        scenes = [next((sc for sc in self.collection.scenes if sc.id == sid), None) for sid in scene_ids]
+        folder = self._recordings_folder() / "Screenshots" if save else None
+
+        def then(future):
+            shots = future.result()
+            saved = next((shot for shot in shots if shot is not None and shot.get("path")), None)
+            if saved is not None:
+                self._saved_note("Screenshot saved", Path(saved["path"]).parent)
+                self._tidy_saves()
+            return shots
+
+        return Later(partial(screenshot.take_scenes, self.engine, scenes, name, folder, width, as_data), then)
+
     def _screenshot_saved(self, shots: list[dict], images: dict, folder, afters=()) -> None:
         try:
             self._say(f"Screenshot saved to {folder}" if shots else "Couldn't take a screenshot: nothing is drawing.")
@@ -6585,6 +6712,10 @@ class MainWindow(QMainWindow):
         self._open_settings()
 
     def _open_settings(self, tab: str = "General", output_id: str | None = None) -> None:
+        from sprigcast.core import workers
+
+        if workers.when_free(lambda: self._open_settings(tab, output_id)):
+            return  # mid-wait (a Control API screenshot, say): opens the moment it's done
         # (not the off-screen warm-up one: a gear click in its 2 s did nothing, "already open")
         open_now = next((w for w in QApplication.topLevelWidgets() if isinstance(w, SettingsWindow) and w.isVisible()
                          and not w.testAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)), None)

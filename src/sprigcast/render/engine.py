@@ -63,6 +63,7 @@ WAKE_BUDGET_S = 0.004  # waking sources takes at most about this of one tick; th
 WAKE_LOG_S = 0.003  # a source this slow on a frame that woke some is named in the "waking frame" log line
 SLOW_STEP_S = 0.008  # a step of a frame this long: note where the window's thread is (the late-frame line says)
 LATE_LOG_EVERY_S = 10.0  # late-frame log lines at most this often (the rest are counted in the next one)
+GPU_STALL_S = 0.3  # the card behind this long stopped the whole app (the window too): log who was using it
 GPU_SKIP_MAX_S = 2.0  # the card stuck longer than this (a lost device?): draw anyway, waiting as before
 SOURCE_BUDGET_MS = 5.0  # a source averaging more than this per frame is drawn less often (see _charge)
 CHARGE_CAP_MS = 4 * SOURCE_BUDGET_MS  # the most one frame adds to a source's average (_charge)
@@ -665,6 +666,10 @@ class Engine:
                         late_held += 1
                         # Say where the time went: the first late frame, then at most one every 10 s
                         # (878 lines on 2026-11-15), with how many were let go since.
+                        if gpu_waited >= GPU_STALL_S:  # the card stopped for the whole app: see who used it
+                            from sprigcast.app.gpu_usage import log_gpu_users_later
+
+                            log_gpu_users_later(1000 * gpu_waited)
                         if now - late_logged >= LATE_LOG_EVERY_S:
                             late_logged = now
                             log.info("late frame (%d missed): woke %.1f ms late, %scommands %.1f ms, frame %.1f ms%s%s%s%s",

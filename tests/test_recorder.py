@@ -9,6 +9,15 @@ import pytest
 from sprigcast.output.recorder import VIDEO_QUEUE, Recorder, RecordingSession, recording_path
 from sprigcast.render.engine import Frame
 
+
+def wait_until(predicate, timeout=10.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return False
+
 pytestmark = pytest.mark.skipif("libx264" not in av.codecs_available, reason="needs libx264 in PyAV")
 
 
@@ -458,6 +467,10 @@ def test_a_stuck_feed_keeps_the_files_timing(tmp_path):
         while rec._video.qsize() > 2:
             time.sleep(0.001)
         if i == 29:
+            # The feed stops, not the encoder: let it write what it has first. The clock here stands still, so
+            # frames still queued would make the encoder look stuck for 2.5 s, and the hole counted as dropped
+            # when they're written (1 run in 5).
+            assert wait_until(lambda: rec._video.qsize() == 0 and rec.frames == 30)
             rec.check_flow(clock)
             rec.check_flow(clock + 2.5)  # "no frames arrive"
             clock += 3.0

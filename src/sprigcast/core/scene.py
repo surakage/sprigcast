@@ -397,6 +397,11 @@ class RecordingSettings(BaseModel):
         return tuple(AUDIO_TRACKS[t - 1] for t in self.audio_tracks)
 
 
+SOUND_TYPES = ({"name": "Voice", "color": "green"}, {"name": "Game", "color": "blue"},
+               {"name": "Alerts", "color": "yellow"}, {"name": "Music", "color": "violet"},
+               {"name": "Other", "color": "gray"})
+
+
 class AudioSettings(BaseModel):
     """Mixer-wide audio options. Per-source ones (volume, mute, monitor, hidden, duck_voice) live in
     each audio source's settings."""
@@ -408,6 +413,9 @@ class AudioSettings(BaseModel):
     duck_release_ms: float = 900.0
     duck_hold_ms: float = 400.0
     track_names: list[str] = Field(default_factory=lambda: list(TRACK_NAMES))  # names of tracks 1-5 in files
+    # Sound types, in order: the Sound card's groups and Build's Type filter. Each sound's settings["group"]
+    # names one; a sound whose type is gone shows under the last. Five to start; you add, rename and remove them.
+    sound_types: list[dict[str, str]] = Field(default_factory=lambda: [dict(t) for t in SOUND_TYPES])
     # Global devices: the Desktop audio and Mic set in Settings → Audio. Off: they are not opened at all
     # and leave the Sound list, so only the mics and desktop sounds you add yourself play.
     global_devices: bool = True
@@ -610,6 +618,40 @@ class SceneCollection(BaseModel):
     def sounds_off_here(self) -> frozenset[str]:
         """Ids of the sounds that stay quiet in the blooms on air now (picked for other blooms only)."""
         return frozenset(s.id for s in self.sources if s.settings.get("blooms") and not self.sound_plays(s))
+
+    def placed_under(self, scene_ids) -> set[str]:
+        """Every source placed in these scenes or in the sprigs inside them, at any depth."""
+        by_id = {scene.id: scene for scene in self.scenes}
+        stack = [by_id[i] for i in scene_ids if i in by_id]
+        seen = {scene.id for scene in stack}
+        found: set[str] = set()
+        while stack:
+            scene = stack.pop()
+            found.update(item.source for item in scene.items)
+            for inner in self.inner_shapes(scene):
+                if inner.id not in seen:
+                    seen.add(inner.id)
+                    stack.append(inner)
+        return found
+
+    def sounds_off_air(self) -> frozenset[str]:
+        """Ids of sources placed in blooms or sprigs, none of them in a bloom on air now (an on-air bloom's sprigs
+        count, at any depth). A sound placed nowhere (a mic, desktop or app sound) is never one of them."""
+        placed = {item.source for scene in self.scenes for item in scene.items}
+        if not placed:
+            return frozenset()
+        on_air = self.placed_under(self.active_scenes.get(c.id) for c in self.canvases if c.enabled)
+        return frozenset(placed - on_air)
+
+    def sounds_in(self, bloom_id: str) -> set[str]:
+        """Ids of the sources heard in a bloom: placed in it (or its twin, or their sprigs), or placed nowhere and
+        playing in every bloom or picked for this one. (Build's Sound list, "This bloom".)"""
+        key = self.bloom_key(bloom_id)
+        twins = [s.id for s in self.scenes if s.id == key or s.linked_to == key]
+        placed_here = self.placed_under(twins)
+        placed = {item.source for scene in self.scenes for item in scene.items}
+        return placed_here | {s.id for s in self.sources if s.id not in placed
+                              and (not (b := self.sound_blooms(s)) or key in b)}
 
     def folders_for(self, canvas_id: str) -> list[SceneFolder]:
         """The bloom folders on a canvas."""

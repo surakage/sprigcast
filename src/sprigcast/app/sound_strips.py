@@ -20,12 +20,14 @@ from __future__ import annotations
 from collections.abc import Callable
 from types import SimpleNamespace
 
-from PySide6.QtCore import QPointF, QRectF, QSettings, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
+from PySide6.QtCore import QPointF, QRectF, QSettings, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -34,10 +36,22 @@ from PySide6.QtWidgets import (
 )
 
 from sprigcast.app import icons, theme
+from sprigcast.app.sound_card import (  # the garden's sound types: these change in place
+    GROUP_COLOURS,
+    GROUPS,
+    type_of,
+)
 
 LOW, HIGH = -60.0, 12.0  # the fader's range, as on the Tune page
 STRIP_W, STRIP_H = 104, 220
 FOLD_KEY = "build/sound_strips_open"
+SHOW_KEY = "build/sound_strips_show"  # "all" or "here" (this bloom): the chip you last picked
+TYPE_KEY = "build/sound_strips_type"  # "" (all types) or a group: the type you last picked
+
+
+def group_colour(group: str) -> str:
+    """The same colour a type has on Live's Sound card."""
+    return GROUP_COLOURS.get(group, theme.MUTED)
 
 
 class Fader(QWidget):
@@ -123,6 +137,7 @@ class Strip(QFrame):
                  on_menu: Callable[[str | None, object], None] | None = None):
         super().__init__()
         self.sound_id = sound.id
+        self.group = getattr(sound, "group", "Other") or "Other"
         self.on_change, self.on_open = on_change, on_open
         self.on_menu = on_menu or (lambda _sid, _at: None)
         self.setObjectName("soundStrip")
@@ -135,7 +150,7 @@ class Strip(QFrame):
         col.setSpacing(4)
         self.name = QPushButton()
         self.name.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.name.setIcon(icons.icon(_kind_icon(kind), theme.MUTED, 14))
+        self.name.setIcon(icons.icon(_kind_icon(kind), group_colour(self.group), 14))  # coloured by its group
         self.name.setStyleSheet(f"QPushButton {{ background: transparent; border: none; color: {theme.TEXT};"
                                 " font-weight: 600; font-size: 12px; padding: 0; text-align: center; }"
                                 f"QPushButton:hover {{ color: {theme.TEXT_BRIGHT}; }}")
@@ -191,7 +206,8 @@ class Strip(QFrame):
         self._selected = on
         edge = theme.ACCENT if on else theme.CARD
         self.setStyleSheet(f"#soundStrip {{ background: {theme.SELECT_BG if on else theme.CARD};"
-                           f" border: 1px solid {edge}; border-radius: 18px; }}")
+                           f" border: 1px solid {edge}; border-top: 3px solid {group_colour(self.group)};"
+                           " border-radius: 18px; }")
 
     def set_tag(self, text: str) -> None:
         """Where it plays, when that isn't every bloom ("Gaming", "2 blooms")."""
@@ -204,8 +220,8 @@ class Strip(QFrame):
 
     def _mute_clicked(self, on: bool) -> None:
         """Show it at once on this strip; the rest of the window catches up when changes settle."""
-        name, db, _muted = getattr(self, "_shown", None) or (self.full_name, self.fader.db, not on)
-        self.show_sound(SimpleNamespace(name=name, volume_db=db, muted=on))
+        name, db = (getattr(self, "_shown", None) or (self.full_name, self.fader.db))[:2]
+        self.show_sound(SimpleNamespace(name=name, volume_db=db, muted=on, group=self.group))
         self.on_change(self.sound_id, {"muted": on})
 
     def _volume(self, db: float) -> None:
@@ -213,14 +229,14 @@ class Strip(QFrame):
         self.on_change(self.sound_id, {"volume_db": db})
 
     def show_sound(self, sound) -> None:
-        shown = (sound.name, sound.volume_db, sound.muted)
+        shown = (sound.name, sound.volume_db, sound.muted, getattr(sound, "group", ""))
         if getattr(self, "_shown", None) == shown:
             return  # nothing to redo: every change used to reset every strip's labels and icons
         self._shown = shown
         self.full_name = sound.name
         metrics = QFontMetrics(_bold(self.name.font()))
         self.name.setText(metrics.elidedText(sound.name, Qt.TextElideMode.ElideRight, STRIP_W - 36))
-        self.name.setToolTip(f"{sound.name}: open its controls")
+        self.name.setToolTip(f"{sound.name} ({type_of(sound.group)}): open its controls")  # the type in words too
         if self.fader.db != sound.volume_db:
             self.fader.db = sound.volume_db
         self.fader.muted = sound.muted
@@ -230,6 +246,21 @@ class Strip(QFrame):
         self.mute.setIcon(icons.icon("speaker-off" if sound.muted else "speaker",
                                      theme.SELECT_TEXT if sound.muted else theme.TEXT, 16))
         self.mute.setToolTip("Unmute" if sound.muted else "Mute")
+
+
+def _dot(colour: str):
+    """A small round dot in a group's colour, for its chip."""
+    from PySide6.QtGui import QIcon, QPixmap
+
+    pix = QPixmap(16, 16)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(colour))
+    p.drawEllipse(QRectF(4, 4, 8, 8))
+    p.end()
+    return QIcon(pix)
 
 
 def _bold(font: QFont) -> QFont:
@@ -265,8 +296,10 @@ class SoundStrips(QFrame):
     away (remembered), where they play, and +."""
 
     def __init__(self, on_change: Callable[[str, dict], None], on_open: Callable[[str], None],
-                 on_menu: Callable[[str | None, object], None] | None = None):
+                 on_menu: Callable[[str | None, object], None] | None = None,
+                 on_types: Callable[[str | None], None] | None = None):
         super().__init__()
+        self.on_types = on_types or (lambda _name: None)  # None: New type; a name: Edit that type
         self.setObjectName("soundCard")
         self.setStyleSheet(f"#soundCard {{ background: {theme.PANEL}; border-radius: 24px; }}")
         self.on_change, self.on_open = on_change, on_open
@@ -299,6 +332,52 @@ class SoundStrips(QFrame):
         self.add.clicked.connect(lambda: self.on_menu(None, self.add.mapToGlobal(self.add.rect().bottomLeft())))
         head.addWidget(self.add)
         col.addLayout(head)
+        # A long list: find one by name, show this bloom's sounds only, or one type (coloured as on Live).
+        self.finder = QWidget()
+        find = QHBoxLayout(self.finder)
+        find.setContentsMargins(0, 0, 0, 0)
+        find.setSpacing(6)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Find a sound")
+        self.search.setClearButtonEnabled(True)
+        self.search.setFixedSize(180, 26)
+        self.search.setStyleSheet(f"QLineEdit {{ background: {theme.CARD}; border: 1px solid {theme.EDGE_STRONG};"
+                                  f" border-radius: 13px; padding: 0px 12px; color: {theme.TEXT}; }}"
+                                  f"QLineEdit:focus {{ border-color: {theme.ACCENT}; }}")
+        self.search.textChanged.connect(lambda _t: self._filter())
+        find.addWidget(self.search)
+        self.chips: dict[str, QPushButton] = {}
+        for key, text in (("all", "All"), ("here", "This bloom")):
+            chip = QPushButton(text)
+            chip.setCheckable(True)
+            chip.setAutoExclusive(True)
+            chip.setCursor(Qt.CursorShape.PointingHandCursor)
+            chip.setFixedHeight(26)  # every chip as tall, so each keeps its round ends
+            chip.setStyleSheet(theme.button_style(12, "0px 11px", extra="font-size: 12px;"))
+            chip.clicked.connect(lambda _on=False, k=key: self._pick(k))
+            self.chips[key] = chip
+            find.addWidget(chip)
+        self.kind = QPushButton()  # the sound's type: a pill that lists Voice, Game, Alerts, Music and Other
+        self.kind.setFixedHeight(26)
+        self.kind.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.kind.setToolTip("Show one type")
+        self.kind.setStyleSheet(theme.button_style(12, "0px 11px", extra="font-size: 12px;")
+                                + "QPushButton::menu-indicator { width: 0; image: none; }")
+        self.kind_menu = QMenu(self.kind)
+        theme.rounded_menus(self.kind_menu)
+        self.kind_actions: dict[str, object] = {}
+        self.kind.setMenu(self.kind_menu)
+        find.addSpacing(4)
+        find.addWidget(self.kind)
+        find.addStretch(1)
+        col.addWidget(self.finder)
+        self.showing = str(QSettings().value(SHOW_KEY, "all"))
+        if self.showing not in self.chips:
+            self.showing = "all"
+        self.chips[self.showing].setChecked(True)
+        self.type_shown = str(QSettings().value(TYPE_KEY, ""))
+        self._types_shown: tuple = ()
+        self.here: set[str] | None = None  # the sounds heard in the bloom you're building ("This bloom")
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -316,6 +395,9 @@ class SoundStrips(QFrame):
         self.fade.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.scroll.horizontalScrollBar().rangeChanged.connect(lambda *_: self._place_fade())
         self.scroll.horizontalScrollBar().valueChanged.connect(lambda *_: self._place_fade())
+        self.none_found = QLabel("No sound matches.")
+        self.none_found.setStyleSheet(f"color: {theme.MUTED}; padding: 4px;")
+        col.addWidget(self.none_found)
         self.empty = QLabel("No sounds yet: + adds a mic, desktop sound or app sound.")
         self.empty.setStyleSheet(f"color: {theme.MUTED}; padding: 4px;")
         col.addWidget(self.empty)
@@ -343,6 +425,71 @@ class SoundStrips(QFrame):
         self.toggle.setText("Sound" + ("" if on else "  ▸"))
         self.scroll.setVisible(on and bool(self.strips))
         self.empty.setVisible(on and not self.strips)
+        self.finder.setVisible(on and bool(self.strips))
+        self._filter()
+
+    def _pick(self, key: str) -> None:
+        self.showing = key
+        QSettings().setValue(SHOW_KEY, key)
+        self._filter()
+
+    def _fill_types(self) -> None:
+        """The Type pill's list: every type (with how many sounds it has), then New type and Edit."""
+        counts = {g: sum(s.group == g for s in self.strips.values()) for g in GROUPS}
+        if self.type_shown and self.type_shown not in GROUPS:
+            self.type_shown = ""  # it was removed or renamed
+        key = (tuple((g, group_colour(g), counts[g]) for g in GROUPS), self.type_shown)
+        if key == self._types_shown:
+            return
+        self._types_shown = key
+        menu = self.kind_menu
+        menu.clear()
+        self.kind_actions = {"": menu.addAction("All types", lambda: self._pick_type(""))}
+        for g in GROUPS:
+            self.kind_actions[g] = menu.addAction(_dot(group_colour(g)), f"{g} ({counts[g]})",
+                                                  lambda g=g: self._pick_type(g))
+        menu.addSeparator()
+        # Opened after the menu has closed, as right-click → Type does: a window opened from inside the button's
+        # menu was missing for Windows' UI Automation (PC 2026-11-20) and could swallow the click.
+        later = lambda name: QTimer.singleShot(0, self, lambda: self.on_types(name))  # noqa: E731
+        menu.addAction("New type…", lambda: later(None))
+        if self.type_shown:
+            menu.addAction(f"Edit {self.type_shown}…", lambda g=self.type_shown: later(g))
+        self.kind.setText(f"{self.type_shown or 'All types'}  ▾")
+        self.kind.setIcon(_dot(group_colour(self.type_shown)) if self.type_shown else QIcon())
+
+    def _pick_type(self, group: str) -> None:
+        self.type_shown = group
+        QSettings().setValue(TYPE_KEY, group)
+        self._filter()
+
+    def set_here(self, ids: set[str] | None) -> None:
+        """The sounds heard in the bloom you're building (for "This bloom")."""
+        self.here = set(ids) if ids is not None else None
+        self._filter()
+
+    def matches(self, sid: str, strip: "Strip") -> bool:
+        text = self.search.text().strip().casefold() if hasattr(self, "search") else ""
+        if text and text not in strip.full_name.casefold():
+            return False
+        group = getattr(self, "type_shown", "")
+        if group and group in GROUPS and strip.group != group:
+            return False
+        return getattr(self, "showing", "all") != "here" or self.here is None or sid in self.here
+
+    def _filter(self) -> None:
+        """Show the strips the search, chip and type let through; each type says how many it has."""
+        if not hasattr(self, "chips"):
+            return
+        shown = 0
+        for sid, strip in self.strips.items():
+            keep = self.matches(sid, strip)
+            strip.setVisible(keep)
+            shown += keep
+        self._fill_types()
+        self.chips["all"].setText(f"All {len(self.strips)}")
+        open_ = getattr(self, "is_open", True)
+        self.none_found.setVisible(open_ and bool(self.strips) and not shown)
 
     def show_sound(self, sounds: list, kinds: dict[str, str], tags: dict[str, str] | None = None) -> None:
         """Sound items (app/sound_card.Sound), each one's source kind (for its icon) and where it plays."""
@@ -370,9 +517,17 @@ class SoundStrips(QFrame):
             self.set_open(self.is_open)
         self._kinds = dict(kinds)
         for sound in sounds:
-            self.strips[sound.id].show_sound(sound)
-            self.strips[sound.id].set_tag((tags or {}).get(sound.id, ""))
+            strip = self.strips[sound.id]
+            group = getattr(sound, "group", "Other") or "Other"
+            if (group, group_colour(group)) != (strip.group, getattr(strip, "shade", None)):  # follows its type
+                strip.group = group
+                strip.shade = group_colour(group)
+                strip.name.setIcon(icons.icon(_kind_icon(kinds.get(sound.id, "")), group_colour(group), 14))
+                strip._selected = None
+            strip.show_sound(sound)
+            strip.set_tag((tags or {}).get(sound.id, ""))
         self.set_selected(self.selected)
+        self._filter()
 
     def set_selected(self, source_id: str | None) -> None:
         """Ring the strip whose controls are open on the right."""
