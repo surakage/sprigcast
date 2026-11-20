@@ -257,6 +257,48 @@ def button_style(radius: int = 13, padding: str = "6px 14px", selector: str = "Q
     )
 
 
+_CROSS_ICONS: dict = {}  # (colour, size): one drawn × for every button that shows it
+
+
+def cross_icon(colour: str | None = None, size: int = 10):
+    """A drawn ×: two even strokes with round ends, centred and sharp at any scale. The letter × sat small
+    and off centre, and its button took the letter's shape (user 2026-11-19: "fix the shape of the x that
+    closes, across the app")."""
+    from PySide6.QtGui import QIcon, QPixmap
+
+    key = (colour or TEXT, size)
+    if key not in _CROSS_ICONS:
+        ratio = 3.0
+        pixmap = QPixmap(round(size * ratio), round(size * ratio))
+        pixmap.setDevicePixelRatio(ratio)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pixmap)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor(key[0]), 1.6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawLine(QPointF(1.5, 1.5), QPointF(size - 1.5, size - 1.5))
+        p.drawLine(QPointF(size - 1.5, 1.5), QPointF(1.5, size - 1.5))
+        p.end()
+        _CROSS_ICONS[key] = QIcon(pixmap)
+    return _CROSS_ICONS[key]
+
+
+def make_cross(button, size: int = 30, styled: bool = True, extra: str = ""):
+    """Turn `button` into the app's one × button: a true circle of `size` with the drawn cross in its
+    middle. styled=False leaves the look to a style sheet further up (set its radius to size // 2 - 1)."""
+    from PySide6.QtCore import QSize
+
+    button.setText("")
+    button.setIcon(cross_icon())
+    button.setIconSize(QSize(10, 10))
+    button.setFixedSize(size, size)
+    button.setCursor(Qt.CursorShape.PointingHandCursor)
+    if styled:
+        button.setStyleSheet(button_style(size // 2 - 1, "0px", extra=extra))
+    return button
+
+
 def paint_button(p: QPainter, rect: QRectF, radius: float, hover: bool = False) -> None:
     """Draw the shared button shape (fill, edge, lit top) for painted widgets such as bloom tiles."""
     p.save()

@@ -435,7 +435,13 @@ class StreamPage(QWidget):
         """Extras (bandwidth test, ignoring the service's recommendations) are expert rows."""
         self._expert = on
         output = self._current()
-        self._show_unpicked(output is not None and output.id in self._unpicked)
+        unpicked = output is not None and output.id in self._unpicked
+        self._show_unpicked(unpicked)
+        if output is not None and not unpicked:
+            # Showing the rows again brought back every account row at once: Twitch's "Connected as" and, under
+            # it, YouTube and Kick's Sign in / Sign out (2026-11-19, with Expert settings on). Only this
+            # service's row stays.
+            self._show_service(output)
 
     def _auto_row(self, auto: QCheckBox, spin: QSpinBox, start: int) -> QWidget:
         """An "Auto" tick beside a number box, like OBS: ticked means 0 (let Twitch decide)."""

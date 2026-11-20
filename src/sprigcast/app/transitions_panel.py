@@ -11,7 +11,7 @@ import math
 import os
 from collections.abc import Callable
 
-from PySide6.QtCore import QElapsedTimer, QPointF, QRectF, Qt, QTimer
+from PySide6.QtCore import QElapsedTimer, QPointF, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QPushButton,
     QScrollArea,
+    QSizeGrip,
     QSizePolicy,
     QSlider,
     QSpinBox,
@@ -62,16 +63,20 @@ UNMATCHED = [("fade", "Fade"), ("scale", "Scale"), ("slide", "Slide")]  # what o
 
 # The panel sits on a PANEL card (Live's side column, Build's left column, or its own window), so its
 # pills use the shared button look and boxes are one step lighter (RAISED), to read as things you can press or type in.
-PILL_STYLE = theme.button_style(13, "6px 8px")
+# A soft fall of light from the top, so the pills read as raised (user 2026-11-19: "the buttons feel flat").
+LIFT = (f"background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {theme.BUTTON_HOVER}, stop:0.55 {theme.BUTTON},"
+        f" stop:1 {theme.BUTTON_PRESSED});")
+PILL_STYLE = theme.button_style(13, "6px 8px", extra=LIFT)
 CHOICE_STYLE = PILL_STYLE
 
 # Number boxes as soft pills too, the number centred with room on both sides. No arrow buttons (type,
 # scroll or use the arrow keys); setButtonSymbols(NoButtons) can't be used, the app stylesheet then
 # shrinks the text to 1 px.
 FIELD_STYLE = (
-    f"QSpinBox {{ background: {theme.RAISED}; color: {theme.TEXT}; border: none; border-radius: 13px;"
-    f" padding: 6px 14px; min-height: 14px; }}"
-    f"QSpinBox:hover, QSpinBox:focus {{ background: {theme.RAISED_HOVER}; }}"
+    f"QSpinBox {{ background: {theme.FIELD}; color: {theme.TEXT}; border: 1px solid {theme.FIELD_EDGE};"
+    f" border-radius: 13px; padding: 5px 14px; min-height: 14px; }}"
+    f"QSpinBox:hover {{ border-color: {theme.BUTTON_EDGE_HOVER}; }}"
+    f"QSpinBox:focus {{ border-color: {theme.ACCENT}; }}"
     "QSpinBox::up-button, QSpinBox::down-button { subcontrol-origin: margin; width: 0px; height: 0px; border: none; }"
 )
 CHOICE_WIDTH = 64  # a choice pill needs about this much room ("Stinger" plus padding)
@@ -83,6 +88,48 @@ def short_name(path: str, empty: str = "Choose…") -> str:
         return empty
     name = os.path.basename(path)
     return name if len(name) <= 22 else name[:10] + "…" + name[-10:]
+
+
+class ElideButton(QPushButton):
+    """A button that shows its whole text while there's room, and only then shortens it in the middle to
+    the width it really has (a file name cut at 22 letters lost its middle in a pop-up with room to spare,
+    2026-11-19). The whole text is always its tool tip's first line."""
+
+    PAD = 30  # the pill's padding, edge and a little air, both sides together
+
+    def __init__(self, text: str = ""):
+        super().__init__()
+        self.full = ""
+        self.set_full(text)
+
+    def set_full(self, text: str, tip: str = "") -> None:
+        self.full = text
+        self.setToolTip(tip or text)
+        self._fit()
+        self.updateGeometry()
+
+    def _fit(self) -> None:
+        room = max(20, self.width() - self.PAD)
+        self.setText(self.fontMetrics().elidedText(self.full, Qt.TextElideMode.ElideMiddle, room))
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._fit()
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        hint = super().sizeHint()
+        return QSize(self.fontMetrics().horizontalAdvance(self.full) + self.PAD, hint.height())
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(64, super().minimumSizeHint().height())  # a long name never holds the pop-up wide
+
+
+def cross_button(tip: str, size: int = 30) -> QPushButton:
+    """A round × button in the shared look (theme.make_cross): Close on a pop-up, Remove on a row, Clear on a file."""
+    button = theme.make_cross(QPushButton(), size, extra=LIFT)
+    button.setToolTip(tip)
+    button.setAccessibleName(tip)
+    return button
 
 
 
@@ -905,12 +952,10 @@ class TransitionsPanel(QWidget):
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
-        pick = QPushButton(empty)
+        pick = ElideButton(empty)
         pick.setStyleSheet(PILL_STYLE)
         pick.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        clear = QPushButton("×")
-        clear.setStyleSheet(PILL_STYLE)
-        clear.setToolTip("Clear")
+        clear = cross_button("Clear", 28)
         layout.addWidget(pick, 1)
         layout.addWidget(clear)
         row.pick, row.clear, row.empty = pick, clear, empty
@@ -926,8 +971,7 @@ class TransitionsPanel(QWidget):
 
     @staticmethod
     def _show_file(row: QWidget, path: str) -> None:
-        row.pick.setText(short_name(path, row.empty))
-        row.pick.setToolTip(path)
+        row.pick.set_full(os.path.basename(path) if path else row.empty, path)
         row.clear.setVisible(bool(path))
 
     # Loading and saving ----------------------------------------------------------------
@@ -1034,7 +1078,8 @@ class TransitionsPanel(QWidget):
 
             dialog.add_tab_later("rules", "Between blooms", make_table)
         dialog.show_tab(tab)
-        dialog.resize(480, 640)
+        dialog.setMinimumSize(460, 380)  # the tabs and a rule's two blooms always fit
+        dialog.resize(520, 640)  # a stinger's whole file name fits, with the scroll bar showing
         return dialog
 
     def rules_dialog(self) -> "PopUp":
@@ -1128,6 +1173,35 @@ def scrolled(widget: QWidget) -> QScrollArea:
 TAB_STYLE = CHOICE_STYLE.replace("padding: 6px 8px", "padding: 7px 16px")
 
 
+class PopUpGrip(QSizeGrip):
+    """The pop-up's bottom right corner: drag to resize. Three short strokes, drawn here (the app's style
+    sheet leaves a plain size grip blank)."""
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setFixedSize(16, 16)
+        self.setToolTip("Drag to resize")
+
+    def paintEvent(self, _event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor(theme.BUTTON_EDGE_HOVER if self.underMouse() else theme.BUTTON_EDGE), 1.6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        w, h = self.width() - 2.0, self.height() - 2.0
+        for inset in (3.0, 7.5, 12.0):
+            p.drawLine(QPointF(w, inset), QPointF(inset, h))
+        p.end()
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self.update()
+        super().leaveEvent(event)
+
+
 class PopUp(QDialog):
     """A rounded, raised pop-up card with pill tabs along the top. Drag it by any empty spot."""
 
@@ -1160,10 +1234,7 @@ class PopUp(QDialog):
         self.tab_row.setSpacing(6)
         head.addLayout(self.tab_row)
         head.addStretch(1)
-        close = QPushButton("×")
-        close.setStyleSheet(PILL_STYLE)
-        close.setFixedSize(28, 28)
-        close.setToolTip("Close")
+        close = cross_button("Close")
         close.clicked.connect(self.accept)
         head.addWidget(close)
         if not bare:
@@ -1185,6 +1256,22 @@ class PopUp(QDialog):
         self._later: dict[str, Callable[[], None]] = {}  # add_tab_later: makes the page if it isn't yet
         self._group = QButtonGroup(self)
         self._drag = None
+        self.grip = PopUpGrip(card)  # no window frame to pull on: its corner resizes it
+        self.setMinimumSize(360, 260)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._place_grip()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self.grip.setVisible(self.minimumSize() != self.maximumSize())  # a pop-up of one fixed size has none
+        self._place_grip()
+
+    def _place_grip(self) -> None:
+        card, grip = self._card, self.grip
+        grip.move(card.width() - grip.width() - 7, card.height() - grip.height() - 7)
+        grip.raise_()
 
     def add_tab(self, key: str, label: str, page: QWidget) -> None:
         button = QPushButton(label)
@@ -1250,11 +1337,15 @@ def bloom_choices(collection: SceneCollection) -> list[tuple[str, str]]:
     return [(s.id, s.name) for s in collection.scenes if s.kind == "show" and s.linked_to is None]
 
 
-ROW_STYLE = f"#ruleRow {{ background: {theme.CARD}; border-radius: 14px; }}"
+ROW_STYLE = (f"#ruleRow {{ background: {theme.SECTION}; border: 1px solid {theme.SECTION_EDGE};"
+             " border-radius: 16px; }")
+ROW_LABEL_STYLE = f"color: {theme.LABEL}; font-size: 12px;"
+ROW_LABEL_WIDTH = 74
 
 
 class RuleRow(QFrame):
-    """One line of the table: from bloom → to bloom, and the transition between them."""
+    """One rule, on its own card: from bloom → to bloom, the transition between them and, for a stinger,
+    the clip vertical canvases play."""
 
     def __init__(self, table: "RulesTable", rule: TransitionRule):
         super().__init__()
@@ -1262,36 +1353,70 @@ class RuleRow(QFrame):
         self.setObjectName("ruleRow")
         self.setStyleSheet(ROW_STYLE)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(14, 12, 12, 12)
         layout.setSpacing(8)
         ends = QHBoxLayout()
-        ends.setSpacing(6)
+        ends.setSpacing(8)
         self.from_pick = self._end_button("from_scene")
         self.to_pick = self._end_button("to_scene")
         arrow = QLabel("→")
-        arrow.setStyleSheet(theme.MUTED_STYLE)
+        arrow.setStyleSheet(f"color: {theme.LABEL}; font-size: 15px;")
+        remove = cross_button("Remove this rule", 28)
+        remove.clicked.connect(lambda: table.remove(rule))
         ends.addWidget(self.from_pick, 1)
         ends.addWidget(arrow)
         ends.addWidget(self.to_pick, 1)
+        ends.addSpacing(2)
+        ends.addWidget(remove)
         layout.addLayout(ends)
-        how = QHBoxLayout()
-        how.setSpacing(6)
-        self.how = QPushButton()
+        self.how = ElideButton()
         self.how.setStyleSheet(CHOICE_STYLE)
-        self.how.setToolTip("Change how this switch looks")
+        self.how.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.how.clicked.connect(self._edit)
-        remove = QPushButton("×")
-        remove.setStyleSheet(PILL_STYLE)
-        remove.setToolTip("Remove this rule")
-        remove.clicked.connect(lambda: table.remove(rule))
-        how.addWidget(self.how, 1)
-        how.addWidget(remove)
-        layout.addLayout(how)
+        layout.addLayout(self._labeled("Transition", self.how))
+        # The clip for vertical canvases, in plain sight: it was only inside the rule's own pop-up.
+        self.tall = ElideButton()
+        self.tall.setStyleSheet(CHOICE_STYLE)
+        self.tall.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.tall.clicked.connect(self._browse_tall)
+        self.tall_clear = cross_button("Use the same clip", 28)
+        self.tall_clear.clicked.connect(lambda: self._set_tall(""))
+        self.tall_label = QLabel("Vertical")
+        self.tall_label.setStyleSheet(ROW_LABEL_STYLE)
+        self.tall_label.setFixedWidth(ROW_LABEL_WIDTH)
+        tall = QHBoxLayout()
+        tall.setSpacing(8)
+        tall.addWidget(self.tall_label)
+        tall.addWidget(self.tall, 1)
+        tall.addWidget(self.tall_clear)
+        layout.addLayout(tall)
         self.show_values()
 
+    @staticmethod
+    def _labeled(text: str, widget: QWidget) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        label = QLabel(text)
+        label.setStyleSheet(ROW_LABEL_STYLE)
+        label.setFixedWidth(ROW_LABEL_WIDTH)
+        row.addWidget(label)
+        row.addWidget(widget, 1)
+        return row
+
+    def _browse_tall(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Choose file", "", VIDEO_FILTER)
+        if path:
+            self._set_tall(path)
+
+    def _set_tall(self, path: str) -> None:
+        self.rule.transition.stinger.vertical_path = path
+        self.show_values()
+        self.table.changed()
+
     def _end_button(self, end: str) -> QPushButton:
-        button = QPushButton()
+        button = ElideButton()
         button.setStyleSheet(PILL_STYLE)
+        button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         button.setProperty("end", end)
         menu = QMenu(button)
         menu.aboutToShow.connect(lambda: self._fill_menu(menu, end))
@@ -1317,13 +1442,26 @@ class RuleRow(QFrame):
         scene = next((s for s in self.table.collection.scenes if s.id == scene_id), None)
         return short_name(scene.name, "?") if scene is not None else "Removed"
 
+    def _full_name(self, scene_id: str) -> str:
+        if scene_id == ANY:
+            return "Any bloom"
+        scene = next((s for s in self.table.collection.scenes if s.id == scene_id), None)
+        return (scene.name or "?") if scene is not None else "Removed"
+
     def show_values(self) -> None:
-        self.from_pick.setText(self._name(self.rule.from_scene) + "  ▾")
-        self.to_pick.setText(self._name(self.rule.to_scene) + "  ▾")
-        text = summary(self.rule.transition)
-        if self.rule.transition.kind == "stinger" and self.rule.transition.stinger.path:
-            text += " · " + short_name(self.rule.transition.stinger.path)
-        self.how.setText(text)
+        self.from_pick.set_full(self._full_name(self.rule.from_scene) + "  ▾", "Coming from this bloom")
+        self.to_pick.set_full(self._full_name(self.rule.to_scene) + "  ▾", "Going to this bloom")
+        t = self.rule.transition
+        text = summary(t)
+        stinger = t.kind == "stinger"
+        if stinger and t.stinger.path:
+            text += " · " + os.path.basename(t.stinger.path)
+        self.how.set_full(text, "Change how this switch looks" + (f"\n{t.stinger.path}" if stinger else ""))
+        for widget in (self.tall_label, self.tall):
+            widget.setVisible(stinger)
+        self.tall_clear.setVisible(stinger and bool(t.stinger.vertical_path))
+        self.tall.set_full(os.path.basename(t.stinger.vertical_path) or "Same clip",
+                           t.stinger.vertical_path or "Its own clip for vertical canvases")
 
     def _edit(self) -> None:
         dialog = QDialog(self)
@@ -1371,7 +1509,7 @@ class RulesTable(QWidget):
         self.hint.setStyleSheet(theme.MUTED_STYLE)
         layout.addWidget(self.hint)
         self.rows = QVBoxLayout()
-        self.rows.setSpacing(8)
+        self.rows.setSpacing(12)
         layout.addLayout(self.rows)
         layout.addStretch(1)  # rows keep their size; the space stays below them
         self.refresh()

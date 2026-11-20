@@ -55,11 +55,9 @@ class HotkeyRow(QWidget):
             line.setPlaceholderText("Press keys…")
             line.setAlignment(Qt.AlignmentFlag.AlignCenter)
         row.addWidget(self.edit)
-        self.clear = QPushButton("×")
+        self.clear = theme.make_cross(QPushButton(), 34, styled=False)  # the page's one style sheet styles it
         self.clear.setObjectName("hotkeyClear")
         self.clear.setToolTip("Clear this hotkey")
-        self.clear.setFixedSize(34, 34)
-        self.clear.setCursor(Qt.CursorShape.PointingHandCursor)
         self.clear.clicked.connect(self.edit.clear)
         row.addWidget(self.clear)
         self.edit.keySequenceChanged.connect(self._mark)
