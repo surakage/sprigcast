@@ -951,16 +951,40 @@ def _transitions(data: dict[str, Any], col: SceneCollection, by_name: dict[str, 
     duration = int(_num(data.get("transition_duration"), 300))
     current = str(data.get("current_transition", "Fade"))
     col.transition = _transition(named.get(current) or builtin.get(current), duration, notes) or Transition()
+    # A scene's own transition becomes an "Any -> this bloom" rule. A vertical bloom switches with the main one
+    # it's linked to and uses that rule (with the stinger's vertical video), so its own is only needed when the
+    # main one has none. Nothing is skipped without a note (PC, 2026-11-20: the user saw one rule of five).
+    ruled: set[str] = set()
+    later: list[tuple[Scene, dict[str, Any], str]] = []
     for obs in [*data.get("sources", []), *data.get("groups", [])]:
-        scene = made.get(id(obs)) if isinstance(obs, dict) else None
-        override = (obs.get("private_settings") or {}) if scene is not None else {}
-        name = override.get("transition")
-        if scene is None or scene.kind != "show" or not name:
+        if not isinstance(obs, dict):
             continue
-        found = _transition(named.get(name) or builtin.get(name),
-                            int(_num(override.get("transition_duration"), duration)), notes)
-        if found is not None:
-            col.transition_rules.append(TransitionRule(from_scene=ANY, to_scene=scene.id, transition=found))
+        override = obs.get("private_settings") or {}
+        name = override.get("transition")
+        if not name:
+            continue
+        scene = made.get(id(obs))
+        if scene is None or scene.kind != "show":
+            notes.append(f"{obs.get('name')}: its own transition ({name}) isn't carried over: it's a sprig here.")
+        elif scene.linked_to:
+            later.append((scene, override, str(name)))
+        else:
+            _rule(scene.id, str(name), override, named, builtin, duration, col, ruled, notes)
+    for scene, override, name in later:
+        if scene.linked_to not in ruled:
+            _rule(scene.linked_to, name, override, named, builtin, duration, col, ruled, notes)
+
+
+def _rule(bloom: str, name: str, override: dict[str, Any], named: dict[str, dict], builtin: dict[str, dict],
+          duration: int, col: SceneCollection, ruled: set[str], notes: list[str]) -> None:
+    obs = named.get(name) or builtin.get(name) or named.get(strip_vertical(name))  # "X (Vertical)": X's
+    if obs is None:
+        notes.append(f"{name}: that transition isn't in the scene collection; the usual one is used instead.")
+        return
+    found = _transition(obs, int(_num(override.get("transition_duration"), duration)), notes)
+    if found is not None:
+        col.transition_rules.append(TransitionRule(from_scene=ANY, to_scene=bloom, transition=found))
+        ruled.add(bloom)
 
 
 # Streamlabs -------------------------------------------------------------------------------------------

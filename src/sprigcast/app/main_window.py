@@ -316,6 +316,7 @@ class MainWindow(QMainWindow):
         self.in_place: tuple[str, str, str, str] | None = None
         self._updating = False  # True while we fill widgets, so their signals do not echo back
         self.source_sizes: dict[str, tuple[int, int]] = {}
+        self._start_sizes: dict[str, str] = {}  # new source id -> its layout's id, until it's sized (_place_new_sources)
         self.source_statuses: dict[str, str] = {}
         self.recording: SharedRecording | None = None
         self.replay: SharedReplay | None = None
@@ -3071,6 +3072,8 @@ class MainWindow(QMainWindow):
                     plugin_hooks.levels_heard(self.api, event.levels)
             elif isinstance(event, SourceInfo):
                 self.source_sizes, self.source_statuses = event.sizes, event.statuses
+                if self._start_sizes:
+                    self._place_new_sources(event.sizes)
                 moved, touched = self.collection.keep_cards_put(event.sizes)  # a clock card's box grew or shrank
                 if moved:
                     self._changed()  # its places moved so the card stays put
@@ -4639,8 +4642,39 @@ class MainWindow(QMainWindow):
             scene = self._open_bloom_sprig(scene)
         self.collection.sources.append(config)
         scene.items.append(SceneItem(source=config.id))
+        if config.kind not in (*self.AUDIO_KINDS, "text"):
+            self._start_sizes[config.id] = scene.id  # 1280 x 720 once its picture's size is known
         self._changed()
         self._refresh_sources(keep_row=0)
+
+    START_BOX = (1280, 720)  # every new source but text starts this size on a 1080p canvas (user, 2026-11-19)
+
+    def _place_new_sources(self, sizes: dict) -> None:
+        """New sources whose size just became known: fitted into START_BOX (scaled with the canvas, kept
+        inside it, or inside the part of the canvas a small sprig covers), centred. Text keeps its own size."""
+        for source_id, scene_id in list(self._start_sizes.items()):
+            size = sizes.get(source_id)
+            if not size or not size[0] or not size[1]:
+                continue
+            del self._start_sizes[source_id]
+            scene = next((s for s in self.collection.scenes if s.id == scene_id), None)
+            item = next((i for i in scene.items if i.source == source_id), None) if scene is not None else None
+            if item is None:
+                continue
+            canvas = self.collection.canvas(scene.canvas)
+            k, vx, vy, left, top, width, height = self.collection.view_region(scene)
+            share = min(canvas.width, canvas.height) / 1080
+            box_w, box_h = min(self.START_BOX[0] * share, width), min(self.START_BOX[1] * share, height)
+            w, h = item.cropped_size(size)
+            if not w or not h:
+                continue
+            fit = min(box_w / w, box_h / h)
+            item.scale, item.scale_y, item.rotation = fit / k, None, 0.0
+            item.x = round((left + (width - w * fit) / 2 - vx) / k, 2)
+            item.y = round((top + (height - h * fit) / 2 - vy) / k, 2)
+            self._changed()
+            if self._item() is item:
+                self._refresh_properties()
 
     def _open_bloom_sprig(self, show: Scene) -> Scene:
         """The sprig this bloom shows (made, named after it, if it has none yet), selected for editing."""
@@ -5055,20 +5089,7 @@ class MainWindow(QMainWindow):
                 return
             name = ask_name(self, short_name(settings["name"], "Camera"), settings["name"])
         self._add_item(SourceConfig(id=self.collection.new_id("camera"), kind="camera", name=name, settings=settings))
-        item, canvas = self._item(), self.collection.canvas(scene.canvas)
-        if item is not None and is_capture_card(settings["name"]):
-            # A capture card is a console or another PC: it fills the canvas, centred (PC, 2026-11-19).
-            item.scale = min(canvas.width / settings["width"], canvas.height / settings["height"])
-            item.x = (canvas.width - settings["width"] * item.scale) / 2
-            item.y = (canvas.height - settings["height"] * item.scale) / 2
-            self._changed()
-            self._refresh_properties()
-        elif item is not None:  # a quarter-width overlay in the bottom-right corner, like a typical facecam
-            item.scale = (canvas.width * 0.25) / settings["width"]
-            item.x = canvas.width - settings["width"] * item.scale - 32
-            item.y = canvas.height - settings["height"] * item.scale - 32
-            self._changed()
-            self._refresh_properties()
+        # Where it goes: 1280 x 720 in the middle once its picture arrives, like every source (_place_new_sources).
 
     def _fit_item(self, checked: bool = False, size: tuple[int, int] | None = None) -> None:
         """Scale the selected item to fit its canvas and centre it."""
