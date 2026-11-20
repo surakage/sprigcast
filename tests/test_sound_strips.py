@@ -167,9 +167,18 @@ def test_gear_clicks_are_logged_and_a_window_opened_early_is_made_whole(tmp_path
             press = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(5, 5), QPointF(5, 5),
                                 Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
             app.sendEvent(w.settings_button, press)
-            w.settings_button.click()
+            release = QMouseEvent(QEvent.Type.MouseButtonRelease, QPointF(5, 5), QPointF(5, 5),
+                                  Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+            app.sendEvent(w.settings_button, release)
+            app.processEvents()
         assert "settings: gear pressed" in caplog.text and "settings: gear clicked" in caplog.text
-        assert opened == [()]
+        # PC test, 2026-11-20: about every other click did nothing. The press opens it, once, release or not.
+        assert opened == [()] and not w.settings_button.isDown()
+        app.sendEvent(w.settings_button, press)  # no release this time (it went elsewhere)
+        app.processEvents()
+        assert opened == [(), ()]
+        w.settings_button.click()  # Space on the button
+        assert len(opened) == 3
         w.show_minimized_drawn(settle_ms=10_000)  # a minimized start, still being drawn...
         w.showMaximized()  # ...when another app opens it
         app.processEvents()

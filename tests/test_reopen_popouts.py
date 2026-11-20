@@ -90,3 +90,23 @@ def test_settings_has_the_tick(clean):
     w.projector_reopen.setChecked(True)
     assert w.apply() and projector.reopen()
     w.close()
+
+
+def test_a_projector_is_owned_on_windows_so_it_is_never_the_main_window(monkeypatch):
+    """PC test, 2026-11-20: a full-screen projector became SprigCast's main window to Windows. Projectors get a
+    hidden owner (not the main window, so minimizing SprigCast leaves them up)."""
+    import sys
+
+    from PySide6.QtWidgets import QApplication, QWidget
+
+    from sprigcast.app import projector
+
+    QApplication.instance() or QApplication([])
+    widget = QWidget()
+    projector.own(widget)  # off Windows: nothing
+    assert widget.windowHandle() is None or widget.windowHandle().transientParent() is None
+    monkeypatch.setattr(sys, "platform", "win32")  # the owner part (the taskbar style call fails here, logged)
+    projector.own(widget)
+    owner = widget.windowHandle().transientParent()
+    assert owner is projector._owner and owner is not None and not owner.isVisible()
+    widget.close()

@@ -9,11 +9,14 @@ encoding. Esc, a double-click or the right-click menu closes it.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QScreen
 from PySide6.QtWidgets import QMenu, QWidget
+
+log = logging.getLogger(__name__)
 
 
 def screen_label(index: int, screen: QScreen) -> str:
@@ -97,6 +100,44 @@ def on_a_screen(window: list, screens) -> bool:
                and s.availableGeometry().intersected(box).height() >= 60 for s in screens)
 
 
+_owner = None  # a hidden window that owns every projector (Windows only)
+
+
+def own(widget: QWidget) -> None:
+    """Give a projector an owner, so Windows never takes it for SprigCast's main window (PC test, 2026-11-20: a
+    full-screen projector became the process's main window, and anything asking Windows for SprigCast's window
+    got the projector). The owner is a hidden window, not the main window: minimizing SprigCast then doesn't take
+    projectors on other screens with it. Owned windows lose their taskbar button, so it's asked for back."""
+    import sys
+
+    if sys.platform != "win32":
+        return
+    global _owner
+    try:
+        from PySide6.QtGui import QWindow
+
+        if _owner is None:
+            _owner = QWindow()
+            _owner.setTitle("SprigCast projectors")
+            _owner.create()  # a native window, never shown
+        hwnd = int(widget.winId())
+        handle = widget.windowHandle()
+        if handle is not None:
+            handle.setTransientParent(_owner)
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+        user32.GetWindowLongPtrW.argtypes = (ctypes.c_void_p, ctypes.c_int)
+        user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+        user32.SetWindowLongPtrW.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t)
+        gwl_exstyle, ws_ex_appwindow = -20, 0x00040000
+        style = user32.GetWindowLongPtrW(hwnd, gwl_exstyle)
+        user32.SetWindowLongPtrW(hwnd, gwl_exstyle, style | ws_ex_appwindow)
+    except Exception:  # noqa: BLE001 (a projector always opens, owned or not)
+        log.warning("projector: couldn't give it an owner", exc_info=True)
+
+
 class Projector(QWidget):
     """One canvas on one screen. screen=None opens a normal window instead of full screen."""
 
@@ -117,6 +158,7 @@ class Projector(QWidget):
         self.setCursor(Qt.CursorShape.BlankCursor if blank else Qt.CursorShape.ArrowCursor)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._menu)
+        own(self)  # before it's shown: never SprigCast's main window to Windows
         if screen is not None:
             self.setGeometry(screen.geometry())
             self.showFullScreen()
