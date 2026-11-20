@@ -77,3 +77,23 @@ def test_the_small_windows_are_cards(app):
                 DuckingDialog):
         assert issubclass(cls, CardDialog), cls.__name__
     assert NameDialog("Cam", "Elgato Facecam MK.2").name() == "Cam"
+
+
+def test_a_card_ignores_a_press_the_moment_it_shows(app, monkeypatch):
+    """It can pop up under a key or click meant for something else (Record pressed through UI Automation while
+    the user was busy elsewhere, PC test 2026-11-20): a stray press mustn't answer it unread."""
+    from PySide6.QtTest import QTest
+
+    from sprigcast.app import message
+
+    card = message.MessageCard("SprigCast", "Stop recording?")
+    yes = card.add_button("Yes", primary=True)
+    card.show()
+    yes.click()  # straight away: ignored
+    assert card.clicked is None and card.isVisible()
+    QTest.keyClick(yes, message.Qt.Key.Key_Space)
+    assert card.clicked is None and card.isVisible()
+    monkeypatch.setattr(message, "ARM_S", 0.05)
+    QTest.qWait(80)
+    yes.click()
+    assert card.clicked is yes and not card.isVisible()
