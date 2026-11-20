@@ -530,3 +530,51 @@ def test_pop_up_screen_height_never_follows_its_width():
     assert dialog.panel.picture.height() == TransitionPicture.WIDE_HEIGHT
     dialog.close()
     panel.close()
+
+
+def test_a_stinger_rule_shows_its_whole_file_name_and_its_vertical_clip(monkeypatch):
+    """User 2026-11-19: the stinger's name was cut ("hidden-slo…inger.webm") in a pop-up with room for it, the
+    pop-up couldn't be resized, and the clip for vertical canvases was only inside the rule's own pop-up."""
+    from PySide6.QtWidgets import QApplication, QFileDialog
+
+    QApplication.instance() or QApplication([])
+    from sprigcast.app.transitions_panel import PopUpGrip, RuleRow, TransitionsPanel
+    from sprigcast.core.scene import ANY, Canvas, Scene, SceneCollection, Stinger, Transition, TransitionRule
+
+    col = SceneCollection(canvases=[Canvas(id="horizontal", width=1920, height=1080)],
+                          scenes=[Scene(id="a", name="Starting Soon", canvas="horizontal")])
+    col.transition_rules = [
+        TransitionRule(from_scene=ANY, to_scene="a", transition=Transition(
+            kind="stinger", stinger=Stinger(path="C:/clips/hidden-slothbloom-stinger.webm"))),
+        TransitionRule(from_scene="a", to_scene=ANY, transition=Transition(kind="fade")),
+    ]
+    changed = []
+    panel = TransitionsPanel(col.transition, lambda: changed.append(1), collection=col, compact=True)
+    dialog = panel.popup("rules")
+    dialog.show()
+    QApplication.processEvents()
+    try:
+        stinger, fade = (dialog.table.rows.itemAt(i).widget() for i in range(2))
+        assert isinstance(stinger, RuleRow)
+        assert stinger.how.text() == "Stinger · hidden-slothbloom-stinger.webm"  # whole, at the size it opens
+        assert stinger.tall.isVisibleTo(dialog) and stinger.tall.text() == "Same clip"
+        assert not stinger.tall_clear.isVisibleTo(dialog)
+        assert not fade.tall.isVisibleTo(dialog)  # only a stinger has a clip
+        monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: ("C:/clips/tall.webm", ""))
+        stinger.tall.click()
+        assert col.transition_rules[0].transition.stinger.vertical_path == "C:/clips/tall.webm" and changed
+        assert stinger.tall.text() == "tall.webm" and stinger.tall_clear.isVisibleTo(dialog)
+        stinger.tall_clear.click()
+        assert col.transition_rules[0].transition.stinger.vertical_path == "" and stinger.tall.text() == "Same clip"
+        # Resizable by its corner; pulled as small as it goes, the name shortens in the middle and nothing is cut off.
+        grip = dialog.findChild(PopUpGrip)
+        assert grip is not None and grip.isVisibleTo(dialog)
+        assert dialog.minimumWidth() < dialog.width() < dialog.maximumWidth()
+        dialog.resize(dialog.minimumSize())
+        QApplication.processEvents()
+        assert "…" in stinger.how.text() and stinger.how.full.endswith("hidden-slothbloom-stinger.webm")
+        assert stinger.how.toolTip().endswith("C:/clips/hidden-slothbloom-stinger.webm")
+        right = stinger.mapTo(dialog.table, stinger.rect().topRight()).x()
+        assert right <= dialog.table.width()
+    finally:
+        dialog.close()

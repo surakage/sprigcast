@@ -1067,8 +1067,8 @@ class SceneCollection(BaseModel):
                         if where is None:
                             middle = item.x + laid_w * item.scale / 2
                             where = "left" if middle < canvas.width / 3 else "right" if middle > canvas.width * 2 / 3 \
-                                else "centre"
-                        shift = grow if where == "right" else grow / 2 if where == "centre" else 0.0
+                                else "center"
+                        shift = grow if where == "right" else grow / 2 if where == "center" else 0.0
                         if shift:
                             item.x -= shift
                             moved = True

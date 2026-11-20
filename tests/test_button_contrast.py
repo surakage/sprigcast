@@ -84,3 +84,27 @@ def test_card_pop_up_cancel_stands_out(app):
     cancel = next(b for b in dialog.findChildren(QPushButton) if b.text() == "Cancel")
     assert _edge_contrast(dialog, cancel) >= MIN_EDGE
     dialog.reject()
+
+
+def test_every_x_button_is_the_one_round_drawn_cross():
+    """User 2026-11-19: "fix the shape of the x that closes, across the app". The letter × sat small and off
+    centre and its button took the letter's shape; every × is now theme.make_cross: a circle, a drawn cross."""
+    import os
+    import pathlib
+    import re
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication, QPushButton
+
+    QApplication.instance() or QApplication([])
+    from sprigcast.app import theme
+
+    button = theme.make_cross(QPushButton("×"), 30)
+    assert button.text() == "" and not button.icon().isNull()
+    assert (button.minimumSize(), button.maximumSize()) == (button.size(), button.size())
+    assert button.width() == button.height() == 30 and "border-radius: 14px" in button.styleSheet()
+    app = pathlib.Path(theme.__file__).parent
+    lettered = [f"{path.name}:{n}" for path in sorted(app.glob("*.py"))
+                for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+                if re.search(r'Q(Push|Tool)Button\(\s*"[×✕✖xX]"', line)]
+    assert lettered == []

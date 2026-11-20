@@ -326,3 +326,24 @@ def test_a_login_never_recorded_is_looked_up_off_the_window_thread_and_filled_in
     assert asked_on == [False] and recorded == ["surakage"]
     assert d.twitch_label.text() == "Connected as surakage" and d.use_account.isVisibleTo(d)
     assert not d._twitch_poll.isActive()
+
+
+def test_expert_settings_never_bring_back_another_services_account_row(fake_keyring, monkeypatch):
+    """User 2026-11-19: on a Twitch place the Account card showed "Connected as … Sign out" and, under it, a
+    second "Account: Sign in, Sign out" row (YouTube and Kick's), with Expert settings on."""
+    QApplication.instance() or QApplication([])
+    from sprigcast.app.stream_dialog import StreamPage
+    from sprigcast.output import twitch_auth
+
+    monkeypatch.setattr(twitch_auth, "remembered_login", lambda: "sloth")
+    monkeypatch.setattr(twitch_auth, "connected_account", lambda: "sloth")
+    d = StreamPage(SceneCollection(
+        canvases=[Canvas(id="horizontal", width=1920, height=1080)],
+        outputs=[Output(id="tw", type="stream", service="twitch", canvas="horizontal", key_ref="sprigcast/t")]))
+    d.show()
+    for on in (True, False, True):
+        d.set_expert(on)
+        assert d.twitch_row.isVisibleTo(d) and d.twitch_sign_out.isVisibleTo(d)
+        assert not d.signin_row.isVisibleTo(d) and not d.signin_label.isVisibleTo(d)
+        assert not d.twitch_button.isVisibleTo(d)  # connected: no "Connect Account" beside "Connected as"
+    d.close()

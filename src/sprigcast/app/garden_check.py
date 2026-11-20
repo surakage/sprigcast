@@ -146,12 +146,8 @@ class GardenCheckPage(QWidget):
         words.addWidget(self.mood)
         words.addStretch(1)
         head.addLayout(words, 1)
-        self.close_button = QPushButton("×", self)
-        self.close_button.setStyleSheet(
-            theme.button_style(13, "0", extra="font-size: 15px; min-height: 0;"))
-        self.close_button.setFixedSize(28, 28)
+        self.close_button = theme.make_cross(QPushButton(self), 30, extra="min-height: 0;")
         self.close_button.setToolTip("Close")
-        self.close_button.setCursor(Qt.CursorShape.PointingHandCursor)
         head.addWidget(self.close_button, 0, Qt.AlignmentFlag.AlignTop)
         root.addLayout(head)
 

@@ -41,7 +41,6 @@ TAB_STYLE = (
     f"QPushButton:hover {{ color: {theme.TEXT}; background: {theme.RAISED}; }}"
     f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}"
 )
-TOOL_STYLE = theme.button_style(12, "3px 8px", extra="font-size: 14px;")
 
 
 @dataclass
@@ -96,11 +95,12 @@ class PanelCard(QFrame):
         top.addStretch(1)
         self.pop = QPushButton("↗")
         self.pop.setToolTip("Pop out to its own window")
-        self.close_button = QPushButton("×")
+        self.pop.setStyleSheet(theme.button_style(12, "0px", extra="font-size: 14px;"))
+        self.pop.setFixedSize(26, 26)  # round, the same size as the × beside it
+        self.pop.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_button = theme.make_cross(QPushButton(), 26)
         self.close_button.setToolTip("Hide this panel (Panels menu brings it back)")
         for button in (self.pop, self.close_button):
-            button.setStyleSheet(TOOL_STYLE)
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
             top.addWidget(button)
         self.pop.clicked.connect(lambda: self.current and manager.pop_out(self.current))
         self.close_button.clicked.connect(lambda: self.current and manager.set_shown(self.current, False, mode))
