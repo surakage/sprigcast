@@ -463,11 +463,14 @@ def test_obs_scene_filters_and_monitoring():
     chat["monitoring_type"] = 2
     col, notes = from_obs(data, _like())
     page = next(s for s in col.sources if s.name == "Chat")
-    roll = next(f for f in page.filters if f.kind == "barrel_roll")
+    overlay = next(s for s in col.scenes if s.name == "Overlay")
+    item = next(i for i in overlay.items if i.source == page.id)
+    roll = next(f for f in item.effects if f.kind == "barrel_roll")  # on that item only, like in OBS
     assert not roll.enabled and roll.settings == {"seconds": 12.0, "turns": 5, "direction": "clockwise"}
+    assert not any(f.kind == "barrel_roll" for f in page.filters)
     assert page.settings["monitor"] is True
     assert "Overlay: the Sparkle filter has no match yet." in notes
-    assert any(n.startswith("Roll: now a Barrel roll on Chat") for n in notes)
+    assert any(n.startswith("Roll: now a Barrel roll on Chat in Overlay") for n in notes)
 
 
 def test_obs_scene_transitions_on_sprigs_and_vertical_blooms():

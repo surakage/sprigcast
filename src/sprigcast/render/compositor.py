@@ -16,7 +16,7 @@ import numpy as np
 from sprigcast.core import looks
 from sprigcast.core.filters import VideoEffects
 from sprigcast.core.looks import SHAPE_IDS
-from sprigcast.core.scene import Canvas, Scene, Transition
+from sprigcast.core.scene import Canvas, Scene, Transition, item_key
 
 log = logging.getLogger(__name__)
 
@@ -1209,7 +1209,9 @@ class Compositor:
                 continue
             quad = item.quad(size)
             if quad:
-                yield item.source, scene.canvas, quad, fades.get(item.source, 1.0) if fades else 1.0
+                own = item_key(scene.id, item.source) if item.effects else None
+                yield (item.source, scene.canvas, quad, fades.get(item.source, 1.0) if fades else 1.0,
+                       own if own in self.effects else item.source)
 
     def _draw_pieces(self, pieces) -> None:
         """Draw (source id, canvas id, quad, opacity) pieces in order, onto the framebuffer in use.
@@ -1218,14 +1220,16 @@ class Compositor:
         quads are somewhere between two blooms."""
         planar_on = False
         opacity = 1.0
-        for source_id, canvas_id, quad, alpha in pieces:
+        for piece in pieces:  # (source id, canvas id, quad, opacity[, effects key: an item's own])
+            source_id, canvas_id, quad, alpha = piece[:4]
+            fx_key = piece[4] if len(piece) > 4 else source_id
             part = self.parts.get((source_id, canvas_id))
             tex = part or self.textures.get(source_id)
             if tex is None:
                 continue
-            fx = self.effects.get(source_id, NO_EFFECTS)
+            fx = self.effects.get(fx_key, NO_EFFECTS)
             if fx.spin[0]:
-                quad = self._spun(source_id, quad, fx.spin)
+                quad = self._spun(fx_key, quad, fx.spin)
             self.vbo.write(np.array(quad, dtype="f4").tobytes())
             planar = None if part is not None else self.planar.get(source_id)
             if planar is not None:

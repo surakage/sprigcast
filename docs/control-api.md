@@ -336,13 +336,15 @@ Pages shown by a Web page source get `window.sprigcast` (the same object as `win
 
 Plugins added from **Tools → Plugin store** bring their own actions. They're in `app.actions` only while the plugin is added; without it they answer `plugin_missing`, naming the plugin to add. `plugins.list` shows every store plugin with `enabled` true or false. Timed effects (`hide.blackout`, `hide.pixelate`, `roll.spin`, `freeze.start`, `seconds` up to 600) end by themselves, and a new call on the same thing restarts the time.
 
+Hide it and Barrel Roll take `in` (a bloom's or sprig's name or id): then only the item in there changes, and the same source elsewhere stays as it is. `{"source": "Facecam", "in": "Gameplay"}` is the camera in Gameplay; `{"sprig": "Cam frame", "in": "Gameplay"}` is that sprig placed in Gameplay. Without `in`, it's the source everywhere it shows.
+
 | Action | Plugin | What it does | Fields |
 | --- | --- | --- | --- |
-| `hide.pixelate` | Hide it | Pixelate a source for a while. | `source`, `seconds` (optional; 0 = until shown again), `size` (optional block size) |
-| `hide.blackout` | Hide it | Black a source out for a while. | `source`, `seconds` (optional) |
-| `hide.toggle` | Hide it | Hide it until toggled back, or show it. | `source`, `how` (optional): pixelate or blackout |
-| `hide.show` | Hide it | Show it again now. | `source` |
-| `roll.spin` | Barrel Roll | Spin a sprig (everywhere it's shown) or one thing, then it lands where it was. | `sprig` or `source`, `seconds`, `turns`, `direction` (all optional) |
+| `hide.pixelate` | Hide it | Pixelate a source for a while. | `source` (or `sprig` with `in`), `in` (optional), `seconds` (optional; 0 = until shown again), `size` (optional block size) |
+| `hide.blackout` | Hide it | Black a source out for a while. | `source` (or `sprig` with `in`), `in` (optional), `seconds` (optional) |
+| `hide.toggle` | Hide it | Hide it until toggled back, or show it. | `source` (or `sprig` with `in`), `in` (optional), `how` (optional): pixelate or blackout |
+| `hide.show` | Hide it | Show it again now. | `source` (or `sprig` with `in`), `in` (optional) |
+| `roll.spin` | Barrel Roll | Spin a sprig (everywhere it's shown) or one thing, then it lands where it was. | `sprig` or `source`, `in`, `seconds`, `turns`, `direction` (all optional) |
 | `freeze.start` | Freeze | Hold a sprig (everywhere it's shown) or one thing still on the frame showing now, then it's live again. Called again while frozen, it keeps the picture and restarts the time. | `sprig` or `source`, `seconds` (optional; 0 = until `freeze.stop`) |
 | `freeze.stop` | Freeze | Let it move again now. | `sprig` or `source` |
 | `freeze.toggle` | Freeze | Freeze until toggled back, or let it go. | `sprig` or `source` |
