@@ -136,12 +136,9 @@ def test_build_tabs_sound_sections_add_undo(tmp_path, monkeypatch):
         assert col.source("mic").settings["muted"] is True
         w._close_build_sound()
         assert w.build_stage.right_stack.currentIndex() == 0
-        # The inspector has tabs: one shows at a time, and the open tab is remembered.
-        header, body = w.prop_section_toggles["Look"]
-        w.inspector_tabs.show_tab("Place")
-        assert not body.isVisibleTo(w.inspector_tabs)
-        header.click()
-        assert body.isVisibleTo(w.inspector_tabs) and QSettings().value("inspector/tab") == "Look"
+        # The inspector is one page, Transform, with no tabs (Look, Shapes and Device went, user 2026-11-20).
+        assert w.inspector_tabs.names == ("Transform",) and not w.inspector_tabs.buttons["Transform"].isVisibleTo(w)
+        assert not {"Look", "Shapes", "Device"} & set(w.prop_section_toggles)
         # + Add lists real devices (here: none found, so it says so).
         monkeypatch.setattr(mw, "list_cameras", lambda: [])
         w._fill_add_source_menu()

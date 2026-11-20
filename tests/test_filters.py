@@ -14,6 +14,7 @@ from sprigcast.core.filters import (
     settings_for,
     video_effects,
 )
+from sprigcast.core.looks import SHAPES
 from sprigcast.core.scene import Canvas, Filter, Scene, SceneCollection, SceneItem
 
 
@@ -252,7 +253,9 @@ def test_gpu_lut_mono_and_from_file(compositor, tmp_path):
 
 def test_gpu_shapes_cut_the_corners(compositor):
     img = np.full((64, 96, 4), (200, 100, 50, 255), np.uint8)
-    for shape in ("circle", "hexagon", "leaf", "heart", "star"):
+    drawn = [name for name, _label in SHAPES if name not in ("rounded", "image")]  # every drawn preset
+    assert {"circle", "heart", "star", "diamond", "triangle", "flower", "arch", "squircle"} <= set(drawn)
+    for shape in drawn:
         out = render_full(compositor, img, [flt("shape", shape=shape)])
         assert out[32, 48, 3] == 255, shape  # the middle stays
         assert out[1, 1, 3] == 0 and out[62, 94, 3] == 0, shape  # corners are cut away

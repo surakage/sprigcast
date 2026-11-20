@@ -145,6 +145,34 @@ float sd_star(vec2 p, float r, float rf) {
     return length(p - ba * h) * sign(p.y * ba.x - p.x * ba.y);
 }
 
+float sd_octagon(vec2 p, float r) {
+    const vec3 k = vec3(-0.9238795325, 0.3826834323, 0.4142135623);
+    p = abs(p);
+    p -= 2.0 * min(dot(vec2(k.x, k.y), p), 0.0) * vec2(k.x, k.y);
+    p -= 2.0 * min(dot(vec2(-k.x, k.y), p), 0.0) * vec2(-k.x, k.y);
+    p -= vec2(clamp(p.x, -k.z * r, k.z * r), r);
+    return length(p) * sign(p.y);
+}
+
+float sd_pentagon(vec2 p, float r) {
+    const vec3 k = vec3(0.809016994, 0.587785252, 0.726542528);
+    p.x = abs(p.x);
+    p -= 2.0 * min(dot(vec2(-k.x, k.y), p), 0.0) * vec2(-k.x, k.y);
+    p -= 2.0 * min(dot(vec2(k.x, k.y), p), 0.0) * vec2(k.x, k.y);
+    p -= vec2(clamp(p.x, -r * k.z, r * k.z), r);
+    return length(p) * sign(p.y);
+}
+
+float sd_triangle(vec2 p, float r) {
+    const float k = 1.7320508;
+    p.x = abs(p.x) - r;
+    p.y = p.y + r / k;
+    if (p.x + k * p.y > 0.0) p = vec2(p.x - k * p.y, -k * p.x - p.y) / 2.0;
+    p.x -= clamp(p.x, -2.0 * r, 0.0);
+    return -length(p) * sign(p.y);
+}
+
+
 // Distance in canvas pixels from the shape's edge.
 float shape_distance(vec2 local) {
     vec2 size = max(quad_size, vec2(1.0));
@@ -166,8 +194,27 @@ float shape_distance(vec2 local) {
     } else if (shape == 5) {
         float s = r * 1.62;
         d = sd_heart(vec2(p.x, -p.y) / s + vec2(0.0, 0.53)) * s;
-    } else {
+    } else if (shape == 6) {
         d = sd_star(vec2(p.x, -p.y + r * 0.1), r, 0.45);
+    } else if (shape == 8) {   // diamond
+        d = (abs(p.x) + abs(p.y) - r) * 0.70710678;
+    } else if (shape == 9) {   // octagon
+        d = sd_octagon(p, r * 0.92);
+    } else if (shape == 10) {  // pentagon, a point at the top
+        d = sd_pentagon(vec2(p.x, p.y - r * 0.1), r * 0.8);
+    } else if (shape == 11) {  // triangle, a point at the top
+        d = sd_triangle(vec2(p.x, -p.y + r * 0.245), r * 0.85);
+    } else if (shape == 12) {  // arch: a round top on a straight-sided bottom
+        vec2 q = vec2(p.x, -p.y);
+        float top = length(q - vec2(0.0, r * 0.15)) - r * 0.75;
+        vec2 b = abs(q - vec2(0.0, -r * 0.3)) - vec2(r * 0.75, r * 0.45);
+        d = min(top, length(max(b, 0.0)) + min(max(b.x, b.y), 0.0));
+    } else if (shape == 13) {  // flower: five round petals, one at the top
+        float a = atan(p.y, p.x);
+        d = (length(p) - r * (0.8 + 0.17 * cos(5.0 * a + 7.853982))) * 0.75;
+    } else {                   // squircle
+        vec2 q = abs(p) / r;
+        d = (pow(pow(q.x, 4.0) + pow(q.y, 4.0), 0.25) - 0.98) * r;
     }
     if (stretch) {
         d *= min(size.x, size.y) / side;   // a rough pixel scale, enough for edges and borders
@@ -265,7 +312,7 @@ float hash(vec2 p) {
 vec4 halo() {
     vec2 l = local * sil_map.xy + sil_map.zw;
     float a;
-    if (shape >= 1 && shape <= 6) {
+    if (shape >= 1 && shape != 7) {   // drawn shapes (7 is a picture)
         // A drawn shape: exact and smooth from its distance, at any size, for the cost of one sample.
         float d = shape_distance(l);
         float r = max(sil_px, 0.75);

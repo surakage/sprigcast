@@ -1715,15 +1715,21 @@ class MainWindow(QMainWindow):
 
         from sprigcast.app.inspector_fields import InspectorTabs
 
-        self.inspector_tabs = InspectorTabs(("Place", "Look", "Shapes", "Device"))
+        # One page now: Transform (position, size, turn, bounds, crop). Look, Shapes and Device went (user,
+        # 2026-11-20): Filters… holds the looks and shapes, Properties… the device.
+        self.inspector_tabs = InspectorTabs(("Transform",))
         self.prop_sections.append(self.inspector_tabs)
-        tab_of = {"Bounds": "Place", "Crop": "Place"}
+        tab_of = {"Place": "Transform", "Bounds": "Transform", "Crop": "Transform"}
+        self._prop_spare = QWidget(panel)  # the old tabs' buttons, kept for their shortcuts, never shown
+        self._prop_spare.hide()
 
         def section(title: str) -> QVBoxLayout:
-            """A group on one of the inspector's tabs: Place holds Place, Bounds and Crop."""
-            body = self.inspector_tabs.group(tab_of.get(title, title), None if title in self.inspector_tabs.names
-                                             else title)
-            self.prop_section_toggles[title] = (self.inspector_tabs.buttons[tab_of.get(title, title)], body)
+            """A group on the inspector's page: Transform holds the place, Bounds and Crop."""
+            tab = tab_of.get(title)
+            if tab is None:
+                return QVBoxLayout(QWidget(self._prop_spare))
+            body = self.inspector_tabs.group(tab, None if title == "Place" else title)
+            self.prop_section_toggles[title] = (self.inspector_tabs.buttons[tab], body)
             return body.layout()
 
         top = QVBoxLayout()
@@ -1893,25 +1899,18 @@ class MainWindow(QMainWindow):
         for chip in (self.prop_extra, self.prop_filters, self.prop_fit, self.prop_uncrop):
             chip.setStyleSheet(chip_style)
             chip.setCursor(Qt.CursorShape.PointingHandCursor)
-        for chip in (self.prop_filters, self.prop_fit, self.prop_uncrop):
+        for chip in (self.prop_fit, self.prop_uncrop):
             chips.addWidget(chip)
         chips.addStretch(1)
         look.addLayout(chips)
+        # Filters (looks, shapes, keys...) is one button under the name, the way in to every filter.
+        top.addWidget(self.prop_filters, 0, Qt.AlignmentFlag.AlignLeft)
         device = section("Device")
         device_row = QHBoxLayout()
         device_row.addWidget(self.prop_extra)
         device_row.addStretch(1)
         device.addLayout(device_row)
 
-        shapes = section("Shapes")
-        self.prop_shapes: dict[str, QLabel] = {}
-        for canvas in self.collection.canvases:
-            row = QHBoxLayout()
-            row.addWidget(QLabel(canvas.id.capitalize()), 1)
-            state = QLabel("")
-            row.addWidget(state)
-            self.prop_shapes[canvas.id] = state
-            shapes.addLayout(row)
         col.addStretch(1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -1929,34 +1928,6 @@ class MainWindow(QMainWindow):
             button.setStyleSheet(style)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             self.build_bar.tools.addWidget(button)
-
-    def _shape_states(self, item: SceneItem | None) -> dict[str, str]:
-        """For the inspector: is the selected thing in each shape's bloom right now?"""
-        scene = self._scene()
-        states = {}
-        for canvas in self.collection.canvases:
-            if not canvas.enabled:
-                states[canvas.id] = "Off"
-                continue
-            if item is None or scene is None:
-                states[canvas.id] = ""
-                continue
-            if scene.kind == "show" and scene.canvas == canvas.id:
-                states[canvas.id] = "Shown" if item.visible else "Hidden"
-                continue
-            other = self._twin_scene(canvas.id)
-            match = next((i for i in other.items if i.source == item.source), None) if other else None
-            states[canvas.id] = ("Shown" if match.visible else "Hidden") if match else "Not here"
-        return states
-
-    def _twin_scene(self, canvas_id: str) -> Scene | None:
-        """The bloom a twin shows: the partner of the bloom being edited, else that shape's bloom on air."""
-        scene = self._scene()
-        if scene is not None and scene.kind == "show":
-            partner = next((s for s in self.collection.linked_with(scene.id) if s.canvas == canvas_id), None)
-            if partner is not None:
-                return partner
-        return self._shown_scene(canvas_id)
 
     def _edit_destination(self, output_id: str | None) -> None:
         """Open Settings → Stream on a destination. "new:<service>" (Live's + Add menu) adds one first."""
@@ -3294,13 +3265,23 @@ class MainWindow(QMainWindow):
         self._show_part_editor()
         self.live_panel.show_scenes(self.collection)
 
+    def request_close(self) -> None:
+        """Close as if you'd clicked the window's ×: the tray and "You're live" questions still apply. Used when
+        the × was clicked while a pop-up was open (Windows doesn't pass that click on: modal.py)."""
+        self._user_close = True
+        try:
+            self.close()
+        finally:
+            self._user_close = False
+
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         tray = getattr(self, "tray", None)
-        if event.spontaneous() and tray is not None and tray.closing():
+        user = event.spontaneous() or getattr(self, "_user_close", False)
+        if user and tray is not None and tray.closing():
             event.ignore()  # Close to the tray: hidden, and everything carries on
             self._pace_poll()
             return
-        if event.spontaneous() and not self._may_close():
+        if user and not self._may_close():
             event.ignore()
             return
         if tray is not None:
@@ -3713,10 +3694,6 @@ class MainWindow(QMainWindow):
         self.prop_empty.setVisible(not enabled and not self.learned)  # after a few sessions: just a quiet column
         self.prop_name.setVisible(enabled)
         self.prop_locked.setEnabled(enabled)
-        for canvas_id, state in self._shape_states(item).items():
-            label = self.prop_shapes[canvas_id]
-            label.setText(state)
-            label.setStyleSheet(f"color: {theme.ACCENT if state == 'Shown' else theme.MUTED};")
         if item is not None:
             self.prop_locked.setChecked(item.locked)
             config = self.collection.source(item.source)

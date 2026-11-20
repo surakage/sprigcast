@@ -153,7 +153,7 @@ class Card(QFrame):
 
 
 class InspectorTabs(QWidget):
-    """The inspector's tabs (Place, Look, Shapes, Device) as one rounded segmented row, then the open tab's
+    """The inspector's tabs as one rounded segmented row (none when there is one page), then the open tab's
     groups. The open tab is remembered."""
 
     KEY = "inspector/tab"
@@ -195,6 +195,7 @@ class InspectorTabs(QWidget):
             self.pages[name] = page
             self.stack.addWidget(page)
         col.addWidget(bar)
+        bar.setVisible(len(names) > 1)  # one page needs no tabs
         col.addLayout(self.stack)
         saved = str(QSettings().value(self.KEY, names[0]) or names[0])
         self.show_tab(saved if saved in names else names[0], remember=False)
