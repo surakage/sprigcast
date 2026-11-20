@@ -433,7 +433,17 @@ def _stream_outputs(c: SceneCollection) -> list:
 
 
 def _encodes(p: PcProfile, c: SceneCollection) -> int:
-    n = len(_stream_outputs(c)) if p.wants_stream else 0
+    """Encoders running at once. Places on one canvas that a site doesn't hold lower share one encoder
+    (output/shared_stream.py), so Twitch, YouTube and Kick together are one, not three."""
+    from sprigcast.output.stream import SERVICES
+
+    n = 0
+    if p.wants_stream:
+        kinds = set()
+        for o in _stream_outputs(c):
+            service = SERVICES.get(o.service or "custom", SERVICES["custom"])
+            kinds.add((o.canvas, service.fps, min(service.long_side, 1920)))
+        n = len(kinds)
     if p.wants_record:
         n += sum(1 for cv in c.canvases if cv.enabled and cv.id in c.recording.canvases)
     return n
@@ -767,7 +777,9 @@ def room(p: PcProfile, c: SceneCollection, step: tuple[int, int]) -> tuple[int, 
     wizard allows, on a graphics-card encoder an estimate of its pixel rate.
     """
     streams = stream_steps(p, c, step, _budget(p, c))
-    steps = [s for _, s, _ in streams]
+    # Places on one canvas at one step and bitrate share an encoder: they cost the PC once (the gauge read
+    # three places as three encoders, 83% on a PC that was carrying them at a few percent, 2026-11-19).
+    steps = [s for _, s, _ in {(o.canvas, s, k): (o, s, k) for o, s, k in streams}.values()]
     if p.wants_record:
         steps += [step] * sum(1 for cv in c.canvases if cv.enabled and cv.id in c.recording.canvases)
     if p.hardware:
