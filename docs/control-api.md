@@ -213,13 +213,16 @@ for. The connection closes next. Look again in a second or two: it's often a res
 
 | Action | What it does | Fields |
 | --- | --- | --- |
-| `filter.add` | Add a filter to a source. | `source`: name or id, `kind`: kind from filters.kinds, `name` (optional): its name, `settings` (optional): {key: value}, `on` (optional): true (default) or false |
-| `filter.move` | Move a filter to a new place in the list (0 = top). | `source`: name or id, `filter`: name, id or kind, `index`: new position |
-| `filter.remove` | Remove a filter from a source. | `source`: name or id, `filter`: name, id or kind |
-| `filter.set` | Turn a filter on or off and/or change some of its settings (others stay). | `source`: name or id, `filter`: filter name, id or kind, `on` (optional): true or false, `settings` (optional): {key: value} |
-| `filter.toggle` | Turn a filter on if off, off if on. | `source`: name or id, `filter`: name, id or kind |
+| `filter.add` | Add a filter to a source or a placed sprig. | `kind`: kind from filters.kinds, `name` (optional): its name, `settings` (optional): {key: value}, `on` (optional): true (default) or false, `source` (optional): name or id, `sprig` (optional): a sprig instead: its filters where it's placed, `in` (optional): with sprig: only where it's placed in this bloom or sprig (both canvases) |
+| `filter.move` | Move a filter to a new place in the list (0 = top). | `filter`: name, id or kind, `index`: new position, `source` (optional): name or id, `sprig` (optional): a sprig instead: its filters where it's placed, `in` (optional): with sprig: only where it's placed in this bloom or sprig (both canvases) |
+| `filter.remove` | Remove a filter from a source or a placed sprig. | `filter`: name, id or kind, `source` (optional): name or id, `sprig` (optional): a sprig instead: its filters where it's placed, `in` (optional): with sprig: only where it's placed in this bloom or sprig (both canvases) |
+| `filter.set` | Turn a filter on or off and/or change some of its settings (others stay). | `filter`: filter name, id or kind, `on` (optional): true or false, `settings` (optional): {key: value}, `source` (optional): name or id, `sprig` (optional): a sprig instead: its filters where it's placed, `in` (optional): with sprig: only where it's placed in this bloom or sprig (both canvases) |
+| `filter.toggle` | Turn a filter on if off, off if on. | `filter`: name, id or kind, `source` (optional): name or id, `sprig` (optional): a sprig instead: its filters where it's placed, `in` (optional): with sprig: only where it's placed in this bloom or sprig (both canvases) |
 | `filters.kinds` | Filter kinds you can add, with their settings and limits. | none |
-| `filters.list` | A source's filters, top to bottom. | `source`: name or id |
+| `filters.list` | A source's or a placed sprig's filters, top to bottom. | `source` (optional): name or id, `sprig` (optional): a sprig instead: its filters where it's placed, `in` (optional): with sprig: only where it's placed in this bloom or sprig (both canvases) |
+| `filters.share` | A placed sprig: the same filters on both canvases (the usual), or its own on each. | `on`: true or false, `source` (optional): name or id, `sprig` (optional): a sprig instead: its filters where it's placed, `in` (optional): with sprig: only where it's placed in this bloom or sprig (both canvases) |
+
+A sprig placed in a bloom has a placement on each canvas, and each placement has filters of its own. They're kept the same: change one (in the Filters window or with any request here) and the other canvas follows. `filters.share` with `on: false`, or unticking **Same on both canvases** in its Filters window, lets each canvas keep its own. Name the sprig with `sprig` to change its filters wherever it's placed, or add `in` for one bloom: `{"do": "filter.set", "sprig": "Elgato", "in": "Gameplay", "filter": "barrel_roll", "on": true}`. A placement that doesn't have the filter is passed over. `filters.list` says `same_on_both_canvases` for a placed sprig. A source's filters were always one list on every canvas.
 
 ### garden
 

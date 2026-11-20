@@ -1187,17 +1187,19 @@ class ControlApi:
         return info
 
     def req_SetSourceFilterEnabled(self, data):
-        _, found = self._source_filter(data)
+        source, found = self._source_filter(data)
         from sprigcast.core.filters import switch
 
         switch(found, _require(data, "filterEnabled", bool))
+        self.col.share_filters(source)
         self.host.commit("filters")
 
     def req_SetSourceFilterSettings(self, data):
-        _, found = self._source_filter(data)
+        source, found = self._source_filter(data)
         settings = _require(data, "filterSettings", dict)
         overlay = data.get("overlay", True)
         found.settings = {**found.settings, **settings} if overlay is not False else dict(settings)
+        self.col.share_filters(source)
         self.host.commit("filters")
 
     def req_SetSourceFilterName(self, data):
@@ -1208,6 +1210,7 @@ class ControlApi:
         if any(f.name == name and f is not found for f in source.filters):
             raise RequestError(Status.RESOURCE_ALREADY_EXISTS, f"{source.name!r} already has a filter {name!r}.")
         found.name = name
+        self.col.share_filters(source)
         self.host.commit("filters")
 
     def _media_input(self, data: dict[str, Any]) -> SourceConfig:

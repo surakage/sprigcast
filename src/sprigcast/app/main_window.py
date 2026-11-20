@@ -4042,6 +4042,7 @@ class MainWindow(QMainWindow):
                 source.filters.append(existing)
             existing.enabled = True
             existing.settings = {**settings_for(kind, existing.settings), key: value}
+        self.collection.share_filters(source)
         self._changed()
         if open_filters:
             self._open_filters(source_id)
@@ -4056,7 +4057,8 @@ class MainWindow(QMainWindow):
     def _open_filters(self, source_id: str, media: str | None = None) -> None:
         sounds = sorted(((c.id, c.name) for c in self.collection.sources if self._has_sound(c)),
                         key=lambda pair: pair[1].lower())
-        modal(FiltersDialog(self.collection.source(source_id), self._changed, self, media, sounds=sounds))
+        modal(FiltersDialog(self.collection.source(source_id), self._changed, self, media, sounds=sounds,
+                            collection=self.collection))
         if self._has_sound(self.collection.source(source_id)):
             self._refresh_audio_soon()  # the Sound card lists filter names
         self._refresh_sources(keep_row=self.source_list.currentRow())
