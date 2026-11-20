@@ -294,7 +294,7 @@ def test_the_build_canvas_pops_out_and_comes_back(tmp_path, monkeypatch):
         w.show()
         w._set_mode("build")
         w._pick_bloom("h2")
-        w.pop_canvas_button.setChecked(True)
+        w.pop_canvas_button.click()
         QApplication.processEvents()
         window = w.canvas_window
         assert window is not None and window.isVisible() and w.center.window() is window
@@ -312,6 +312,19 @@ def test_the_build_canvas_pops_out_and_comes_back(tmp_path, monkeypatch):
         QApplication.processEvents()
         assert w.canvas_window is None and not w.pop_canvas_button.isChecked()
         assert w.center.window() is w and not w.canvas_away.isVisible()
+        # PC test, 2026-11-20: "Bring it back" in the card did nothing. It now docks straight away.
+        from PySide6.QtWidgets import QPushButton
+
+        w.pop_canvas_button.click()
+        assert w.canvas_window is not None and w.pop_canvas_button.isChecked()
+        back = next(b for b in w.canvas_away.findChildren(QPushButton) if b.text() == "Bring it back")
+        back.click()
+        QApplication.processEvents()
+        assert w.canvas_window is None and not w.pop_canvas_button.isChecked()
+        assert w.center.window() is w and not w.canvas_away.isVisible()
+        w.pop_canvas_button.click()  # the monitor button brings it back too
+        w.pop_canvas_button.click()
+        assert w.canvas_window is None and w.center.window() is w
     finally:
         w.close()
 

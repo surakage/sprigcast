@@ -160,3 +160,24 @@ def test_a_snapped_item_shows_the_lines_it_sits_on_and_its_pin_snaps_to_the_cent
     assert (0, 960.0) in edit.snap_guides(item, size, canvas)
     item.x, item.y = 0, 980  # left edge and bottom edge on the canvas's
     assert set(edit.snap_guides(item, size, canvas)) >= {(0, 0.0), (1, 1080.0)}
+
+
+def test_snapped_values_are_tidy():
+    """PC test, 2026-11-20: snapping left float noise like 959.9999999999995 in the saved place."""
+    from sprigcast.core import edit
+    from sprigcast.core.scene import SceneItem
+
+    size, canvas = (1000, 700), (1920, 1080)
+    for scale in (0.1, 0.3, 0.7, 1 / 3, 0.123456789):
+        start = SceneItem(source="a", x=17.3, y=11.1, scale=scale)
+        item = start.model_copy()
+        edit.move(item, start, size, (1920 / 2 - 17.3 - 1000 * scale / 2 + 2.2, 0.0), canvas, 10)
+        assert item.x == round(item.x, 6) and item.y == round(item.y, 6)
+        assert str(item.x).count("9999") == 0 and str(item.x).count("0000") == 0
+        item = start.model_copy()
+        edit.snap_resize(item, start, size, 3, (1917.0, 900.0), canvas, 10)
+        for value in (item.x, item.y):
+            assert value == round(value, 6)
+        assert item.scale == round(item.scale, 9)
+        right = item.x + item.drawn_size(size)[0]
+        assert abs(right - 1920) < 0.01  # still on the edge

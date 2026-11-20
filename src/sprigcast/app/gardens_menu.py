@@ -152,6 +152,9 @@ class GardenControl:
 
     def _switch_garden(self, entry_id: str) -> str | None:
         w = self.w
+        dock = getattr(w, "_dock_canvas", None)
+        if dock is not None:  # a popped-out canvas belongs to the garden you're leaving
+            dock()
         w.collection.save(w.scenes_path)
         self.shelf.sync_path(w.collection)
         w._save_thumbs()

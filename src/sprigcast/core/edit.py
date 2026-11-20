@@ -79,6 +79,17 @@ def _pin(item: SceneItem, size: Size, corner: int, anchor: Point) -> None:
     item.y += anchor[1] - y
 
 
+def _tidy(item: SceneItem) -> None:
+    """Drop float noise from a drag (PC test, 2026-11-20: a snapped x of 959.9999999999995 was saved and shown).
+    Places and boxes to a millionth of a pixel, scales to a billionth: nothing you could see moves."""
+    item.x, item.y = round(item.x, 6) + 0.0, round(item.y, 6) + 0.0
+    item.scale = round(item.scale, 9)
+    if item.scale_y is not None:
+        item.scale_y = round(item.scale_y, 9)
+    if item.bounded:
+        item.bounds_size = (round(item.bounds_size[0], 6), round(item.bounds_size[1], 6))
+
+
 def move(
     item: SceneItem,
     start: SceneItem,
@@ -121,6 +132,7 @@ def move(
                 item.x += nearest
             else:
                 item.y += nearest
+    _tidy(item)
 
 
 def scale_from_corner(item: SceneItem, start: SceneItem, size: Size, corner: int, point: Point,
@@ -146,6 +158,7 @@ def scale_from_corner(item: SceneItem, start: SceneItem, size: Size, corner: int
         item.x, item.y, item.crop, item.rotation = start.x, start.y, start.crop, start.rotation
         item.bounds_size = (w, h)
         _pin(item, size, anchor_index, anchor)
+        _tidy(item)
         return
     cw, ch = start.cropped_size(size)
     if not cw or not ch:
@@ -162,6 +175,7 @@ def scale_from_corner(item: SceneItem, start: SceneItem, size: Size, corner: int
     item.scale = sx
     item.scale_y = None if abs(sy - sx) < 1e-6 else sy
     _pin(item, size, anchor_index, anchor)
+    _tidy(item)
 
 
 def snap_resize(

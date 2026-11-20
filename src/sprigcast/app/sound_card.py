@@ -332,28 +332,79 @@ class SoundCard(QWidget):
     # Building -----------------------------------------------------------------------------
 
     def _build(self) -> None:
-        while self.body.count():
+        """Lay out the groups and rows. Boxes and rows already made are used again with the new sounds: making
+        every one afresh after a garden switch held the window 332 ms while live (PC test, 2026-11-20)."""
+        boxes: dict[str, QWidget] = getattr(self, "_boxes", {})
+        self._boxes = boxes
+        spare: list[QWidget] = getattr(self, "_spare_rows", [])
+        self._spare_rows = spare
+        while self.body.count():  # take everything out; what's still wanted goes back in below
             widget = self.body.takeAt(0).widget()
             if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
-        self.meters, self.group_meters, self.rows, self.parts, self.notes = {}, {}, {}, {}, {}
+                widget.hide()
+        self.meters, self.group_meters, self.rows, self.notes = {}, {}, {}, {}
         self.names: dict[str, QLabel] = {}
         self._muted_shown: dict[str, bool] = {}  # what each row and group head shows now
         self._lit = {}
+        old_parts, self.parts = self.parts, {}
         if not self.sounds:
-            from sprigcast.app.empty import EmptyState
+            if getattr(self, "_empty", None) is None:
+                from sprigcast.app.empty import EmptyState
 
-            self.body.addWidget(EmptyState("No mic or desktop audio yet. Add them in Build with + Add.", scale=0.7))
+                self._empty = EmptyState("No mic or desktop audio yet. Add them in Build with + Add.", scale=0.7)
+            self.body.addWidget(self._empty)
+            self._empty.show()
+            for group, part in old_parts.items():  # unused rows wait in the spare pile
+                self._park_rows(part)
             return
         for group in GROUPS:
             members = [s for s in self.sounds.values() if s.group == group]
-            if members:
-                box = self._group_box(group, members)
-                self.body.addWidget(box)
-                box.show()  # a layout shows new children later; show now so visibility below sticks
+            part = old_parts.pop(group, None)
+            if not members:
+                if part is not None:
+                    self._park_rows(part)
+                continue
+            if part is None:
+                box = boxes.get(group)
+                if box is None:
+                    box = boxes[group] = self._group_box(group)
+                part = box.part
+            self._fill_group(group, part, members)
+            self.parts[group] = part
+            self.group_meters[group] = part["meter"]
+            self.body.addWidget(part["box"])
+            part["box"].show()  # a layout shows new children later; show now so visibility below sticks
+        for part in old_parts.values():
+            self._park_rows(part)
 
-    def _group_box(self, group: str, members: list[Sound]) -> QWidget:
+    def _park_rows(self, part: dict) -> None:
+        for row in part["row_list"]:
+            part["inner_layout"].removeWidget(row)
+            row.hide()
+            row.setParent(None)
+            self._spare_rows.append(row)
+        part["row_list"] = []
+
+    def _fill_group(self, group: str, part: dict, members: list[Sound]) -> None:
+        colour = GROUP_COLOURS[group]
+        rows = part["row_list"]
+        while len(rows) > len(members):
+            row = rows.pop()
+            part["inner_layout"].removeWidget(row)
+            row.hide()
+            row.setParent(None)
+            self._spare_rows.append(row)
+        while len(rows) < len(members):
+            row = self._spare_rows.pop() if self._spare_rows else self._sound_row()
+            part["inner_layout"].addWidget(row)
+            rows.append(row)
+        for row, sound in zip(rows, members, strict=True):
+            self._show_row(row, sound, colour)
+        part["ids"] = [s.id for s in members]
+        part["muted"] = []
+        part["count"] = len(members)
+
+    def _group_box(self, group: str) -> QWidget:
         colour = GROUP_COLOURS[group]
         box = QWidget()
         col = QVBoxLayout(box)
@@ -378,9 +429,12 @@ class SoundCard(QWidget):
         for label in (dot, name, sub):
             label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         mute = _chip("Mute")  # its words and colour come from _show_muted
-        ids = [s.id for s in members]
-        mute.clicked.connect(lambda _=False, ids=ids: self._mute_all(
-            ids, not all(self.sounds[i].muted for i in ids if i in self.sounds)))
+        part: dict = {}
+
+        def mute_all(_=False) -> None:
+            ids = part["ids"]
+            self._mute_all(ids, not all(self.sounds[i].muted for i in ids if i in self.sounds))
+        mute.clicked.connect(mute_all)
         head.addWidget(dot)
         head.addWidget(name)
         head.addWidget(sub, 1)
@@ -388,47 +442,54 @@ class SoundCard(QWidget):
         col.addWidget(head_row)
         meter = ThinMeter()
         meter.colour = colour
-        self.group_meters[group] = meter
         col.addWidget(meter)
         inner_box = QWidget()
         inner = QVBoxLayout(inner_box)
         inner.setContentsMargins(20, 4, 0, 2)
         inner.setSpacing(6)
-        for sound in members:
-            row = self._sound_row(sound, colour)
-            self.rows[sound.id] = row
-            inner.addWidget(row)
         col.addWidget(inner_box)
-        self.parts[group] = {"name": name, "sub": sub, "inner": inner_box, "dot": dot, "mute": mute, "ids": ids,
-                             "muted": [], "count": len(members)}
+        part.update({"box": box, "name": name, "sub": sub, "inner": inner_box, "inner_layout": inner, "dot": dot,
+                     "mute": mute, "meter": meter, "row_list": [], "ids": [], "muted": [], "count": 0})
+        box.part = part
         return box
 
-    def _sound_row(self, sound: Sound, colour: str) -> QWidget:
+    def _sound_row(self) -> QWidget:
+        """An empty row; _show_row puts a sound in it (and another one later: rows are used again)."""
         row = ClickRow()
+        row.sid = ""
         row.setCursor(Qt.CursorShape.PointingHandCursor)
         row.setToolTip("Tune this sound: volume, left/right, mono, delay, filters…")
-        row.clicked.connect(lambda sid=sound.id: self.open_tune(sid))
+        row.clicked.connect(lambda: self.open_tune(row.sid))
         col = QVBoxLayout(row)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(0)  # the volume bar has its own breathing room (it's 14 px tall for the knob)
         line = QHBoxLayout()
         line.setSpacing(8)
-        name = QLabel(sound.name)  # its colour, and the note's, come from _show_muted
-        name.setWordWrap(True)
-        self.names[sound.id] = name
-        note = "muted" if sound.muted else f"{sound.volume_db:+.0f} dB" if sound.volume_db else ""
-        right = QLabel(note)
-        for label in (name, right):
+        row.name = QLabel()  # its colour, and the note's, come from _show_muted
+        row.name.setWordWrap(True)
+        row.note = QLabel()
+        for label in (row.name, row.note):
             label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        line.addWidget(name, 1)
-        line.addWidget(right)
+        line.addWidget(row.name, 1)
+        line.addWidget(row.note)
         col.addLayout(line)
-        self.notes[sound.id] = right
-        meter = VolumeMeter(sound.volume_db, lambda db, sid=sound.id: self._drag_volume(sid, db))
-        meter.colour = colour
-        self.meters[sound.id] = meter
-        col.addWidget(meter)
+        row.meter = VolumeMeter(0.0, lambda db: self._drag_volume(row.sid, db))
+        col.addWidget(row.meter)
         return row
+
+    def _show_row(self, row: QWidget, sound: Sound, colour: str) -> None:
+        row.sid = sound.id
+        if row.name.text() != sound.name:
+            row.name.setText(sound.name)
+        note = "muted" if sound.muted else f"{sound.volume_db:+.0f} dB" if sound.volume_db else ""
+        if row.note.text() != note:
+            row.note.setText(note)
+        meter = row.meter
+        meter.db, meter.colour = sound.volume_db, colour
+        meter.set_db(-60.0)  # the last sound's level isn't this one's
+        meter.update()
+        self.rows[sound.id], self.names[sound.id], self.notes[sound.id] = row, row.name, row.note
+        self.meters[sound.id] = meter
 
     def _show_muted(self) -> None:
         """Muted or not, in place: each row's name, note and bar, and each group's Mute chip and bar."""

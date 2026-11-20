@@ -243,7 +243,10 @@ def test_window_switches_gardens_and_paths(window, tmp_path):
     assert events["CurrentSceneCollectionChanged"] == {"sceneCollectionName": "Event"}
     assert ("garden.changed", {"garden": "Event"}) in native.changes()
 
+    w._pop_out_canvas()  # PC test, 2026-11-20: a popped-out canvas stayed open across a switch
+    assert w.canvas_window is not None
     obs.handle("SetCurrentSceneCollection", {"sceneCollectionName": "Main"})
+    assert w.canvas_window is None and w.center.window() is w and not w.pop_canvas_button.isChecked()
     assert w.scenes_path == tmp_path / "scenes.json"
     assert {s.name for s in w.collection.scenes if s.kind == "show"} == starter_blooms
     assert obs.handle("GetSceneCollectionList", {}) == {"currentSceneCollectionName": "Main",
