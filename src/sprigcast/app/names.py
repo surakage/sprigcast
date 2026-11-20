@@ -65,8 +65,10 @@ def _res(w: int, h: int, fps: str | None) -> str:
 def short_status(status: str) -> str:
     """The quiet tag for a row: '' when it's working, else one or two words."""
     s = (status or "").lower()
-    if not s or s == "ok" or s.startswith(("capturing", "monitoring", "listening")):
+    if not s or s == "ok" or s.startswith(("capturing", "monitoring", "listening", "sound plays on desktop")):
         return ""
+    if s.startswith("video can't play"):  # the page works; one video on it doesn't (sources/browser.py)
+        return "no video"
     if s.startswith(("loading", "getting")):  # getting ready (a plugin fetching what it needs)
         return "starting"
     for words, tag in (("paused", "asleep"), ("not found", "not found"), ("disconnected", "unplugged"),
@@ -100,6 +102,11 @@ def plain_problem(status: str, kind: str) -> tuple[str, str] | None:
         return f"Lost the {thing} for a moment. SprigCast keeps trying; you can also try now.", "retry"
     if tag == "waiting":
         return f"Waiting for the {thing} to start.", ""
+    if tag == "no video":
+        if "h.264" in (status or "").lower():
+            return ("A video on this page can't play: it's H.264 (MP4), which SprigCast's page engine can't play "
+                    "yet. The rest of the page still shows."), ""
+        return "A video on this page can't play: its format isn't supported. The rest of the page still shows.", ""
     detail = (status or "").strip().rstrip(".")
     return f"Something's wrong with this {thing}: {detail}.", "retry"
 

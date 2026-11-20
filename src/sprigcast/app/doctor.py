@@ -291,6 +291,14 @@ def _sources(c: Checkup) -> list[Finding]:
             found.append(Finding("bad", "Sources", f"{s.name} doesn't work on this Windows "
                                                    f"({status.removeprefix('unavailable: ')}): remove it in Sources."))
             continue
+        if status and status.startswith("Sound plays on desktop"):  # a page's note, not a problem
+            continue
+        if status and status.startswith("Video can't play"):  # the page works; one video on it can't play
+            what = "it's H.264 (MP4), which the page engine can't play yet" if "H.264" in status else \
+                "its format isn't supported"
+            found.append(Finding("warning", "Sources", f"{s.name}: a video on its page can't play ({what}). "
+                                                       "The rest of the page still shows."))
+            continue
         if status and not status.lower().startswith(OK_STATUSES):
             found.append(Finding("bad", "Sources", f"{s.name} isn't working ({status}): "
                                                    "check it's plugged in or open, or edit it in Sources."))
