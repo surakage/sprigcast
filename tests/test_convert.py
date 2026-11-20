@@ -468,3 +468,19 @@ def test_obs_scene_filters_and_monitoring():
     assert page.settings["monitor"] is True
     assert "Overlay: the Sparkle filter has no match yet." in notes
     assert any(n.startswith("Roll: now a Barrel roll on Chat") for n in notes)
+
+
+def test_obs_scene_transitions_on_sprigs_and_vertical_blooms():
+    """A sprig's own transition is noted, not dropped quietly; a vertical bloom's own transition (named
+    "X (Vertical)", kept outside the collection by OBS's vertical plugin) becomes X's rule on its main bloom
+    when that has none (PC, 2026-11-20)."""
+    data = obs_file()
+    data["transitions"] = [{"name": "Sting", "id": "obs_stinger_transition",
+                            "settings": {"path": "C:/s.webm", "transition_point": 900}}]
+    by_name = {s["name"]: s for s in data["sources"]}
+    by_name["Overlay"]["private_settings"] = {"transition": "Sting"}
+    by_name["Just Chatting (Vertical)"]["private_settings"] = {"transition": "Sting (Vertical)"}
+    col, notes = from_obs(data, _like())
+    main = next(s for s in col.scenes if s.name == "Just Chatting" and s.canvas == "horizontal")
+    assert [(r.to_scene, r.transition.kind) for r in col.transition_rules] == [(main.id, "stinger")]
+    assert "Overlay: its own transition (Sting) isn't carried over: it's a sprig here." in notes
