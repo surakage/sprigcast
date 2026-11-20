@@ -13,6 +13,9 @@ own buttons: add_button() returns the button, clicked is the one pressed (None f
 
 from __future__ import annotations
 
+import logging
+import time
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMessageBox, QPushButton, QWidget
 
@@ -24,6 +27,11 @@ NAMES = {Button.Ok: "OK", Button.Yes: "Yes", Button.No: "No", Button.Cancel: "Ca
 ORDER = (Button.Cancel, Button.No, Button.Close, Button.Ok, Button.Yes)  # the way out on the left, the go on the right
 GO = (Button.Yes, Button.Ok)
 DOT = {"warn": theme.WARN, "bad": theme.BAD}
+# A card's buttons take no press for this long after it shows. It can pop up while you're typing or clicking
+# elsewhere (Record pressed from an app or UI Automation: PC test 2026-11-20, a recording stopped with no
+# "Stop recording?" seen), and a stray Enter, Space or click mustn't answer it unread.
+ARM_S = 0.5
+log = logging.getLogger(__name__)
 PLAIN_PILL = theme.button_style(17, "9px 18px")
 DANGER_PILL = PLAIN_PILL + (f"QPushButton {{ color: {theme.BAD}; border-color: {theme.BAD}; font-weight: 600; }}"
                             f"QPushButton:hover {{ background: {theme.BAD}; color: {theme.ACCENT_TEXT}; }}")
@@ -37,6 +45,7 @@ class MessageCard(CardDialog):
         super().__init__(title, parent, width)
         self.clicked: QPushButton | None = None
         self._buttons: list[QPushButton] = []
+        self._shown_at: float | None = None
         plain_title = not title or title == "SprigCast"  # the app's name says nothing: the message is the card
         if kind in DOT and not plain_title:
             self.heading.setText(f"<span style='color: {DOT[kind]};'>●</span>&nbsp; {title}")
@@ -78,7 +87,18 @@ class MessageCard(CardDialog):
             other.setDefault(other is button)
         button.setFocus()
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self._shown_at is None:
+            self._shown_at = time.monotonic()
+
+    def armed(self) -> bool:
+        return self._shown_at is None or time.monotonic() - self._shown_at >= ARM_S
+
     def _press(self, button: QPushButton) -> None:
+        if not self.armed():
+            log.info("ignored a press on %r: the card had only just shown", button.text())
+            return
         self.clicked = button
         self.accept()
 
@@ -93,10 +113,14 @@ def _show(parent: QWidget | None, title: str, text: str, kind: str, buttons, def
             made[which] = card.add_button(NAMES[which], primary=which in GO)
     if default in made:
         card.set_default(made[default])
+    if kind == "ask":
+        log.info("asked: %s", text.splitlines()[0][:80] if text else title)
     modal(card)
     picked = next((which for which, button in made.items() if button is card.clicked), None)
     if picked is None:  # Esc: the way out, else the only button
         picked = next((which for which in ORDER if which in made and which not in GO), next(iter(made)))
+    if kind == "ask":
+        log.info("answered: %s", NAMES.get(picked, "?"))
     return picked
 
 
