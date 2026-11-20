@@ -30,7 +30,7 @@ LOOKS: tuple[tuple[str, str], ...] = (
 FROM_FILE = "file"
 
 SHAPES: tuple[tuple[str, str], ...] = (  # the Shape filter's presets, as listed (user, 2026-11-20: more shapes)
-    ("rounded", "Rounded rectangle"),
+    ("rounded", "Rounded"),
     ("circle", "Circle"),
     ("squircle", "Squircle"),
     ("arch", "Arch"),
@@ -43,7 +43,7 @@ SHAPES: tuple[tuple[str, str], ...] = (  # the Shape filter's presets, as listed
     ("pentagon", "Pentagon"),
     ("hexagon", "Hexagon"),
     ("octagon", "Octagon"),
-    ("image", "My own shape (image)"),
+    ("image", "Custom"),
 )
 # The number each shape has in the shaders (both engines). Fixed: new shapes take new numbers; 7 is the picture.
 SHAPE_IDS = {"rounded": 1, "circle": 2, "hexagon": 3, "leaf": 4, "heart": 5, "star": 6, "image": 7,
