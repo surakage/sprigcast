@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 
-from sprigcast.core.scene import SceneItem
+from sprigcast.core.scene import SceneItem, align_share
 
 Point = tuple[float, float]
 Size = tuple[int, int]
@@ -94,7 +94,7 @@ def move(
     """Move by `delta`, then snap within `snap` canvas pixels (like OBS):
 
     edges   the item's edges to the canvas edges
-    center  the item's centre to the canvas centre lines
+    center  the item's center (and its pin point) to the canvas center lines
     others  the item's edges to the edges of other items, given as (x, y, w, h) rectangles
     """
     item.x, item.y = round(start.x + delta[0]), round(start.y + delta[1])  # whole pixels stay crisp
@@ -107,6 +107,8 @@ def move(
             options += [0 - pos, limit - (pos + length)]
         if center:
             options.append(limit / 2 - (pos + length / 2))
+            pin = pos + length * align_share(item.align)[axis]  # the pin point, onto the center lines too
+            options.append(limit / 2 - pin)
         for rect in others:
             o, ol = rect[axis], rect[axis + 2]
             for target in (o, o + ol):  # line up with, or butt against, the other item's edges
@@ -162,6 +164,55 @@ def scale_from_corner(item: SceneItem, start: SceneItem, size: Size, corner: int
     _pin(item, size, anchor_index, anchor)
 
 
+def snap_resize(
+    item: SceneItem,
+    start: SceneItem,
+    size: Size,
+    corner: int,
+    point: Point,
+    canvas: Size | None,
+    snap: float,
+    keep_aspect: bool = True,
+    *,
+    edges: bool = True,
+    center: bool = True,
+    others: list[tuple[float, float, float, float]] = (),
+) -> None:
+    """Resize like `scale_from_corner`, then pull the dragged edge onto a line within `snap` canvas pixels:
+    the canvas edges, its center lines, other items' edges (user, 2026-11-20: resizing didn't snap).
+
+    A corner that keeps its shape (or a side) lands on the nearer line of the two; a free corner snaps each
+    way on its own. Rotated items don't snap, as with moving."""
+    scale_from_corner(item, start, size, corner, point, keep_aspect)
+    if canvas is None or snap <= 0 or start.rotation % 360 != 0:
+        return
+    moved = _corner(item, size, corner)
+    anchor = _corner(start, size, OPPOSITE[corner])
+    axes = (0,) if corner in (4, 5) else (1,) if corner in (6, 7) else (0, 1)
+    pulls: dict[int, float] = {}
+    for axis in axes:
+        lines = []
+        if edges:
+            lines += [0, canvas[axis]]
+        if center:
+            lines.append(canvas[axis] / 2)
+        for rect in others:
+            lines += [rect[axis], rect[axis] + rect[axis + 2]]
+        if lines:
+            nearest = min((line - moved[axis] for line in lines), key=abs)
+            if abs(nearest) <= snap and moved[axis] != anchor[axis]:
+                pulls[axis] = nearest
+    if not pulls:
+        return
+    if len(axes) == 2 and not keep_aspect:  # a free corner: each way on its own
+        target = (moved[0] + pulls.get(0, 0.0), moved[1] + pulls.get(1, 0.0))
+    else:  # one size for both ways: grow or shrink toward the nearer line
+        axis = min(pulls, key=lambda a: abs(pulls[a]))
+        f = (moved[axis] + pulls[axis] - anchor[axis]) / (moved[axis] - anchor[axis])
+        target = (anchor[0] + (moved[0] - anchor[0]) * f, anchor[1] + (moved[1] - anchor[1]) * f)
+    scale_from_corner(item, start, size, corner, target, keep_aspect)
+
+
 def crop_from_corner(item: SceneItem, start: SceneItem, size: Size, corner: int, point: Point) -> None:
     """Crop by dragging a corner (its two edges move) or a side (only that edge moves).
 
@@ -201,3 +252,21 @@ def cover(size: tuple[int, int], canvas: tuple[int, int]) -> tuple[tuple[int, in
     cx = max(0, math.floor((w - canvas[0] / scale) / 2))
     cy = max(0, math.floor((h - canvas[1] / scale) / 2))
     return (cx, cy, cx, cy), scale
+
+
+def snap_guides(item: SceneItem, size: Size, canvas: Size, *, edges: bool = True, center: bool = True,
+                others: list[tuple[float, float, float, float]] = ()) -> list[tuple[int, float]]:
+    """The lines the item now sits on, as (axis, position): drawn while dragging so you see it snapped."""
+    if item.rotation % 360 != 0:
+        return []
+    w, h = item.drawn_size(size)
+    found = []
+    for axis, (pos, length) in enumerate(((item.x, w), (item.y, h))):
+        mine = (pos, pos + length / 2, pos + length, pos + length * align_share(item.align)[axis])
+        lines = ([0, canvas[axis]] if edges else []) + ([canvas[axis] / 2] if center else [])
+        for rect in others:
+            lines += [rect[axis], rect[axis] + rect[axis + 2]]
+        for line in dict.fromkeys(lines):
+            if any(abs(line - v) < 0.5 for v in mine):
+                found.append((axis, float(line)))
+    return found

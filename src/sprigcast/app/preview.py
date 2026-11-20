@@ -1,6 +1,6 @@
 """A widget that shows one canvas and lets you edit the active scene's items with the mouse.
 
-- Click an item to select it; drag to move it (snapping options are in the right-click menu → Snapping).
+- Click an item to select it; drag to move or resize it (both snap; options in the right-click menu → Snapping).
 - Drag a corner handle to scale; hold Alt while dragging a handle to crop instead.
 - Arrow keys nudge the selected item by 1 px, or 10 px with Shift.
 - Double-click a part to edit it in place: the show stays on screen, dimmed around the part, and the
@@ -630,8 +630,20 @@ class Preview(QWidget):
             p.drawPolygon(poly)
         p.restore()
 
+    def _paint_guides(self, p: QPainter) -> None:
+        """While dragging: the lines the item has snapped to, across the whole canvas."""
+        guides = getattr(self, "_guides", None) if self._drag is not None else None
+        if not guides:
+            return
+        bw, bh = self._bounds()
+        p.setPen(QPen(QColor(theme.ACCENT), 1, Qt.PenStyle.DashLine))
+        for axis, at in guides:
+            a, b = ((at, 0), (at, bh)) if axis == 0 else ((0, at), (bw, at))
+            p.drawLine(self.to_widget(*a), self.to_widget(*b))
+
     def _paint_selection(self, p: QPainter) -> None:
         self._paint_ghost(p)
+        self._paint_guides(p)
         selected = self._selected_item() if self.editable else None
         if selected is None:
             return
@@ -731,6 +743,8 @@ class Preview(QWidget):
             if corner is not None:
                 alt = bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
                 self._drag = ("crop" if alt else "scale", corner, event.position(), item.model_copy())
+                self._drag_prefs = snap_settings()  # resizing snaps too, read once per drag
+                self._drag_others = None
                 return
         index = edit.hit_test(self.scene.items, self.sizes, point)
         self.selected_index = index
@@ -773,9 +787,20 @@ class Preview(QWidget):
             others = self._drag_others if prefs["sources"] else []
             edit.move(item, start_item, size, delta, self._bounds(), snap,
                       edges=prefs["edges"], center=prefs["center"], others=others)
+            self._guides = edit.snap_guides(item, size, self._bounds(), edges=prefs["edges"],
+                                            center=prefs["center"], others=others) if snap else []
         elif mode == "scale":
             keep = self.keep_aspect != bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
-            edit.scale_from_corner(item, start_item, size, corner, point, keep_aspect=keep)
+            prefs = getattr(self, "_drag_prefs", None) or snap_settings()
+            off = not prefs["enabled"] or event.modifiers() & Qt.KeyboardModifier.ControlModifier
+            snap = 0.0 if off else prefs["distance"] / self._scale()
+            if prefs["sources"] and getattr(self, "_drag_others", None) is None:
+                self._drag_others = self._other_rects(item)
+            others = self._drag_others if prefs["sources"] else []
+            edit.snap_resize(item, start_item, size, corner, point, self._bounds(), snap, keep_aspect=keep,
+                             edges=prefs["edges"], center=prefs["center"], others=others)
+            self._guides = edit.snap_guides(item, size, self._bounds(), edges=prefs["edges"],
+                                            center=prefs["center"], others=others) if snap else []
         else:
             edit.crop_from_corner(item, start_item, size, corner, point)
         self.edited.emit(self.canvas_id, False)
@@ -789,6 +814,9 @@ class Preview(QWidget):
         if self._drag is not None and event.button() == Qt.MouseButton.LeftButton:
             moved = event.position() != self._drag[2]
             self._drag = None
+            if getattr(self, "_guides", None):
+                self._guides = []
+                self.update()
             if moved:
                 self.edited.emit(self.canvas_id, True)
 

@@ -132,7 +132,8 @@ def test_plugin_hotkeys_and_right_click_entries(added):
     entries = []
     place = plugin_hooks.Place.of(col, col.scene("chat-h"), "fc")
     plugin_hooks.fill_item_menu(api, col.source("fc"), lambda label, fn: entries.append((label, fn)), place)
-    assert any(e.startswith("Pixelate") for e, _ in entries) and any(e.startswith("Barrel roll") for e, _ in entries)
+    assert any(e.startswith("Pixelate") for e, _ in entries)
+    assert not any(e.startswith("Barrel roll") for e, _ in entries)  # a filter you add, not a menu entry (2026-11-20)
     next(fn for e, fn in entries if e.startswith("Pixelate"))()
     assert not col.source("fc").filters and place.item.effects[0].kind == "pixelate"  # that item only
     assert "plugin:hide:pixelate:chat-h/fc" in dict(hotkeys.actions(col))  # a key for that one item
