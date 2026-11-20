@@ -98,6 +98,40 @@ def grab_one(engine, source_id: str, timeout: float = WAIT_S * 2) -> QImage | No
     return QImage(data, w, h, w * 4, QImage.Format.Format_RGBA8888_Premultiplied).copy()
 
 
+def grab_scene(engine, scene_id: str, timeout: float = 8.0) -> QImage | None:
+    """A picture of a bloom that isn't on air, on its own canvas (Engine.grab_scene), or None if it can't be made."""
+    got: list = []
+    done = threading.Event()
+
+    def take(picture):
+        got.append(picture)
+        done.set()
+
+    engine.grab_scene(scene_id, take)
+    done.wait(timeout)
+    picture = got[0] if got else None
+    if picture is None or getattr(picture, "ndim", 0) != 3 or not picture.shape[0] or not picture.shape[1]:
+        return None
+    h, w = picture.shape[:2]
+    return QImage(picture.tobytes(), w, h, w * 4, QImage.Format.Format_RGBA8888_Premultiplied).copy()
+
+
+def take_scene(engine, scene_id: str, name: str, folder: Path | None, width: int | None = None,
+               as_data: bool = False) -> dict | None:
+    """Like take_one, for a bloom off air: saved as "screenshot <name> <time>.png" and/or returned as base64."""
+    image = grab_scene(engine, scene_id)
+    if image is None:
+        return None
+    image = shrink(image, width)
+    shot: dict = {"width": image.width(), "height": image.height()}
+    if folder is not None:
+        safe = "".join(c if c.isalnum() or c in " -_()" else "_" for c in name).strip() or "bloom"
+        shot["path"] = str(save(image, folder, safe))
+    if as_data:
+        shot["png"] = png_base64(image)
+    return shot
+
+
 def take_one(engine, source_id: str, name: str, folder: Path | None, width: int | None = None,
              as_data: bool = False) -> dict | None:
     """Like take, for one source: saved as "screenshot <name> <time>.png" and/or returned as base64 PNG."""

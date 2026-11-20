@@ -62,6 +62,7 @@ FEATURES = (
     "effects.freeze",      # freeze.start / freeze.stop / freeze.toggle (Freeze plugin), effect.ended "freeze.start"
     "record.pause",        # record.pause / resume / toggle_pause / chapter, record.status paused, record.paused event
     "place.bandwidth_test",  # place.set bandwidth_test (Twitch test mode); places.list says it where there is one
+    "screenshot.bloom_off_air",  # screenshot.take {bloom, shape}: any bloom on its canvas without putting it on air
     "layout.get",          # layout.get: every item's place, crop, bounds, source size and canvas box; flat, overlaps
 )
 PREVIEW = API_VERSION == 0
@@ -1331,6 +1332,22 @@ class NativeApi:
                 if not shots:
                     raise ApiError("not_allowed", "Nothing is drawing right now, so there's nothing to picture.")
                 return {"shots": [{**shot, "bloom": bloom.name} for shot in shots]}
+            off_air = getattr(self.host, "bloom_screenshot", None)
+            if off_air is not None:  # drawn on its own canvas, nothing on air changes; its sources wake for it
+                if self.host.stream_status() is not None or self.host.record_status() is not None:
+                    raise ApiError("not_allowed", f"{bloom.name!r} isn't on air. A bloom off air can't be pictured "
+                                                  "while live or recording: its sources would have to wake.")
+                shots = []
+                for layout in (family if shape == "both" else family[:1]):
+                    try:
+                        shot = off_air(layout.id, bloom.name, width, save, as_data)
+                    except OSError as exc:
+                        raise ApiError("failed", f"Couldn't save the screenshot: {exc}") from exc
+                    if shot is not None:
+                        shots.append({"shape": layout.canvas, **shot, "bloom": bloom.name, "on_air": False})
+                if not shots:
+                    raise ApiError("not_allowed", "Nothing is drawing right now, so there's nothing to picture.")
+                return {"shots": shots}
             placed = [i.source for i in family[0].items]
             if len(placed) != 1:
                 raise ApiError("not_allowed", f"{bloom.name!r} isn't on air, so there's nothing to picture.")
