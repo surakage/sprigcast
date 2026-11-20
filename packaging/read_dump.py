@@ -53,33 +53,31 @@ def main(path: str, folder: str) -> int:
         rec = record.ExceptionRecord
         faulting = record.ThreadId
         print(f"exception 0x{rec.ExceptionCode_raw:08x} at {where(rec.ExceptionAddress)} thread {record.ThreadId}")
-    qt = ("qt6", "shiboken", "pyside", "qtcore.pyd", "qtwidgets.pyd", "qtgui.pyd")
-    for thread in dump.threads.threads:
-        stack = thread.Stack
+    receiver = 0x22094c4ff80
+
+    def peek(address: int, size: int = 0x60):
         try:
-            data = reader.read(stack.StartOfMemoryRange, stack.MemoryLocation.DataSize)
-        except Exception as exc:  # noqa: BLE001
-            print(f"thread {thread.ThreadId}: stack not read: {exc}")
+            return reader.read(address, size)
+        except Exception:  # noqa: BLE001
+            return None
+
+    got = peek(receiver)
+    print("receiver memory:", "not in the dump" if got is None else "")
+    if got is not None:
+        for i in range(0, len(got), 8):
+            (v,) = struct.unpack_from("<Q", got, i)
+            print(f"  +0x{i:02x} {v:016x} {where(v)}")
+    for thread in dump.threads.threads:
+        if thread.ThreadId != faulting:
             continue
-        found = []
-        for offset in range(0, len(data) - 7, 8):
+        stack = thread.Stack
+        data = reader.read(stack.StartOfMemoryRange, stack.MemoryLocation.DataSize)
+        for offset in range(0x10d0, 0x1300, 8):
             (value,) = struct.unpack_from("<Q", data, offset)
-            name = where(value)
-            if name:
-                found.append((offset, name))
-        is_faulting = thread.ThreadId == faulting
-        if is_faulting:
-            print(f"thread {thread.ThreadId} <- faulting")
-            for offset, name in [f for f in found if f[0] >= 0x10d0][:60]:
-                print(f"  +0x{offset:05x} {name}")
-        elif any(n.lower().startswith(qt) for _o, n in found[:40]):
-            print(f"thread {thread.ThreadId}: Qt near the top of its stack")
-            for offset, name in found[:28]:
-                print(f"  +0x{offset:05x} {name}")
-        else:
-            print(f"thread {thread.ThreadId}: " + " | ".join(n.split(" ")[0] for _o, n in found[:5]))
+            note = where(value)
+            blob = None if note else peek(value, 0x40)
+            if blob is not None and struct.pack("<Q", receiver) in blob:
+                note = "POINTS AT A BLOCK HOLDING THE RECEIVER: " + " ".join(
+                    f"{struct.unpack_from('<Q', blob, i)[0]:x}" for i in range(0, 0x40, 8))
+            print(f"  stack +0x{offset:05x} {value:016x} {note}")
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv[1], sys.argv[2]))
