@@ -140,16 +140,17 @@ _WARM = threading.Event()
 
 
 def warm_up() -> None:
-    """Import Pillow (which shrinks the screenshot into the polaroid) once, ahead of the first screenshot: a
-    cold PC took about a second for it, which the first polaroid waited on. On a worker, and Python only:
-    Qt's own first uses stay where they were, since two threads touching a PySide type for the first time at
-    once can crash."""
+    """Load Pillow (which shrinks the screenshot into the polaroid) and Qt's SVG module once, ahead of the first
+    screenshot: on a cold PC loading them took over a second, which the first polaroid waited on. On a worker,
+    and only the imports: Qt's first drawing stays where it was, since two threads creating a PySide enum for the
+    first time at once crashed."""
     if _WARM.is_set():
         return
     _WARM.set()
 
     def run():
         import PIL.Image  # noqa: F401
+        import PySide6.QtSvg  # noqa: F401
 
     from sprigcast.core import workers
 
