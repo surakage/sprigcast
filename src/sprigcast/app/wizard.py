@@ -463,6 +463,9 @@ class OptimizeWizard(CardWindow):
         self.card.layout().activate()
         _, top, _, bottom = self.MARGINS
         needed = self.card.layout().minimumSize().height() + top + bottom
+        if self.layout() is not None:  # what the window itself insists on: asking for less made Qt complain
+            self.layout().activate()
+            needed = max(needed, self.layout().minimumSize().height(), self.minimumSizeHint().height())
         screen = self.screen()
         if screen is not None:
             needed = min(needed, screen.availableGeometry().height())  # never taller than the screen

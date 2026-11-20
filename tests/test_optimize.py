@@ -110,18 +110,27 @@ def test_room_grows_with_the_stage():
     assert optimize.room(optimize.PcProfile(**STRONG), c, (1080, 60))[1] is None  # upload untested
 
 
-def test_upload_speed_uses_the_big_blocks():
+def _line(kbps):
+    """A connection that carries `kbps`: pieces leave at that pace until the deadline."""
     import time as t
 
-    sent = []
+    def sender(deadline, count):
+        piece = 16 * 1024
+        while t.monotonic() < deadline:
+            t.sleep(piece * 8 / 1000 / kbps)
+            count(piece)
 
-    def post(data):
-        sent.append(len(data))
-        t.sleep(len(data) / 2_000_000)  # 16 Mbps
+    return sender
 
-    kbps = optimize.upload_speed(seconds=0.6, post=post, connections=1)
-    assert 12000 < kbps < 17000
-    assert optimize.upload_speed(seconds=0.2, post=lambda d: (_ for _ in ()).throw(OSError("offline"))) is None
+
+def test_upload_speed_counts_what_leaves_until_the_deadline():
+    kbps = optimize.upload_speed(seconds=0.8, sender=_line(16000), connections=1)
+    assert 13000 < kbps < 17000
+
+    def offline(deadline, count):
+        raise OSError("offline")
+
+    assert optimize.upload_speed(seconds=0.2, sender=offline) is None
 
 
 def test_x264_speed_measures_something():
@@ -265,13 +274,8 @@ def test_a_lighter_clean_stream_keeps_the_most_proven():
 def test_upload_speed_adds_up_what_several_connections_carry():
     """PC check 2026-11-19: 11.4 Mbps measured on a line that had carried 23 Mbps of streams for an hour.
     One connection alone tops out below the line; streams to three places are three connections."""
-    import time as t
-
-    def post(data):
-        t.sleep(len(data) / 750_000)  # each connection carries 6 Mbps
-
-    one = optimize.upload_speed(seconds=1.2, post=post, connections=1)
-    four = optimize.upload_speed(seconds=1.2, post=post, connections=4)
+    one = optimize.upload_speed(seconds=1.2, sender=_line(6000), connections=1)
+    four = optimize.upload_speed(seconds=1.2, sender=_line(6000), connections=4)
     assert 4500 < one < 6600 and 18000 < four < 26000
 
 
@@ -425,7 +429,54 @@ def test_the_upload_test_says_who_it_is_and_tries_a_second_shape_when_refused(mo
         return Reply()
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
-    kbps = optimize.upload_speed(seconds=0.4, connections=1)
-    assert kbps and kbps > 0
-    assert "origin" not in seen[0] and "origin" in seen[1]
-    assert all("origin" in h for h in seen[2:])  # the shape that works goes first from then on
+    shape = optimize._upload_shape(optimize.UPLOAD_URL)
+    assert len(seen) == 2 and "Origin" in shape and "python" not in shape["User-Agent"].lower()
+
+
+def test_the_real_sender_measures_a_slow_server_without_waiting_for_answers():
+    """PC check 2026-11-19 (#711): every connection ended in "The read operation timed out" and the test read
+    15 Mbps on a line that carries 23. Bytes count as they leave; a request cut off by the deadline, or an
+    answer that never comes, takes nothing away."""
+    import socket
+    import threading
+    import time as t
+
+    server = socket.socket()
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 64 * 1024)
+    server.bind(("127.0.0.1", 0))
+    server.listen(8)
+    stop = threading.Event()
+    rate = 250_000  # bytes a second each connection is read at: 2 Mbps, and never an answer
+
+    def drain(conn):
+        conn.settimeout(2)
+        try:
+            while not stop.is_set():
+                if not conn.recv(25_000):
+                    break
+                t.sleep(0.1)
+        except OSError:
+            pass
+        conn.close()
+
+    def accept():
+        server.settimeout(0.2)
+        while not stop.is_set():
+            try:
+                conn, _ = server.accept()
+            except OSError:
+                continue
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 64 * 1024)
+            threading.Thread(target=drain, args=(conn,), daemon=True).start()
+
+    threading.Thread(target=accept, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{server.getsockname()[1]}/__up"
+        began = t.monotonic()
+        kbps = optimize.upload_speed(url, seconds=4.0, sender=optimize._upload_sender(url, {"User-Agent": "t"}),
+                                     connections=2)
+        assert t.monotonic() - began < 8  # cut off at the deadline, not held by the answer
+        assert 2 * rate * 8 / 1000 * 0.6 < kbps < 2 * rate * 8 / 1000 * 1.5, kbps
+    finally:
+        stop.set()
+        server.close()
