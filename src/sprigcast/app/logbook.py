@@ -379,7 +379,8 @@ class StreamReport:
             self._write(f"{stamp}  {st.name}: {status}, {kbps:.0f} / {average:.0f} kbps, "
                         f"{frames} frames (+{frames - last_f}), {st.dropped} dropped, "
                         f"backlog {stats.get('backlog_s', 0.0):.2f} s, auto-pilot {pilot_text}, "
-                        f"encode {stats.get('encode_ms', 0.0):.1f} ms, network {stats.get('network_pct', 0.0):.0f}%")
+                        f"encode {stats.get('encode_ms', 0.0):.1f} ms, network {stats.get('network_pct', 0.0):.0f}%"
+                        + (f" (sending {stats['sending_pct']:.0f}%)" if "sending_pct" in stats else ""))
         extra = []
         if render_stats is not None:
             extra.append(f"render {render_stats.fps:.0f} fps, {render_stats.render_ms:.1f} ms, "

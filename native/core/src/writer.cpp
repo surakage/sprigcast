@@ -126,6 +126,7 @@ struct Core {
     bool catching_up = false;
     int64_t hole_from = -1;    // frames of textures lost with the encoder on the card start here (writer thread)
     double write_seconds = 0, longest_write = 0;
+    double encode_seconds = 0;  // time handing pictures to the encoder and taking its packets, writing them not counted
     bool yuv420 = false;  // the encoder took no NV12: pictures are repacked as I420 (writer thread only)
     std::deque<int64_t> faults;  // SPRIGCAST_WRITER_FAULT (tests): pictures whose encoding fails ("10" or "10,20")
     int reopen_ms = 0;  // SPRIGCAST_WRITER_REOPEN_MS (tests): opening the encoder again takes this long
@@ -358,6 +359,17 @@ void Core::write_packets(AVCodecContext *enc, AVStream *stream, AVPacket *use) {
 }
 
 void Core::encode_video(AVFrame *frame, bool key) {
+    // Timed for the stream report's "encode ms" (PC soak 2026-11-20: 0.0 ms on every line with the engine encoding).
+    const double began = now_s(), written = write_seconds;  // write_seconds only changes on this thread
+    struct Timed {
+        Core &c;
+        double began, written;
+        ~Timed() {
+            const double spent = now_s() - began - (c.write_seconds - written);
+            std::lock_guard<std::mutex> hold(c.lock);
+            c.encode_seconds += spent > 0 ? spent : 0;
+        }
+    } timed{*this, began, written};
     if (slow_ms > 0 && frame && recoveries > 0)  // tests: an encoder that only just keeps up
         std::this_thread::sleep_for(std::chrono::milliseconds(slow_ms));
     if (frame && yuv420) {  // an encoder without NV12: the planes apart, U then V
@@ -1064,6 +1076,7 @@ SC_API int sc_writer_stats_get(sc_writer *w, sc_writer_stats *out) {
         out->queued = static_cast<int>(c.pictures.size());
         out->write_seconds = c.write_seconds;
         out->longest_write = c.longest_write;
+        out->encode_seconds = c.encode_seconds;
         out->last_pts = c.last_pts;
         out->frames_late = c.frames_late;
         out->frames_repeated = c.frames_repeated;

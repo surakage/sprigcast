@@ -700,6 +700,8 @@ typedef struct sc_writer_stats {
     int on_card;                               /* takes textures now (0 once its encoder left the card) */
     int recoveries;                            /* times the video encoder failed and started again from memory
                                                 * (once at most: a second failure fails the writer) */
+    double encode_seconds;                     /* time encoding pictures (writing the packets not counted); last, so
+                                                * an older engine leaves it 0 */
 } sc_writer_stats;
 SC_API int sc_writer_open(const sc_writer_config *cfg, sc_writer **out);
 SC_API int sc_writer_video(sc_writer *writer, const uint8_t *nv12, int stride, int64_t pts);
