@@ -1012,3 +1012,33 @@ def test_saving_settings_keeps_a_frame_rate_optimize_queued(app):
         assert apply_pending_video(col) and col.canvases[0].fps == 30
     finally:
         QSettings().remove(PENDING_VIDEO)
+
+
+def test_looking_for_the_main_window_never_makes_settings_pages(app):
+    """PC 2026-11-19 (build 44677899228): opening Settings held the scene 1.1 to 1.2 s. The pop-up helper asked
+    every open window hasattr(window, "request_close"); Settings answers an unknown name by making its pages,
+    so all of them were made at once."""
+    from sprigcast.app import modal
+    from sprigcast.app.settings_window import TABS
+
+    w = _window(_collection(), tab="General", fill_after_show=True)
+    w.show()
+    try:
+        before = set(w._built)
+        assert len(before) < len(TABS)
+        assert modal._main_window() is not w
+        assert set(w._built) == before
+    finally:
+        w.close()
+
+
+def test_theme_tiles_work_their_colors_out_once(app, monkeypatch):
+    from sprigcast.app import look_preview, theme
+
+    look_preview._palettes.clear()
+    calls = []
+    real = theme.palette
+    monkeypatch.setattr(theme, "palette", lambda *a: calls.append(a) or real(*a))
+    first = look_preview.colors_for("slothbloom")
+    first["BG"] = "#000000"  # a copy: changing it never reaches the next asker
+    assert look_preview.colors_for("slothbloom")["BG"] != "#000000" and len(calls) == 1

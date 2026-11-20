@@ -626,6 +626,9 @@ class SettingsWindow(QDialog):
         if page is not None and page not in self._built:
             self.ensure(page)
         else:  # page by page, stopping at the one that has it
+            if name not in self.__dict__.setdefault("_asked_blind", set()):
+                self._asked_blind.add(name)  # said once: a probe from outside made every page at once (2026-11-19)
+                log.info("settings: '%s' asked for before its page was made; making pages to find it", name)
             for page in TABS:
                 if name in self.__dict__:
                     break

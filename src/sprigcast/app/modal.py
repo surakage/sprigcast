@@ -50,7 +50,10 @@ WM_SYSCOMMAND, SC_CLOSE = 0x0112, 0xF060
 def _main_window():
     from PySide6.QtWidgets import QApplication
 
-    return next((w for w in QApplication.topLevelWidgets() if hasattr(w, "request_close")), None)
+    # Asked of the class, never the window: Settings makes its pages when an attribute it doesn't have yet is
+    # asked for, so hasattr(window, ...) built every page at once each time Settings opened (1.1 to 1.2 s with
+    # the scene held, PC 2026-11-19).
+    return next((w for w in QApplication.topLevelWidgets() if hasattr(type(w), "request_close")), None)
 
 
 def close_main_after(dialog, window) -> None:
