@@ -2844,15 +2844,23 @@ class MainWindow(QMainWindow):
         help_menu.addAction("Support SprigCast").triggered.connect(lambda: self._open_tip_page())
 
     def _fill_plugin_tools(self) -> None:
-        """Tools menu entries that added plugins bring (register_tool), under Plugin store."""
+        """Tools menu entries that added plugins bring (register_tool), under Plugin store. Left as they are
+        when the plugins' tools haven't changed, so screen readers keep the items they were told about."""
+        from sprigcast.app.menu_refresh import announce
+
+        tools = list(plugin_hooks.tools())
+        if getattr(self, "_plugin_tools_shown", None) == tools:
+            return
+        self._plugin_tools_shown = tools
         for action in self._plugin_tool_actions:
             self._tools_menu.removeAction(action)
             action.deleteLater()
         self._plugin_tool_actions = []
-        for label, fn in plugin_hooks.tools():
+        for label, fn in tools:
             action = self._tools_menu.addAction(label)
             action.triggered.connect(lambda _=False, fn=fn: self._run_plugin_tool(fn))
             self._plugin_tool_actions.append(action)
+        announce(self._tools_menu)
 
     def _run_plugin_tool(self, fn) -> None:
         try:
