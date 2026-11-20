@@ -604,6 +604,38 @@ def test_projector_views_are_drawn_at_screen_rate_only():
     assert fake.drawn == 3 and len(got) == 3
 
 
+def test_top_menus_keep_their_items_for_screen_readers(app, tmp_path, monkeypatch):
+    """Opening a top menu must not delete and remake its items (a screen reader saw none in Gardens),
+    and every item is readable through Qt's accessibility tree."""
+    import keyring
+    from PySide6.QtGui import QAccessible
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    from sprigcast.app.main_window import MainWindow
+
+    w = MainWindow(_collection(), tmp_path / "scenes.json")
+    try:
+        for top in w.menuBar().actions():
+            menu = top.menu()
+            menu.aboutToShow.emit()
+            before = list(menu.actions())
+            menu.aboutToShow.emit()  # opened again with nothing changed: the very same items
+            assert menu.actions() == before, top.text()
+            face = QAccessible.queryAccessibleInterface(menu)
+            names = [face.child(i).text(QAccessible.Text.Name) for i in range(face.childCount())]
+            wanted = [a.text().replace("&", "").partition("\t")[0] for a in before if not a.isSeparator()]
+            assert wanted and all(any(n and n.replace("&", "").startswith(t) for n in names) for t in wanted), \
+                (top.text(), names)
+        gardens = w.menuBar().actions()[3].menu()
+        remove = next(a for a in gardens.actions() if a.text() == "Remove")
+        assert not remove.isEnabled()  # one garden
+        w.gardens.shelf.add_garden("Second", _collection())
+        gardens.aboutToShow.emit()  # the list changed: rebuilt, so Remove can be used now
+        assert next(a for a in gardens.actions() if a.text() == "Remove").isEnabled()
+    finally:
+        w.close()
+
+
 def test_menu_bar_order_and_shortcut_list(app, tmp_path, monkeypatch):
     import keyring
 

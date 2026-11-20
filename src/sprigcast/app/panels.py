@@ -331,9 +331,16 @@ class Panels(QObject):
 
     def fill_menu(self, menu, extra_actions=(), after_panels=()) -> None:
         """This screen's panels (a tick on the ones showing), then after_panels, then extra_actions.
-        Pop out is each panel's own ↗ button."""
-        menu.clear()
+        Pop out is each panel's own ↗ button. Rebuilt only when the list or a tick changes (menu_refresh)."""
+        from sprigcast.app.menu_refresh import refresh
+
         offered = [p for p in self.panels.values() if self.mode in p.modes]
+        key = (tuple((p.key, p.title, self.is_shown(p.key), self.is_popped(p.key)) for p in offered),
+               tuple(id(a) for a in (*after_panels, *extra_actions)))
+        refresh(menu, key, lambda: self._build_menu(menu, offered, extra_actions, after_panels))
+
+    def _build_menu(self, menu, offered, extra_actions, after_panels) -> None:
+        menu.clear()
         for panel in offered:
             on = self.is_shown(panel.key) or self.is_popped(panel.key)
             action = menu.addAction(panel.title + ("  (popped out)" if self.is_popped(panel.key) else ""))

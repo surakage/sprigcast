@@ -232,9 +232,17 @@ class GardenControl:
             self.fill(menu, kind)
 
     def fill(self, menu: QMenu, kind: str) -> None:
-        """New…, Duplicate…, Rename…, Remove, then Import and Export. Switching is the header chip's job."""
-        menu.clear()
+        """New…, Duplicate…, Rename…, Remove, then Import and Export. Switching is the header chip's job.
+        Rebuilt only when Remove's state or the other apps' collections change (see menu_refresh)."""
+        from sprigcast.app.menu_refresh import refresh
+
         entries = self.shelf.gardens() if kind == "garden" else self.shelf.paths()
+        others = () if kind == "path" else tuple(
+            (app, tuple(f.name for f in files)) for app, files in sorted(self._other_apps().items()))
+        refresh(menu, (kind, len(entries) > 1, others), lambda: self._build(menu, kind, entries))
+
+    def _build(self, menu: QMenu, kind: str, entries) -> None:
+        menu.clear()
         menu.addAction("New…").triggered.connect(lambda: self._ask_new(kind, copy=False))
         menu.addAction("Duplicate…").triggered.connect(lambda: self._ask_new(kind, copy=True))
         menu.addAction("Rename…").triggered.connect(lambda: self._ask_rename(kind))
