@@ -471,9 +471,21 @@ class MediaSource(Source):
                     self._speed = clamp_speed(settings.get("speed", 1.0))
             self._ensure_thread()
 
+    @property
+    def follows_air(self) -> bool:
+        """A sound file: told hidden or not by whether a bloom it's placed in is on air (render/engine.py)."""
+        return not self.has_video
+
     def set_hidden(self, hidden: bool) -> None:
         """Its eye went off (pause) or on again (start over, or carry on). Any thread."""
-        if not self.has_video:
+        if not self.has_video:  # a placed sound file: its bloom went on air (play) or off (pause)
+            if hidden:
+                if self.state == "playing":
+                    self.pause()
+            elif self.settings.get("restart_on_show", True):
+                self.restart()
+            else:
+                self.play()
             return
         if self._native is not None:
             return self._control(sprigcore.MEDIA_HIDE if hidden else sprigcore.MEDIA_SHOW, ensure=not hidden)
