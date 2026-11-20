@@ -234,6 +234,22 @@ for. The connection closes next. Look again in a second or two: it's often a res
 
 Blooms hold sprigs, so `{"bloom": "Chatting", "item": "Cam"}` also finds the Cam inside Chatting's own sprig.
 
+### layout
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `layout.get` | Where everything in a bloom or sprig sits, per shape, top of the stack first. | `bloom` or `sprig`: name or id, `shape` (optional): both (default), horizontal or vertical, `flat` (optional): true for only the things themselves (no sprigs), `overlaps` (optional): true to also list overlapping pairs |
+
+`layout.get` reads the garden; it draws nothing and changes nothing, so it works for blooms that aren't on air. It answers `{"bloom" or "sprig": name, "id", "shapes": {"horizontal": {"canvas": {"width", "height"}, "items": [...]}}}`. Each item has:
+
+- `id`, `name`, `kind` (`sprig` for a nested sprig, else the source's kind), `sprig`, `visible`, `locked`, and `shown` (visible, and so is every sprig it's inside).
+- Its place as saved: `x`, `y` (top-left of its box before turning), `scale_x`, `scale_y`, `rotation` (degrees clockwise, around the `align` point), `align`, `crop` (`left`, `top`, `right`, `bottom` in source pixels) and `bounds` (`mode`: off, fit, fill or stretch; `width`, `height`; `align`).
+- `source_size`: the source's own `width` and `height` in pixels. A sprig is as big as its canvas. `null` when SprigCast doesn't know yet (a source that hasn't drawn); then `size`, `corners` and `box` are `null` too.
+- `size`: its box before turning. `corners`: the box's four corners on the canvas (top-left, top-right, bottom-left, bottom-right). `box`: the upright rectangle around those corners (`x`, `y`, `width`, `height`), in the canvas pixels of the bloom or sprig you asked for.
+- A sprig has `items`: what's inside it. Their `x`, `y` and scales are in the sprig's own pixels, and their `corners` and `box` are where they end up on the canvas you asked for. `in` lists the sprigs an item is inside.
+
+With `overlaps`, each shape also has `overlaps`: `[{"a", "a_name", "a_in", "b", "b_name", "b_in", "box"}]` for each pair of shown things whose boxes share more than a pixel. Boxes are upright rectangles, so two turned things may be listed when only their corners' rectangles touch.
+
 ### media
 
 | Action | What it does | Fields |
