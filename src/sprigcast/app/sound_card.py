@@ -724,7 +724,10 @@ class TunePage(QWidget):
         back.setIcon(icons.icon("chevron-left", theme.TEXT))
         back.setIconSize(QSize(18, 18))
         back.setFixedSize(30, 30)
-        back.setStyleSheet(theme.button_style(15, "0px"))
+        # Its size in the style sheet too: the sheet's own min-height (18 px) won over setFixedSize and made it
+        # 30 x 20, too short for its radius, so Qt drew it square (user 2026-11-20).
+        back.setStyleSheet(theme.button_style(14, "0px", extra="min-width: 28px; max-width: 28px;"
+                                                             " min-height: 28px; max-height: 28px;"))
         back.setCursor(Qt.CursorShape.PointingHandCursor)
         back.setToolTip("Back to all sounds")
         back.clicked.connect(on_back)
