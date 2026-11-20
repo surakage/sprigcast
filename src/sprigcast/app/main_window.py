@@ -1582,6 +1582,19 @@ class MainWindow(QMainWindow):
         self._changed()
         self._refresh_scenes()
 
+    def _reorder_blooms(self, ids: list[str]) -> None:
+        """Live's Edit: one list's blooms in a new order. They keep the places they held among all scenes,
+        so other lists stay put; what's on air doesn't change, and 1-9 follow the new order."""
+        scenes = self.collection.scenes
+        slots = sorted(i for i, s in enumerate(scenes) if s.id in ids)
+        if len(slots) != len(ids):
+            return  # a bloom went meanwhile
+        by_id = {s.id: s for s in scenes}
+        for slot, scene_id in zip(slots, ids):
+            scenes[slot] = by_id[scene_id]
+        self._changed()
+        self._refresh_scenes()
+
     def _move_scene(self, scene_id: str, step: int) -> None:
         """Swap with the neighbour in the same list (same canvas and folder)."""
         scenes = self.collection.scenes
@@ -2028,6 +2041,7 @@ class MainWindow(QMainWindow):
         """Live mode's own screen (app/live_stage.py): no docks, the stage, bloom tiles and a side column."""
         self.live_panel = LivePanel(self._switch_to_scene, self._set_sprig_state, on_edit=self._edit_in_build)
         self.live_panel.on_project = self._live_bloom_menu
+        self.live_panel.on_reorder = self._reorder_blooms
         self._build_transition_menu()
         self.live_side = LiveSide(self._on_live_clicked, self._on_record_clicked, self._on_clip_clicked,
                                   self._edit_destination, self._on_stream_toggled, self._place_action,
