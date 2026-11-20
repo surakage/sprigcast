@@ -49,7 +49,7 @@ SMALL_CHIP = CHIP + "QPushButton { padding: 7px 6px; }"
 ROW_HEIGHT = 34
 LABEL_WIDTH = 132
 SPEEDS = ((0.5, "0.5×"), (0.75, "0.75×"), (1.0, "1×"), (1.25, "1.25×"), (1.5, "1.5×"), (2.0, "2×"))
-HEAR = ((False, "Stream"), (True, "Both"), ("only", "Just me"))
+HEAR = ((False, "Stream"), (True, "Stream + me"), ("only", "Just me"))
 VOLUME_RANGE = (-60, 12)  # dB, the same as the sound strip's slider
 
 
@@ -199,7 +199,7 @@ class MediaDialog(CardDialog):
         grid.addLayout(volume_row, 0, 1)
         monitor = s.get("monitor", False)
         self.hear = Choice(HEAR, "only" if monitor == "only" else bool(monitor))
-        hear_label = _name("Listeners")
+        hear_label = _name("Who hears it")
         hear_label.setFixedWidth(LABEL_WIDTH)
         grid.addWidget(hear_label, 1, 0)
         grid.addWidget(self.hear, 1, 1)
