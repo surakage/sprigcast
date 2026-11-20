@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import operator
+import re
 import threading
 from pathlib import Path
 from typing import Any, Literal
@@ -397,9 +398,30 @@ class RecordingSettings(BaseModel):
         return tuple(AUDIO_TRACKS[t - 1] for t in self.audio_tracks)
 
 
-SOUND_TYPES = ({"name": "Voice", "color": "green"}, {"name": "Game", "color": "blue"},
-               {"name": "Alerts", "color": "yellow"}, {"name": "Music", "color": "violet"},
-               {"name": "Other", "color": "gray"})
+# A to Z (user 2026-11-20: Voice, Game, TTS, SFX, Music, Browser and Other, alphabetical). SFX keeps the color the
+# old Alerts type had, since most of its sounds go there.
+SOUND_TYPES = ({"name": "Browser", "color": "teal"}, {"name": "Game", "color": "blue"},
+               {"name": "Music", "color": "violet"}, {"name": "Other", "color": "gray"},
+               {"name": "SFX", "color": "yellow"}, {"name": "TTS", "color": "orange"},
+               {"name": "Voice", "color": "green"})
+_OLD_TYPES = ("Voice", "Game", "Alerts", "Music", "Other")  # the first five (#755), before 2026-11-20
+_TTS = re.compile(r"tts|text to speech|speech|speaker\.?bot", re.IGNORECASE)
+
+
+def alerts_type_now(kind: str, name: str) -> str:
+    """Where a sound that was in the old Alerts type goes: web pages to Browser, speech to TTS, the rest SFX."""
+    if _TTS.search(name or ""):
+        return "TTS"
+    return "Browser" if kind == "browser" else "SFX"
+
+
+def _new_sound_types(types: list[dict]) -> list[dict]:
+    """The old five become the new seven; types you made yourself stay, with their colors."""
+    names = [str(t.get("name", "")) for t in types]
+    if not all(n in names for n in _OLD_TYPES):
+        return types  # renamed or removed some of them: yours to keep as they are
+    yours = [t for t in types if t.get("name") not in _OLD_TYPES and t.get("name") not in {d["name"] for d in SOUND_TYPES}]
+    return [dict(t) for t in SOUND_TYPES] + yours
 
 
 class AudioSettings(BaseModel):
@@ -545,6 +567,11 @@ class SceneCollection(BaseModel):
         for output in self.outputs:
             if output.canvas not in canvas_ids:
                 raise ValueError(f"output {output.id!r} uses unknown canvas {output.canvas!r}")
+        self.audio.sound_types = _new_sound_types(self.audio.sound_types)
+        if "Alerts" not in {t.get("name") for t in self.audio.sound_types}:  # its sounds move to the nearest type
+            for source in self.sources:
+                if source.settings.get("group") == "Alerts":
+                    source.settings = {**source.settings, "group": alerts_type_now(source.kind, source.name)}
         for source in self.sources:  # "SFX & alerts" is just "SFX" now (a name you typed yourself stays)
             if source.kind == "app_audio" and source.name == "SFX & alerts" and source.settings.get("preset") == "sfx":
                 source.name = "SFX"

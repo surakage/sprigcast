@@ -55,7 +55,9 @@ def test_groups_show_only_what_is_playing(app):
 
     assert auto_group("Mic", "audio_input") == "Voice"
     assert auto_group("Spotify", "audio_output") == "Music"
-    assert auto_group("Alerts (Vertical)", "audio_output") == "Alerts"
+    assert auto_group("Alerts (Vertical)", "audio_output") == "SFX"
+    assert auto_group("Text to speech", "app_audio") == "TTS" and auto_group("Speaker.bot", "audio_output") == "TTS"
+    assert auto_group("Overlay", "browser") == "Browser"
     assert auto_group("Desktop audio", "audio_output") == "Game"
     changes = []
     mic_first = []
@@ -67,23 +69,23 @@ def test_groups_show_only_what_is_playing(app):
     assert mic_first == [True] and not card.mic_first.isChecked()
     card.resize(264, 600)
     card.show()
-    card.show_sound([Sound("mic", "Mic", group="Voice"), Sound("al", "Alerts", group="Alerts"),
-                     Sound("tts", "TTS", group="Alerts", pinned=True), Sound("sp", "Spotify", group="Music", muted=True)])
-    assert set(card.group_meters) == {"Voice", "Alerts", "Music"}
+    card.show_sound([Sound("mic", "Mic", group="Voice"), Sound("al", "Alerts", group="SFX"),
+                     Sound("tts", "TTS", group="SFX", pinned=True), Sound("sp", "Spotify", group="Music", muted=True)])
+    assert set(card.group_meters) == {"Voice", "SFX", "Music"}
     shown = lambda: {sid for sid, row in card.rows.items() if row.isVisibleTo(card)}  # noqa: E731
     sub = lambda g: card.parts[g]["sub"].text()  # noqa: E731
     card.set_levels({"mic": (-60, -60), "al": (-60, -60), "tts": (-60, -60), "sp": (-60, -60)}, now=100.0)
     assert shown() == {"tts"}  # calm: groups only, plus a sound set to Always show
-    assert sub("Voice") == "quiet" and sub("Alerts") == "2 quiet" and sub("Music") == "Spotify muted"
-    # Alerts plays: the group lights up in its colour and names what's playing.
+    assert sub("Voice") == "quiet" and sub("SFX") == "2 quiet" and sub("Music") == "Spotify muted"
+    # SFX plays: the group lights up in its colour and names what's playing.
     card.set_levels({"al": (-10, -20), "mic": (-60, -60)}, now=101.0)
-    assert sub("Alerts") == "Alerts" and GROUP_COLOURS["Alerts"] in card.parts["Alerts"]["name"].styleSheet()
+    assert sub("SFX") == "Alerts" and GROUP_COLOURS["SFX"] in card.parts["SFX"]["name"].styleSheet()
     assert theme.MUTED in card.parts["Voice"]["name"].styleSheet()
     card.set_levels({"al": (-60, -60)}, now=106.0)  # quiet again for longer than LINGER_S
-    assert sub("Alerts") == "2 quiet"
-    card.toggle_group("Alerts")
+    assert sub("SFX") == "2 quiet"
+    card.toggle_group("SFX")
     assert shown() == {"al", "tts"}
-    card.toggle_group("Alerts")
+    card.toggle_group("SFX")
     card.edit.click()
     assert card.editing and shown() == set(card.rows)
     card.edit.click()

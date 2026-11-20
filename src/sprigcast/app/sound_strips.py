@@ -357,7 +357,7 @@ class SoundStrips(QFrame):
             chip.clicked.connect(lambda _on=False, k=key: self._pick(k))
             self.chips[key] = chip
             find.addWidget(chip)
-        self.kind = QPushButton()  # the sound's type: a pill that lists Voice, Game, Alerts, Music and Other
+        self.kind = QPushButton()  # the sound's type: a pill that lists the types A to Z
         self.kind.setFixedHeight(26)
         self.kind.setCursor(Qt.CursorShape.PointingHandCursor)
         self.kind.setToolTip("Show one type")
