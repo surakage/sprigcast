@@ -67,8 +67,6 @@ GPU_SKIP_MAX_S = 2.0  # the card stuck longer than this (a lost device?): draw a
 SOURCE_BUDGET_MS = 5.0  # a source averaging more than this per frame is drawn less often (see _charge)
 CHARGE_CAP_MS = 4 * SOURCE_BUDGET_MS  # the most one frame adds to a source's average (_charge)
 BUDGET_MARGIN = 0.8  # ...and drawn more often again only under this share of the lower step's budget
-SCENE_SHOT_WAIT_S = 4.0  # a bloom pictured off air (grab_scene) is taken this long after the ask at the latest
-SCENE_SHOT_SETTLE_S = 0.3  # ...or this long after every source in it has a picture (a page's first paint lands)
 WAKE_WAIT_S = 2.0  # a switch to a bloom whose camera is closed shows the old bloom until it opens, at most this
 STAGED_VIEW = "~next:"  # + canvas id: the engine's view of the bloom Build edits there (Engine._native_views)
 PART_VIEW = "~part"  # the engine's view of the sprig open in Build
@@ -167,7 +165,6 @@ class Engine:
         self._taps: dict[str, list[Callable[[Frame], None]]] = {}  # canvas id -> recorders, later streams
         self._taps_lock = threading.Lock()
         self._grabs: list[tuple[str | None, Callable[[np.ndarray | None], None]]] = []  # see grab_source
-        self._scene_shots: list[dict] = []  # blooms asked for a picture while off air, see grab_scene
         self._transitions: dict[str, Running] = {}  # canvas id -> the transition it is in
         self._filtered: frozenset[str] = frozenset()  # sources with video filters, see _sync_filters
         # canvas id -> (outgoing scene, give up at, sources still opening): a switch waiting for them
@@ -270,66 +267,6 @@ class Engine:
         runs on the render thread and must not block."""
         with self._taps_lock:
             self._grabs.append((source_id, callback))
-
-    def grab_scene(self, scene_id: str, callback: Callable[[np.ndarray | None], None]) -> None:
-        """A picture of a bloom that isn't on air, on its own canvas, handed to callback as an H x W x 4 RGBA array
-        (None if it can't be made). Nothing on air changes: until it's taken the bloom counts as drawn, so its
-        sources wake as for Build's edited bloom, and it's taken once they have pictures (SCENE_SHOT_SETTLE_S
-        after the last one, SCENE_SHOT_WAIT_S at most). They go back to sleep by themselves afterwards. The
-        callback runs on the render thread and must not block."""
-        with self._taps_lock:
-            self._scene_shots.append({"scene": scene_id, "callback": callback, "since": None, "ready": None})
-
-    def _scene_shot_sources(self, scene) -> set[str]:
-        """Every source showing in a bloom, however deep in sprigs (items with their eye off left out)."""
-        collection = self._collection
-        configs = {s.id: s for s in collection.sources}
-        visible: set[str] = set()
-        _walk_visible(collection, configs, visible, scene, set(), (scene.id,))
-        return visible
-
-    def _serve_scene_shots(self, compositor, sizes, now: float) -> None:
-        collection = self._collection
-        with self._taps_lock:
-            waiting = list(self._scene_shots)
-        for shot in waiting:
-            scene = next((s for s in collection.scenes if s.id == shot["scene"]), None)
-            canvas = None if scene is None else next((c for c in collection.canvases if c.id == scene.canvas), None)
-            picture, done = None, scene is None or canvas is None
-            if not done:
-                if shot["since"] is None:
-                    shot["since"] = now
-                textures = getattr(compositor, "textures", None)
-                late = [sid for sid in self._scene_shot_sources(scene)
-                        if (src := self._sources.get(sid)) is not None and src.kind != PART_KIND
-                        and (src.asleep or (textures is not None and sid not in textures and _has_size(src)))]
-                if late:
-                    shot["ready"] = None
-                elif shot["ready"] is None:
-                    shot["ready"] = now
-                settled = shot["ready"] is not None and now - shot["ready"] >= SCENE_SHOT_SETTLE_S
-                if settled or now - shot["since"] >= SCENE_SHOT_WAIT_S:
-                    done = True
-                    key = f"sceneshot:{canvas.id}"
-                    try:
-                        compositor.render(canvas.model_copy(update={"id": key}), scene, sizes)
-                        data = compositor.read(key)
-                        picture = np.frombuffer(data, dtype=np.uint8).reshape(canvas.height, canvas.width, 4).copy()
-                    except Exception:
-                        log.exception("picturing the bloom %s off air failed", scene.name)
-                    finally:
-                        target = compositor.targets.pop(key, None)
-                        release = getattr(target, "release", None)
-                        if release is not None:
-                            release()
-            if done:
-                with self._taps_lock:
-                    if shot in self._scene_shots:
-                        self._scene_shots.remove(shot)
-                try:
-                    shot["callback"](picture)
-                except Exception:
-                    log.exception("scene shot callback for %s failed", shot["scene"])
 
     def _serve_grabs(self, compositor, sizes) -> None:
         with self._taps_lock:
@@ -1539,10 +1476,6 @@ class Engine:
             waiting = self._waking.get(canvas.id)
             if waiting is not None and waiting[0] not in drawn:  # still on screen while a camera opens
                 drawn.append(waiting[0])
-        for shot in list(self._scene_shots):  # a bloom being pictured off air: its sources wake, its sprigs draw
-            scene = next((s for s in collection.scenes if s.id == shot["scene"]), None)
-            if scene is not None and scene not in drawn:
-                drawn.append(scene)
         for name in list(self.views):  # what the virtual camera shows wakes its sources (and sprigs)
             _canvas, scene = self._view_scene(name)
             if scene is not None and scene not in drawn:
@@ -1914,7 +1847,7 @@ class Engine:
         # (A switch waiting for a picture isn't a reason: the engine draws the bloom held, and the sources waited
         # for are copied for Python's compositor on their own, see `awaited` in _tick. Counting it as one had
         # Python draw every sprig and copy every source of every canvas for the whole wait.)
-        if self._grabs or self._scene_shots or (self.editing_part and not self._engine_shows(native, PART_VIEW)):
+        if self._grabs or (self.editing_part and not self._engine_shows(native, PART_VIEW)):
             return True
         canvases = {c.id for c in self._collection.canvases if c.enabled}
         riding = {f"view:{name}" for names in self._riders.values() for name in names}
@@ -2398,9 +2331,6 @@ class Engine:
         if self._grabs:
             self._serve_grabs(compositor, sizes)
             self._mark("snapshots")
-        if self._scene_shots:
-            self._serve_scene_shots(compositor, sizes, now)
-            self._mark("bloom pictures")
 
 
 class _SprigPlan:
@@ -2481,15 +2411,6 @@ def _walk_detail(collection, configs, canvases, sizes, best, scene, factor: floa
             _walk_detail(collection, configs, canvases, sizes, best, shape, scale, (*path, part.id))
         elif scale > best.get(item.source, 0.0):
             best[item.source] = scale
-
-
-def _has_size(source) -> bool:
-    """Does this source make a picture at all (a sound has no size)? One whose size can't be asked counts as not."""
-    try:
-        w, h = source.size
-        return bool(w and h)
-    except Exception:
-        return False
 
 
 def _walk_visible(collection, configs, visible: set[str], scene, hidden: set[str], path: tuple[str, ...]) -> None:

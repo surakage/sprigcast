@@ -98,28 +98,48 @@ def grab_one(engine, source_id: str, timeout: float = WAIT_S * 2) -> QImage | No
     return QImage(data, w, h, w * 4, QImage.Format.Format_RGBA8888_Premultiplied).copy()
 
 
-def grab_scene(engine, scene_id: str, timeout: float = 8.0) -> QImage | None:
-    """A picture of a bloom that isn't on air, on its own canvas (Engine.grab_scene), or None if it can't be made."""
-    got: list = []
-    done = threading.Event()
-
-    def take(picture):
-        got.append(picture)
-        done.set()
-
-    engine.grab_scene(scene_id, take)
-    done.wait(timeout)
-    picture = got[0] if got else None
-    if picture is None or getattr(picture, "ndim", 0) != 3 or not picture.shape[0] or not picture.shape[1]:
-        return None
-    h, w = picture.shape[:2]
-    return QImage(picture.tobytes(), w, h, w * 4, QImage.Format.Format_RGBA8888_Premultiplied).copy()
+SCENE_WAKE_S = 4.0  # a bloom pictured off air: how long its sleeping sources get to wake first, at most
+SCENE_SETTLE_S = 0.3  # ...and how long after the last one woke (its first picture lands)
 
 
-def take_scene(engine, scene_id: str, name: str, folder: Path | None, width: int | None = None,
+def _still_asleep(engine, scene) -> bool:
+    """Is anything showing in this bloom (however deep in sprigs) still asleep?"""
+    collection = getattr(engine, "_collection", None)
+    sources = getattr(engine, "_sources", None)
+    if collection is None or sources is None:
+        return False
+    scene = next((s for s in collection.scenes if s.id == scene.id), scene)  # the engine's own copy of it
+    stack, seen, ids = [scene], {scene.id}, set()
+    while stack:
+        shown = stack.pop()
+        ids.update(item.source for item in shown.items if item.visible)
+        for inner in collection.inner_shapes(shown):
+            if inner.id not in seen:
+                seen.add(inner.id)
+                stack.append(inner)
+    return any(getattr(sources.get(sid), "asleep", False) for sid in ids)
+
+
+def grab_scene(engine, scene, view: str = "apishot") -> QImage | None:
+    """A picture of a bloom that isn't on air, on its own canvas, or None if it can't be made. It's drawn through
+    an engine view for that moment only (as the bloom tile's Save screenshot is): nothing on air changes, its
+    sources wake while the view is there and rest again once it's gone. Waits for them to wake first."""
+    engine.set_view(view, scene.canvas, "bloom", scene.id)
+    try:
+        until = time.monotonic() + SCENE_WAKE_S
+        time.sleep(0.05)  # a tick or two, so the view is seen and its sources are told to wake
+        while _still_asleep(engine, scene) and time.monotonic() < until:
+            time.sleep(0.05)
+        time.sleep(SCENE_SETTLE_S)
+        return grab(engine, [f"view:{view}"]).get(f"view:{view}")
+    finally:
+        engine.set_view(view, None)
+
+
+def take_scene(engine, scene, name: str, folder: Path | None, width: int | None = None,
                as_data: bool = False) -> dict | None:
     """Like take_one, for a bloom off air: saved as "screenshot <name> <time>.png" and/or returned as base64."""
-    image = grab_scene(engine, scene_id)
+    image = grab_scene(engine, scene)
     if image is None:
         return None
     image = shrink(image, width)

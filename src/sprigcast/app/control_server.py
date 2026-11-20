@@ -304,7 +304,7 @@ class WindowHost:
 
     def bloom_screenshot(self, scene_id: str, name: str, width: int | None, save: bool,
                          as_data: bool) -> dict[str, Any] | None:
-        return self.w._bloom_screenshot(scene_id, name, width, save, as_data)
+        return self.w._bloom_shot_for_apps(scene_id, name, width, save, as_data)
 
     def source_instance(self, source_id: str):
         """The running source (from the engine), for plugins; None until it's loaded."""

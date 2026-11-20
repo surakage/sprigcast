@@ -1,71 +1,57 @@
 """screenshot.take of a bloom that isn't on air: drawn on its own canvas, nothing on air changes (2026-11-20)."""
 
-import numpy as np
+import types
+
 import pytest
 
 from sprigcast.control.native import ApiError, NativeApi
-from sprigcast.render.engine import SCENE_SHOT_SETTLE_S, SCENE_SHOT_WAIT_S, SLEEP_AFTER
 
 from test_control_api import FakeHost, _collection
-from test_sleeping_sources import FakeCompositor, _engine
 
 
-class Compositor(FakeCompositor):
-    def __init__(self):
-        super().__init__()
-        self.textures, self.drawn = {}, []
+def test_a_bloom_off_air_is_drawn_through_a_view_once_its_sources_woke(monkeypatch):
+    pytest.importorskip("PySide6.QtGui")
+    from PySide6.QtGui import QImage
 
-    def upload(self, source_id, *a):
-        super().upload(source_id, *a)
-        self.textures[source_id] = True
+    from sprigcast.app import screenshot
 
-    def forget(self, source_id):
-        super().forget(source_id)
-        self.textures.pop(source_id, None)
+    col = _collection()
+    brb = col.scene("brb-h")
+    brb.items.append(col.scene("chat-h").items[0].model_copy())  # the Cam, asleep while BRB is off air
+    cam = types.SimpleNamespace(asleep=True)
+    seen = []
 
-    def render(self, canvas, scene, *a, **k):
-        self.drawn.append((canvas.id, getattr(scene, "id", None)))
-        self.targets[canvas.id] = object()
+    class Engine:
+        _collection, _sources, views = col, {"cam": cam}, {}
 
-    def read(self, key):
-        return bytes(64 * 36 * 4)
+        def set_view(self, name, canvas_id=None, kind="bloom", ref=None):
+            seen.append((name, canvas_id, kind, ref))
+            if canvas_id is not None:
+                self.views[name] = (canvas_id, kind, ref)
+            else:
+                self.views.pop(name, None)
 
+    engine = Engine()
+    naps = []
 
-def test_a_bloom_off_air_is_pictured_once_its_sources_woke_and_then_they_rest_again():
-    engine, col = _engine()
-    col.scenes[1].items[0].visible = True  # "Starting soon" shows its source
-    fake, got = Compositor(), []
-    engine._tick(fake, 100.0)
-    engine._tick(fake, 101.0)
-    soon = engine._sources["soon"]
-    assert soon.asleep and "soon" not in fake.textures
-    engine.grab_scene("b", got.append)
-    engine._tick(fake, 102.0)  # it wakes; no picture taken yet
-    assert not soon.asleep and got == [] and col.active_scenes == {"h": "a"}
-    engine._tick(fake, 102.1)
-    assert got == []  # its picture only just arrived: one more moment
-    engine._tick(fake, 102.1 + SCENE_SHOT_SETTLE_S + 0.05)
-    assert len(got) == 1 and got[0].shape == (36, 64, 4)
-    assert ("sceneshot:h", "b") in fake.drawn and "sceneshot:h" not in fake.targets  # its target is let go
-    assert engine._scene_shots == [] and col.active_scenes == {"h": "a"}
-    engine._tick(fake, 103.0)
-    engine._tick(fake, 103.0 + SLEEP_AFTER + 1)
-    assert soon.asleep  # nothing shows it any more
+    def nap(seconds):
+        naps.append(seconds)
+        if len(naps) == 3:
+            cam.asleep = False  # the view woke it
 
+    def grab(eng, ids):
+        assert not cam.asleep and eng.views == {"apishot": ("horizontal", "bloom", "brb-h")}  # still drawn, awake
+        return {ids[0]: QImage(8, 4, QImage.Format.Format_RGBA8888_Premultiplied)}
 
-def test_a_source_that_never_gets_a_picture_doesnt_hold_it_up_for_ever_and_a_gone_bloom_answers_none():
-    engine, col = _engine()
-    col.scenes[1].items[0].visible = True
-    fake, got = Compositor(), []
-    fake.upload = lambda *a: None  # no picture ever arrives
-    engine.grab_scene("b", got.append)
-    engine.grab_scene("nope", got.append)
-    engine._tick(fake, 100.0)
-    assert got == [None]  # the bloom that doesn't exist
-    engine._tick(fake, 100.0 + SCENE_SHOT_WAIT_S - 0.5)
-    assert len(got) == 1
-    engine._tick(fake, 100.0 + SCENE_SHOT_WAIT_S + 0.1)
-    assert len(got) == 2 and got[1] is not None  # taken as it is
+    monkeypatch.setattr(screenshot.time, "sleep", nap)
+    monkeypatch.setattr(screenshot, "grab", grab)
+    shot = screenshot.take_scene(engine, brb, "BRB", None, as_data=True)
+    assert (shot["width"], shot["height"]) == (8, 4) and shot["png"]
+    assert seen == [("apishot", "horizontal", "bloom", "brb-h"), ("apishot", None, "bloom", None)]
+    assert engine.views == {} and naps[-1] == screenshot.SCENE_SETTLE_S  # the view is gone: its sources rest again
+    # Nothing drawing: no picture, and the view still goes.
+    monkeypatch.setattr(screenshot, "grab", lambda eng, ids: {})
+    assert screenshot.take_scene(engine, brb, "BRB", None, as_data=True) is None and engine.views == {}
 
 
 class Host(FakeHost):
