@@ -99,8 +99,6 @@ def register_filter(kind: str, label: str, media: Literal["video", "audio"], fie
     module = sys._getframe(1).f_globals.get("__name__", "")  # the plugin, so removing it can take these away
 
     def wrap(cls):
-        if kind in _KINDS and _KINDS[kind].builtin:
-            return cls  # built in (Freeze, since 2026-11-20): the plugin adds its extras, the filter stays put
         _KINDS[kind] = FilterKind(kind, label, media, list(fields), cls, builtin=False, module=module, status=status)
         return cls
 
@@ -211,11 +209,6 @@ _video("shape", "Shape", [
 
 PLUGIN_VIDEO_KINDS = ("pixelate", "blackout", "barrel_roll", "freeze")  # drawn by the GPU, offered by plugins
 
-# Freeze is always in the filter list (user, 2026-11-20: "they should be in filters"): switched on, the picture
-# holds still for its time (0: until it's switched off). The Freeze plugin adds hotkeys, right-click and
-# freeze.start on top. The engine holds the picture (freeze_of); nothing for the shader.
-_video("freeze", "Freeze", [Field("seconds", "Time", 5.0, 0.0, 600.0, 0.5, " s")])
-
 
 def parse_color(text: str) -> tuple[float, float, float]:
     text = str(text).strip().lstrip("#")
@@ -275,11 +268,11 @@ class VideoEffects:
 
 
 def freeze_of(filters) -> tuple[int, float] | None:
-    """A source's Freeze filter while it's on: (run, until). run goes up each time it's
+    """A source's Freeze filter while it's on and its plugin is added: (run, until). run goes up each time it's
     switched on (a new freeze catches a new picture); until is the time.time() it ends by, 0 for no end. A
     freeze saved on and found long after (SprigCast closed mid-freeze) has run out, so it never sticks."""
     flt = next((f for f in filters if f.kind == "freeze" and f.enabled), None)
-    if flt is None:
+    if flt is None or "freeze" not in _KINDS:  # only with the Freeze plugin (user, 2026-11-20)
         return None
     until = float(flt.settings.get("until", 0) or 0)
     return int(flt.settings.get("run", 0) or 0), until
