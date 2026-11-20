@@ -143,6 +143,8 @@ def _line() -> QFrame:
     return line
 
 
+NO_DEVICE = "__none__"  # a device list's "None": remove that sound
+
 class LevelDots(QWidget):
     """A row of small bars that fill with a device's level: green, yellow when loud, pink close to clipping."""
 
@@ -385,6 +387,7 @@ class AudioPage(QWidget):
 
     def _combo(self, source: SourceConfig, names: list[str]) -> QComboBox:
         combo = QComboBox()
+        combo.addItem("None", NO_DEVICE)  # takes the sound away on Save (user 2026-11-20: no way to remove it)
         combo.addItem("Default (follows Windows)", "default")
         for name in names:
             combo.addItem(nice_device_name(name), name)
@@ -829,6 +832,11 @@ class AudioPage(QWidget):
         if not recording:
             collection.recording.audio_tracks = [n for n, keep in enumerate(self.track_kept, 1) if keep.isChecked()]
             collection.recording.voice_track = 3 in collection.recording.audio_tracks
+        gone = [s.id for s in collection.sources
+                if (combo := self.device_combos.get(s.id)) is not None and combo.currentData() == NO_DEVICE]
+        for source_id in gone:  # "None": the sound leaves, global or not
+            audio.global_sources = [i for i in audio.global_sources if i != source_id]
+            collection.remove_source_if_unused(source_id)
         for source in collection.sources:
             combo = self.device_combos.get(source.id)
             if combo is not None and combo.currentData() != source.settings.get("device", "default"):

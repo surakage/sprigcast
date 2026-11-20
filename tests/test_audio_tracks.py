@@ -421,3 +421,21 @@ def test_a_tabs_further_cards_can_be_made_a_tick_apart_in_their_places():
     again.build_tab("Devices", later=lambda call: None)
     again.finish()  # makes what was still waiting
     assert not again._parts_waiting and hasattr(again, "listen_through")
+
+
+def test_audio_page_none_removes_desktop_sound():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import NO_DEVICE, AudioPage
+
+    QApplication.instance() or QApplication([])
+    col = _collection()
+    page = AudioPage(col, {"audio_output": ["UG-08S"]})
+    combo = page.device_combos["desktop"]
+    assert combo.itemText(0) == "None" and combo.currentData() == "default"
+    combo.setCurrentIndex(combo.findData(NO_DEVICE))
+    page.apply_to(col)
+    assert "desktop" not in {s.id for s in col.sources} and "desktop" not in col.global_device_ids()
+    assert "mic" in col.global_device_ids()
