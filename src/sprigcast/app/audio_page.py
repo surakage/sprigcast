@@ -293,9 +293,14 @@ class AudioPage(QWidget):
         """The page is as wide as the tab showing, not the widest tab: Tracks' 922 px made Sounds wider than
         Settings, cutting off its right side (PC 2026-11-20, Settings at 1076 px)."""
         now = self.tabs.currentIndex()
+        if now == getattr(self, "_fitted", None):
+            return  # already fitted to this tab: every showing of the page (showEvent) asked again, and each
+            # asking laid out the whole page anew (377 ms in one on the PC as Settings opened, 2026-11-20)
+        self._fitted = now
         for i in range(self.tabs.count()):
             policy = QSizePolicy.Policy.Preferred if i == now else QSizePolicy.Policy.Ignored
-            self.tabs.widget(i).setSizePolicy(policy, policy)
+            if self.tabs.widget(i).sizePolicy().horizontalPolicy() != policy:
+                self.tabs.widget(i).setSizePolicy(policy, policy)
         self.tabs.updateGeometry()
 
     def build_tab(self, name: str, later=None) -> None:
