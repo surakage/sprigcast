@@ -517,3 +517,40 @@ def test_just_me_and_back_keeps_where_a_sound_goes():
     row["hear"].setCurrentIndex(0)  # back to Stream
     p.apply_to(col)
     assert source_tracks(col.source("bgm")) == before and col.source("bgm").settings["monitor"] is False
+
+
+def test_sounds_tab_finds_by_name_and_type_and_shows_one_set_of_columns_at_a_time(monkeypatch):
+    """57 sounds were a long list that also ran off the side (user 2026-11-20): Find, Type and two views."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import AudioPage
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(QSettings, "value", lambda self, key, default=None, *a, **k: default)
+    monkeypatch.setattr(QSettings, "setValue", lambda self, key, value: None)
+    col = _collection()
+    col.source("desktop").settings["group"] = "Game"
+    page = AudioPage(col, {})
+    page.finish()
+    assert page.sound_count.text() == "3 sounds"
+    page.sound_find.setText("wave")
+    assert [s for s in ("desktop", "mic", "mic-2") if page.sound_shown(s)] == ["mic-2"]
+    assert page.sound_count.text() == "1 of 3"
+    assert page.sound_rows["mic"]["volume"].isHidden() and not page.sound_rows["mic-2"]["volume"].isHidden()
+    page.sound_find.clear()
+    page.sound_type_actions["Game"].trigger()
+    assert [s for s in ("desktop", "mic", "mic-2") if page.sound_shown(s)] == ["desktop"]
+    assert "Game" in page.sound_type.text()
+    page.sound_type_actions[""].trigger()
+    assert page.sound_count.text() == "3 sounds"
+    # Volume and sync first; Where it goes swaps the columns, so the table never runs off the side.
+    mic = page.sound_rows["mic"]
+    assert not mic["volume"].isHidden() and mic["hear"].isHidden()
+    page.sound_view.buttons["routing"].click()
+    assert mic["volume"].isHidden() and not mic["hear"].isHidden()
+    assert not any(t.isHidden() for t in page.track_ticks["mic"])
+    page.apply_to(col)  # hidden rows and columns still save
+    assert col.source("desktop").settings["group"] == "Game"
