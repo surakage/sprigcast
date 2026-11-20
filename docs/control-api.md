@@ -386,9 +386,9 @@ Hide it and Barrel Roll take `in` (a bloom's or sprig's name or id): then only t
 | `hide.toggle` | Hide it | Hide it until toggled back, or show it. | `source` (or `sprig` with `in`), `in` (optional), `how` (optional): pixelate or blackout |
 | `hide.show` | Hide it | Show it again now. | `source` (or `sprig` with `in`), `in` (optional) |
 | `roll.spin` | Barrel Roll | Spin a sprig (everywhere it's shown) or one thing, then it lands where it was. | `sprig` or `source`, `in`, `seconds`, `turns`, `direction` (all optional) |
-| `freeze.start` | Freeze | Hold a sprig (everywhere it's shown) or one thing still on the frame showing now, then it's live again. Called again while frozen, it keeps the picture and restarts the time. | `sprig` or `source`, `seconds` (optional; 0 = until `freeze.stop`) |
-| `freeze.stop` | Freeze | Let it move again now. | `sprig` or `source` |
-| `freeze.toggle` | Freeze | Freeze until toggled back, or let it go. | `sprig` or `source` |
+| `freeze.start` | Freeze | Hold a sprig (everywhere it's shown) or one thing still on the frame showing now, then it's live again. Called again while frozen, it keeps the picture and restarts the time. | `sprig` or `source`, `in` (optional: a bloom or sprig, to freeze only the one in there), `seconds` (optional; 0 = until `freeze.stop`) |
+| `freeze.stop` | Freeze | Let it move again now. | `sprig` or `source`, `in` (optional) |
+| `freeze.toggle` | Freeze | Freeze until toggled back, or let it go. | `sprig` or `source`, `in` (optional) |
 | `deaths.add` | Death count | One more death (or `amount` more). The gravestone pops up with the new count. | `amount` (optional, default 1), `source` (optional) |
 | `deaths.remove` | Death count | One less death (or `amount` less), never below 0. | `amount` (optional, default 1), `source` (optional) |
 | `deaths.set` | Death count | Set the count to a number. | `count`, `source` (optional) |
