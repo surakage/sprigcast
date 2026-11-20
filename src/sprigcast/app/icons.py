@@ -136,6 +136,13 @@ def _draw(p: QPainter, name: str) -> None:
     elif name == "plus":
         p.drawLine(P(12, 5), P(12, 19))
         p.drawLine(P(5, 12), P(19, 12))
+    elif name == "minus":
+        p.drawLine(P(5, 12), P(19, 12))
+    elif name == "swap":  # two arrows passing: switch together (Link)
+        p.drawLine(P(4, 8.5), P(19, 8.5))
+        p.drawPolyline([P(15.5, 5), P(19, 8.5), P(15.5, 12)])
+        p.drawLine(P(20, 15.5), P(5, 15.5))
+        p.drawPolyline([P(8.5, 12), P(5, 15.5), P(8.5, 19)])
     elif name == "compass":
         p.drawEllipse(P(12, 12), 8.5, 8.5)
         needle = QPainterPath(P(15.5, 8.5))
@@ -330,15 +337,16 @@ def _draw(p: QPainter, name: str) -> None:
 NAMES = ("sprig", "bloom", "leaf", "gear", "search", "lock", "unlock", "link", "key", "upload", "monitor", "mic",
          "camera", "disk", "bolt", "panel", "plus", "compass", "folder", "trash", "speaker", "speaker-off",
          "gamepad", "keyboard", "shutter", "chat", "note", "trophy", "ball", "broadcast", "record", "landscape",
-         "portrait", "dual", "clip", "heart", "tree", "paw", "chevron-down", "chevron-up", "warning", "clock", "moon", "plug", "eye-off", "sliders")
+         "portrait", "dual", "clip", "heart", "tree", "paw", "chevron-down", "chevron-up", "minus", "swap", "warning", "clock", "moon", "plug", "eye-off", "sliders")
 
 
-def paint_icon(p: QPainter, r: QRectF, name: str, colour: str | QColor | None = None, width: float = 1.7) -> None:
-    """Draw icon `name` centred in `r` (square-ish), in `colour` (default: the normal text colour)."""
+def paint_icon(p: QPainter, r: QRectF, name: str, colour: str | QColor | None = None, width: float = 1.9) -> None:
+    """Draw icon `name` centred in `r` (square-ish), in `colour` (default: the normal text colour).
+    Its box starts on a whole pixel, so lines land on the same pixels every time (crisper)."""
     p.save()
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     side = min(r.width(), r.height())
-    p.translate(r.center().x() - side / 2, r.center().y() - side / 2)
+    p.translate(round(r.center().x() - side / 2), round(r.center().y() - side / 2))
     p.scale(side / 24, side / 24)
     pen = QPen(QColor(colour or theme.TEXT), width * 24 / max(side, 1))  # `width` screen pixels at any size
     pen.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -367,7 +375,9 @@ def icon(name: str, colour: str | QColor | None = None, size: int = 18) -> QIcon
     key = (name, QColor(colour or theme.TEXT).name(QColor.NameFormat.HexArgb), size)
     if key not in _cache:
         made = QIcon()
-        for ratio in (1.0, 2.0):
+        # One picture per common Windows scale (100-300%), so Qt never stretches or shrinks one: a 2x
+        # picture shrunk to 150% is what made the top bar's icons look soft (PC, 2026-11-20).
+        for ratio in (1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0):
             made.addPixmap(pixmap(name, colour, size, ratio))
         _cache[key] = made
     return _cache[key]
