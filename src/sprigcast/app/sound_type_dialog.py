@@ -21,11 +21,13 @@ from PySide6.QtWidgets import (
     QAbstractButton,
     QButtonGroup,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -33,7 +35,6 @@ from PySide6.QtWidgets import (
 from sprigcast.app import theme
 from sprigcast.app.card import CardDialog, field_label
 from sprigcast.app.labels import literal
-from sprigcast.app.live_panel import FlowLayout
 from sprigcast.app.sound_card import GROUP_COLOURS, TYPE_COLORS
 
 
@@ -68,16 +69,26 @@ class _SoundPill(QPushButton):
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         metrics = QFontMetrics(self.font())
-        shown = metrics.elidedText(name, Qt.TextElideMode.ElideRight, 170)
+        shown = metrics.elidedText(name, Qt.TextElideMode.ElideRight, 136)
         self.setText(literal(shown))
         self.setToolTip(f"{name} (now in {kind})" if shown != name else f"Now in {kind}")
         self.setAccessibleName(name)  # screen readers and UI Automation read the whole name
         self.setAccessibleDescription(f"Now in {kind}")
         self.setIcon(_dot(GROUP_COLOURS.get(kind, theme.MUTED)))
-        self.setStyleSheet(theme.button_style(14, "0px 12px", extra="font-size: 12px; min-height: 28px;")
+        self.setStyleSheet(theme.button_style(14, "0px 12px", extra="font-size: 12px; min-height: 28px; text-align: left;")
                            + f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT};"
                              f" border: 1px solid {theme.ACCENT}; }}")
-        self.setFixedHeight(30)  # (the min-height above too: the app style sheet sets a smaller one on show)
+        self.setFixedHeight(30)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)  # the column sets the width  # (the min-height above too: the app style sheet sets a smaller one on show)
+
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        """Cut a long name short to the pill's width (the columns set it), never more than needed."""
+        super().resizeEvent(event)
+        room = max(40, self.width() - 44)  # the dot, the padding and the edges
+        shown = QFontMetrics(self.font()).elidedText(self.full_name, Qt.TextElideMode.ElideRight, room)
+        if self.text() != literal(shown):
+            self.setText(literal(shown))
 
 
 def _dot(colour: str) -> QIcon:
@@ -97,7 +108,7 @@ class SoundTypeDialog(CardDialog):
 
     def __init__(self, types: list[dict], sounds: list[tuple[str, str, str]], editing: str | None = None,
                  parent: QWidget | None = None):
-        super().__init__(f"Edit {editing}" if editing else "New type", parent, width=520)
+        super().__init__(f"Edit {editing}" if editing else "New type", parent, width=580)
         self.types = [dict(t) for t in types]
         self.sounds = sounds
         self.editing = editing
@@ -154,7 +165,20 @@ class SoundTypeDialog(CardDialog):
         holder = QWidget()
         holder.setObjectName("pillHolder")
         holder.setStyleSheet("#pillHolder { background: transparent; }")
-        flow = FlowLayout(holder, spacing=8)
+        # Two even columns (user 2026-11-20): every pill as wide as the other, rows lined up.
+        stack = QVBoxLayout(holder)  # the rows at the top, the room under them empty when Find shows a few
+        stack.setContentsMargins(0, 0, 0, 0)
+        rows_box = QWidget()
+        rows_box.setObjectName("pillRows")
+        rows_box.setStyleSheet("#pillRows { background: transparent; }")
+        stack.addWidget(rows_box)
+        stack.addStretch(1)
+        self.grid = QGridLayout(rows_box)
+        self.grid.setContentsMargins(0, 0, 4, 0)
+        self.grid.setHorizontalSpacing(10)
+        self.grid.setVerticalSpacing(8)
+        self.grid.setColumnStretch(0, 1)
+        self.grid.setColumnStretch(1, 1)
         self.ticks: dict[str, QPushButton] = {}
         # The type's own sounds first (when editing), so what's in it shows without scrolling.
         for sid, name, kind in sorted(sounds, key=lambda s: bool(editing) and s[2] != editing):
@@ -162,7 +186,8 @@ class SoundTypeDialog(CardDialog):
             pill.setChecked(bool(editing) and kind == editing)
             pill.toggled.connect(lambda _on: self._count())
             self.ticks[sid] = pill
-            flow.addWidget(pill)
+        self._order = list(self.ticks.values())
+        self._lay_out()
         self.none_found = QLabel("No sound matches.")
         self.none_found.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
         self.none_found.hide()
@@ -172,7 +197,7 @@ class SoundTypeDialog(CardDialog):
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)  # pills wrap instead
         scroll.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
         scroll.setWidget(holder)
-        rows = max(1, -(-len(sounds) // 3))
+        rows = max(1, -(-len(sounds) // 2))
         scroll.setFixedHeight(min(5, rows) * 38)  # about five rows show; more scroll down
         box.addWidget(scroll)
         box.addWidget(self.none_found)
@@ -194,14 +219,23 @@ class SoundTypeDialog(CardDialog):
         n = sum(p.isChecked() for p in self.ticks.values())
         self.picked.setText(f"{n} picked" if n else "")
 
-    def _filter(self) -> None:
-        text = self.find.text().strip().casefold()
+    def _lay_out(self) -> None:
+        """The pills Find lets through, two to a row with no gaps."""
+        text = self.find.text().strip().casefold() if hasattr(self, "find") else ""
+        for pill in self._order:
+            self.grid.removeWidget(pill)
         shown = 0
-        for pill in self.ticks.values():
+        for pill in self._order:
             keep = not text or text in pill.full_name.casefold()
             pill.setVisible(keep)
-            shown += keep
-        self.none_found.setVisible(bool(self.ticks) and not shown)
+            if keep:
+                self.grid.addWidget(pill, shown // 2, shown % 2)
+                shown += 1
+        if hasattr(self, "none_found"):
+            self.none_found.setVisible(bool(self.ticks) and not shown)
+
+    def _filter(self) -> None:
+        self._lay_out()
 
     def _remove(self) -> None:
         self.removed = True
