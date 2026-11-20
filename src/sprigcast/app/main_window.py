@@ -5679,6 +5679,70 @@ class MainWindow(QMainWindow):
             self._tidy_saves()
         return shot
 
+    # For the Control API (control/native.Later): the picture is made on a worker and handed back later; the
+    # window's thread never waits for it (waiting there, events still handled, left the window not answering for
+    # 514 ms on the PC, 2026-11-20).
+
+    def _screenshot_later(self, shapes: list[str] | None, width: int | None, save: bool, as_data: bool):
+        from functools import partial
+
+        from sprigcast.app import screenshot
+        from sprigcast.control.native import Later
+
+        ids = [c.id for c in self.collection.canvases if c.enabled and (not shapes or c.id in shapes)]
+        folder = self._recordings_folder() / "Screenshots" if save else None
+        afters = plugin_hooks.screenshot_starting(self.api, ids) if save else []
+        images: dict = {}
+
+        def then(future):
+            try:
+                shots = future.result()
+            except Exception:
+                plugin_hooks.screenshot_done(afters, [])
+                raise
+            if save:
+                self._screenshot_saved(shots, images, folder, afters)
+            return shots
+
+        return Later(partial(screenshot.take, self.engine, ids, folder, width, as_data, images), then)
+
+    def _source_shot_later(self, source_id: str, name: str, width: int | None, save: bool, as_data: bool):
+        from functools import partial
+
+        from sprigcast.app import screenshot
+        from sprigcast.control.native import Later
+
+        folder = self._recordings_folder() / "Screenshots" if save else None
+
+        def then(future):
+            shot = future.result()
+            if shot is not None and save:
+                self._saved_note("Screenshot saved", Path(shot["path"]).parent)
+                self._tidy_saves()
+            return shot
+
+        return Later(partial(screenshot.take_one, self.engine, source_id, name, folder, width, as_data), then)
+
+    def _bloom_shots_later(self, scene_ids: list[str], name: str, width: int | None, save: bool, as_data: bool):
+        """Blooms off air (each shape of one bloom), pictured together: one wait for their sources to wake."""
+        from functools import partial
+
+        from sprigcast.app import screenshot
+        from sprigcast.control.native import Later
+
+        scenes = [next((sc for sc in self.collection.scenes if sc.id == sid), None) for sid in scene_ids]
+        folder = self._recordings_folder() / "Screenshots" if save else None
+
+        def then(future):
+            shots = future.result()
+            saved = next((shot for shot in shots if shot is not None and shot.get("path")), None)
+            if saved is not None:
+                self._saved_note("Screenshot saved", Path(saved["path"]).parent)
+                self._tidy_saves()
+            return shots
+
+        return Later(partial(screenshot.take_scenes, self.engine, scenes, name, folder, width, as_data), then)
+
     def _screenshot_saved(self, shots: list[dict], images: dict, folder, afters=()) -> None:
         try:
             self._say(f"Screenshot saved to {folder}" if shots else "Couldn't take a screenshot: nothing is drawing.")

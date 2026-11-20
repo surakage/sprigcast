@@ -21,14 +21,14 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QObject, QSettings, QTimer, Slot
+from PySide6.QtCore import QObject, QSettings, QTimer, Signal, Slot
 from PySide6.QtNetwork import QHostAddress, QTcpServer, QTcpSocket
 from PySide6.QtWebSockets import QWebSocket, QWebSocketProtocol, QWebSocketServer
 
 from sprigcast.control import web
 from sprigcast.control.api import ControlApi
 from sprigcast.control import secret_store
-from sprigcast.control.native import NativeApi, NativeSession
+from sprigcast.control.native import Later, NativeApi, NativeSession
 from sprigcast.control.pairing import Pairing
 from sprigcast.control.protocol import Close, Session, Sleep, Step, Sub, new_password
 from sprigcast.core.quiet import Every
@@ -330,6 +330,19 @@ class WindowHost:
                          as_data: bool) -> dict[str, Any] | None:
         return self.w._bloom_shot_for_apps(scene_id, name, width, save, as_data)
 
+    # Later versions (control/native.Later): the picture is made on a worker, the window never waits for it.
+
+    def screenshot_later(self, shapes: list[str], width: int | None, save: bool, as_data: bool) -> Later:
+        return self.w._screenshot_later(shapes, width, save, as_data)
+
+    def source_screenshot_later(self, source_id: str, name: str, width: int | None, save: bool,
+                                as_data: bool) -> Later:
+        return self.w._source_shot_later(source_id, name, width, save, as_data)
+
+    def bloom_screenshots_later(self, scene_ids: list[str], name: str, width: int | None, save: bool,
+                                as_data: bool) -> Later:
+        return self.w._bloom_shots_later(scene_ids, name, width, save, as_data)
+
     def source_instance(self, source_id: str):
         """The running source (from the engine), for plugins; None until it's loaded."""
         return self.w.engine._sources.get(source_id)
@@ -424,8 +437,12 @@ class ControlServer(QObject):
     OBS-compatible door (control/api.py), which can be switched off and gets no new features.
     """
 
+    _later_done = Signal(object)  # (socket, steps, Later, future) from a worker: answered on the window's thread
+
     def __init__(self, api: ControlApi, parent: QObject | None = None, native: NativeApi | None = None):
         super().__init__(parent)
+        self._later_done.connect(self._finish_later)
+        self._later_busy = False  # a Later answer's work is running: the inbox waits for it
         self.api = api
         self.native = native if native is not None else NativeApi(api.host)
         api.custom_event = lambda data: self.broadcast("CustomEvent", Sub.GENERAL, data)
@@ -771,8 +788,8 @@ class ControlServer(QObject):
 
     def _drain(self) -> None:
         self._drain_queued = False
-        if self._answering:
-            return  # inside an answer's wait: the answer under it carries on with the inbox when it's done
+        if self._answering or self._later_busy:
+            return  # inside an answer (or its work still running): it carries on with the inbox when it's done
         if not self._inbox:
             return
         socket, answer = self._inbox.popleft()
@@ -811,6 +828,15 @@ class ControlServer(QObject):
                 QTimer.singleShot(int(step.seconds * 1000),
                                   lambda: self._queue(None, lambda: self._pump(socket, steps)))
                 return
+            if isinstance(step, Later):
+                # Its work on a worker; the answer, and anything after it, once that's done (_finish_later). The
+                # inbox waits meanwhile, so answers stay in order and two pictures never share the engine's view.
+                from sprigcast.core import workers
+
+                self._later_busy = True
+                future = workers.run(step.job, name="control answer")
+                future.add_done_callback(lambda f, s=socket, st=steps, later=step: self._later_done.emit((s, st, later, f)))
+                return
             if isinstance(step, Close):
                 log.info("control: closing a connection: %s%s", step.reason,
                          f" ({len(self.pairing.devices)} paired device key(s), the password"
@@ -820,6 +846,30 @@ class ControlServer(QObject):
             socket.sendTextMessage(step)
             if getattr(self.sessions.get(socket), "may_change", True):
                 self.soon()  # a step list changes things between waits
+
+    @Slot(object)
+    def _finish_later(self, done) -> None:
+        socket, steps, later, future = done
+        self._later_busy = False
+        try:
+            if socket in self.sessions:
+                try:
+                    text = later.then(future)
+                except Exception:  # noqa: BLE001
+                    log.exception("control: finishing an answer failed")
+                    text = None
+                if isinstance(text, str):
+                    socket.sendTextMessage(text)
+                self._pump(socket, steps)
+            else:
+                try:  # the asker hung up: what the work left (a saved file's note) is still tidied
+                    later.then(future)
+                except Exception:  # noqa: BLE001
+                    pass
+        finally:
+            if self._inbox and not self._drain_queued and not self._later_busy:
+                self._drain_queued = True
+                QTimer.singleShot(0, self._drain)
 
     # Events ----------------------------------------------------------------------------
 
