@@ -42,6 +42,12 @@ jobs:
           $env:QT_QPA_PLATFORM = "offscreen"
           & $py -c "import sys; from PySide6 import QtCore, QtWidgets, QtWebEngineCore; app = QtWidgets.QApplication(sys.argv); page = QtWebEngineCore.QWebEnginePage(); ok = []; page.loadFinished.connect(lambda r: (ok.append(r), app.quit())); QtCore.QTimer.singleShot(60000, app.quit); page.setHtml('<p>SprigCast</p>'); app.exec(); print('web page loads:', ok); sys.exit(0 if ok == [True] else 1)"
           if ($LASTEXITCODE -ne 0) { throw "Qt WebEngine can't open a page after pruning" }
+          # Web page sources play MP4 (H.264/AAC) clips with the page engine laid over PySide6's
+          # (packaging/webengine_codecs.py), once one is pinned.
+          if (Test-Path packaging\webengine_codecs.json) {
+            & $py packaging\webengine_probe.py --expect-h264
+            if ($LASTEXITCODE -ne 0) { throw "Web pages can't play H.264/AAC in the installed copy" }
+          }
           Remove-Item Env:QT_QPA_PLATFORM
           # Browser sources run in a helper started from SprigCast.exe (#451): it must start, open a page and
           # stay up (no restarts). Chromium doesn't paint offscreen on Windows, so frames aren't checked here.

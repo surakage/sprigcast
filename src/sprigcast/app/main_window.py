@@ -365,45 +365,13 @@ class MainWindow(QMainWindow):
         self.part_preview.edited.connect(self._on_preview_edited)
         self.part_preview.sprig_dropped.connect(self._sprig_dropped)
         self.part_preview.menu_requested.connect(self._on_preview_menu)
+        # The sprig's canvas gets the whole card: no header, no note (user, 2026-11-20: "the canvas is crowded").
+        # The library opens and closes sprigs; Esc goes back to the bloom you came from.
+        self.part_preview.show_title = False
+        self.part_preview.back_requested.connect(self._close_part)
         part_panel = QWidget()
         part_layout = QVBoxLayout(part_panel)
         part_layout.setContentsMargins(0, 0, 0, 0)
-        header = QHBoxLayout()
-        header.setContentsMargins(8, 4, 8, 0)
-        self.part_path = QLabel()
-        self.part_path.setStyleSheet(f"color: {theme.MUTED};")
-        header.addWidget(self.part_path, 1)
-        # One button per canvas shape: switch to that layout, or make it ("+ Vertical layout").
-        self.shape_buttons: dict[str, QPushButton] = {}
-        for canvas in self.collection.canvases:
-            button = QPushButton()
-            button.setCheckable(True)
-            button.clicked.connect(lambda _=False, cid=canvas.id: self._edit_shape(cid))
-            self.shape_buttons[canvas.id] = button
-            header.addWidget(button)
-        self.remove_shape_button = QPushButton("Remove layout")
-        self.remove_shape_button.setToolTip(f"{cap(SHOWS)} on this canvas go back to using the {PART}'s main layout")
-        self.remove_shape_button.clicked.connect(self._remove_shape)
-        header.addWidget(self.remove_shape_button)
-        states = QPushButton("Live states…")
-        states.setToolTip(f"Looks for this {PART} that you switch between in Live, like “Alert showing”")
-        states.clicked.connect(lambda: self._scene() is not None and self._edit_states(self._scene().id))
-        header.addWidget(states)
-        self.part_back = QPushButton("← Back")
-        self.part_back.setToolTip(f"Back to the {SHOW} you came from")
-        self.part_back.clicked.connect(self._close_part)
-        header.insertWidget(0, self.part_back)
-        for button in (self.part_back, *self.shape_buttons.values(), self.remove_shape_button, states):
-            button.setStyleSheet(theme.SMALL_PILL_STYLE)
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
-        part_layout.addLayout(header)
-        # Nesting, said plainly: what you change here changes in every bloom that uses this sprig.
-        self.part_uses_note = QLabel()
-        self.part_uses_note.setWordWrap(True)
-        self.part_uses_note.setTextFormat(Qt.TextFormat.RichText)
-        self.part_uses_note.linkActivated.connect(self._jump_to_bloom)
-        self.part_uses_note.setStyleSheet(theme.NOTE_STYLE + " padding: 9px 14px; margin: 4px 8px 0 8px;")
-        part_layout.addWidget(self.part_uses_note)
         part_layout.addWidget(self.part_preview, 1)
         self.splitter = splitter
         splitter.on_resize = self._splitter_resized  # Live re-shares the stage when it changes size
@@ -4440,33 +4408,10 @@ class MainWindow(QMainWindow):
             self.center.setCurrentIndex(0)
             return
         canvas = self.collection.canvas(scene.canvas)
-        main = self.collection.main_part(scene)
-        uses = self.collection.part_uses(main.id)
-        self.part_path.setText(f"{scene.canvas.capitalize()} {canvas.width}×{canvas.height}")
-        names = self._bloom_links(uses)
-        self.part_uses_note.setText(
-            f"This {PART} is in {len(uses)} {SHOW if len(uses) == 1 else SHOWS}: {names}. "
-            "What you change here changes in all of them." if uses else
-            f"This {PART} isn't in any {SHOW} yet. Pick {a(SHOW)}, then + Add and choose it.")
-        back = getattr(self, "last_bloom_id", None)
-        back_scene = next((s for s in self.collection.scenes if s.id == back and s.kind == "show"), None)
-        self.part_back.setText(f"← {back_scene.name}" if back_scene else "← Back")
-        shapes = {s.canvas: s for s in self.collection.shapes(main)}
-        for canvas_id, button in self.shape_buttons.items():
-            has = canvas_id in shapes
-            button.setText(canvas_id.capitalize() if has else f"+ {canvas_id.capitalize()}")
-            button.setChecked(canvas_id == scene.canvas)
-            button.setToolTip(
-                f"Edit the layout {SHOWS} on the {canvas_id} canvas get" if has else
-                f"Give this {PART} its own {canvas_id} layout. Until then, {canvas_id} {SHOWS} use the "
-                f"{main.canvas} layout, scaled to fit."
-            )
-        self.remove_shape_button.setVisible(scene.shape_of is not None)
         if self.part_preview.canvas_id != f"part:{scene.id}":
             self.part_preview._image = None
         self.part_preview.canvas_id = f"part:{scene.id}"
         self.part_preview.title = scene.name
-        self.part_preview.subtitle = "updates everywhere it's used"
         self.part_preview.aspect = (canvas.width, canvas.height)
         self.part_preview.output_size = lambda c=canvas.id: self.collection.canvas(c).output_size()
         self.engine.editing_part = scene.id
@@ -5611,6 +5556,23 @@ class MainWindow(QMainWindow):
 
         folder = self._recordings_folder() / "Screenshots" if save else None
         shot = workers.wait_answering(screenshot.take_one, self.engine, source_id, name, folder, width, as_data)
+        if shot is not None and save:
+            self._saved_note("Screenshot saved", Path(shot["path"]).parent)
+            self._tidy_saves()
+        return shot
+
+    def _bloom_shot_for_apps(self, scene_id: str, name: str, width: int | None = None, save: bool = True,
+                             as_data: bool = False) -> dict | None:
+        """A PNG of a bloom that isn't on air, on its own canvas (apps: screenshot.take with bloom). Nothing on
+        air changes; its sources wake for the moment it takes (see screenshot.grab_scene)."""
+        from sprigcast.app import screenshot
+        from sprigcast.core import workers
+
+        scene = next((sc for sc in self.collection.scenes if sc.id == scene_id), None)
+        if scene is None:
+            return None
+        folder = self._recordings_folder() / "Screenshots" if save else None
+        shot = workers.wait_answering(screenshot.take_scene, self.engine, scene, name, folder, width, as_data)
         if shot is not None and save:
             self._saved_note("Screenshot saved", Path(shot["path"]).parent)
             self._tidy_saves()

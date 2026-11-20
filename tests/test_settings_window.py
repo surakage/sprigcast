@@ -887,16 +887,14 @@ def test_canvas_cards_pick_a_size_and_a_frame_rate(app):
     app.processEvents()
     enabled, width, height, fps = w.video_fields["horizontal"]
     size, (big, small) = w.video_sizes["horizontal"], w.video_heads["horizontal"]
-    assert size.currentText() == "1920×1080 (1080p)" and not width.isVisible()  # the boxes are for Custom
+    assert size.currentText() == "1920×1080 (1080p)" and not width.isVisible()
     assert big.text() == "1920×1080" and small.text().startswith("Landscape")
     assert [f for f, b in fps.buttons.items() if not b.isHidden()] == sorted({30, 60, fps.value()})
     size.setCurrentIndex(size.findText("1280×720 (720p)"))
     assert (width.value(), height.value()) == (1280, 720) and big.text() == "1280×720"
-    size.setCurrentIndex(size.findText("Custom"))
-    app.processEvents()
-    assert width.isVisible()
-    width.setValue(1000)
-    assert big.text() == "1000×720" and size.currentText() == "Custom"  # typing never jumps the list about
+    assert [size.itemText(i) for i in range(size.count())] == [
+        "1280×720 (720p)", "1366×768", "1600×900", "1920×1080 (1080p)", "2048×1152",
+        "2560×1440 (1440p)"]  # 720p to 1440p, nothing of your own
     fps.buttons[30].click()
     assert small.text().endswith("30 fps") and fps.currentData() == 30
     other = w.video_other_fps["horizontal"]
@@ -912,14 +910,22 @@ def test_canvas_cards_pick_a_size_and_a_frame_rate(app):
     w.close()
 
 
-def test_a_canvas_size_of_your_own_opens_on_custom(app):
+def test_a_canvas_size_outside_720p_to_1440p_comes_back_to_1080p(app):
+    """Canvases are 720p, 1080p or 1440p, 1080p by default (user, 2026-11-20): 4K or a size of your own
+    shows as 1080p and is saved so."""
     col = _collection()
-    col.canvases[0].width, col.canvases[0].height = 1600, 900
+    col.canvases[0].width, col.canvases[0].height = 3840, 2160
+    col.canvases[1].width, col.canvases[1].height = 1000, 1700
     w = _window(col, tab="Video")
     w.show()
     app.processEvents()
-    assert w.video_sizes["horizontal"].currentText() == "Custom" and w.video_fields["horizontal"][1].isVisible()
-    assert w.apply() and (col.canvases[0].width, col.canvases[0].height) == (1600, 900)
+    assert w.video_sizes["horizontal"].currentText() == "1920×1080 (1080p)"
+    assert w.video_sizes["vertical"].currentText() == "1080×1920 (1080p)"
+    assert not w.video_fields["horizontal"][1].isVisible()
+    from sprigcast.app.settings_window import pending_video
+
+    assert w.apply()
+    assert pending_video()["horizontal"]["width"] == 1920 and pending_video()["vertical"]["height"] == 1920
     w.close()
 
 

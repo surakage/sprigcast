@@ -112,6 +112,23 @@ server → {"id": "8", "ok": true, "result": {"steps": [{"ok": true, …}, {"ok"
 - A list holds at most 100 steps.
 - A failing step stops the list. Send `"stopOnError": false` to carry on.
 
+#### Several changes as one
+
+Add `"one_step": true` to a step list and its steps are taken together: all of them work, or nothing changes. They are saved and drawn once, and are one step for undo (Ctrl+Z in SprigCast, or `edit.undo`). The answer's `result` has `applied` (true or false) next to `steps`.
+
+Add `"dry_run": true` instead and nothing is kept at all. The answer says where things would end up: `result.layouts` holds a `layout.get` answer (with `overlaps`) for each bloom or sprig the steps name.
+
+```
+app    → {"id": "9", "dry_run": true, "steps": [
+            {"do": "item.place", "bloom": "Main", "item": "Chat", "shape": "vertical", "x": 40, "y": 1200}]}
+server → {"id": "9", "ok": true, "result": {"steps": [{"ok": true, …}], "applied": false, "dry_run": true,
+            "layouts": [{"bloom": "Main", "shapes": {"vertical": {"canvas": {…}, "items": […], "overlaps": […]}}}]}}
+```
+
+Only changes to the garden can be taken as one, so they can all be taken back: `item.add`, `item.place`, `item.order`, `item.show`, `item.hide`, `item.toggle`, `item.lock`, `item.remove`, `item.duplicate`, `source.new`, `source.set`, `source.rename`, `source.rotate`, `source.remove`, `filter.add`, `filter.set`, `filter.remove`, `filter.move`, plus `items.list` and `layout.get`. Anything else, or a `wait`, is refused with `bad_request` and nothing is done.
+
+`edit.undo` and `edit.redo` are SprigCast's own undo and redo (the last 50 changes to the garden, whoever made them). They answer `{"undone": true}` or `{"redone": true}`, false when there was nothing to undo or redo.
+
 ## Events
 
 Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
@@ -119,7 +136,7 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | Group | Events |
 | --- | --- |
 | `bloom` | `bloom.shown` (bloom, bloomId, shape), `blooms.changed` |
-| `item` | `item.changed` (bloom or sprig, shape, item, itemId, visible; inside a sprig also `blooms`: the blooms whose own sprig it is), `items.changed` (bloom or sprig, shape, items: [{item, itemId}], top first) when something is added to or taken out of a bloom or sprig |
+| `item` | `item.changed` (bloom or sprig, shape, item, itemId, visible; inside a sprig also `blooms`: the blooms whose own sprig it is), `items.changed` (bloom or sprig, shape, items: [{item, itemId}], top first) when something is added to or taken out of a bloom or sprig, `item.moved` (bloom or sprig, shape, item, itemId, x, y, scale_x, scale_y, rotation, align, crop, bounds) when something is moved, sized, cropped or turned, by hand or by an app |
 | `sprig` | `sprig.state` (sprig, sprigId, state) |
 | `sound` | `sound.changed` (id, name, muted, volumeDb, balance) |
 | `filter` | `filter.changed` (source, id, name, kind, on, settings, added), `filter.removed`, `effect.ended` (source, sourceId, effect: hide.pixelate, hide.blackout, roll.spin or freeze.start, reason: ended or replaced) |
@@ -224,15 +241,34 @@ for. The connection closes next. Look again in a second or two: it's often a res
 | Action | What it does | Fields |
 | --- | --- | --- |
 | `item.add` | Put a source in a bloom (in its sprig) or a sprig, on top (a plugin starts readable, in a free corner). Answers the item's id. | `source`: name or id, `bloom` (optional): bloom to add to, `sprig` (optional): sprig to add to, `shape` (optional): both (default), horizontal or vertical, `visible` (optional): true (default) or false |
+| `item.duplicate` | Copy something: a new source with the same settings and filters, placed the same way, on top. Not for sprigs. Answers `item`, `name`, `shapes`. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical, `name` (optional): the copy's name |
 | `item.hide` | Hide something inside a bloom or sprig. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
+| `item.lock` | Lock something in place in Build, or unlock it (no `locked`: toggle). | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical, `locked` (optional): true or false |
 | `item.order` | Bring something forward or send it back. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical, `to`: top, bottom, up (one step) or down (one step) |
-| `item.place` | Move, size or turn something inside a bloom or sprig (only the fields you give change). | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical, `x` (optional): left edge, canvas pixels, `y` (optional): top edge, `scale` (optional): size, 1 = as big as the source, `scale_x` (optional): width only, 1 = as wide as the source, `scale_y` (optional): height only, 1 = as tall as the source, `rotation` (optional): degrees clockwise, `dx` (optional): pixels to move right (negative: left), `dy` (optional): pixels to move down (negative: up) |
+| `item.place` | Move, size or turn something inside a bloom or sprig (only the fields you give change). | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical, `x` (optional): left edge, canvas pixels, `y` (optional): top edge, `scale` (optional): size, 1 = as big as the source, `scale_x` (optional): width only, 1 = as wide as the source, `scale_y` (optional): height only, 1 = as tall as the source, `rotation` (optional): degrees clockwise, `dx` (optional): pixels to move right (negative: left), `dy` (optional): pixels to move down (negative: up), `crop` (optional): `{left, top, right, bottom}` in source pixels (the sides you give change), `bounds` (optional): off, fit, fill or stretch, `bounds_width`, `bounds_height` (optional): the box in canvas pixels, `bounds_align` (optional): where the picture sits in its box, `align` (optional): the point it turns around, top_left to bottom_right (the picture stays where it is) |
+| `item.remove` | Take something out of a bloom or sprig. Its source stays. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
 | `item.show` | Show something inside a bloom or sprig. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
 | `item.status` | Whether something inside a bloom or sprig is shown. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
 | `item.toggle` | Show it if hidden, hide it if shown. | `item`: name or id, `bloom` (optional): bloom it's in, `sprig` (optional): sprig it's in, `shape` (optional): both (default), horizontal or vertical |
 | `items.list` | What's inside a bloom or sprig, per shape. | `bloom` (optional): name or id, `sprig` (optional): name or id |
 
 Blooms hold sprigs, so `{"bloom": "Chatting", "item": "Cam"}` also finds the Cam inside Chatting's own sprig.
+
+### layout
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `layout.get` | Where everything in a bloom or sprig sits, per shape, top of the stack first. | `bloom` or `sprig`: name or id, `shape` (optional): both (default), horizontal or vertical, `flat` (optional): true for only the things themselves (no sprigs), `overlaps` (optional): true to also list overlapping pairs |
+
+`layout.get` reads the garden; it draws nothing and changes nothing, so it works for blooms that aren't on air. It answers `{"bloom" or "sprig": name, "id", "shapes": {"horizontal": {"canvas": {"width", "height"}, "items": [...]}}}`. Each item has:
+
+- `id`, `name`, `kind` (`sprig` for a nested sprig, else the source's kind), `sprig`, `visible`, `locked`, and `shown` (visible, and so is every sprig it's inside).
+- Its place as saved: `x`, `y` (top-left of its box before turning), `scale_x`, `scale_y`, `rotation` (degrees clockwise, around the `align` point), `align`, `crop` (`left`, `top`, `right`, `bottom` in source pixels) and `bounds` (`mode`: off, fit, fill or stretch; `width`, `height`; `align`).
+- `source_size`: the source's own `width` and `height` in pixels. A sprig is as big as its canvas. `null` when SprigCast doesn't know yet (a source that hasn't drawn); then `size`, `corners` and `box` are `null` too.
+- `size`: its box before turning. `corners`: the box's four corners on the canvas (top-left, top-right, bottom-left, bottom-right). `box`: the upright rectangle around those corners (`x`, `y`, `width`, `height`), in the canvas pixels of the bloom or sprig you asked for.
+- A sprig has `items`: what's inside it. Their `x`, `y` and scales are in the sprig's own pixels, and their `corners` and `box` are where they end up on the canvas you asked for. `in` lists the sprigs an item is inside.
+
+With `overlaps`, each shape also has `overlaps`: `[{"a", "a_name", "a_in", "b", "b_name", "b_in", "box"}]` for each pair of shown things whose boxes share more than a pixel. Boxes are upright rectangles, so two turned things may be listed when only their corners' rectangles touch.
 
 ### media
 
@@ -284,6 +320,9 @@ Blooms hold sprigs, so `{"bloom": "Chatting", "item": "Cam"}` also finds the Cam
 | --- | --- | --- |
 | `screenshot.take` | A picture of what's on air in each shape, or of one source or bloom. | `shape` (optional): both (default), horizontal or vertical, `source` (optional): just this source (a camera...), name or id, `bloom` (optional): just this bloom, name or id, `width` (optional): shrink to this width in pixels (keeps the shape), `save` (optional): true (default): save PNGs in the recordings folder, under Screenshots, `data` (optional): true: send the picture back as base64 PNG (for bots and pages; large) |
 
+
+`screenshot.take` with `bloom` pictures that bloom on the `shape` you name, whether it's on air or not. A bloom on air is pictured as its canvas. A bloom off air is drawn on its own canvas without being put on air: its sources wake for the moment it takes (up to about 4 seconds for cameras and web pages), then rest again, and its shot has `"on_air": false`. That isn't done while live or recording (`not_allowed`), so the stream never pays for it.
+
 ### sound
 
 | Action | What it does | Fields |
@@ -301,6 +340,8 @@ Blooms hold sprigs, so `{"bloom": "Chatting", "item": "Cam"}` also finds the Cam
 | `source.get` | A source's settings. | `source`: name or id |
 | `source.new` | Make a source (a browser page, text, image...). Put it in a bloom with item.add. | `name`: name, `kind`: browser, text, image, color, media..., `settings` (optional): {key: value}, e.g. url, width, height |
 | `source.rename` | Give a source a new name. | `source`: name or id, `name`: new name |
+| `source.refresh` | Load a web page source again, now. `not_allowed` while the page isn't open (off screen): it loads fresh when it's shown. | `source`: name or id |
+| `source.remove` | Remove a source, taking it out of every bloom and sprig it's in. Answers `removed`, `places`. | `source`: name or id |
 | `source.rotate` | Turn a source to an angle wherever it's shown (0: upright again). | `source`: name or id, `degrees`: clockwise, -3600 to 3600 |
 | `source.set` | Change some of a source's settings: text, a browser page's url, an image file, a color... | `source`: name or id, `settings`: {key: value} |
 | `sources.list` | Every source (cameras, text, browser pages, images, sounds...). | none |

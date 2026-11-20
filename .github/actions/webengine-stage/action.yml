@@ -1,0 +1,156 @@
+name: Qt WebEngine build stage
+description: >
+  One stage of webengine-codecs.yml. Chromium takes longer to build than one GitHub job may run (6 h on 4 cores),
+  so the build goes on across stages: each restores the last stage's tree (sources, Qt, build folder, with their
+  times, so ninja picks up where it stopped), builds until its time is up and saves the tree for the next. The
+  stage that finishes installs the build and uploads the zip the installer lays over PySide6.
+inputs:
+  stage:
+    description: Stage number (1 starts from nothing)
+    required: true
+  qt:
+    description: Qt version (PySide6's)
+    required: true
+  build-minutes:
+    description: How long this stage may build before it saves its tree
+    default: "285"
+outputs:
+  done:
+    description: "true once the build finished and the zip is uploaded"
+    value: ${{ steps.build.outputs.done }}
+runs:
+  using: composite
+  steps:
+    - name: Start the clock
+      shell: pwsh
+      run: |
+        "STAGE_DEADLINE=$((Get-Date).ToUniversalTime().AddMinutes(${{ inputs.build-minutes }}).ToString('o'))" >> $env:GITHUB_ENV
+        Get-PSDrive C | Format-Table -AutoSize | Out-String | Write-Host
+    - name: Bigger page file (linking Qt6WebEngineCore.dll needs more than the runner's 16 GB)
+      uses: al-cheb/configure-pagefile-action@v1.4
+      with:
+        minimum-size: 16GB
+        maximum-size: 32GB
+        disk-root: "C:"
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+    - name: Build tools (html5lib, ninja, gperf, bison, flex, zstd)
+      shell: pwsh
+      run: |
+        python -m pip install --quiet html5lib==1.1 ninja==1.13.0 aqtinstall==3.3.0
+        choco install -y --no-progress gperf winflexbison3 zstandard
+        if ($LASTEXITCODE -ne 0) { throw "choco couldn't install the build tools" }
+    - uses: ilammy/msvc-dev-cmd@v1.13.0
+      with:
+        arch: x64
+    - name: Sources and Qt (stage 1)
+      if: inputs.stage == '1'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        $qt = "${{ inputs.qt }}"
+        New-Item -ItemType Directory -Force C:\qtwe, C:\qtwe\qt | Out-Null
+        # The official Qt PySide6's wheels are built from (aqt installs the same binaries the Qt installer does).
+        $arch = (python -m aqt list-qt windows desktop --arch $qt) -split '\s+' | Where-Object { $_ -match '^win64_msvc20\d\d_64$' } | Sort-Object | Select-Object -Last 1
+        if (-not $arch) { throw "No 64-bit MSVC Qt $qt to build against" }
+        "Qt $qt $arch"
+        python -m aqt install-qt windows desktop $qt $arch --outputdir C:\qtwe\qt -m qtwebchannel qtpositioning qtwebsockets
+        if ($LASTEXITCODE -ne 0) { throw "aqt couldn't install Qt $qt" }
+        $qtdir = (Get-ChildItem C:\qtwe\qt\$qt -Directory | Select-Object -First 1).FullName
+        "QTDIR=$qtdir" | Out-File C:\qtwe\qtdir.txt
+        # Qt WebEngine's source release, checked against Qt's own list of checksums.
+        $base = "https://download.qt.io/official_releases/qt/$($qt.Substring(0, $qt.LastIndexOf('.')))/$qt/submodules"
+        $name = "qtwebengine-everywhere-src-$qt.tar.xz"
+        Invoke-WebRequest "$base/$name" -OutFile C:\qtwe\$name
+        Invoke-WebRequest "$base/md5sums.txt" -OutFile C:\qtwe\md5sums.txt
+        $want = (Select-String -Path C:\qtwe\md5sums.txt -Pattern ([regex]::Escape($name)) | Select-Object -First 1).Line.Split(' ')[0]
+        $got = (Get-FileHash C:\qtwe\$name -Algorithm MD5).Hash.ToLower()
+        if (-not $want -or $want -ne $got) { throw "$name doesn't match Qt's checksum ($got vs $want)" }
+        "source sha256: $((Get-FileHash C:\qtwe\$name -Algorithm SHA256).Hash.ToLower())"
+        tar -xf C:\qtwe\$name -C C:\qtwe
+        if ($LASTEXITCODE -ne 0) { throw "couldn't unpack $name" }
+        Rename-Item "C:\qtwe\qtwebengine-everywhere-src-$qt" C:\qtwe\s
+        Remove-Item C:\qtwe\$name
+        New-Item -ItemType Directory -Force C:\qtwe\b | Out-Null
+        Push-Location C:\qtwe\b
+        # Exactly PySide6's Qt WebEngine plus H.264/AAC. Qt PDF isn't built (PySide6's own stays), nor Rust parts.
+        & "$qtdir\bin\qt-configure-module.bat" C:\qtwe\s -- -DFEATURE_webengine_proprietary_codecs=ON `
+            -DFEATURE_qtpdf_build=OFF -DFEATURE_webengine_rust_build=OFF -DCMAKE_BUILD_TYPE=Release
+        if ($LASTEXITCODE -ne 0) { throw "Qt WebEngine's configure failed" }
+        Pop-Location
+        Get-Content C:\qtwe\b\config.summary -ErrorAction SilentlyContinue | Write-Host
+        if (-not (Select-String -Path C:\qtwe\b\CMakeCache.txt -Pattern '^QT_FEATURE_webengine_proprietary_codecs:[A-Z]+=ON' -Quiet)) {
+          throw "configure didn't turn on proprietary codecs"
+        }
+    - name: Last stage's tree
+      if: inputs.stage != '1'
+      uses: actions/download-artifact@v4
+      with:
+        name: webengine-tree-${{ github.run_id }}
+        path: C:\state
+    - name: Unpack last stage's tree
+      if: inputs.stage != '1'
+      shell: cmd
+      run: |
+        zstd -d -q -c C:\state\tree.tar.zst | C:\Windows\System32\tar.exe -xf - -C C:\
+        if errorlevel 1 exit /b 1
+        del C:\state\tree.tar.zst
+    - name: Build until the stage's time is up
+      id: build
+      shell: pwsh
+      run: |
+        $deadline = [DateTime]::Parse($env:STAGE_DEADLINE).ToUniversalTime()
+        $p = Start-Process cmake -ArgumentList "--build", "C:\qtwe\b", "--parallel", "$env:NUMBER_OF_PROCESSORS" -NoNewWindow -PassThru
+        while (-not $p.HasExited -and (Get-Date).ToUniversalTime() -lt $deadline) { Start-Sleep 20 }
+        if ($p.HasExited) {
+          $p.WaitForExit()
+          if ($p.ExitCode -ne 0) { throw "The build failed (exit $($p.ExitCode))" }
+          "done=true" >> $env:GITHUB_OUTPUT
+          exit 0
+        }
+        $stopped = Get-Date
+        & taskkill /PID $p.Id /T /F | Out-Null
+        Start-Sleep 10
+        # A file a stopped compiler or linker was writing may be half there but newer than its inputs, and ninja
+        # would take it as built: everything written in the last 30 minutes is made again next stage.
+        Get-ChildItem C:\qtwe\b -Recurse -File -Include *.obj, *.o, *.lib, *.dll, *.exe, *.pdb, *.res, *.ilk |
+          Where-Object { $_.LastWriteTime -gt $stopped.AddMinutes(-30) } | Remove-Item -Force
+        "done=false" >> $env:GITHUB_OUTPUT
+    - name: Save the tree for the next stage
+      if: steps.build.outputs.done != 'true'
+      shell: cmd
+      run: |
+        mkdir C:\state 2>nul
+        C:\Windows\System32\tar.exe -cf - -C C:\ qtwe | zstd -T0 -3 -q -o C:\state\tree.tar.zst
+        if errorlevel 1 exit /b 1
+        dir C:\state
+    - name: Upload the tree
+      if: steps.build.outputs.done != 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: webengine-tree-${{ github.run_id }}
+        path: C:\state\tree.tar.zst
+        compression-level: 0
+        retention-days: 2
+        overwrite: true
+    - name: Install and pack
+      if: steps.build.outputs.done == 'true'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        cmake --install C:\qtwe\b --prefix C:\qtwe\out
+        if ($LASTEXITCODE -ne 0) { throw "cmake --install failed" }
+        $redist = Get-ChildItem "$env:VCToolsRedistDir\x64" -Directory -Filter "Microsoft.VC*.CRT" | Select-Object -First 1
+        python packaging\webengine_codecs.py pack C:\qtwe\out "C:\pack\qtwebengine-${{ inputs.qt }}-codecs-win64.zip" $redist.FullName
+        if ($LASTEXITCODE -ne 0) { throw "packing failed" }
+    - name: Upload the zip
+      if: steps.build.outputs.done == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: webengine-codecs
+        path: C:\pack\*.zip
+        compression-level: 0
