@@ -302,6 +302,28 @@ class WindowHost:
                           as_data: bool) -> dict[str, Any] | None:
         return self.w._source_screenshot(source_id, name, width, save, as_data)
 
+    def undo(self) -> bool:
+        """Ctrl+Z for apps (edit.undo). False: nothing to undo."""
+        if not self.w._undo:
+            return False
+        self.w.undo()
+        return True
+
+    def redo(self) -> bool:
+        if not self.w._redo:
+            return False
+        self.w.redo()
+        return True
+
+    def garden_replaced(self) -> None:
+        """Every bloom, sprig and item was put in again in place (an app's batch): the lists are read again, as
+        after an undo."""
+        self.w._refresh_all()
+
+    def new_undo_step(self) -> None:
+        """The next change is an undo step of its own, however soon after the last (a batch from an app)."""
+        self.w._undo_at = 0.0
+
     def bloom_screenshot(self, scene_id: str, name: str, width: int | None, save: bool,
                          as_data: bool) -> dict[str, Any] | None:
         return self.w._bloom_shot_for_apps(scene_id, name, width, save, as_data)
