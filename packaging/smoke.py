@@ -152,6 +152,9 @@ def size(path: Path) -> int:
 
 
 def main() -> int:
+    # The CI console is cp1252: a character it can't show (the app's own "\ufffd" for bytes that weren't UTF-8)
+    # must not crash this script before it prints what SprigCast said (run 44657647849).
+    sys.stdout.reconfigure(errors="replace")
     seconds = float(sys.argv[1])
     command = sys.argv[2:]
     watchdog = threading.Timer(seconds + HANG_AFTER_S, _hung, args=(seconds + HANG_AFTER_S,))
