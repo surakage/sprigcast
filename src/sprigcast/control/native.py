@@ -956,7 +956,9 @@ class NativeApi:
         if on is None and settings is None:
             raise _bad("Give on, settings or both.")
         if on is not None:
-            found.enabled = on
+            from sprigcast.core.filters import switch
+
+            switch(found, on)
         if settings:
             from sprigcast.core.filters import filter_kind
 
@@ -973,7 +975,9 @@ class NativeApi:
     def filter_toggle(self, data):
         source = self._source(data, "source")
         found = self._filter(source, data)
-        found.enabled = not found.enabled
+        from sprigcast.core.filters import switch
+
+        switch(found, not found.enabled)
         self.host.commit("filters")
         return self._filter_info(found)
 

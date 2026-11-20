@@ -1188,7 +1188,9 @@ class ControlApi:
 
     def req_SetSourceFilterEnabled(self, data):
         _, found = self._source_filter(data)
-        found.enabled = _require(data, "filterEnabled", bool)
+        from sprigcast.core.filters import switch
+
+        switch(found, _require(data, "filterEnabled", bool))
         self.host.commit("filters")
 
     def req_SetSourceFilterSettings(self, data):
