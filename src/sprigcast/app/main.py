@@ -403,7 +403,13 @@ def run() -> None:
         if crashed is not None:
             from sprigcast.app import problem_report
 
-            QTimer.singleShot(1200, lambda: problem_report.ask(window, crashed))  # what happened? send it?
+            if safe_mode.unattended():  # nobody answered the safe mode question: no card waiting over the window
+                logging.info("report: crash card not shown: nobody answered the safe mode question (it's in the "
+                             "log; Help → Report a problem sends it)")
+                window.statusBar().showMessage("SprigCast closed unexpectedly last time. Help → Report a problem "
+                                               "sends a report.", 60_000)
+            else:
+                QTimer.singleShot(1200, lambda: problem_report.ask(window, crashed))  # what happened? send it?
     from PySide6.QtCore import QTimer
 
     from sprigcast.core import pacing
