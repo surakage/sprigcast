@@ -2459,6 +2459,9 @@ class MainWindow(QMainWindow):
         self._exit_in_place()
         self._place_canvases()
         self._show_part_editor()
+        # Live shows what's on air, Build the bloom picked there: the "Empty bloom" card of a bloom picked in
+        # Build stayed over the on-air picture in Live (2026-11-20).
+        self._refresh_previews()
         for preview in self.previews.values():
             preview.editable = editable
             preview.update()

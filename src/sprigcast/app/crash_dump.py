@@ -30,6 +30,10 @@ MiniDumpWithThreadInfo = 0x1000
 MiniDumpWithUnloadedModules = 0x20
 MiniDumpWithIndirectlyReferencedMemory = 0x40
 DUMP_TYPE = MiniDumpNormal | MiniDumpWithThreadInfo | MiniDumpWithUnloadedModules
+if os.environ.get("SPRIGCAST_DUMP_MEMORY") == "1":
+    # Also what the registers and stacks point at (about a kilobyte each): which object a crash was in. Only for
+    # the start-up check on GitHub (packaging/read_dump.py reads it): a dump a person sends never holds memory.
+    DUMP_TYPE |= MiniDumpWithIndirectlyReferencedMemory
 EXCEPTION_CONTINUE_SEARCH = 0
 GENERIC_WRITE = 0x40000000
 CREATE_ALWAYS = 2

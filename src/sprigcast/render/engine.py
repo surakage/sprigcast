@@ -2191,7 +2191,10 @@ class Engine:
                     if isinstance(frame, drawn.Drawn):
                         native.draw_list(source_id, frame)
                     else:
-                        native.upload(source_id, frame, source.channel_order, layout)
+                        # (One color is a few pixels stretched over its size: the engine has to be told the size,
+                        # or it draws a 2 x 2 dot. Python's compositor knows it from the layout.)
+                        stretched = source.size if getattr(source, "stretched", False) else None
+                        native.upload(source_id, frame, source.channel_order, layout or stretched)
             spent = time.perf_counter() - began
             self._charge(source_id, source, spent)
             if spent > slowest[1]:

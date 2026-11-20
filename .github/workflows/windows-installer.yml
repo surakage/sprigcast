@@ -73,6 +73,7 @@ jobs:
           # OpenGL (Mesa) sits beside SprigCast.exe as opengl32.dll. It's removed straight after: the
           # installer was built before this step and never has it.
           $home_ = "packaging\build\python"
+          $env:SPRIGCAST_DUMP_MEMORY = "1"  # a crash dump here also holds what the crash pointed at
           $gl = Join-Path $home_ "opengl32.dll"
           Copy-Item (Join-Path $home_ "Lib\site-packages\PySide6\opengl32sw.dll") $gl
           try {
@@ -97,6 +98,18 @@ jobs:
             Remove-Item $gl -Force
           }
           if ($code -ne 0) { throw "SprigCast didn't start cleanly (see the log above)" }
+      - name: Where a start that crashed was
+        if: failure()
+        shell: pwsh
+        run: |
+          # No symbols needed: module, nearest exported name, registers and what they point at.
+          $logs = Join-Path ([Environment]::GetFolderPath("MyDocuments")) "SprigCast\Logs"
+          Get-ChildItem $logs -Filter "crash *.dmp" -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "=====" $_.Name
+            uv run --no-project --with minidump --with pefile python -u packaging/read_dump.py $_.FullName packaging\build\python 2>&1 |
+              ForEach-Object { "$_" } | Where-Object { $_ -notmatch "minidump|PEB|Traceback|\^\^\^|buff_reader|_select_segment|Installed|^\s*$" }
+          }
+          exit 0
       - name: Keep the logs and crash dumps of a start that failed
         if: failure()
         uses: actions/upload-artifact@v4

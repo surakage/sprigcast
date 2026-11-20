@@ -20,6 +20,8 @@ def parse_color(text: str) -> tuple[int, int, int, int]:
 
 @register("color")
 class ColorSource(Source):
+    stretched = True  # its picture is a few pixels shown at `size` (render/engine.py tells the engine)
+
     def __init__(self, source_id: str, settings: dict[str, Any]):
         super().__init__(source_id, settings)
         self._dirty = True
