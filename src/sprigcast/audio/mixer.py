@@ -130,6 +130,19 @@ def source_tracks(source) -> tuple[str, ...]:
     return tuple(t for t in TRACKS if t in base or t in extra)
 
 
+def planned_tracks(source) -> tuple[str, ...]:
+    """The tracks a sound goes to once it's no longer "Just me": what source_tracks gives, as if it weren't.
+    Shown while it's Just me, so switching back keeps them (PC 2026-11-20: Just me → Stream saved no tracks)."""
+    settings = dict(getattr(source, "settings", {}) or {})
+    if settings.get("monitor") != "only":
+        return source_tracks(source)
+    settings["monitor"] = False
+    from types import SimpleNamespace
+
+    return source_tracks(SimpleNamespace(id=getattr(source, "id", None), kind=getattr(source, "kind", ""),
+                                         name=getattr(source, "name", ""), settings=settings))
+
+
 EXTRA_TRACKS = ("vod", "track4", "track5")  # set by their own switches, never by the "tracks" list
 
 

@@ -131,7 +131,7 @@ from sprigcast.app.panels import Panel, Panels
 from sprigcast.app.stats_panel import StatsPanel, StatsStrip
 from sprigcast.app.terms import COLLECTION, PART, PARTS, SHOW, SHOWS, a, cap
 from sprigcast import plugin_hooks
-from sprigcast.audio.mixer import source_tracks
+from sprigcast.audio.mixer import planned_tracks
 from sprigcast.core.events import (
     AudioLevels,
     EngineError,
@@ -3837,7 +3837,7 @@ class MainWindow(QMainWindow):
             delay_ms=int(st.get("delay_ms", 0) or 0), voice=is_voice(st, config.kind),
             filters=[f.name for f in config.filters if f.enabled],
             can_monitor=config.kind != "audio_output",  # desktop audio already plays on your speakers
-            tracks=source_tracks(config),
+            tracks=planned_tracks(config),  # Just me shows where it goes once it is back
             apps=self._app_sound_text(config) if config.kind == "app_audio" else None,
         )
 

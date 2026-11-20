@@ -486,3 +486,34 @@ def test_sounds_row_name_follows_a_device_change():
     page.apply_to(col)
     assert page.name_labels["desktop"].text() == col.source("desktop").name
     assert "Realtek" not in col.source("desktop").name
+
+
+def test_just_me_and_back_keeps_where_a_sound_goes():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import AudioPage
+    from sprigcast.audio.mixer import planned_tracks
+
+    QApplication.instance() or QApplication([])
+    col = _collection()
+    col.sources.append(SourceConfig(id="bgm", kind="media", name="Starting Soon BG Music", settings={}))
+    before = source_tracks(col.source("bgm"))
+    col.source("bgm").settings["monitor"] = "only"  # saved as Just me
+    assert source_tracks(col.source("bgm")) == () and planned_tracks(col.source("bgm")) == before
+
+    def page():
+        p = AudioPage(col, {})
+        p.finish()
+        while p._rows_waiting:
+            p._more_rows()
+        return p
+
+    p = page()
+    row = p.sound_rows["bgm"]
+    assert row["stream"].isChecked() and row["clips"].isChecked() and not row["stream"].isEnabled()
+    assert [row["hear"].itemText(i) for i in range(3)] == ["Stream", "Stream + me", "Just me"]
+    row["hear"].setCurrentIndex(0)  # back to Stream
+    p.apply_to(col)
+    assert source_tracks(col.source("bgm")) == before and col.source("bgm").settings["monitor"] is False
