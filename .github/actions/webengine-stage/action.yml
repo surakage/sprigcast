@@ -11,6 +11,9 @@ inputs:
   qt:
     description: Qt version (PySide6's)
     required: true
+  webengine:
+    description: Qt WebEngine version (PySide6's; its own numbering since Qt 6.12, e.g. 6.140.0)
+    required: true
   build-minutes:
     description: How long this stage may build before it saves its tree
     default: "285"
@@ -61,7 +64,7 @@ runs:
         $qtdir = (Get-Content C:\qtwe\qt\prefix.txt -Raw).Trim()
         "QTDIR=$qtdir" | Out-File C:\qtwe\qtdir.txt
         # Qt WebEngine's source release (official_releases, archive or mirrors), checked against Qt's checksums.
-        python packaging\qt_sdk.py source $qt qtwebengine C:\qtwe\src
+        python packaging\qt_sdk.py source ${{ inputs.webengine }} qtwebengine C:\qtwe\src
         if ($LASTEXITCODE -ne 0) { throw "Couldn't download Qt WebEngine $qt's source" }
         $archive = (Get-Content C:\qtwe\src\source.txt -Raw).Trim()
         # Qt 6.12 has no qtwebengine submodule tarball: then it's the whole qt-everywhere-src, and only its
