@@ -82,7 +82,8 @@ def set_capture_sound(collection: SceneCollection, capture: SourceConfig, choice
     elif choice.startswith(INPUT):
         sound = SourceConfig(id=current.id if current else collection.new_id("sound"), kind="audio_input",
                              name=f"{capture.name} sound",
-                             settings={**base, "device": choice[len(INPUT):], "duck_voice": False})
+                             settings={"monitor": True,  # a card's sound: you hear the game too, like the console
+                                       **base, "device": choice[len(INPUT):], "duck_voice": False})
     else:
         sound = SourceConfig(id=current.id if current else collection.new_id("sound"), kind="audio_output",
                              name=f"{capture.name} sound", settings={**base, "device": choice})

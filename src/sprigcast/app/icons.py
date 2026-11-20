@@ -288,6 +288,11 @@ def _draw(p: QPainter, name: str) -> None:
         path.lineTo(P(12, 15))
         path.lineTo(P(17, 10))
         p.drawPath(path)
+    elif name == "chevron-left":
+        path = QPainterPath(P(14, 7))
+        path.lineTo(P(9, 12))
+        path.lineTo(P(14, 17))
+        p.drawPath(path)
     elif name == "chevron-up":
         path = QPainterPath(P(7, 14))
         path.lineTo(P(12, 9))
@@ -337,7 +342,7 @@ def _draw(p: QPainter, name: str) -> None:
 NAMES = ("sprig", "bloom", "leaf", "gear", "search", "lock", "unlock", "link", "key", "upload", "monitor", "mic",
          "camera", "disk", "bolt", "panel", "plus", "compass", "folder", "trash", "speaker", "speaker-off",
          "gamepad", "keyboard", "shutter", "chat", "note", "trophy", "ball", "broadcast", "record", "landscape",
-         "portrait", "dual", "clip", "heart", "tree", "paw", "chevron-down", "chevron-up", "minus", "swap", "warning", "clock", "moon", "plug", "eye-off", "sliders")
+         "portrait", "dual", "clip", "heart", "tree", "paw", "chevron-down", "chevron-up", "chevron-left", "minus", "swap", "warning", "clock", "moon", "plug", "eye-off", "sliders")
 
 
 def paint_icon(p: QPainter, r: QRectF, name: str, colour: str | QColor | None = None, width: float = 1.9) -> None:
