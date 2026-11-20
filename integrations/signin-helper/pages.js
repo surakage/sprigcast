@@ -5,7 +5,7 @@
 
 import { LOGO } from "./logo.js";
 
-export const UPDATED = "November 18, 2026";
+export const UPDATED = "November 20, 2026";
 const REPO = "https://github.com/surakage/sprigcast";
 const CONTACT = `${REPO}/issues`;
 
@@ -241,13 +241,12 @@ export const HOME = page("SprigCast: free streaming and recording for Windows", 
   <div class="grid two">
     <div class="tile">${icon("key")}<h3>Fill in your stream key</h3>
     <p>Sign in reads your channel name and finds your reusable stream key. If you don't have one, SprigCast makes one
-    called "SprigCast". Right after that, SprigCast cancels the sign-in with Google and keeps only the key, on your
-    PC.</p>
-    <p class="where">In SprigCast: Live → Destinations → + Add → YouTube → Sign in</p></div>
+    called "SprigCast". The key and the sign-in are kept on your PC, encrypted by Windows.</p>
+    <p class="where">In SprigCast: Settings → Stream → YouTube → Sign in</p></div>
     <div class="tile">${icon("edit")}<h3>Set your stream details</h3>
     <p>Set your stream's title, description, privacy, start time, category, tags and thumbnail. SprigCast reads your
     live or upcoming YouTube stream, saves your changes when you press Save, and makes a new upcoming stream on your
-    key if there isn't one. This sign-in stays on your PC, kept by Windows, until you press Sign out.</p>
+    key if there isn't one. It uses the same sign-in, which stays on your PC until you press Sign out.</p>
     <p class="where">In SprigCast: Live → Destinations → Details</p></div>
   </div>
   <div class="never">${icon("shield")}<p><strong>What SprigCast never does.</strong> It never uploads videos,
@@ -264,6 +263,7 @@ export const PRIVACY = page("Privacy policy · SprigCast", "/privacy", policy("P
   <li>SprigCast runs on your PC. There are no SprigCast accounts, ads, analytics or tracking.</li>
   <li>We don't sell, rent or share your data, and we don't use it for advertising or to train AI models.</li>
   <li>Your YouTube data goes only between your PC and YouTube. We don't keep a copy of it.</li>
+  <li>Your sign-in is encrypted on your PC by Windows and always sent over HTTPS. Sign out deletes it.</li>
 </ul>
 
 <h2>Signing in with Google (YouTube)</h2>
@@ -285,14 +285,34 @@ or use any other Google service.</p>
 
 <h3>Where it's kept</h3>
 <ul>
-  <li><strong>Stream key sign-in:</strong> SprigCast keeps only the stream key, in your PC's Windows Credential
-  Manager. It cancels the sign-in with Google straight away, so nothing is left that could reach your
-  account.</li>
-  <li><strong>Stream details sign-in:</strong> the sign-in tokens are kept in Windows Credential Manager on your PC,
-  protected by Windows, so you don't have to sign in again each time. <strong>Sign out</strong> on the Stream
-  details card deletes them and cancels them with Google.</li>
+  <li><strong>One sign-in for YouTube:</strong> the sign-in tokens Google gives SprigCast, and the stream key, are
+  kept only on your PC, in Windows Credential Manager. SprigCast uses them for the stream key and for Stream
+  details until you press <strong>Sign out</strong>.</li>
   <li>The title and other details you type stay in SprigCast's settings on your PC.</li>
 </ul>
+
+<h2>How we protect your data</h2>
+<p>Your Google sign-in tokens and stream keys are sensitive, so SprigCast protects them like this:</p>
+<ul>
+  <li><strong>Encrypted on your PC.</strong> Tokens and stream keys are stored only in Windows Credential Manager,
+  which encrypts them with Windows Data Protection (DPAPI) tied to your Windows account. Other Windows users and
+  other PCs can't read them. They're never written to SprigCast's settings files or logs.</li>
+  <li><strong>Encrypted in transit.</strong> Every call to Google, YouTube and the sign-in helper uses HTTPS (TLS).
+  Signing in uses OAuth 2.0 with PKCE, and Google's answer comes back to a one-time address on your own PC
+  (127.0.0.1) that's open only while you sign in.</li>
+  <li><strong>Hidden in logs and reports.</strong> SprigCast's logs and problem reports hide stream keys, tokens
+  and passwords before anything is written or sent.</li>
+  <li><strong>No copies on our servers.</strong> SprigCast has no database or accounts. The sign-in helper stores
+  and logs nothing, and the app's Google client secret is kept as an encrypted secret on the helper, never inside
+  the app.</li>
+  <li><strong>Least access.</strong> SprigCast asks for one YouTube permission and uses it only when you press
+  Sign in, open Stream details or press Save. No person at Sloth Bloom can see your Google data.</li>
+  <li><strong>Deletion.</strong> <strong>Sign out</strong> (Settings → Stream → YouTube) deletes the tokens from
+  your PC and asks Google to cancel them. Uninstalling SprigCast deletes every key and token it saved in Windows
+  Credential Manager.</li>
+</ul>
+<p>If you find a security problem, please tell us through the contact below and we'll fix it as fast as we
+can.</p>
 
 <h3>The sign-in helper</h3>
 <p>Google gives each app a secret that mustn't ship inside the app. So the last step of signing in goes through
@@ -313,10 +333,10 @@ which you can see and control in the app. No person reads it, and it's never tra
 by the <a href="https://policies.google.com/privacy">Google Privacy Policy</a>.</p>
 
 <h3>Removing access</h3>
-<p>Press <strong>Sign out</strong> in SprigCast, or remove SprigCast at any time from your Google Account's
+<p>Press <strong>Sign out</strong> in SprigCast (Settings → Stream → YouTube), or remove SprigCast at any time from your Google Account's
 <a href="https://myaccount.google.com/connections">third-party connections</a> page
 (<a href="https://security.google.com/settings/security/permissions">security settings</a>). Uninstalling SprigCast
-and deleting its settings removes everything it kept on your PC.</p>
+deletes its saved keys and tokens, and "Also delete my SprigCast data" removes the rest.</p>
 
 <h2>Other services</h2>
 <p>Kick and Twitch sign-ins work the same way: they're optional, the tokens stay on your PC, and they're used only
