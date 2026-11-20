@@ -1582,6 +1582,19 @@ class MainWindow(QMainWindow):
         self._changed()
         self._refresh_scenes()
 
+    def _reorder_blooms(self, ids: list[str]) -> None:
+        """Live's Edit: one list's blooms in a new order. They keep the places they held among all scenes,
+        so other lists stay put; what's on air doesn't change, and 1-9 follow the new order."""
+        scenes = self.collection.scenes
+        slots = sorted(i for i, s in enumerate(scenes) if s.id in ids)
+        if len(slots) != len(ids):
+            return  # a bloom went meanwhile
+        by_id = {s.id: s for s in scenes}
+        for slot, scene_id in zip(slots, ids):
+            scenes[slot] = by_id[scene_id]
+        self._changed()
+        self._refresh_scenes()
+
     def _move_scene(self, scene_id: str, step: int) -> None:
         """Swap with the neighbour in the same list (same canvas and folder)."""
         scenes = self.collection.scenes
@@ -1621,9 +1634,14 @@ class MainWindow(QMainWindow):
                         placed.append((child.data(0, ROLE_ID), folder_id))
             return placed, folder_order
 
-        shows, parts = self.collection.scenes_for(self.build_canvas), self.collection.parts()
-        show_folders = [f.id for f in self.collection.folders_for(self.build_canvas)]
-        part_folders = [f.id for f in self.collection.part_folders()]
+        # What the library listed: this shape's blooms and sprigs only (#623). Checked against everything, a
+        # sprig or sprig folder of the other shape made every drop look wrong and it was put back (PC, 2026-11-20).
+        bloom_groups = self.collection.grouped_scenes(self.build_canvas)
+        sprig_groups = self.collection.grouped_parts_on(self.build_canvas)
+        shows = [s for _f, group in bloom_groups for s in group]
+        parts = [p for _f, group in sprig_groups for p in group]
+        show_folders = [f.id for f, _g in bloom_groups if f is not None]
+        part_folders = [f.id for f, _g in sprig_groups if f is not None]
         got_shows, got_parts = read(""), read(PART_ROOT)
         if (got_shows is None or got_parts is None
                 or sorted(sid for sid, _ in got_shows[0]) != sorted(s.id for s in shows)
@@ -2028,6 +2046,7 @@ class MainWindow(QMainWindow):
         """Live mode's own screen (app/live_stage.py): no docks, the stage, bloom tiles and a side column."""
         self.live_panel = LivePanel(self._switch_to_scene, self._set_sprig_state, on_edit=self._edit_in_build)
         self.live_panel.on_project = self._live_bloom_menu
+        self.live_panel.on_reorder = self._reorder_blooms
         self._build_transition_menu()
         self.live_side = LiveSide(self._on_live_clicked, self._on_record_clicked, self._on_clip_clicked,
                                   self._edit_destination, self._on_stream_toggled, self._place_action,

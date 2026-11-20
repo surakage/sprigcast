@@ -170,3 +170,50 @@ def test_new_sources_start_at_720p_but_text(tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_leaves_drops_land_anywhere_on_a_tall_sprig_row():
+    """A sprig's Leaves row is tall (its contents under it): a drop over its lower half goes after it, its upper
+    half before it, not only Qt's few pixels at the edges (PC, 2026-11-20)."""
+    from PySide6.QtWidgets import QApplication, QListWidgetItem
+
+    QApplication.instance() or QApplication([])
+    from sprigcast.app.build_stage import ROLE_CHILDREN, ROLE_NAME, InsideList
+
+    view = InsideList()
+    view.resize(320, 600)
+    for name, children in (("Cam", []), ("Sprig", [(0, "a", False), (0, "b", False), (0, "c", False)]), ("Chat", [])):
+        row = QListWidgetItem(name)
+        row.setData(ROLE_NAME, name)
+        row.setData(ROLE_CHILDREN, children)
+        view.addItem(row)
+    view.show()
+    QApplication.processEvents()
+    tall = view.visualItemRect(view.item(1))
+    assert tall.height() > 60
+    assert view._slot_at(tall.top() + tall.height() * 0.3) == 1
+    assert view._slot_at(tall.top() + tall.height() * 0.7) == 2
+    assert view._slot_at(view.visualItemRect(view.item(2)).bottom() + 20) == 3
+    moved = []
+    view.moved.connect(lambda a, b: moved.append((a, b)))
+    view.setCurrentRow(0)
+
+    class Drop:  # what dropEvent reads
+        def __init__(self, y):
+            from PySide6.QtCore import QMimeData, QPointF
+            self._pos, self._mime = QPointF(10, y), QMimeData()
+
+        def mimeData(self):
+            return self._mime
+
+        def position(self):
+            return self._pos
+
+        def setDropAction(self, _a):
+            pass
+
+        def accept(self):
+            pass
+
+    view.dropEvent(Drop(tall.top() + tall.height() * 0.7))  # Cam dropped on the lower half of the sprig
+    assert moved == [(0, 1)]

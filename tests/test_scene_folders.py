@@ -178,6 +178,10 @@ def test_dragging_folders_reorders_them_and_sprigs_move_between_folders(tmp_path
     nested = col.add_folder("horizontal", "Nested Scenes", holds="part")
     browser = col.add_folder("horizontal", "Browser Scenes", holds="part")
     col.scenes.append(Scene(id="p1", name="Webcam", canvas="horizontal", kind="part", folder=nested.id))
+    # The other shape's sprigs aren't listed here (#623); they mustn't make every drop look wrong (PC, 2026-11-20).
+    tall = col.add_folder("vertical", "Tall sprigs", holds="part")
+    col.scenes.append(Scene(id="pv", name="Tall cam", canvas="vertical", kind="part", folder=tall.id))
+    col.scenes.append(Scene(id="pv2", name="Tall chat", canvas="vertical", kind="part"))
     w = MainWindow(col, tmp_path / "scenes.json")
     try:
         w._refresh_scenes()
@@ -205,10 +209,11 @@ def test_dragging_folders_reorders_them_and_sprigs_move_between_folders(tmp_path
         sprigs.addChild(holder.takeChild(0))  # and out of any folder
         w._scenes_dropped()
         assert col.scene("p1").folder is None
+        assert col.scene("pv").folder == tall.id and col.scene("pv2").folder is None  # the other shape's: untouched
         sprigs = heading(PART_ROOT)
         child(sprigs, browser.id).addChild(sprigs.takeChild(sprigs.indexOfChild(child(sprigs, nested.id))))
         w._scenes_dropped()  # a folder in a folder is undone
-        assert [f.id for f in col.part_folders()] == [nested.id, browser.id]
+        assert [f.id for f in col.part_folders()][:2] == [nested.id, browser.id]
         top = heading("")
         heading(PART_ROOT).addChild(top.takeChild(top.indexOfChild(child(top, first.id))))
         w._scenes_dropped()  # a bloom folder among the sprigs is undone

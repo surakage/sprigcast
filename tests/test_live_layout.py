@@ -124,3 +124,41 @@ def test_a_long_bloom_name_takes_two_lines_in_a_narrow_list(app):
     assert short.height() == BloomTile.HEIGHT
     tile.close()
     short.close()
+
+
+def test_edit_drags_blooms_into_order_without_switching(app, tmp_path, monkeypatch):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    from sprigcast.core.scene import Scene
+
+    w = _window(tmp_path, monkeypatch)
+    try:
+        col = w.collection
+        for name in ("Gameplay", "Just chatting"):
+            col.scenes.append(Scene(id=name.lower().replace(" ", "-"), name=name, canvas="horizontal"))
+        w.show()
+        w._set_mode("live")
+        panel = w.live_panel
+        panel.show_scenes(col)
+        box = next(b for b, ids in panel._groups.items() if "gameplay" in ids)
+        before = list(panel._groups[box])
+        on_air = dict(col.active_scenes)
+        panel.edit_button.click()
+        assert panel.editing and panel.edit_button.text() == "Done"
+        QTest.mouseClick(panel.buttons["gameplay"], Qt.MouseButton.LeftButton)  # Edit: a click switches nothing
+        app.processEvents()
+        assert col.active_scenes == on_air
+        panel.move_bloom(box, "just-chatting", 0)  # drag it to the top
+        QTest.qWait(20)
+        horizontal = [s.id for s in col.scenes_for("horizontal")]
+        assert horizontal[0] == "just-chatting" and sorted(horizontal) == sorted(before)
+        assert col.active_scenes == on_air  # reordering never changes what's on air
+        assert panel.number_order[0] == "just-chatting"  # 1 follows the new order
+        assert panel.buttons["just-chatting"].key == "1"
+        assert panel.editing  # still editing after the lists rebuilt
+        panel.edit_button.click()
+        assert not panel.editing and panel.edit_button.text() == "Edit"
+        assert panel.drop_index(next(iter(panel._groups)), -5) == 0
+    finally:
+        w.close()

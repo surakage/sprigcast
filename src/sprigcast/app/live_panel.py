@@ -8,9 +8,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt
+from PySide6.QtCore import QEvent, QMimeData, QPoint, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import (
     QColor,
+    QDrag,
     QFont,
     QFontMetrics,
     QImage,
@@ -22,6 +23,8 @@ from PySide6.QtGui import (
     QShortcut,
 )
 from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
     QHBoxLayout,
     QSizePolicy,
     QLabel,
@@ -39,6 +42,7 @@ from sprigcast.core.scene import SceneCollection
 BUTTON_HEIGHT = 30
 BUTTON_WIDTH = (96, 190)  # each button fits its name between these, then wraps onto the next line
 TILE_SIZE = (184, 150)  # a bloom tile: a 16:9 thumbnail with the name under it
+BLOOM_MIME = "application/x-sprigcast-bloom"  # a bloom being dragged into a new place in its list
 
 
 class FlowLayout(QLayout):
@@ -336,6 +340,11 @@ class LivePanel(QWidget):
         self.state_buttons: dict[tuple[str, str | None], QPushButton] = {}  # (sprig id, state name or None)
         self.thumbs: dict[str, QImage] = {}  # scene id -> its last on-air picture, small
         self.number_order: list[str] = []  # the blooms that 1-9 switch to, in the order shown
+        # Edit: drag blooms into a new order within their list. A click then switches nothing.
+        self.editing = False
+        self.on_reorder: Callable[[list[str]], None] | None = None  # a list's bloom ids in their new order
+        self._groups: dict[QWidget, list[str]] = {}  # each list's box -> its bloom ids, in order
+        self._drag: tuple[str, QPoint] | None = None  # (bloom id, where the press was)
         for n in range(1, 10):
             # Window shortcuts only (never global): a game's number keys are left alone. Typing in a
             # text box (chat) still types the number, and they do nothing while Live is hidden.
@@ -368,6 +377,12 @@ class LivePanel(QWidget):
         self.transition_chip.setStyleSheet(theme.SMALL_PILL_STYLE)
         self.transition_chip.setCursor(Qt.CursorShape.PointingHandCursor)
         top.addWidget(self.transition_chip)
+        self.edit_button = QPushButton("Edit")
+        self.edit_button.setStyleSheet(theme.LINK_STYLE)
+        self.edit_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.edit_button.setToolTip("Drag blooms to change their order")
+        self.edit_button.clicked.connect(lambda: self.set_editing(not self.editing))
+        top.addWidget(self.edit_button)
         top.addSpacing(12)
         root.addLayout(top)
         self.rows = QVBoxLayout()
@@ -381,6 +396,18 @@ class LivePanel(QWidget):
         collection = getattr(self, "_collection", None)
         if collection is not None:
             self.show_scenes(collection)
+
+    def set_editing(self, on: bool) -> None:
+        """Edit: drag a bloom up or down its own list. Clicks switch nothing meanwhile, so what's on air stays."""
+        self.editing = on
+        self._drag = None
+        self.edit_button.setText("Done" if on else "Edit")
+        ThumbPop.hide_now()
+        for button in self.buttons.values():
+            self._tile_look(button)
+
+    def _tile_look(self, button: QPushButton) -> None:
+        button.setCursor(Qt.CursorShape.OpenHandCursor if self.editing else Qt.CursorShape.PointingHandCursor)
 
     def _number(self, n: int) -> None:
         if 0 < n <= len(self.number_order) and self.isVisible():
@@ -427,6 +454,7 @@ class LivePanel(QWidget):
         self.buttons = {}
         self.state_buttons = {}
         self.number_order = []
+        self._groups = {}
         sections = []
         for canvas in collection.canvases:
             if not canvas.enabled or self.view not in ("both", canvas.id):
@@ -499,12 +527,25 @@ class LivePanel(QWidget):
     def _add_list(self, column: QVBoxLayout, scenes, colour: str | None = None) -> None:
         """The blooms as a list, one full-width row each. The column's heading names the canvas, so a
         "(vertical)" on the end of a name and the ⇄ link mark are left off (the tooltip says it's linked)."""
+        box = QWidget()  # one list: Edit drags a bloom within it
+        box.setAcceptDrops(True)
+        box.installEventFilter(self)
+        rows = QVBoxLayout(box)
+        rows.setContentsMargins(0, 0, 0, 0)
+        rows.setSpacing(6)
+        line = QFrame(box)  # where a dragged bloom lands
+        line.setObjectName("dropLine")
+        line.setStyleSheet(f"background: {theme.ACCENT}; border-radius: 1px;")
+        line.setFixedHeight(2)
+        line.hide()
         for button in self._tiles(scenes, colour, plain=True):
             # Shrink with the card (the name ends in "…"; the whole name is in the tooltip).
             button.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             button.setMinimumWidth(90)
             button.wrap = True  # a narrow card shows a long name on two lines rather than "St…"
-            column.addWidget(button)
+            rows.addWidget(button)
+        self._groups[box] = [s.id for s in scenes]
+        column.addWidget(box)
 
     def _add_grid(self, scenes, colour: str | None = None) -> None:
         flow_box = QWidget()
@@ -544,9 +585,103 @@ class LivePanel(QWidget):
             button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             button.customContextMenuRequested.connect(
                 lambda pos, sid=scene.id, b=button: self._run_menu(self.scene_menu(sid), b.mapToGlobal(pos)))
+            button.setProperty("scene_id", scene.id)
+            button.installEventFilter(self)  # Edit: a press and a pull drags it
+            self._tile_look(button)
             self.buttons[scene.id] = button
             tiles.append(button)
         return tiles
+
+    # Edit: dragging blooms into order ----------------------------------------------------------
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        kind = event.type()
+        if watched in self._groups:
+            return self._list_event(watched, event)
+        scene_id = watched.property("scene_id") if isinstance(watched, QWidget) else None
+        if not scene_id or not self.editing:
+            return super().eventFilter(watched, event)
+        if kind == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+            self._drag = (scene_id, event.position().toPoint())
+            return True  # no click: Edit never switches a bloom
+        if kind == QEvent.Type.MouseMove and self._drag and event.buttons() & Qt.MouseButton.LeftButton:
+            if (event.position().toPoint() - self._drag[1]).manhattanLength() >= QApplication.startDragDistance():
+                self._start_drag(watched, self._drag[0])
+            return True
+        if kind in (QEvent.Type.MouseButtonRelease, QEvent.Type.MouseButtonDblClick):
+            self._drag = None
+            return True
+        return super().eventFilter(watched, event)
+
+    def _start_drag(self, tile: QWidget, scene_id: str) -> None:
+        self._drag = None
+        ThumbPop.hide_now()
+        data = QMimeData()
+        data.setData(BLOOM_MIME, scene_id.encode())
+        drag = QDrag(tile)
+        drag.setMimeData(data)
+        drag.setPixmap(tile.grab())
+        drag.setHotSpot(tile.mapFromGlobal(tile.cursor().pos()))
+        drag.exec(Qt.DropAction.MoveAction)
+        drag.deleteLater()
+
+    def _list_event(self, box: QWidget, event) -> bool:
+        kind = event.type()
+        line = box.findChild(QFrame, "dropLine")
+        if kind in (QEvent.Type.DragEnter, QEvent.Type.DragMove, QEvent.Type.Drop):
+            data = event.mimeData()
+            dragged = bytes(data.data(BLOOM_MIME)).decode() if data.hasFormat(BLOOM_MIME) else ""
+            if not self.editing or dragged not in self._groups[box]:
+                event.ignore()  # only within its own list: another canvas or folder is Build's job
+                if line is not None:
+                    line.hide()
+                return True
+            index = self.drop_index(box, event.position().y())
+            if kind == QEvent.Type.Drop:
+                if line is not None:
+                    line.hide()
+                self.move_bloom(box, dragged, index)
+            elif line is not None:
+                self._show_drop(box, line, index)
+            event.acceptProposedAction()
+            return True
+        if kind == QEvent.Type.DragLeave:
+            if line is not None:
+                line.hide()
+            return True
+        return False
+
+    def _rows(self, box: QWidget) -> list[QWidget]:
+        rows = box.layout()
+        return [rows.itemAt(i).widget() for i in range(rows.count()) if rows.itemAt(i).widget() is not None]
+
+    def drop_index(self, box: QWidget, y: float) -> int:
+        """Where a bloom dropped at height y in this list goes: 0 is the top."""
+        return sum(1 for tile in self._rows(box) if y > tile.geometry().center().y())
+
+    def _show_drop(self, box: QWidget, line: QFrame, index: int) -> None:
+        tiles = self._rows(box)
+        if not tiles:
+            return
+        gap = box.layout().spacing() // 2 + 1
+        y = tiles[index].geometry().top() - gap if index < len(tiles) else tiles[-1].geometry().bottom() + gap
+        line.setGeometry(0, max(0, min(y, box.height() - 2)), box.width(), 2)
+        line.show()
+        line.raise_()
+
+    def move_bloom(self, box: QWidget, scene_id: str, index: int) -> None:
+        """Put a bloom at `index` in its list (counted before it's taken out) and hand on the new order."""
+        order = list(self._groups.get(box, []))
+        if scene_id not in order:
+            return
+        at = order.index(scene_id)
+        order.pop(at)
+        order.insert(index - 1 if index > at else index, scene_id)
+        if order != self._groups[box] and self.on_reorder is not None:
+            from PySide6.QtCore import QTimer
+
+            # After the drop finishes: the new order rebuilds the lists, this one included.
+            QTimer.singleShot(0, self, lambda: self.on_reorder(order) if self.on_reorder is not None else None)
 
     @staticmethod
     def _run_menu(menu: QMenu, where) -> None:
