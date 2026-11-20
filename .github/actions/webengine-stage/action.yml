@@ -41,7 +41,7 @@ runs:
     - name: Build tools (html5lib, ninja, gperf, bison, flex, zstd)
       shell: pwsh
       run: |
-        python -m pip install --quiet html5lib==1.1 ninja==1.13.0 aqtinstall==3.3.0
+        python -m pip install --quiet html5lib==1.1 ninja==1.13.0
         choco install -y --no-progress gperf winflexbison3 zstandard
         if ($LASTEXITCODE -ne 0) { throw "choco couldn't install the build tools" }
     - uses: ilammy/msvc-dev-cmd@v1.13.0
@@ -54,27 +54,10 @@ runs:
         $ErrorActionPreference = "Stop"
         $qt = "${{ inputs.qt }}"
         New-Item -ItemType Directory -Force C:\qtwe, C:\qtwe\qt | Out-Null
-        # The official Qt PySide6's wheels are built from (aqt installs the same binaries the Qt installer does).
-        # download.qt.io sometimes can't hand aqt a checksum (run 44657659498): its big mirrors carry the same files.
-        $bases = @("https://download.qt.io", "https://qt.mirror.constant.com", "https://mirrors.ocf.berkeley.edu/qt",
-                   "https://ftp.fau.de/qtproject")
-        $arch, $installed = $null, $false
-        foreach ($base in $bases) {
-          for ($try = 1; $try -le 2 -and -not $installed; $try++) {
-            $list = python -m aqt list-qt windows desktop --arch $qt -b $base 2>&1
-            "aqt list ($base): $list"
-            $arch = ("$list" -split '\s+') | Where-Object { $_ -match '^win64_msvc20\d\d_64$' } | Sort-Object | Select-Object -Last 1
-            if (-not $arch) { Start-Sleep 20; continue }
-            python -m aqt install-qt windows desktop $qt $arch --outputdir C:\qtwe\qt -b $base -m qtwebchannel qtpositioning qtwebsockets
-            if ($LASTEXITCODE -eq 0) { $installed = $true } else { Start-Sleep 20 }
-          }
-          if ($installed) { break }
-        }
-        if (-not $installed) {
-          (Invoke-WebRequest "https://download.qt.io/online/qtsdkrepository/windows_x86/desktop/").Links.href | Select-String "qt6" | Write-Host
-          throw "Couldn't install Qt $qt (64-bit MSVC) with aqt from any mirror"
-        }
-        "Qt $qt $arch"
+        # The official Qt PySide6's wheels are built from, straight from Qt's online repository (aqt 3.3 couldn't
+        # read Qt 6.12's), each archive checked against Qt's SHA-1.
+        python packaging\qt_sdk.py $qt C:\qtwe\qt qtwebchannel qtpositioning qtwebsockets
+        if ($LASTEXITCODE -ne 0) { throw "Couldn't install Qt $qt" }
         $qtdir = (Get-ChildItem C:\qtwe\qt\$qt -Directory | Select-Object -First 1).FullName
         "QTDIR=$qtdir" | Out-File C:\qtwe\qtdir.txt
         # Qt WebEngine's source release, checked against Qt's own list of checksums.
