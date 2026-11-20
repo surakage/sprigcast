@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 34
+#define SC_INTERFACE_VERSION 35
 
 enum {
     SC_OK = 0,
@@ -201,6 +201,11 @@ typedef struct sc_snapshot {
 
 SC_API int sc_source_upload(sc_device *device, uint64_t id, const uint8_t *data, const sc_upload *how);
 SC_API int sc_source_forget(sc_device *device, uint64_t id);
+/* Source `id` becomes a still copy of what is drawn right now: of source `source`'s picture (scene = 0), or of
+ * the snapshot scene `scene` (a sprig) drawn at its own size at `time` (source = 0). One item frozen while its
+ * source goes on live everywhere else is drawn from such a copy. Returns 1, and makes nothing, while there is no
+ * picture to copy yet. sc_source_forget lets the copy go. */
+SC_API int sc_source_hold(sc_device *device, uint64_t id, uint64_t source, uint64_t scene, double time);
 /* Source `id` is drawn from a list of other sources' pictures (a store plugin's animation: the art uploaded once
  * as sources of their own, then only where each goes, frame by frame): `items` (as in a snapshot, bottom first;
  * `part` and `effects` are ignored) drawn onto a see-through width x height picture, which is then the source's
@@ -368,6 +373,10 @@ SC_API int sc_engine_canvas_show(sc_engine *engine, int index, uint64_t scene);
 SC_API int sc_engine_source_upload(sc_engine *engine, uint64_t id, const uint8_t *data, const sc_upload *how,
                                    int flags);
 SC_API int sc_engine_source_forget(sc_engine *engine, uint64_t id);
+/* As sc_source_hold, on the frame thread: the copy is made on the next frame that has a picture to copy, before
+ * that frame's canvases are drawn. After the device was rebuilt it is made again, from the picture then.
+ * sc_engine_source_forget lets it go. */
+SC_API int sc_engine_source_hold(sc_engine *engine, uint64_t id, uint64_t source, uint64_t scene);
 /* Source `id` shows what `media` plays: every frame the engine takes the picture due from the player itself,
  * straight from its decoder thread, so a video's pictures never pass through Python. media = NULL goes back to
  * pictures sent with sc_engine_source_upload (the source keeps the picture it has). The engine keeps the player

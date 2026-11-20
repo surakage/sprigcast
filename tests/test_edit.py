@@ -126,3 +126,37 @@ def test_sides_stretch_or_keep_shape_and_crop():
     item = start.model_copy()
     edit.crop_from_corner(item, start, SIZE, corner=7, point=(110, 60))  # pull the bottom side up 50 px
     assert item.crop == (0, 0, 0, 50) and (item.x, item.y) == (10, 10)
+
+
+def test_resizing_snaps_to_the_canvas_edges_center_and_other_items():
+    """User, 2026-11-20: a color resized past the right edge ended 1948 wide on a 1920 canvas."""
+    canvas, size = (1920, 1080), (1920, 1080)
+    start = SceneItem(source="c", x=0, y=0, scale=0.5)  # 960x540 at the top left
+    item = start.model_copy()
+    # drag the bottom-right corner to just past the canvas corner: it lands on it, shape kept
+    edit.snap_resize(item, start, size, 3, (1935, 1090), canvas, 20)
+    assert item.drawn_size(size) == pytest.approx((1920, 1080)) and (item.x, item.y) == (0, 0)
+    # the right side alone, near the center line: lands on it
+    item = start.model_copy()
+    edit.snap_resize(item, start, size, 5, (968, 300), canvas, 20, keep_aspect=False)
+    assert item.drawn_size(size)[0] == pytest.approx(960)
+    # a free corner snaps each way on its own, to another item's edge
+    item = start.model_copy()
+    edit.snap_resize(item, start, size, 3, (1205, 693), canvas, 10, keep_aspect=False, center=False,
+                     others=[(1200, 700, 100, 100)])
+    assert item.drawn_size(size) == pytest.approx((1200, 700))
+    # off (snap 0) or out of reach: it follows the mouse
+    item = start.model_copy()
+    edit.snap_resize(item, start, size, 5, (1500, 300), canvas, 0, keep_aspect=False)
+    assert item.drawn_size(size)[0] == pytest.approx(1500)
+
+
+def test_a_snapped_item_shows_the_lines_it_sits_on_and_its_pin_snaps_to_the_center():
+    canvas, size = (1920, 1080), (200, 100)
+    start = SceneItem(source="s", x=0, y=0, align="top_left")
+    item = start.model_copy()
+    edit.move(item, start, size, (955, 300), canvas, snap=10)  # the pin (top left) comes to the center line
+    assert item.x == 960
+    assert (0, 960.0) in edit.snap_guides(item, size, canvas)
+    item.x, item.y = 0, 980  # left edge and bottom edge on the canvas's
+    assert set(edit.snap_guides(item, size, canvas)) >= {(0, 0.0), (1, 1080.0)}

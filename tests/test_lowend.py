@@ -77,6 +77,25 @@ def test_frame_rate_waits_for_the_next_start():
     QSettings().clear()
 
 
+def test_a_queued_frame_rate_the_canvas_already_has_is_dropped():
+    """PC 2026-11-19: 60 → 30 → 60 without a restart left {"fps": 60} waiting on canvases already at 60, so
+    "Canvas changes wait for a restart" showed for nothing."""
+    from PySide6.QtCore import QCoreApplication, QSettings
+
+    from sprigcast.app.settings_window import pending_video
+
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("LowEndTest")
+    QSettings().clear()
+    col = _collection()
+    assert lowend.store_fps({"horizontal": 30, "vertical": 30}, col)
+    assert not lowend.store_fps({"horizontal": 60, "vertical": 60}, col)  # back to what they are
+    assert pending_video() == {} and lowend.waiting_fps() == {}
+    assert lowend.store_fps({"horizontal": 30, "vertical": 60}, col)
+    assert pending_video() == {"horizontal": {"fps": 30}}
+    QSettings().clear()
+
+
 def test_recordings_shrink_and_cpu_encoding_gets_superfast():
     from sprigcast.output.recorder import shrink_to
 

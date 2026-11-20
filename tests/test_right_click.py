@@ -76,9 +76,13 @@ def test_main_window_menus(app, tmp_path, monkeypatch):
     try:
         w._on_preview_selected("horizontal", 0)
         on_item = _texts(w._preview_menu("horizontal", 0))
-        assert "Settings…" in on_item and "Remove" in on_item and "Size and place" in on_item
+        assert "Properties…" in on_item and "Remove" in on_item and "Transform" in on_item
+        # most used first, Remove last (user, 2026-11-20); no Barrel roll entry (it's a filter)
+        assert on_item.index("Properties…") < on_item.index("Transform") < on_item.index("Order") \
+            < on_item.index("Hide") < on_item.index("Shape") < on_item.index("Pop out") < on_item.index("Remove")
+        assert on_item[-1] == "Remove" and not any(t.startswith("Barrel roll") for t in on_item)
         menu = w._preview_menu("horizontal", 0)
-        size_menu = next(a.menu() for a in menu.actions() if a.text() == "Size and place")
+        size_menu = next(a.menu() for a in menu.actions() if a.text() == "Transform")
         fit = next(a for a in size_menu.actions() if a.text() == "Fit to canvas")
         assert fit.shortcut().toString() == "Ctrl+F"  # the shortcut shows in the menu
         shape_menu = next(a.menu() for a in menu.actions() if a.text() == "Shape")

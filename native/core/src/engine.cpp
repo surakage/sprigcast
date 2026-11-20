@@ -226,6 +226,11 @@ struct CanvasCfg {
     uint64_t scene = 0;
 };
 
+struct HoldWant {  // shared: a still copy of a source's or a sprig's picture, for one frozen item
+    uint64_t source = 0, scene = 0;
+    uint64_t serial = 0;
+};
+
 struct PreviewCfg {
     int id = 0;
     int canvas = 0;
@@ -526,12 +531,15 @@ struct sc_engine {
     ComPtr<ID3D11Device> device_out;  // the device as encoders get it (sc_engine_device); none while rebuilding
     uint64_t detach_asked = 0, detach_done = 0;
     sc_engine_stats stats{};
+    std::unordered_map<uint64_t, HoldWant> holds;  // still copies asked for (sc_engine_source_hold), by their id
+    uint64_t hold_serial = 0;
     int read_asks[SC_ENGINE_CANVASES] = {};  // frames each canvas is still drawn for a sc_engine_canvas_read
 
     // ---- the frame thread's own (canvas reads borrow them under `frame`) ----
     std::timed_mutex frame;  // held by a frame; Python's calls that need it wait 0.5 s at most
     sc_device *dev = nullptr;
     sc_canvas *gpu[SC_ENGINE_CANVASES] = {};
+    std::unordered_map<uint64_t, uint64_t> holds_made;  // still copy -> the ask (HoldWant.serial) it was made for
     uint32_t canvas_draws = 0;  // canvases drawn so far, over all frames (stats.canvas_draws)
     std::unordered_map<int, PreviewGpu> shown;
     Reader readers[SC_ENGINE_CANVASES];
@@ -695,6 +703,7 @@ bool build(sc_engine &e) {
     }
     e.dev = made;
     e.build_failures = 0;
+    e.holds_made.clear();  // a new device has none of the still copies: made again from the pictures then
     if (e.lost) {
         e.lost = false;
         for (auto &[id, pic] : e.kept_sources) check(sc_source_upload(e.dev, id, pic.data.data(), &pic.how));
@@ -1242,9 +1251,11 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     std::vector<std::pair<uint64_t, CaptureShown>> capture_news;
     uint64_t detach_seen;
     bool read_asked[SC_ENGINE_CANVASES] = {};
+    std::vector<std::pair<uint64_t, HoldWant>> holds;
     at(e, "taking what Python sent");
     {
         std::lock_guard<std::mutex> lock(e.state);
+        holds.assign(e.holds.begin(), e.holds.end());
         for (int i = 0; i < SC_ENGINE_CANVASES; ++i) {
             read_asked[i] = e.read_asks[i] > 0;
             if (read_asked[i]) --e.read_asks[i];
@@ -1526,6 +1537,23 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         sc_snapshot v = view_of(*snapshot);
         check(sc_snapshot_set(e.dev, &v));
         e.kept_snapshot = snapshot;
+    }
+
+    // Still copies for items frozen on their own: made once, from the pictures as they are this frame, before any
+    // canvas is drawn. One with nothing to copy yet is tried again next frame; one that fails isn't tried again.
+    for (auto made = e.holds_made.begin(); made != e.holds_made.end();) {
+        const bool wanted = std::any_of(holds.begin(), holds.end(),
+                                        [&](const auto &h) { return h.first == made->first; });
+        made = wanted ? std::next(made) : e.holds_made.erase(made);
+    }
+    for (const auto &[id, want] : holds) {
+        auto made = e.holds_made.find(id);
+        if (made != e.holds_made.end() && made->second == want.serial) continue;
+        at(e, "copying a frozen item's picture", id);
+        const int code = sc_source_hold(e.dev, id, want.source, want.scene, seconds);
+        if (code == SC_NOT_YET) continue;
+        check(code);
+        e.holds_made[id] = want.serial;
     }
 
     for (int i = 0; i < SC_ENGINE_CANVASES; ++i) {
@@ -1984,7 +2012,19 @@ SC_API int sc_engine_source_forget(sc_engine *engine, uint64_t id) {
         engine->capture_wants.erase(id);
         engine->capture_held.erase(id);
         engine->capture_states.erase(id);
+        engine->holds.erase(id);
         engine->forgets.insert(id);
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_source_hold(sc_engine *engine, uint64_t id, uint64_t source, uint64_t scene) {
+    return engine_call(engine, "sc_engine_source_hold", [&]() -> int {
+        if (!id || (source != 0) == (scene != 0) || id == source)
+            return fail(SC_ERR_ARGUMENT, "sc_engine_source_hold: no id, or not exactly one of a source and a scene");
+        std::lock_guard<std::mutex> lock(engine->state);
+        engine->holds[id] = HoldWant{source, scene, ++engine->hold_serial};
+        engine->forgets.erase(id);
         return SC_OK;
     });
 }

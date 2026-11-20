@@ -258,6 +258,9 @@ def apply_pending_video(collection: SceneCollection) -> bool:
             canvas.fps = int(change.get("fps", canvas.fps))
             canvas.enabled = bool(change.get("enabled", canvas.enabled))
     QSettings().remove(PENDING_VIDEO)
+    # Said each time: a queued 30 fps went missing on the PC (2026-11-19) and nothing told where.
+    log.info("video: queued canvas changes applied at start: %s; canvases now %s", pending,
+             ", ".join(f"{c.id} {c.width}×{c.height} {c.fps} fps" for c in collection.canvases))
     return True
 
 
@@ -1525,10 +1528,14 @@ class SettingsWindow(QDialog):
             if scaling.currentData() != self._scaling_was:  # one Scaling for every canvas: only when it was changed
                 canvas.downscale = scaling.currentData()
         self._scaling_was = self.scaling.currentData()
+        before = pending_video()
         if changes:
             settings.setValue(PENDING_VIDEO, json.dumps(changes))
         else:
             settings.remove(PENDING_VIDEO)
+        if changes != before:
+            log.info("video: Settings changed what waits for a restart: %s (was %s)", changes or "nothing",
+                     before or "nothing")
 
     def _show_restart_note(self) -> None:
         canvas = bool(pending_video())

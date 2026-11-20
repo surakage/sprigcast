@@ -227,3 +227,49 @@ def test_a_tidy_can_say_what_kinds_of_garbage_it_freed(monkeypatch, caplog):
         assert not any(type(o).__name__ == "Knot" for o in gc.get_objects())  # freed, not kept aside
     finally:
         gc.unfreeze()
+
+
+def test_looking_where_a_thread_is_never_moves_its_objects_to_the_looker():
+    """A frame taken from another thread keeps that function's objects alive, and whoever lets the frame go frees
+    them, on that thread. The stall watch freed the window's graphics scene that way; Qt couldn't stop the scene's
+    timer from there, and its next tick crashed SprigCast (about one start in 40 on GitHub, 2026-11-19/20). The
+    looks never hold a frame now: an object made in a function is always freed by the thread that ran it."""
+    import threading
+
+    died = []
+
+    class Thing:
+        def __del__(self):
+            died.append(threading.current_thread().name)
+
+    inside, looked, seen = threading.Event(), threading.Event(), {}
+
+    def work():
+        thing = Thing()  # noqa: F841 (it lives as long as this function runs)
+        inside.set()
+        looked.wait(5)
+
+    def look():
+        inside.wait(5)
+        seen["stacks"] = pacing.thread_stacks()
+        seen["busy"] = pacing.busy_stacks()
+        looked.set()
+
+    worker = threading.Thread(target=work, name="worker")
+    looker = threading.Thread(target=look, name="looker")
+    worker.start(), looker.start()
+    worker.join(5), looker.join(5)
+    assert died == ["worker"]
+    stack = seen["stacks"][worker.ident]
+    assert any(name == "work" and file.endswith("test_pacing.py") for file, _line, name in stack)
+
+
+def test_nothing_takes_another_threads_frame():
+    """sys._current_frames hands out frames that keep other threads' objects alive (see above)."""
+    from pathlib import Path
+
+    import sprigcast
+
+    users = [str(p) for p in Path(sprigcast.__file__).parent.rglob("*.py")
+             if "sys._current_frames()" in p.read_text(encoding="utf-8")]
+    assert users == []

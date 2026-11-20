@@ -35,7 +35,7 @@ def test_strong_nvenc_pc_with_good_upload_gets_1080p60_and_tiktok_stays_720p30()
     assert any(lab.startswith("Horizontal canvas: 60 fps") for lab in labels)
     fps = plan.apply()
     tw, tt = c.outputs
-    assert tw.size is None and tw.bitrate_kbps == 6000 and tw.fps is None  # follows the canvas, soon 60
+    assert tw.size is None and tw.bitrate_kbps == 6000 and tw.fps == 60  # its own, never left to follow the canvas
     assert tt.size == (720, 1280) and tt.bitrate_kbps == 4000
     assert fps["horizontal"] == 60 and fps["vertical"] == 60  # vertical records at 60 too
     assert tt.fps == 30
@@ -490,3 +490,92 @@ def test_the_real_sender_measures_a_slow_server_without_waiting_for_answers():
     finally:
         stop.set()
         server.close()
+
+
+def test_a_place_keeps_the_frame_rate_optimize_chose_when_the_canvas_does_not_follow():
+    """PC 2026-11-19: Optimize set three places to 720p, 30 fps, 2600 kbps and queued the canvas for 30 fps.
+    The places were left "same as the canvas", the canvas stayed at 60, and they went out at 60 fps on 2600."""
+    c = _three_places()
+    p = optimize.PcProfile(**STRONG, upload_kbps=11400)
+    plan = optimize.plan(p, c)
+    assert plan.quality == (720, 30)
+    plan.apply()
+    assert [o.fps for o in c.outputs] == [30, 30, 30]  # whatever becomes of the canvas
+    for canvas in c.canvases:
+        canvas.fps = 60  # the queued change never arrived
+    again = optimize.plan(p, c)
+    assert not [ch for ch in again.changes if ch.group == "Stream"]  # still 30: nothing to put right
+
+
+def test_apply_writes_the_path_file_at_once(tmp_path, monkeypatch):
+    """PC 2026-11-19: after Apply the path's own file kept the old values until a path switch or a later save."""
+    import keyring
+    from PySide6.QtCore import QCoreApplication, QSettings
+    from PySide6.QtWidgets import QApplication, QDialog
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("OptimizeApplyTest")
+    QSettings().clear()
+    from sprigcast.app import main_window
+    from sprigcast.app.main_window import MainWindow
+    from sprigcast.core.gardens import PathSettings
+
+    c = _three_places()
+    for o in c.outputs:
+        o.bitrate_kbps, o.size = 3000, (1280, 720)
+    w = MainWindow(c, tmp_path / "scenes.json")
+    try:
+        shelf = w.gardens.shelf
+        assert {o.bitrate_kbps for o in PathSettings.load(shelf.path_file()).outputs} == {3000}
+
+        def modal(wizard):
+            wizard.profile = optimize.PcProfile(**STRONG, upload_kbps=40000)
+            wizard.plan = optimize.plan(wizard.profile, wizard.collection, wizard.waiting_fps)
+            wizard.chosen = list(wizard.plan.changes)
+            wizard.close()
+            return QDialog.DialogCode.Accepted
+
+        monkeypatch.setattr(main_window, "modal", modal)
+        assert w.open_optimizer()
+        saved = PathSettings.load(shelf.path_file())
+        assert [(o.bitrate_kbps, o.fps) for o in saved.outputs] == [(6000, 60)] * 3
+    finally:
+        w.close()
+        QSettings().clear()
+
+
+def test_a_place_added_reaches_the_path_file_right_away(tmp_path, monkeypatch):
+    """PC 2026-11-19: YouTube and Kick added at 21:49, the path file still as written at 21:26, no places."""
+    import keyring
+    from PySide6.QtCore import QCoreApplication, QSettings
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("PathFileTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import MainWindow
+    from sprigcast.core.gardens import PathSettings
+
+    c = _three_places()
+    c.outputs = c.outputs[:1]
+    w = MainWindow(c, tmp_path / "scenes.json")
+    try:
+        file = w.gardens.shelf.path_file()
+        assert [o.id for o in PathSettings.load(file).outputs] == ["twitch"]
+        w.collection.outputs.append(Output(id="kick", type="stream", service="kick", canvas="horizontal", enabled=True))
+        w._after_settings()  # Settings saved
+        assert [o.id for o in PathSettings.load(file).outputs] == ["twitch", "kick"]
+        written = file.stat().st_mtime_ns
+        w._keep_path_file()  # nothing changed: not written again
+        assert file.stat().st_mtime_ns == written
+        w.collection.outputs.pop()
+        w._save_soon()
+        w._save_pending()  # closing, or the settle timer
+        assert [o.id for o in PathSettings.load(file).outputs] == ["twitch"]
+    finally:
+        w.close()
+        QSettings().clear()

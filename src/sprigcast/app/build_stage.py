@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QListView,
     QListWidget,
     QSizePolicy,
     QSplitter,
@@ -382,7 +383,11 @@ class InsideDelegate(QStyledItemDelegate):
 
     def sizeHint(self, option, index) -> QSize:  # noqa: N802
         children = index.data(ROLE_CHILDREN) or []
-        return QSize(option.rect.width(), ROW_H + CHILD_H * len(children) + (4 if children else 0))
+        view = self.parent()
+        # As wide as the list shows, never wider: a row wider than the list scrolled sideways and cut the
+        # lock, settings and remove icons off (user, 2026-11-20).
+        width = view.viewport().width() if isinstance(view, QListWidget) else option.rect.width()
+        return QSize(width, ROW_H + CHILD_H * len(children) + (4 if children else 0))
 
     def paint(self, p: QPainter, option, index) -> None:
         p.save()
@@ -489,6 +494,8 @@ class InsideList(QListWidget):
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)  # everything fits: no sideways
+        self.setResizeMode(QListView.ResizeMode.Adjust)  # rows follow the list's width
         self.setSpacing(1)
 
     def event(self, event) -> bool:  # noqa: D102

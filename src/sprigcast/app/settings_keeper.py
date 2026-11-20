@@ -133,6 +133,21 @@ def keep_aside(config: Path, settings=None, command: list[str] | None = None) ->
     return True
 
 
+def keep_aside_soon(config: Path, settings=None) -> None:
+    """keep_aside without waiting for the copying program to start. Starting a program took Windows 2.2 to 2.9 s
+    on the PC on three starts (2026-11-19, the window didn't answer meanwhile, 30 s after start); the same call
+    follows every Settings Save. Where the settings are is read here, on the caller's thread; only the start
+    happens on another."""
+    if stopped:
+        return
+    command = None if os.environ.get(ENV_HERE) else aside_command(config, settings)
+    if command is None:
+        keep_aside(config, settings)  # no program to start: the copy is made here, as before
+        return
+    threading.Thread(target=keep_aside, args=(config, None, command), name="sprigcast-settings-copy-start",
+                     daemon=True).start()
+
+
 def _await_aside(proc: subprocess.Popen) -> None:
     try:
         code = proc.wait(ASIDE_S)

@@ -854,12 +854,10 @@ class Recorder:
             self._flow = (*self._flow[:2], mark[1], *self._flow[3:])  # fed since: a repeat tells afresh
             self._last_queued = math.floor((time.perf_counter() - self.start_time) * self.fps) - 1
             return "frames arrive but none are kept (their numbering is back on the clock now)"
-        import sys
-        import traceback
+        from sprigcast.core import pacing
 
-        stack = sys._current_frames().get(self._thread.ident or -1)
-        where = " <- ".join(f"{f.filename.rsplit(os.sep, 1)[-1]}:{f.lineno} {f.name}"
-                            for f in reversed(traceback.extract_stack(stack)[-4:])) if stack else "unknown"
+        stack = pacing.thread_stacks().get(self._thread.ident or -1)  # (never the thread's frame: see there)
+        where = pacing._told(stack, 4) if stack else "unknown"
         return f"the encoder is stuck ({self._video.qsize()} frames waiting; at {where})"
 
     def frames_lost(self, count: int) -> None:

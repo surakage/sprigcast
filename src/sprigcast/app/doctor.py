@@ -261,7 +261,7 @@ def _encoder(c: Checkup) -> list[Finding]:
 def _audio(c: Checkup) -> list[Finding]:
     found = []
     sources = [s for s in c.collection.sources if s.kind in ("audio_input", "audio_output", "app_audio")]
-    mics = [s for s in sources if s.kind == "audio_input"]
+    mics = [s for s in sources if s.kind == "audio_input" and not s.settings.get("capture_of")]  # not a card's sound
     if not mics:
         found.append(Finding("info", "Audio", "No microphone added: add one with + in the Audio Mixer if you talk."))
     for s in sources:
@@ -274,7 +274,7 @@ def _audio(c: Checkup) -> list[Finding]:
             continue
         if peak >= CLIPPING_DB:
             found.append(Finding("warning", "Audio", f"{s.name} is clipping: lower its fader or the gain in Windows."))
-        elif s.kind == "audio_input" and peak < SILENT_DB:
+        elif s in mics and peak < SILENT_DB:
             found.append(Finding("warning", "Audio", f"{s.name} heard nothing while the doctor listened: "
                                                      "check it's the right device and not muted in Windows."))
     return found

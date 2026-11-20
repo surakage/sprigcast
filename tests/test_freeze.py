@@ -93,13 +93,63 @@ def test_freeze_hotkeys_and_right_click(added):
     api = NativeApi(FakeHost(col))
     assert plugin_hooks.run_hotkey(api, "plugin:freeze:sprig:p-frame")
     assert freeze_of(col.source("frame-h").filters)[0] == 1
+    assert "plugin:freeze:source:cam" not in actions  # a camera's keys are per item now
+
+
+def test_right_click_and_its_hotkey_freeze_only_that_item(added):
+    """User 2026-11-20: Freeze holds the one you froze, like Pixelate; the same camera elsewhere keeps moving."""
+    from sprigcast.app import hotkeys
+    from sprigcast.plugin_hooks import Place
+
+    added("freeze")
+    col = _collection()
+    col.source("cam").kind = "camera"
+    api = NativeApi(FakeHost(col))
+    chat, frame = col.scene("chat-h"), col.scene("p-frame")
+    place = Place.of(col, chat, "cam")
     entries = {}
-    plugin_hooks.fill_item_menu(api, col.source("frame-h"), lambda label, fn: entries.setdefault(label, fn))
-    assert "Unfreeze" in entries
-    entries["Unfreeze"]()
+    plugin_hooks.fill_item_menu(api, col.source("cam"), lambda label, fn: entries.setdefault(label, fn), place)
+    entries["Freeze for 5 s"]()
+    mine = next(i for i in chat.items if i.source == "cam")
+    run, until = freeze_of(mine.effects)
+    assert run == 1 and until > time.time()
+    assert freeze_of(col.source("cam").filters) is None  # not the camera everywhere
+    assert freeze_of(next(i for i in frame.items if i.source == "cam").effects) is None  # nor the one in the sprig
     entries.clear()
-    plugin_hooks.fill_item_menu(api, col.source("cam"), lambda label, fn: entries.setdefault(label, fn))
+    plugin_hooks.fill_item_menu(api, col.source("cam"), lambda label, fn: entries.setdefault(label, fn), place)
+    entries["Unfreeze"]()
+    assert freeze_of(mine.effects) is None
+    # A sprig's placement freezes the same way, and sounds get no entry.
+    entries.clear()
+    plugin_hooks.fill_item_menu(api, col.source("frame-h"), lambda label, fn: entries.setdefault(label, fn),
+                                Place.of(col, chat, "frame-h"))
     assert "Freeze for 5 s" in entries
+    # Its own hotkey, per item.
+    actions = dict(hotkeys.actions(col))
+    assert actions["plugin:freeze:item:chat-h/cam"] == "Freeze Cam in Chatting"
+    assert actions["plugin:freeze:item:p-frame/cam"] == "Freeze Cam in Frame"
+    assert plugin_hooks.run_hotkey(api, "plugin:freeze:item:chat-h/cam")
+    assert freeze_of(mine.effects)[0] == 2 and freeze_of(next(i for i in frame.items if i.source == "cam").effects) is None
+
+
+def test_apps_freeze_one_item_with_in_and_it_ends_by_itself(added, app):
+    added("freeze")
+    api = NativeApi(FakeHost(_collection()))
+    frame = api.col.scene("p-frame")
+    inner = next(i for i in frame.items if i.source == "cam")
+    out = api.run("freeze.start", {"source": "Cam", "in": "Frame", "seconds": 0.05})
+    assert out["frozen"] == ["Cam in Frame"] and freeze_of(inner.effects)[0] == 1
+    assert freeze_of(api.col.source("cam").filters) is None
+    _wait(app, lambda: freeze_of(inner.effects) is None, 2.0)  # let go when its time is up
+    api.run("freeze.toggle", {"sprig": "Frame", "in": "Chatting"})  # that sprig placed in the bloom
+    placed = next(i for i in api.col.scene("chat-h").items if i.source == "frame-h")
+    assert freeze_of(placed.effects) == (1, 0) and freeze_of(api.col.source("frame-h").filters) is None
+    api.run("freeze.stop", {"sprig": "Frame", "in": "Chatting"})
+    assert freeze_of(placed.effects) is None
+    with pytest.raises(ApiError):
+        api.run("freeze.start", {"source": "Alert", "in": "Frame"})  # not in there
+    api.run("freeze.start", {"source": "Cam", "seconds": 0})  # without "in": everywhere, as before
+    assert freeze_of(api.col.source("cam").filters) == (1, 0)
 
 
 def test_plugins_list_shows_freeze(added):
@@ -222,6 +272,55 @@ def test_a_freeze_filter_holds_until_it_goes(compositor, added):
     engine._sync_filters(compositor, {s.id: s for s in col.sources})
     engine._tick(compositor, 1.2)
     assert _pixel(engine, compositor, 44, 4)[1] > 200
+
+
+def test_one_item_freezes_while_its_source_stays_live_elsewhere(compositor, added):
+    """A Freeze among one item's effects: that item holds its picture (a source's or a sprig's) and the source
+    goes on live for every other item that shows it."""
+    added("freeze")
+    col = _world()
+    col.scene("p-main").items.append(SceneItem(source="cam", x=20))  # the same camera, inside the sprig too
+    main, cam = col.scene("show").items
+    cam.effects.append(Filter(id="fz", kind="freeze", name="Freeze", settings={"run": 1, "until": 0}))
+    engine = _engine(compositor, col)
+    wanted = {s.id: s for s in col.sources}
+    main, cam = engine._collection.scene("show").items  # (the engine's own copy of the layout)
+    engine._sync_filters(compositor, wanted)
+    engine._tick(compositor, 1.0)
+    engine._sources["game"].colour = engine._sources["cam"].colour = (0, 255, 0)
+    engine._tick(compositor, 1.1)
+    assert _pixel(engine, compositor, 44, 4)[0] > 200  # the item holds
+    assert _pixel(engine, compositor, 4, 4)[1] > 200 and _pixel(engine, compositor, 24, 4)[1] > 200  # the rest live
+    assert set(compositor.item_held) == {"show/cam"} and not engine._frozen
+    main.effects.append(Filter(id="fz2", kind="freeze", name="Freeze", settings={"run": 1, "until": 0}))
+    engine._sync_filters(compositor, wanted)
+    engine._tick(compositor, 1.2)  # the sprig placement is caught, green
+    engine._sources["game"].colour = engine._sources["cam"].colour = (0, 0, 255)
+    cam.effects[0].settings["run"] = 2  # the camera's item frozen again: a new picture is caught
+    engine._sync_filters(compositor, wanted)
+    engine._tick(compositor, 1.3)
+    assert _pixel(engine, compositor, 4, 4)[1] > 200 and _pixel(engine, compositor, 24, 4)[1] > 200
+    assert _pixel(engine, compositor, 44, 4)[2] > 200
+    cam.effects[0].enabled = main.effects[0].enabled = False
+    engine._sync_filters(compositor, wanted)
+    engine._tick(compositor, 1.4)
+    assert _pixel(engine, compositor, 4, 4)[2] > 200 and not compositor.item_held
+
+
+def test_an_items_freeze_ends_by_itself(compositor, added):
+    added("freeze")
+    col = _world()
+    col.scene("show").items[1].effects.append(
+        Filter(id="fz", kind="freeze", name="Freeze", settings={"run": 1, "until": time.time() + 0.05}))
+    engine = _engine(compositor, col)
+    engine._sync_filters(compositor, {s.id: s for s in col.sources})
+    engine._tick(compositor, 1.0)
+    engine._sources["cam"].colour = (0, 255, 0)
+    engine._tick(compositor, 1.1)
+    assert _pixel(engine, compositor, 44, 4)[0] > 200
+    time.sleep(0.08)
+    engine._tick(compositor, 1.2)
+    assert _pixel(engine, compositor, 44, 4)[1] > 200 and not compositor.item_held
 
 
 def test_the_screenshot_is_the_frozen_frame(compositor):

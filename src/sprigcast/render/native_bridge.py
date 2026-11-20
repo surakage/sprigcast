@@ -25,7 +25,7 @@ import weakref
 
 from sprigcast import sprigcore
 from sprigcast.core import drawn, painted
-from sprigcast.core.scene import Scene, SceneCollection
+from sprigcast.core.scene import Scene, SceneCollection, item_key
 from sprigcast.render import native_snapshot
 from sprigcast.render.native_snapshot import SceneDraw
 
@@ -246,6 +246,8 @@ class NativeCanvases:
         self._signature = None
         self._last_upload: dict[str, float] = {}
         self._media: dict[str, object] = {}  # source id -> the engine's player its pictures come straight from
+        self._item_holds: dict[str, tuple[object, str]] = {}  # item key -> (which freeze, its still copy's id)
+        self._hold_count = 0
         self._held: set[str] = set()  # browser pages whose pictures the engine takes but doesn't show (a freeze)
         # source id -> art key -> (its engine id, cacheKey, bytes, the list it was last used in)
         self._arts: dict[str, dict[str, tuple[str, int, int, int]]] = {}
@@ -425,14 +427,18 @@ class NativeCanvases:
 
     def sync(self, collection: SceneCollection, effects: dict, state_view, fading: bool,
              transitions: dict | None = None, wipe_picture=None, views: dict | None = None,
-             held: dict | None = None, move_pieces=None) -> None:
+             held: dict | None = None, move_pieces=None, holds: dict | None = None) -> None:
         """Hand over a new snapshot when what's on air, the filters, a sprig's state or a transition changed
         (every frame while a sprig's state fades). transitions: canvas id -> render/engine.py Running;
         wipe_picture(path) gives a wipe image as a grey RGB array. held: canvas id -> the bloom it keeps showing
         while a switch waits (see snapshot_draws): the engine keeps drawing it, so its outputs go on.
-        move_pieces(running, canvas): a Move's two blooms as render/move.py pieces (old, new), when one starts."""
+        move_pieces(running, canvas): a Move's two blooms as render/move.py pieces (old, new), when one starts.
+        holds: item key (core/scene.py item_key) -> which freeze: items frozen on their own. Each is drawn from a
+        still copy the engine makes of its source's (or sprig's) picture when that freeze starts, while the
+        source goes on live wherever else it shows."""
         if self.failed:
             return
+        holds = holds or {}
         running = {cid: r for cid, r in (transitions or {}).items() if native_transition(r)}
         for canvas in collection.canvases:  # canvases get their slots before any view does
             self._slot(canvas.id)
@@ -451,14 +457,19 @@ class NativeCanvases:
                      tuple((c.id, c.enabled, c.width, c.height, collection.active_scenes.get(c.id))
                            for c in collection.canvases),
                      tuple(sorted((cid, id(r)) for cid, r in running.items())),
-                     tuple(sorted((cid, id(scene)) for cid, scene in (held or {}).items())))
+                     tuple(sorted((cid, id(scene)) for cid, scene in (held or {}).items())),
+                     tuple(sorted((key, repr(token)) for key, token in holds.items())))
         if signature == self._signature and not fading:
             return
         self._signature = signature
         draws, parts, shows = snapshot_draws(collection, state_view,
                                              {cid: r.outgoing for cid, r in running.items()}, views, held)
-        built = native_snapshot.build(draws, effects, parts)
+        ended = [self._item_holds.pop(k)[1] for k, (token, _id) in list(self._item_holds.items())
+                 if holds.get(k) != token]
+        built = native_snapshot.build(draws, effects, parts, self._hold_items(draws, parts, holds))
         self._guard("snapshot", native_snapshot.hand_over, self.engine, built, self.resources)
+        for held_id in ended:  # let go once no snapshot draws from them: no frame without the item's picture
+            self._guard("forget", self.engine.forget, held_id)
         for canvas in collection.canvases:
             slot = self._slot(canvas.id)
             if slot is None:
@@ -483,6 +494,27 @@ class NativeCanvases:
             if self._shown.get(slot, "") != key:
                 self._shown[slot] = key
                 self._guard("show", self.engine.show, slot, key)
+
+    def _hold_items(self, draws, parts: dict, holds: dict) -> dict[str, str]:
+        """The still copies for items frozen on their own (sync's holds): item key -> the engine source the item
+        is drawn from. A new freeze of an item gets a new copy (asked for here, made by the engine before its
+        next frame's canvases). An item whose bloom isn't drawn gets its copy when it is."""
+        if not holds:
+            return {}
+        for draw in draws:
+            for item in draw.scene.items:
+                key = item_key(draw.scene.id, item.source)
+                if key not in holds or key in self._item_holds:
+                    continue
+                self._hold_count += 1
+                held_id = f"hold:{key}:{self._hold_count}"
+                part = parts.get((item.source, draw.key))
+                if part is not None:
+                    self._guard("hold", self.engine.hold, held_id, None, part)
+                else:
+                    self._guard("hold", self.engine.hold, held_id, item.source)
+                self._item_holds[key] = (holds[key], held_id)
+        return {key: held_id for key, (_token, held_id) in self._item_holds.items()}
 
     def _hand_transition(self, slot: int, canvas, running, wipe_picture, move_spec=None) -> None:
         """Start (or stop) the canvas's transition in the engine when Python's changed."""

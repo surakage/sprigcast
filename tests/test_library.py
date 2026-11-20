@@ -282,3 +282,68 @@ def test_new_text_starts_with_the_text_box_ready_to_type():
     app.processEvents()
     assert dialog.focusWidget() is dialog.fields["text"]
     dialog.close()
+
+
+def test_the_build_canvas_pops_out_and_comes_back(tmp_path, monkeypatch):
+    """User, 2026-11-20: "allow the build canvas to pop out as well". The canvas (and an open sprig) is edited
+    in its own window; the card says where it went; closing the window brings it back."""
+    from PySide6.QtWidgets import QApplication
+
+    _col, w = _window(tmp_path, monkeypatch, "LibraryPopCanvas")
+    try:
+        w.show()
+        w._set_mode("build")
+        w._pick_bloom("h2")
+        w.pop_canvas_button.setChecked(True)
+        QApplication.processEvents()
+        window = w.canvas_window
+        assert window is not None and window.isVisible() and w.center.window() is window
+        assert w.canvas_away.isVisible()
+        assert any(a.shortcut().toString() == "Ctrl+Z" for a in window.actions())  # undo works there too
+        w.selected_scene_id = "p1"  # a sprig opens in the window as well
+        w._refresh_scenes()
+        w._show_part_editor()
+        assert w.center.currentIndex() == 1 and w.center.window() is window
+        w._set_mode("live")  # Live borrows the canvases: the window waits for Build
+        assert not window.isVisible()
+        w._set_mode("build")
+        assert window.isVisible()
+        window.close()  # closing it puts the canvas back
+        QApplication.processEvents()
+        assert w.canvas_window is None and not w.pop_canvas_button.isChecked()
+        assert w.center.window() is w and not w.canvas_away.isVisible()
+    finally:
+        w.close()
+
+
+def test_leaves_show_a_sprig_as_one_row_and_add_offers_only_this_shapes_sprigs(tmp_path, monkeypatch):
+    """User, 2026-11-20: a sprig in Leaves is one row (no rows for what's inside it), nothing scrolls sideways,
+    and + Add → Sprig on Horizontal lists only horizontal sprigs (and Vertical only vertical ones)."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.build_stage import ROLE_CHILDREN
+
+    col, w = _window(tmp_path, monkeypatch, "LibraryLeavesTidy")
+    try:
+        col.scenes.append(Scene(id="p3", name="Tall chat", canvas="vertical", kind="part"))
+        w.show()
+        w._pick_bloom("h2")
+        assert w.source_list.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        assert w.source_list.item(0).data(ROLE_CHILDREN) == []  # Webcam frame: one row
+        QApplication.processEvents()
+        assert w.source_list.visualItemRect(w.source_list.item(0)).width() <= w.source_list.viewport().width()
+        w.selected_scene_id = "p2"  # open a horizontal sprig and look at + Add → Sprig
+        w._refresh_scenes()
+        w._show_part_editor()
+        w._fill_add_source_menu()
+        sprigs = next(a.menu() for a in w.add_source_menu.actions() if a.menu() and a.text() == "Sprig")
+        names = [a.text() for a in sprigs.actions()]
+        assert "Webcam frame" in names and "Tall chat" not in names
+        w.build_canvas = "vertical"
+        w.selected_scene_id = "p2v"
+        w._fill_add_source_menu()
+        sprigs = next(a.menu() for a in w.add_source_menu.actions() if a.menu() and a.text() == "Sprig")
+        assert "Tall chat" in [a.text() for a in sprigs.actions()]
+    finally:
+        w.close()

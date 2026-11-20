@@ -377,7 +377,7 @@ Pages shown by a Web page source get `window.sprigcast` (the same object as `win
 
 Plugins added from **Tools → Plugin store** bring their own actions. They're in `app.actions` only while the plugin is added; without it they answer `plugin_missing`, naming the plugin to add. `plugins.list` shows every store plugin with `enabled` true or false. Timed effects (`hide.blackout`, `hide.pixelate`, `roll.spin`, `freeze.start`, `seconds` up to 600) end by themselves, and a new call on the same thing restarts the time.
 
-Hide it and Barrel Roll take `in` (a bloom's or sprig's name or id): then only the item in there changes, and the same source elsewhere stays as it is. `{"source": "Facecam", "in": "Gameplay"}` is the camera in Gameplay; `{"sprig": "Cam frame", "in": "Gameplay"}` is that sprig placed in Gameplay. Without `in`, it's the source everywhere it shows.
+Hide it and Barrel Roll take `in` (a bloom's or sprig's name or id): then only the item in there changes, and the same source elsewhere stays as it is. `{"source": "Facecam", "in": "Gameplay"}` is the camera in Gameplay; `{"sprig": "Cam frame", "in": "Gameplay"}` is that sprig placed in Gameplay. Without `in`, it's the source everywhere it shows. Switching a Barrel roll filter on (`filter.set` with `on: true`, `filter.toggle`, or its tick in Filters) rolls once with the filter's own time and turns; `roll.spin` rolls every time it's called and switches the filter off again when it lands.
 
 | Action | Plugin | What it does | Fields |
 | --- | --- | --- | --- |
@@ -386,9 +386,9 @@ Hide it and Barrel Roll take `in` (a bloom's or sprig's name or id): then only t
 | `hide.toggle` | Hide it | Hide it until toggled back, or show it. | `source` (or `sprig` with `in`), `in` (optional), `how` (optional): pixelate or blackout |
 | `hide.show` | Hide it | Show it again now. | `source` (or `sprig` with `in`), `in` (optional) |
 | `roll.spin` | Barrel Roll | Spin a sprig (everywhere it's shown) or one thing, then it lands where it was. | `sprig` or `source`, `in`, `seconds`, `turns`, `direction` (all optional) |
-| `freeze.start` | Freeze | Hold a sprig (everywhere it's shown) or one thing still on the frame showing now, then it's live again. Called again while frozen, it keeps the picture and restarts the time. | `sprig` or `source`, `seconds` (optional; 0 = until `freeze.stop`) |
-| `freeze.stop` | Freeze | Let it move again now. | `sprig` or `source` |
-| `freeze.toggle` | Freeze | Freeze until toggled back, or let it go. | `sprig` or `source` |
+| `freeze.start` | Freeze | Hold a sprig (everywhere it's shown) or one thing still on the frame showing now, then it's live again. Called again while frozen, it keeps the picture and restarts the time. | `sprig` or `source`, `in` (optional: a bloom or sprig, to freeze only the one in there), `seconds` (optional; 0 = until `freeze.stop`) |
+| `freeze.stop` | Freeze | Let it move again now. | `sprig` or `source`, `in` (optional) |
+| `freeze.toggle` | Freeze | Freeze until toggled back, or let it go. | `sprig` or `source`, `in` (optional) |
 | `deaths.add` | Death count | One more death (or `amount` more). The gravestone pops up with the new count. | `amount` (optional, default 1), `source` (optional) |
 | `deaths.remove` | Death count | One less death (or `amount` less), never below 0. | `amount` (optional, default 1), `source` (optional) |
 | `deaths.set` | Death count | Set the count to a number. | `count`, `source` (optional) |

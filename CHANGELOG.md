@@ -6,6 +6,21 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- The window no longer stops answering for 2 to 3 seconds when the settings copy is made (30 seconds after
+  start and after every Settings Save): the copying program is now started from a side thread. Seen in a PC log
+  on three starts. Not tried on a PC yet.
+
+- Freeze works on one item: a Freeze filter put on an item (not on its source) holds that item's picture where
+  it's placed, while the same source keeps moving everywhere else it shows. Engine side only for now (both
+  engines); the plugin, hotkeys and Control API follow. Not tried on a PC yet.
+
+- Fixed a rare crash about 15 seconds after start ("access violation", seen about one start in 40 in the start-up
+  check on GitHub, never caught on a PC). When SprigCast noted where its window was busy, it could end up freeing
+  that moment's objects on the wrong thread; a 2-second timer of one of them (the card shadow's) then ticked on
+  nothing. The notes are now taken without holding on to anything, and the shadow keeps no timer. This could also
+  have hit any pop-up opened while the window was busy.
+- The start-up check's crash dump on GitHub also holds what the crash pointed at, which is how this one was found.
+
 - A Color is drawn by the new engine at its full size again. Its picture is a few pixels stretched over its size, and
   the engine was never told the size, so it drew a dot: a Color inside a sprig showed only the checkerboard in Build
   and nothing in Live. Not tried on a PC yet.

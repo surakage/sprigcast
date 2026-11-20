@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from PySide6.QtCore import Qt
 
 from sprigcast import plugin_hooks, plugin_store
 from sprigcast.control.native import ApiError, NativeApi
@@ -131,7 +132,8 @@ def test_plugin_hotkeys_and_right_click_entries(added):
     entries = []
     place = plugin_hooks.Place.of(col, col.scene("chat-h"), "fc")
     plugin_hooks.fill_item_menu(api, col.source("fc"), lambda label, fn: entries.append((label, fn)), place)
-    assert any(e.startswith("Pixelate") for e, _ in entries) and any(e.startswith("Barrel roll") for e, _ in entries)
+    assert any(e.startswith("Pixelate") for e, _ in entries)
+    assert not any(e.startswith("Barrel roll") for e, _ in entries)  # a filter you add, not a menu entry (2026-11-20)
     next(fn for e, fn in entries if e.startswith("Pixelate"))()
     assert not col.source("fc").filters and place.item.effects[0].kind == "pixelate"  # that item only
     assert "plugin:hide:pixelate:chat-h/fc" in dict(hotkeys.actions(col))  # a key for that one item
@@ -792,3 +794,40 @@ def test_apps_hear_when_a_plugin_is_added(added):
     added("barrel_roll")
     changed = dict(api.changes())["plugins.changed"]
     assert changed["added"] == ["barrel_roll"] and "barrel_roll" in changed["plugins"]
+
+
+def test_switching_a_barrel_roll_on_plays_it_again(added, app):
+    """Ticking it in Filters, filter.set, filter.toggle or an OBS app switching it on rolls once each time: a roll is
+    timed by its run, and the same run again would sit still (user 2026-11-20)."""
+    from sprigcast.app.filters_dialog import FiltersDialog
+    from sprigcast.core.filters import switch
+
+    added("barrel_roll")
+    col = _collection()
+    api = NativeApi(FakeHost(col))
+    cam = col.source("cam")
+    api.run("filter.add", {"source": "Cam", "kind": "barrel_roll", "on": False})
+    run = lambda: video_effects(cam.filters).spin[2]  # noqa: E731
+    assert video_effects(cam.filters).spin[0] == 0
+    api.run("filter.set", {"source": "Cam", "filter": "barrel_roll", "on": True})
+    first = run()
+    api.run("filter.set", {"source": "Cam", "filter": "barrel_roll", "on": True})  # already on: the roll isn't cut short
+    assert run() == first
+    api.run("filter.toggle", {"source": "Cam", "filter": "barrel_roll"})
+    assert video_effects(cam.filters).spin[0] == 0
+    api.run("filter.toggle", {"source": "Cam", "filter": "barrel_roll"})
+    assert run() == first + 1
+    flt = cam.filters[0]
+    switch(flt, False)
+    dialog = FiltersDialog(cam, lambda **_: None)
+    try:
+        dialog.list.item(0).setCheckState(Qt.CheckState.Checked)  # the tick in the Filters window
+        assert flt.enabled and run() == first + 2
+        dialog.list.setCurrentRow(0)
+        dialog._edited()  # changing how long it spins keeps the count
+        dialog._reset()
+        assert run() == first + 2
+    finally:
+        dialog.deleteLater()
+    api.run("roll.spin", {"source": "Cam"})  # a trigger still rolls each time
+    assert run() == first + 3

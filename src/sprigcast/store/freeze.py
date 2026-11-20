@@ -9,7 +9,11 @@ window), or per trigger:
     {"do": "freeze.toggle", "sprig": "Gameplay"}                 (until toggled back)
     {"do": "freeze.stop", "sprig": "Gameplay"}
 
-Right-click it in a bloom, give it a hotkey (Tools → Hotkeys → Plugins), or trigger it from an app.
+Right-click something in a bloom or sprig to freeze just that one (the same camera elsewhere keeps moving);
+it then has its own hotkey (Tools → Hotkeys → Plugins). Apps name the source or sprig, and "in" for just the
+one in a bloom or sprig (without "in", everywhere it shows):
+    {"do": "freeze.start", "source": "Facecam", "in": "Gameplay", "seconds": 10}
+    {"do": "freeze.start", "sprig": "Elgato", "in": "Gameplay"}  (a sprig placed in there)
 Freezing again while it's frozen restarts the time and keeps the same picture.
 
 A SprigCast store plugin: add it from Tools → Plugin store.
@@ -21,11 +25,12 @@ import time
 
 from sprigcast.control.native import ApiError, register_action
 from sprigcast.core.filters import Field, register_filter
-from sprigcast.plugin_hooks import (filter_off, filter_on, find_filter, not_here, on_air_sources,
-                                    register_hotkeys, register_item_menu)
+from sprigcast.plugin_hooks import (Place, filter_off, filter_on, find_filter, not_here, on_air_sources,
+                                    place_on_air, place_targets, register_hotkeys, register_place_menu, target_by_id)
 
-PLUGIN = {"id": "freeze", "name": "Freeze", "version": 1, "adds": "Effect",
-          "about": "Freeze a sprig, game or camera on one frame for a set time, then it's live again. Great for redeems."}
+PLUGIN = {"id": "freeze", "name": "Freeze", "version": 2, "adds": "Effect",
+          "about": "Freeze a sprig, game or camera on one frame for a set time, then it's live again. Great for redeems.",
+          "new": "Freezes only the one you right-click, not the same camera everywhere."}
 
 USUAL = 5.0
 _TIMERS: dict[str, int] = {}  # source id -> the newest freeze, so an older one's timer doesn't end a newer one
@@ -80,9 +85,9 @@ def _end_later(api, source_id: str, seconds: float) -> None:
     def later():
         if _TIMERS.get(source_id) != n:
             return  # frozen again (or let go) since
-        source = next((s for s in api.col.sources if s.id == source_id), None)  # the collection may be a new copy
-        if source is not None:
-            unfreeze(api, [source])
+        target = target_by_id(api.col, source_id)  # a source or one item; the collection may be a new copy
+        if target is not None:
+            unfreeze(api, [target])
 
     QTimer.singleShot(int(seconds * 1000), later)
 
@@ -113,6 +118,9 @@ def _placed_in(col, sprig):
 
 
 def _targets(api, data):
+    """The items named ("in" a bloom or sprig), else the sprig or source everywhere it shows."""
+    if data.get("in") is not None:
+        return place_targets(api, data, "sprig" if data.get("sprig") is not None else "source")
     if data.get("sprig") is not None:
         return _placed_in(api.col, api._sprig(data))
     if data.get("source") is not None:
@@ -143,24 +151,36 @@ def _toggle(api, data):
     return freeze(api, sources, 0)
 
 
+_WHERE = {"sprig": "?name or id", "source": "?name or id (instead of sprig)",
+          "in": "?a bloom or sprig: only the one in there (without it: everywhere it shows)"}
 register_action("freeze.start", "Freeze a sprig (every place it's shown) or one thing in a bloom on its current frame "
                 "for a while (no seconds: its usual time; 0: until freeze.stop).",
-                {"sprig": "?name or id", "source": "?name or id (instead of sprig)", "seconds": "?how long"}, _start)
-register_action("freeze.stop", "Let a frozen sprig or source move again.",
-                {"sprig": "?name or id", "source": "?name or id (instead of sprig)"},
+                {**_WHERE, "seconds": "?how long"}, _start)
+register_action("freeze.stop", "Let a frozen sprig or source move again.", dict(_WHERE),
                 lambda api, data: unfreeze(api, _targets(api, data)))
 register_action("freeze.toggle", "Freeze a sprig or source until toggled again, or let it go if it's frozen.",
-                {"sprig": "?name or id", "source": "?name or id (instead of sprig)"}, _toggle)
+                dict(_WHERE), _toggle)
 
 
 # Hotkeys and right-click ------------------------------------------------------------------------------
 
+CAPTURES = ("camera", "display_capture", "window_capture", "game_capture")
+SOUNDS = ("audio_input", "audio_output", "app_audio")
+
+
 def _hotkeys(collection):
-    """A Freeze key for each sprig that's placed in a bloom, and for each capture and camera."""
+    """A Freeze key for each sprig that's placed in a bloom (everywhere it shows), and for each camera or
+    capture in each bloom or sprig, and anything else frozen there once: those freeze only that one."""
     out = [(f"freeze:sprig:{part.id}", f"Freeze {part.name}") for part in collection.parts()
            if _placed_in(collection, part)]
-    out += [(f"freeze:source:{source.id}", f"Freeze {source.name}") for source in collection.sources
-            if source.kind in ("camera", "display_capture", "window_capture", "game_capture")]
+    kinds = {s.id: s for s in collection.sources}
+    for scene in collection.scenes:
+        for item in scene.items:
+            source = kinds.get(item.source)
+            if source is None or not (source.kind in CAPTURES or any(e.kind == "freeze" for e in item.effects)):
+                continue
+            place = Place(scene, item, source)
+            out.append((f"freeze:item:{place.id}", f"Freeze {place.name}"))
     return out
 
 
@@ -171,29 +191,33 @@ def _run_hotkey(api, hid):
         if sprig is None:
             return "That sprig is gone."
         sources, name = _placed_in(api.col, sprig), sprig.name
-    else:
-        source = next((s for s in api.col.sources if s.id == ref), None)
-        if source is None:
-            return "That source is gone."
-        sources, name = [source], source.name
-    showing = on_air_sources(api.col)
-    if not any(s.id in showing for s in sources):  # freezing what isn't on air does nothing you'd see
-        return not_here(name)
-    freeze(api, sources)
+        showing = on_air_sources(api.col)
+        if not any(s.id in showing for s in sources):  # freezing what isn't on air does nothing you'd see
+            return not_here(name)
+        freeze(api, sources)
+        return None
+    place = target_by_id(api.col, ref)
+    if place is None:
+        return "That's gone."
+    showing = place_on_air(api.col, place) if isinstance(place, Place) else place.id in on_air_sources(api.col)
+    if not showing:
+        return not_here(place.name)
+    freeze(api, [place])
     return None
 
 
 register_hotkeys(_hotkeys, _run_hotkey)
 
 
-def _menu(api, source, add):
-    if source is None or source.kind in ("audio_input", "audio_output", "app_audio"):
+def _menu(api, place, add):
+    """Right-click on something in a bloom or sprig: freeze that one only."""
+    if place is None or place.kind in SOUNDS:
         return
-    if frozen(source):
-        add("Unfreeze", lambda: unfreeze(api, [source]))
+    if frozen(place):
+        add("Unfreeze", lambda: unfreeze(api, [place]))
     else:
-        usual = _usual(source)
-        add(f"Freeze for {usual:g} s" if usual > 0 else "Freeze", lambda: freeze(api, [source]))
+        usual = _usual(place)
+        add(f"Freeze for {usual:g} s" if usual > 0 else "Freeze", lambda: freeze(api, [place]))
 
 
-register_item_menu(_menu)
+register_place_menu(_menu)

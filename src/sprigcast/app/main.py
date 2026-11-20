@@ -278,7 +278,7 @@ def run() -> None:
     from PySide6.QtCore import QTimer
 
     # A copy even if closing is cut short; made aside, so the window and the show don't wait for the file
-    QTimer.singleShot(30_000, lambda: settings_keeper.keep_aside(config_dir()))
+    QTimer.singleShot(30_000, lambda: settings_keeper.keep_aside_soon(config_dir()))
     app.setWindowIcon(app_icon())
     from sprigcast.core.painted import brand_fonts
 

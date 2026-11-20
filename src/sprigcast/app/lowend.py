@@ -325,20 +325,36 @@ def light_changes(collection: SceneCollection, apply: bool = False, pending_fps:
     return lines, fps
 
 
-def store_fps(fps: dict[str, int]) -> None:
-    """Queue canvas frame rates for the next start, next to anything Settings → Video already queued."""
+def store_fps(fps: dict[str, int], collection=None) -> bool:
+    """Queue canvas frame rates for the next start, next to anything Settings → Video already queued. With the
+    collection given, a change that asks for what a canvas already is isn't kept (60 → 30 → 60 with no restart
+    in between left "60 fps" waiting on a 60 fps canvas, PC 2026-11-19). True when something waits afterwards."""
     import json
+    import logging
 
     from PySide6.QtCore import QSettings
 
     from sprigcast.app.settings_window import PENDING_VIDEO, pending_video
 
     if not fps:
-        return
+        return bool(pending_video())
     pending = pending_video()
     for canvas_id, value in fps.items():
         pending.setdefault(canvas_id, {})["fps"] = value
-    QSettings().setValue(PENDING_VIDEO, json.dumps(pending))
+    if collection is not None:
+        for canvas in collection.canvases:
+            now = {"width": canvas.width, "height": canvas.height, "fps": canvas.fps, "enabled": canvas.enabled}
+            change = {k: v for k, v in pending.get(canvas.id, {}).items() if now.get(k, v) != v}
+            if change:
+                pending[canvas.id] = change
+            else:
+                pending.pop(canvas.id, None)
+    if pending:
+        QSettings().setValue(PENDING_VIDEO, json.dumps(pending))
+    else:
+        QSettings().remove(PENDING_VIDEO)
+    logging.getLogger(__name__).info("video: canvas frame rates queued for the next start: %s", pending or "nothing")
+    return bool(pending)
 
 
 def waiting_fps() -> dict[str, int]:
