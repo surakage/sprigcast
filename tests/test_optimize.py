@@ -35,7 +35,7 @@ def test_strong_nvenc_pc_with_good_upload_gets_1080p60_and_tiktok_stays_720p30()
     assert any(lab.startswith("Horizontal canvas: 60 fps") for lab in labels)
     fps = plan.apply()
     tw, tt = c.outputs
-    assert tw.size is None and tw.bitrate_kbps == 6000 and tw.fps is None  # follows the canvas, soon 60
+    assert tw.size is None and tw.bitrate_kbps == 6000 and tw.fps == 60  # its own, never left to follow the canvas
     assert tt.size == (720, 1280) and tt.bitrate_kbps == 4000
     assert fps["horizontal"] == 60 and fps["vertical"] == 60  # vertical records at 60 too
     assert tt.fps == 30
@@ -490,3 +490,18 @@ def test_the_real_sender_measures_a_slow_server_without_waiting_for_answers():
     finally:
         stop.set()
         server.close()
+
+
+def test_a_place_keeps_the_frame_rate_optimize_chose_when_the_canvas_does_not_follow():
+    """PC 2026-11-19: Optimize set three places to 720p, 30 fps, 2600 kbps and queued the canvas for 30 fps.
+    The places were left "same as the canvas", the canvas stayed at 60, and they went out at 60 fps on 2600."""
+    c = _three_places()
+    p = optimize.PcProfile(**STRONG, upload_kbps=11400)
+    plan = optimize.plan(p, c)
+    assert plan.quality == (720, 30)
+    plan.apply()
+    assert [o.fps for o in c.outputs] == [30, 30, 30]  # whatever becomes of the canvas
+    for canvas in c.canvases:
+        canvas.fps = 60  # the queued change never arrived
+    again = optimize.plan(p, c)
+    assert not [ch for ch in again.changes if ch.group == "Stream"]  # still 30: nothing to put right
