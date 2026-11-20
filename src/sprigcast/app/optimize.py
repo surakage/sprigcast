@@ -215,65 +215,136 @@ def _check_x264(p: PcProfile) -> str:
 
 UPLOAD_URL = "https://speed.cloudflare.com/__up"  # Cloudflare's public speed test: takes bytes, keeps nothing
 UPLOAD_SECONDS = 8.0
+# Python's own "Python-urllib" name is refused by the test site (HTTP 403 on every connection, 2026-11-19): the
+# test says who it is. A second shape, the one the site's own page sends, is tried when the first is refused.
+UPLOAD_HEADERS = (
+    {"User-Agent": "SprigCast upload test", "Accept": "*/*", "Content-Type": "application/octet-stream"},
+    {"User-Agent": "SprigCast upload test", "Accept": "*/*", "Content-Type": "text/plain;charset=UTF-8",
+     "Origin": "https://speed.cloudflare.com", "Referer": "https://speed.cloudflare.com/"},
+    {"User-Agent": "Mozilla/5.0 (compatible; SprigCast upload test)", "Accept": "*/*",
+     "Content-Type": "text/plain;charset=UTF-8",
+     "Origin": "https://speed.cloudflare.com", "Referer": "https://speed.cloudflare.com/"},
+)
 UPLOAD_WARMUP_S = 1.5  # connecting and each connection's slow start don't count
 UPLOAD_CONNECTIONS = 4  # at once, like streaming to several places: one connection alone reads the line low
+UPLOAD_BODY = 24 * 2**20  # one request's size: longer than the test on most lines, so it's cut off, not awaited
+UPLOAD_BUFFER = 256 * 1024  # each connection's send buffer: enough for 100+ Mbps over four, small next to the test
+UPLOAD_PIECE = 32 * 1024  # handed to the connection at a time; each piece is counted as it goes
 
 
-def upload_speed(url: str = UPLOAD_URL, seconds: float = UPLOAD_SECONDS, post=None,
+def _upload_shape(url: str, timeout: float = 6.0) -> dict | None:
+    """The request shape the test site takes, found with one tiny request each. None when it can't be reached."""
+    import urllib.error
+    import urllib.request
+
+    for headers in UPLOAD_HEADERS:
+        request = urllib.request.Request(url, data=b"0", method="POST", headers=dict(headers))
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as reply:
+                reply.read()
+            return dict(headers)
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                continue  # refused as it is: the next shape
+            log.info("upload test stopped: %s", exc)
+            return None
+        except Exception as exc:
+            log.info("upload test stopped: %s", exc)
+            return None
+    log.info("upload test stopped: the test site refused every request shape")
+    return None
+
+
+def _upload_sender(url: str, headers: dict):
+    """Sends request after request on one connection until the deadline, counting each piece as it's handed
+    over. A request still under way at the deadline is dropped: what counts is what left, not what was
+    answered (waiting for each answer read 15 Mbps on a line that carries 23, PC check 2026-11-19)."""
+    import http.client
+    import socket
+    import ssl
+    import urllib.parse
+
+    parts = urllib.parse.urlsplit(url)
+    path = parts.path or "/"
+    piece = bytes(UPLOAD_PIECE)
+
+    def send(deadline: float, count) -> None:
+        while time.monotonic() < deadline:
+            if parts.scheme == "https":
+                conn = http.client.HTTPSConnection(parts.netloc, timeout=5, context=ssl.create_default_context())
+            else:
+                conn = http.client.HTTPConnection(parts.netloc, timeout=5)
+            try:
+                conn.connect()
+                # A fixed, small send buffer: one that grows during the test would count as speed.
+                conn.sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, UPLOAD_BUFFER)
+                conn.putrequest("POST", path)
+                for name, value in headers.items():
+                    conn.putheader(name, value)
+                conn.putheader("Content-Length", str(UPLOAD_BODY))
+                conn.endheaders()
+                left = UPLOAD_BODY
+                while left > 0 and time.monotonic() < deadline:
+                    conn.send(piece[:left])
+                    count(min(left, len(piece)))
+                    left -= len(piece)
+                if left > 0:
+                    return  # time's up mid-request: dropped, never awaited
+                try:
+                    conn.getresponse().read()  # a fast line finished one: its answer, then the next
+                except OSError:
+                    pass  # a slow answer takes nothing away from what was sent
+            finally:
+                conn.close()
+
+    return send
+
+
+def upload_speed(url: str = UPLOAD_URL, seconds: float = UPLOAD_SECONDS, sender=None,
                  connections: int = UPLOAD_CONNECTIONS) -> int | None:
-    """Upload speed in kbps: growing blocks sent over a few connections at once for `seconds`.
+    """Upload speed in kbps: a few connections send at once for `seconds`, every piece counted as it leaves.
 
     What the line carries is every connection's bytes together over the time after the warm-up. One
     connection alone often tops out below the line (11.4 Mbps measured on a line that had carried three
     streams of 23 Mbps for an hour, 2026-11-19), and several streams are several connections.
+    `sender(deadline, count)` sends until the deadline and calls count(bytes) for each piece.
     """
     import threading
-    import urllib.request
 
-    def default_post(data: bytes) -> None:
-        request = urllib.request.Request(url, data=data, method="POST",
-                                         headers={"Content-Type": "application/octet-stream"})
-        with urllib.request.urlopen(request, timeout=seconds + 5) as reply:
-            reply.read()
-
-    post = post or default_post
+    if sender is None:
+        headers = _upload_shape(url)
+        if headers is None:
+            return None
+        sender = _upload_sender(url, headers)
     began = time.monotonic()
     deadline = began + seconds
-    blocks: list[tuple[float, float, int]] = []  # start, end, bytes (list.append is safe across threads)
+    pieces: list[tuple[float, int]] = []  # when, bytes (list.append is safe across threads)
+
+    def count(size: int) -> None:
+        pieces.append((time.monotonic(), size))
 
     def send() -> None:
-        size = 256 * 1024
         try:
-            while time.monotonic() < deadline and size <= 64 * 2**20:
-                start = time.monotonic()
-                post(bytes(size))
-                end = time.monotonic()
-                blocks.append((start, end, size))
-                if end - start < 1.5:
-                    size *= 2
+            sender(deadline, count)
         except Exception as exc:
             log.info("upload test stopped: %s", exc)
 
     senders = [threading.Thread(target=send, name="upload-test", daemon=True) for _ in range(max(1, connections))]
-    for sender in senders:
-        sender.start()
-    for sender in senders:
-        sender.join()
-    if not blocks:
+    for one in senders:
+        one.start()
+    for one in senders:
+        one.join(seconds + 15)
+    counted = list(pieces)
+    if not counted:
         return None
-    # The steady part: after the warm-up, up to the deadline. A block counts for the share of it sent then.
-    first = min(start for start, _, _ in blocks)
-    last = max(end for _, end, _ in blocks)
-    window_start = min(first + min(UPLOAD_WARMUP_S, seconds / 4), last)
-    window_end = min(max(deadline, window_start), last)
-    if window_end - window_start < 0.05:  # everything was over at once: all of it counts
-        window_start, window_end = first, last
-    sent = 0.0
-    for start, end, size in blocks:
-        inside = min(end, window_end) - max(start, window_start)
-        if inside > 0 and end > start:
-            sent += size * inside / (end - start)
-    took = window_end - window_start
+    # The steady part: after the warm-up (connecting, slow start, the send buffer filling), up to the last piece.
+    first = min(when for when, _ in counted)
+    last = min(max(when for when, _ in counted), deadline + 1.0)
+    window_start = first + min(UPLOAD_WARMUP_S, seconds / 4)
+    if last - window_start < min(1.0, seconds / 4):  # hardly anything after the warm-up: all of it counts
+        window_start = began
+    sent = sum(size for when, size in counted if window_start < when <= last)
+    took = last - window_start
     return int(sent * 8 / 1000 / took) if took > 0 and sent else None
 
 
@@ -469,6 +540,43 @@ def recommended_step(p: PcProfile, c: SceneCollection) -> tuple[int, int]:
     t = pc_target(p, _encodes(p, c))
     budget = _budget(p, c, honour_choice=False) if p.wants_stream else float("inf")
     return _best_step(t, SERVICES["custom"], _Canvas1080, budget)
+
+
+def pc_step(p: PcProfile, c: SceneCollection) -> tuple[int, int]:
+    """What this PC could carry with all the upload in the world."""
+    return pc_target(p, _encodes(p, c)).step
+
+
+def upload_is_the_limit(p: PcProfile, c: SceneCollection) -> bool:
+    """The suggestion sits below what the PC can do because of the upload, not the PC."""
+    return p.wants_stream and LADDER.index(recommended_step(p, c)) > LADDER.index(pc_step(p, c))
+
+
+def upload_note(p: PcProfile, c: SceneCollection) -> str:
+    """With the upload as the limit: what it carries in all, shared by how many places, and what fewer
+    places would get. The sites' own numbers (Twitch 6000 kbps at 1080p60, 4500 at 720p60, 3000 at 720p30;
+    YouTube at least 6000, 5000 and 3000; Kick up to 8000) each take their own share of the upload, and the
+    usual advice is to send no more than 70 to 80% of it."""
+    from sprigcast.output.stream import SERVICES
+
+    places = len(_stream_outputs(c))
+    upload = usable_upload(p)
+    if not upload or not places or not upload_is_the_limit(p, c):
+        return ""
+    video = int(upload * UPLOAD_SHARE)
+    t = pc_target(p, _encodes(p, c))
+    text = f"Your upload ({upload / 1000:.1f} Mbps) is the limit, not your PC: it safely carries about {video} kbps"
+    if places == 1:
+        return text + "."
+    text += f", shared by {places} places."
+    for fewer in range(places - 1, 0, -1):
+        step = _best_step(t, SERVICES["custom"], _Canvas1080, video / fewer - c.stream_encoder.audio_kbps)
+        if LADDER.index(step) < LADDER.index(recommended_step(p, c)):
+            what = "One place alone" if fewer == 1 else f"{fewer} places"
+            text += f" {what} would get {step_text(step)}."
+            if step == pc_step(p, c):
+                break
+    return text
 
 
 def _best_step(t: Target, service, canvas, budget_kbps: float) -> tuple[int, int]:
@@ -675,6 +783,9 @@ def plan(p: PcProfile, c: SceneCollection, waiting_fps: dict[str, int] | None = 
         except Exception:
             log.exception("optimize rule %s failed", getattr(rule, "__name__", rule))
     notes = []
+    limit = upload_note(p, c) if not p.extra.get(QUALITY) else ""
+    if limit:
+        notes.append(limit)
     if p.wants_stream and not p.upload_kbps:
         notes.append("Upload not tested: stream bitrates use each site's usual value. Auto bitrate lowers it if needed.")
     if p.wants_stream and not _stream_outputs(c):

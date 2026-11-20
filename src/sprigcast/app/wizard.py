@@ -463,6 +463,9 @@ class OptimizeWizard(CardWindow):
         self.card.layout().activate()
         _, top, _, bottom = self.MARGINS
         needed = self.card.layout().minimumSize().height() + top + bottom
+        if self.layout() is not None:  # what the window itself insists on: asking for less made Qt complain
+            self.layout().activate()
+            needed = max(needed, self.layout().minimumSize().height(), self.minimumSizeHint().height())
         screen = self.screen()
         if screen is not None:
             needed = min(needed, screen.availableGeometry().height())  # never taller than the screen
@@ -637,7 +640,18 @@ class OptimizeWizard(CardWindow):
             button.update()
         name = optimize.STAGE_NAME[quality]
         kbps = optimize.STEP_KBPS[quality]
-        self.grow_label.setText("YOUR PC CAN GROW TO" if quality == self.plan.recommended else "YOU PICKED")
+        streams = optimize.stream_steps(self.profile, self.collection, quality,
+                                        optimize._budget(self.profile, self.collection))
+        at_quality = [k for _, step, k in streams if step == quality]
+        if at_quality:
+            kbps = at_quality[0]  # what Apply sets, not the step's usual number
+        if quality != self.plan.recommended:
+            grow = "YOU PICKED"
+        elif optimize.upload_is_the_limit(self.profile, self.collection):
+            grow = "YOUR UPLOAD CAN CARRY"  # the PC isn't what holds it back (user 2026-11-19)
+        else:
+            grow = "YOUR PC CAN GROW TO"
+        self.grow_label.setText(grow)
         self.stage_title.setText(f"{name}  <span style='font-size:13pt; font-weight:normal; color:{theme.SELECT_TEXT}'>"
                                  f"{optimize.step_text(quality)} · {kbps} kbps</span>")
         pc, upload = optimize.room(self.profile, self.collection, quality)
