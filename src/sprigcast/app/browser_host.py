@@ -406,6 +406,7 @@ class BrowserHost(QObject):
         self.card: tuple[int, int] | None = None
         self.target_for = None
         self.card_drawn = None
+        self.page_closed = None  # callable(source id): its page is gone now (the helper lets go of its block)
 
     # Any thread ---------------------------------------------------------------------
 
@@ -530,9 +531,14 @@ class BrowserHost(QObject):
                     self._tick_state()
                 else:
                     page.apply(value)
-            elif action == "close" and page is not None:
-                page.close()
-                del self.pages[source_id]
+            elif action == "close":
+                try:
+                    if page is not None:
+                        del self.pages[source_id]
+                        page.close()
+                finally:
+                    if self.page_closed is not None:
+                        self.page_closed(source_id)
             elif action == "pause" and page is not None:
                 page.set_paused(bool(value))
             elif action == "reload" and page is not None:

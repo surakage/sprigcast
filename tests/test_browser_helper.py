@@ -80,6 +80,45 @@ def qt():
     return QApplication.instance() or QApplication([])
 
 
+def test_a_page_opened_again_always_says_where_its_pictures_are(qt):
+    """Open, close and open again in quick succession: the helper let go of the page's block when the close was
+    asked for, before the page (opened a moment after its ask) had made it. The block stayed, the next opening
+    used it without a word, and SprigCast never found the page's pictures: an empty page for good."""
+    from sprigcast.app import browser_host
+
+    said = []
+    blocks = browser_helper.PageBlocks(lambda header, payload=b"": said.append(header))
+    host = browser_host.BrowserHost()
+    host.page_closed = blocks.drop
+
+    class Page:
+        def __init__(self, source_id):
+            self.id = source_id
+            blocks.slot_for(source_id, 8 * 8)  # as a page on the card does when it is made (target_for)
+
+        def close(self):
+            pass
+
+    host._new_page = lambda source_id, settings: Page(source_id)
+    host._check_state = host._tick_state = lambda: None
+    try:
+        host.open("b", {})
+        host.close("b")  # both asked before either is done
+        qt.processEvents()
+        assert "b" not in blocks.slots and "b" not in host.pages  # the block went with the page
+        host.open("b", {})
+        qt.processEvents()
+        names = [h["name"] for h in said if h["kind"] == "frames" and h["id"] == "b"]
+        assert len(names) == 2 and names[0] != names[1] and blocks.slots["b"].shm.name == names[1]
+        host.close("b")
+        host.close("b")  # a close for a page already gone still lets go, and nothing breaks
+        qt.processEvents()
+        assert not blocks.slots
+    finally:
+        blocks.close()
+        host.shutdown()
+
+
 def test_a_page_is_drawn_in_the_helper_and_comes_back_after_it_stops(tmp_path, qt, monkeypatch):
     import sys
 

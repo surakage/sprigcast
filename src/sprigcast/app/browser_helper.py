@@ -545,6 +545,42 @@ def _card_from_env() -> tuple[int, int] | None:
         return None
 
 
+class PageBlocks:
+    """The helper's shared memory blocks, one per page, each announced to SprigCast ("frames") when it is made.
+
+    A block goes when its page does (BrowserHost.page_closed), not when the close is asked for. Pages are opened
+    and closed a moment after the ask (a queued call), so a block let go at the ask could be made again by the
+    page still there, or by an open that came just before the close. That block was never let go, the page's
+    next opening used it without announcing it, and SprigCast never learned where the page's pictures were: the
+    engine took none, the helper made a new texture every second, and the page stayed empty for good ("[Art]
+    Gameplay" a checkerboard on Live, 2026-11-19)."""
+
+    def __init__(self, emit):
+        self.slots: dict[str, FrameSlot] = {}
+        self.made = 0
+        self.emit = emit
+
+    def slot_for(self, source_id: str, pixels: int) -> FrameSlot:
+        slot = self.slots.get(source_id)
+        if slot is None or pixels * 4 > slot.capacity:
+            if slot is not None:
+                slot.close()
+            self.made += 1
+            name = f"sprigcast-{os.getpid()}-{self.made}"
+            slot = self.slots[source_id] = FrameSlot.create(name, pixels)
+            self.emit({"kind": "frames", "id": source_id, "name": name})
+        return slot
+
+    def drop(self, source_id: str) -> None:
+        slot = self.slots.pop(source_id, None)
+        if slot is not None:
+            slot.close()
+
+    def close(self) -> None:
+        for source_id in list(self.slots):
+            self.drop(source_id)
+
+
 def serve() -> None:
     """The helper: the pages, drawn with Qt WebEngine on this process's own window thread."""
     from PySide6.QtCore import QCoreApplication, QObject, Qt, QTimer, Signal
@@ -576,20 +612,10 @@ def serve() -> None:
     host = browser_host.BrowserHost()
     host.state_of = lambda: host_state[0]
     host_state: list[dict] = [{}]
-    slots: dict[str, FrameSlot] = {}
-    made = [0]
+    blocks = PageBlocks(emit)
+    slots, slot_for = blocks.slots, blocks.slot_for
+    host.page_closed = blocks.drop  # with the page, in the page's own order (see PageBlocks)
     textures = [0]
-
-    def slot_for(source_id: str, pixels: int) -> FrameSlot:
-        slot = slots.get(source_id)
-        if slot is None or pixels * 4 > slot.capacity:
-            if slot is not None:
-                slot.close()
-            made[0] += 1
-            name = f"sprigcast-{os.getpid()}-{made[0]}"
-            slot = slots[source_id] = FrameSlot.create(name, pixels)
-            emit({"kind": "frames", "id": source_id, "name": name})
-        return slot
 
     def store(source_id: str, frame: np.ndarray) -> None:
         h, w = frame.shape[:2]
@@ -651,10 +677,7 @@ def serve() -> None:
         elif op == "open":
             host.open(source_id, message.get("settings") or {})
         elif op == "close":
-            host.close(source_id)
-            slot = slots.pop(source_id, None)
-            if slot is not None:
-                slot.close()
+            host.close(source_id)  # its block goes when the page does (host.page_closed)
         elif op == "pause":
             host.pause(source_id, bool(message.get("paused")))
         elif op == "reload":
@@ -686,5 +709,4 @@ def serve() -> None:
     finally:
         sound_timer.stop()
         host.shutdown()
-        for slot in slots.values():
-            slot.close()
+        blocks.close()
