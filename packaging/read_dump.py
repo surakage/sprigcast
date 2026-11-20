@@ -34,6 +34,30 @@ def exports(folder: str) -> dict:
     return out
 
 
+def refs(dump, path: str, target: int, where) -> None:
+    """Every place in the dump's memory that points at `target` (the object the crash was handed), with the
+    words around it: one of them is Qt's note of the timer (its interval sits two words before the object)."""
+    needle = struct.pack("<Q", target)
+    segments = []
+    for holder in (getattr(dump, "memory_segments_64", None), getattr(dump, "memory_segments", None)):
+        segments += list(getattr(holder, "memory_segments", None) or [])
+    print(f"places that point at 0x{target:x} ({len(segments)} blocks of memory in the dump):")
+    shown = 0
+    with open(path, "rb") as raw:
+        for segment in segments:
+            raw.seek(segment.start_file_address)
+            blob = raw.read(segment.size)
+            at = blob.find(needle)
+            while at >= 0 and shown < 40:
+                if at % 8 == 0:
+                    shown += 1
+                    print(f"  at 0x{segment.start_virtual_address + at:x}:")
+                    for i in range(max(0, at - 56), min(len(blob) - 7, at + 32), 8):
+                        (value,) = struct.unpack_from("<Q", blob, i)
+                        print(f"    {(i - at) // 8:+d} {value:016x} {where(value)}")
+                at = blob.find(needle, at + 1)
+
+
 def main(path: str, folder: str) -> int:
     names = exports(folder)
     dump = MinidumpFile.parse(path)
@@ -87,7 +111,10 @@ def main(path: str, folder: str) -> int:
     for name in ("rcx", "rdx", "rbx", "rsi", "rdi"):
         if name in registers and not where(registers[name]):
             print(f"what {name} points at:")
-            words(registers[name], 10, "  ")
+            words(registers[name], 24, "  ")
+    target = registers.get("rcx", 0)
+    if target > 0x10000 and not where(target):
+        refs(dump, path, target, where)
     for thread in dump.threads.threads:
         if thread.ThreadId != record.ThreadId:
             continue
