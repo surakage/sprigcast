@@ -60,33 +60,17 @@ runs:
         if ($LASTEXITCODE -ne 0) { throw "Couldn't install Qt $qt" }
         $qtdir = (Get-Content C:\qtwe\qt\prefix.txt -Raw).Trim()
         "QTDIR=$qtdir" | Out-File C:\qtwe\qtdir.txt
-        # Qt WebEngine's source release, checked against Qt's own list of checksums.
-        # A release moves from official_releases to archive once a newer patch is out; try both, then mirrors.
-        $minor = $qt.Substring(0, $qt.LastIndexOf('.'))
-        $name = "qtwebengine-everywhere-src-$qt.tar.xz"
-        $got_it = $false
-        foreach ($site in "https://download.qt.io", "https://qt.mirror.constant.com", "https://ftp.fau.de/qtproject") {
-          foreach ($kind in "official_releases", "archive") {
-            $base = "$site/$kind/qt/$minor/$qt/submodules"
-            try {
-              Invoke-WebRequest "$base/md5sums.txt" -OutFile C:\qtwe\md5sums.txt
-              Invoke-WebRequest "$base/$name" -OutFile C:\qtwe\$name
-              "source from $base"
-              $got_it = $true
-              break
-            } catch { "not at $base/${name}: $($_.Exception.Message)" }
-          }
-          if ($got_it) { break }
-        }
-        if (-not $got_it) { throw "couldn't download $name" }
-        $want = (Select-String -Path C:\qtwe\md5sums.txt -Pattern ([regex]::Escape($name)) | Select-Object -First 1).Line.Split(' ')[0]
-        $got = (Get-FileHash C:\qtwe\$name -Algorithm MD5).Hash.ToLower()
-        if (-not $want -or $want -ne $got) { throw "$name doesn't match Qt's checksum ($got vs $want)" }
-        "source sha256: $((Get-FileHash C:\qtwe\$name -Algorithm SHA256).Hash.ToLower())"
-        C:\Windows\System32\tar.exe -xf C:\qtwe\$name -C C:\qtwe
-        if ($LASTEXITCODE -ne 0) { throw "couldn't unpack $name" }
-        Rename-Item "C:\qtwe\qtwebengine-everywhere-src-$qt" C:\qtwe\s
-        Remove-Item C:\qtwe\$name
+        # Qt WebEngine's source release (official_releases, archive or mirrors), checked against Qt's checksums.
+        python packaging\qt_sdk.py source $qt qtwebengine C:\qtwe\src
+        if ($LASTEXITCODE -ne 0) { throw "Couldn't download Qt WebEngine $qt's source" }
+        $archive = (Get-Content C:\qtwe\src\source.txt -Raw).Trim()
+        if ($archive.EndsWith(".7z")) { & 7z x -y -bso0 -bsp0 "-oC:\qtwe\src" $archive }
+        else { C:\Windows\System32\tar.exe -xf $archive -C C:\qtwe\src }
+        if ($LASTEXITCODE -ne 0) { throw "couldn't unpack $archive" }
+        Remove-Item $archive
+        $top = Get-ChildItem C:\qtwe\src -Directory | Where-Object { $_.Name -like "qtwebengine-everywhere*" } | Select-Object -First 1
+        if (-not $top) { throw "no qtwebengine-everywhere* folder in $archive" }
+        Move-Item $top.FullName C:\qtwe\s
         New-Item -ItemType Directory -Force C:\qtwe\b | Out-Null
         Push-Location C:\qtwe\b
         # Exactly PySide6's Qt WebEngine plus H.264/AAC. Qt PDF isn't built (PySide6's own stays), nor Rust parts.

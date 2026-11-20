@@ -3,6 +3,7 @@ for the few packages the page engine build needs (webengine-codecs.yml). aqt 3.3
 (run 44657659498), so this reads its Updates.xml itself and checks each archive against the SHA-1 Qt publishes.
 
 Usage: qt_sdk.py <version, e.g. 6.12.0> <out folder> [module ...]   (needs 7-Zip's 7z on PATH or in Program Files)
+       qt_sdk.py source <version> <module, e.g. qtwebengine> <out folder>   (the module's source release, checked)
 """
 from __future__ import annotations
 
@@ -63,7 +64,65 @@ def extract_targets(package: ET.Element, out: Path) -> dict[str, Path]:
     return targets
 
 
+def hrefs(listing: str) -> list[str]:
+    import re
+
+    return re.findall(r'href="([^"?#]+)"', listing)
+
+
+def source(version: str, module: str, out: Path) -> Path:
+    """Download <module>'s source release for <version> from download.qt.io (official_releases, then archive,
+    then mirrors; submodules/ or the version folder), check it against Qt's checksums and return the file."""
+    import re
+
+    minor = version.rsplit(".", 1)[0]
+    pattern = re.compile(rf"^{module}-everywhere-(?:opensource-)?src-{re.escape(version)}\.(?:tar\.xz|zip|7z|tar\.gz)$")
+    out.mkdir(parents=True, exist_ok=True)
+    tried: list[str] = []
+    for base in MIRRORS:
+        for kind in ("official_releases", "archive"):
+            for sub in ("submodules/", "single/", ""):
+                folder = f"{kind}/qt/{minor}/{version}/{sub}"
+                try:
+                    with urllib.request.urlopen(f"{base}/{folder}", timeout=60) as reply:
+                        names = [h.rsplit("/", 1)[-1] for h in hrefs(reply.read().decode("utf-8", "replace"))]
+                except Exception as exc:  # noqa: BLE001 - next place
+                    tried.append(f"{base}/{folder}: {exc}")
+                    continue
+                found = sorted(n for n in names if pattern.match(n))
+                if not found:
+                    tried.append(f"{base}/{folder}: no match among {', '.join(n for n in names if module in n)[:400] or names[:20]}")
+                    continue
+                name = next((n for n in found if n.endswith(".tar.xz")), found[0])
+                url = f"{base}/{folder}{name}"
+                data = urllib.request.urlopen(url, timeout=600).read()
+                check = None
+                for algo, sums in (("sha256", f"{name}.sha256"), ("md5", "md5sums.txt"), ("sha1", f"{name}.sha1")):
+                    if sums not in names:
+                        continue
+                    text = urllib.request.urlopen(f"{base}/{folder}{sums}", timeout=60).read().decode()
+                    lines = [ln.split() for ln in text.splitlines() if ln.split()]
+                    line = next((ln for ln in lines if name in ln[-1]), None) if sums == "md5sums.txt" else lines[0]
+                    if line:
+                        check = (algo, line[0].lower())
+                        break
+                if check is None:
+                    raise RuntimeError(f"{url}: Qt publishes no checksum for it next to it")
+                got = hashlib.new(check[0], data).hexdigest()
+                if got != check[1]:
+                    raise RuntimeError(f"{name}: {check[0]} {got} isn't Qt's {check[1]}")
+                target = out / name
+                target.write_bytes(data)
+                print(f"source {url} ({len(data) / 1e6:.0f} MB, {check[0]} matches), sha256 {hashlib.sha256(data).hexdigest()}")
+                return target
+    raise RuntimeError(f"no {module} {version} source release found:\n  " + "\n  ".join(tried))
+
+
 def main(argv: list[str]) -> int:
+    if argv and argv[0] == "source":
+        found = source(argv[1], argv[2], Path(argv[3]))
+        (Path(argv[3]) / "source.txt").write_text(str(found), "utf-8")
+        return 0
     version, out, modules = argv[0], Path(argv[1]), argv[2:]
     short = version.replace(".", "")
     # Qt 6.8+ splits the repository into sub-folders (the base, its add-ons...): read every Updates.xml there.
