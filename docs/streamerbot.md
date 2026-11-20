@@ -64,6 +64,7 @@ The part after `/api/` is the action; everything after `?` is its fields. Spaces
 | --- | --- |
 | Raid: take a screenshot (with Snap added, it prints as a polaroid on stream) | `http://127.0.0.1:4455/api/screenshot.take?password=…` |
 | Redeem: pixelate the camera for 15 s | `http://127.0.0.1:4455/api/hide.pixelate?source=Facecam&seconds=15&password=…` |
+| Redeem: pixelate the camera only in Gameplay | `http://127.0.0.1:4455/api/hide.pixelate?source=Facecam&in=Gameplay&seconds=15&password=…` |
 | Redeem: black out the game for 10 s | `http://127.0.0.1:4455/api/hide.blackout?source=Game%20capture&seconds=10&password=…` |
 | Redeem: barrel roll the camera frame | `http://127.0.0.1:4455/api/roll.spin?sprig=Cam%20frame&seconds=15&password=…` |
 | Redeem: freeze the game for 10 s | `http://127.0.0.1:4455/api/freeze.start?sprig=Gameplay&seconds=10&password=…` |
