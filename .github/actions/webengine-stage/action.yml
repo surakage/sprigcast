@@ -55,11 +55,26 @@ runs:
         $qt = "${{ inputs.qt }}"
         New-Item -ItemType Directory -Force C:\qtwe, C:\qtwe\qt | Out-Null
         # The official Qt PySide6's wheels are built from (aqt installs the same binaries the Qt installer does).
-        $arch = (python -m aqt list-qt windows desktop --arch $qt) -split '\s+' | Where-Object { $_ -match '^win64_msvc20\d\d_64$' } | Sort-Object | Select-Object -Last 1
-        if (-not $arch) { throw "No 64-bit MSVC Qt $qt to build against" }
+        # download.qt.io sometimes can't hand aqt a checksum (run 44657659498): its big mirrors carry the same files.
+        $bases = @("https://download.qt.io", "https://qt.mirror.constant.com", "https://mirrors.ocf.berkeley.edu/qt",
+                   "https://ftp.fau.de/qtproject")
+        $arch, $installed = $null, $false
+        foreach ($base in $bases) {
+          for ($try = 1; $try -le 2 -and -not $installed; $try++) {
+            $list = python -m aqt list-qt windows desktop --arch $qt -b $base 2>&1
+            "aqt list ($base): $list"
+            $arch = ("$list" -split '\s+') | Where-Object { $_ -match '^win64_msvc20\d\d_64$' } | Sort-Object | Select-Object -Last 1
+            if (-not $arch) { Start-Sleep 20; continue }
+            python -m aqt install-qt windows desktop $qt $arch --outputdir C:\qtwe\qt -b $base -m qtwebchannel qtpositioning qtwebsockets
+            if ($LASTEXITCODE -eq 0) { $installed = $true } else { Start-Sleep 20 }
+          }
+          if ($installed) { break }
+        }
+        if (-not $installed) {
+          (Invoke-WebRequest "https://download.qt.io/online/qtsdkrepository/windows_x86/desktop/").Links.href | Select-String "qt6" | Write-Host
+          throw "Couldn't install Qt $qt (64-bit MSVC) with aqt from any mirror"
+        }
         "Qt $qt $arch"
-        python -m aqt install-qt windows desktop $qt $arch --outputdir C:\qtwe\qt -m qtwebchannel qtpositioning qtwebsockets
-        if ($LASTEXITCODE -ne 0) { throw "aqt couldn't install Qt $qt" }
         $qtdir = (Get-ChildItem C:\qtwe\qt\$qt -Directory | Select-Object -First 1).FullName
         "QTDIR=$qtdir" | Out-File C:\qtwe\qtdir.txt
         # Qt WebEngine's source release, checked against Qt's own list of checksums.
@@ -71,7 +86,7 @@ runs:
         $got = (Get-FileHash C:\qtwe\$name -Algorithm MD5).Hash.ToLower()
         if (-not $want -or $want -ne $got) { throw "$name doesn't match Qt's checksum ($got vs $want)" }
         "source sha256: $((Get-FileHash C:\qtwe\$name -Algorithm SHA256).Hash.ToLower())"
-        tar -xf C:\qtwe\$name -C C:\qtwe
+        C:\Windows\System32\tar.exe -xf C:\qtwe\$name -C C:\qtwe
         if ($LASTEXITCODE -ne 0) { throw "couldn't unpack $name" }
         Rename-Item "C:\qtwe\qtwebengine-everywhere-src-$qt" C:\qtwe\s
         Remove-Item C:\qtwe\$name
