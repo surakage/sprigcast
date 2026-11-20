@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
 from sprigcast.app import theme
 from sprigcast.app.live_stage import Switch
 from sprigcast.app.segmented import Segmented
-from sprigcast.audio.mixer import is_monitor_only, source_tracks
+from sprigcast.audio.mixer import is_monitor_only, is_music, source_tracks
 from sprigcast.core.scene import AUDIO_DEVICE_KINDS, AUDIO_TRACKS, TRACK_NAMES, SceneCollection, SourceConfig
 from sprigcast.sources.audio import device_label as nice_device_name
 from sprigcast.sources.audio import is_mixer_app_device
@@ -119,6 +119,10 @@ def page_style() -> str:
         f" min-width: 22px; max-width: 22px; min-height: 22px; max-height: 22px; padding: 0; font-weight: 600; }}"
         f"QPushButton#trackPill:checked {{ background: {t.SELECT_BG}; color: {t.SELECT_TEXT}; }}"
         f"QPushButton#trackPill:disabled {{ color: {t.EDGE_STRONG}; }}"
+        f"QPushButton#mixPill {{ background: {t.RAISED}; color: {t.LABEL}; border: none; border-radius: 11px;"
+        f" min-height: 22px; max-height: 22px; padding: 0px 9px; font-weight: 600; }}"
+        f"QPushButton#mixPill:checked {{ background: {t.SELECT_BG}; color: {t.SELECT_TEXT}; }}"
+        f"QPushButton#mixPill:disabled {{ color: {t.EDGE_STRONG}; }}"
         f"QSlider#balance::sub-page:horizontal {{ background: {t.EDGE_STRONG}; }}"
         f"QSpinBox#audioDelay {{ background: transparent; border: 1px solid transparent; padding: 4px 0px;"
         f" min-height: 18px; }}"
@@ -677,10 +681,10 @@ class AudioPage(QWidget):
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(6)
         tracks = len(AUDIO_TRACKS)
-        for col, text in enumerate(("Sound", "Volume", "Balance", "Mono", "Delay", "Hear it", "Tracks")):
+        for col, text in enumerate(("Sound", "Volume", "Balance", "Mono", "Delay", "Hear it", "Goes to", "Mute")):
             grid.addWidget(_head(text), 0, col)
         for row in range(1, len(sounds) + 1):
-            grid.addWidget(_line(), 2 * row - 1, 0, 1, 7)
+            grid.addWidget(_line(), 2 * row - 1, 0, 1, 8)
         self._rows_waiting = [(grid, row, source, tracks) for row, source in enumerate(sounds, 1)]
         for _ in range(min(self.ROWS_NOW, len(self._rows_waiting))):
             self._sound_row(*self._rows_waiting.pop(0))
@@ -772,6 +776,18 @@ class AudioPage(QWidget):
         names = self._track_names(tracks)
         pills = QHBoxLayout()
         pills.setSpacing(4)
+        # The stream and clips are their own mixes, not recording tracks: each gets its own pill, so a sound
+        # taken off every track can leave the stream too (PC 2026-11-20: Desktop stayed on stream and clips).
+        mixes = {}
+        for key, text, tip in (("stream", "Stream", "the stream"), ("clips", "Clips", "saved clips")):
+            pill = QPushButton(text)
+            pill.setObjectName("mixPill")
+            pill.setCheckable(True)
+            pill.setAutoDefault(False)
+            pill.setChecked(key in have)
+            pill.setToolTip(f"{source.name} on {tip}")
+            pills.addWidget(pill)
+            mixes[key] = pill
         for n in range(1, tracks + 1):
             tick = QPushButton(str(n))
             tick.setObjectName("trackPill")
@@ -782,9 +798,19 @@ class AudioPage(QWidget):
             pills.addWidget(tick)
             ticks.append(tick)
         grid.addLayout(pills, 2 * row, 6)
+        mute = QCheckBox()
+        mute.setChecked(bool(st.get("muted", False)))
+        mute.setToolTip(f"Mute {source.name}")
+        grid.addWidget(mute, 2 * row, 7, alignment=_CENTRE)
         self.track_ticks[source.id] = ticks
         self.sound_rows[source.id] = {"volume": volume, "mono": mono, "balance": balance, "sync": sync,
-                                      "hear": hear}
+                                      "hear": hear, "mute": mute, **mixes,
+                                      "vod": bool(st.get("vod", not is_music(source)))}
+        for pill in mixes.values():
+            pill.setEnabled(current != "only")
+        if len(ticks) > 1:
+            ticks[1].toggled.connect(lambda on, sid=source.id, t=ticks[1]: t.isEnabled() and
+                                     self.sound_rows[sid].__setitem__("vod", on))
         ticks[0].toggled.connect(lambda _on, sid=source.id: self._row_ticks(sid))
         hear.currentIndexChanged.connect(lambda _i, sid=source.id: self._row_ticks(sid))
         only_me = current == "only"  # as _row_ticks would find it, without asking Qt back
@@ -792,6 +818,8 @@ class AudioPage(QWidget):
         for n, tick in enumerate(ticks, 1):
             if only_me or (n == 2 and not first):
                 tick.setEnabled(False)
+            if n == 2 and not first:
+                tick.setChecked(False)  # VOD-safe is part of track 1: never shown on while it can't be
 
     def _track_names(self, tracks: int) -> list[str]:
         """The tracks' names, worked out once a build of the page (each row's ticks asked again)."""
@@ -804,9 +832,14 @@ class AudioPage(QWidget):
     def _row_ticks(self, source_id: str) -> None:
         """Just me: on no track. VOD-safe is a part of track 1, so it needs track 1."""
         ticks = self.track_ticks[source_id]
-        only_me = self.sound_rows[source_id]["hear"].currentData() == "only"
+        row = self.sound_rows[source_id]
+        only_me = row["hear"].currentData() == "only"
         for n, tick in enumerate(ticks, 1):
             tick.setEnabled(not only_me and (n != 2 or ticks[0].isChecked()))
+        if len(ticks) > 1:  # VOD-safe shows what it will be: off without track 1, as it was with it
+            ticks[1].setChecked(ticks[0].isChecked() and row["vod"])
+        for key in ("stream", "clips"):
+            row[key].setEnabled(not only_me)
 
     # Saving ------------------------------------------------------------------------------
 
@@ -848,12 +881,21 @@ class AudioPage(QWidget):
             if row is not None:
                 wanted = {"volume_db": round(row["volume"].value(), 1), "mono": row["mono"].isChecked(),
                           "balance": row["balance"].value() / 100, "delay_ms": row["sync"].value(),
-                          "monitor": row["hear"].currentData()}
-                defaults = {"volume_db": 0.0, "mono": False, "balance": 0.0, "delay_ms": 0, "monitor": False}
+                          "monitor": row["hear"].currentData(), "muted": row["mute"].isChecked()}
+                defaults = {"volume_db": 0.0, "mono": False, "balance": 0.0, "delay_ms": 0, "monitor": False,
+                            "muted": False}
                 changed = {k: v for k, v in wanted.items() if source.settings.get(k, defaults[k]) != v}
                 if changed:
                     source.settings = {**source.settings, **changed}
             ticks = self.track_ticks.get(source.id)
             if ticks is not None and not is_monitor_only(source):
                 for n, tick in enumerate(ticks, 1):
-                    put_on_track(source, n, tick.isChecked())
+                    if tick.isEnabled():  # (VOD-safe without track 1 keeps its own setting for when it's back)
+                        put_on_track(source, n, tick.isChecked())
+                if row is not None:
+                    for key in ("stream", "clips"):
+                        have = source_tracks(source)
+                        if (key in have) != row[key].isChecked():
+                            main = [t for t in have if t in ("stream", "recording", "voice", "clips")]
+                            source.settings = {**source.settings, "tracks": [t for t in main if t != key]
+                                               + ([key] if row[key].isChecked() else [])}
