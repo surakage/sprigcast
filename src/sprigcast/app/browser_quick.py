@@ -40,6 +40,7 @@ Item {
     id: root
     signal loaded(bool ok)
     signal crashed(int status, int code)
+    signal mediaNote(string message)
     property var scripts: []
     // Set from Python through these: Python can't hold the WebEngineView itself (PySide6 has no
     // converter for QQuickWebEngineView*: the PC log said so and every page fell back to memory, 2026-11-18).
@@ -78,6 +79,9 @@ Item {
             else if (info.status === WebEngineView.LoadFailedStatus) root.loaded(false)
         }
         onRenderProcessTerminated: function(status, code) { root.crashed(status, code) }
+        onJavaScriptConsoleMessage: function(level, message, line, source) {
+            if (message.startsWith("sprigcast:media ")) root.mediaNote(message)
+        }
     }
 }
 """
@@ -156,6 +160,8 @@ class QuickPage:
         self.root.setProperty("profile", profile)
         self.root.loaded.connect(self._loaded)
         self.root.crashed.connect(self._crashed)
+        self._media_noted: set[str] = set()
+        self.root.mediaNote.connect(self._media_note)
         self.control.sceneChanged.connect(self._changed)
         self.control.renderRequested.connect(self._changed)
         self.timer = QTimer()
@@ -178,6 +184,9 @@ class QuickPage:
         if any(old.get(k) != settings.get(k) for k in RELOAD_KEYS):
             self._set_up_sound()
             self._scripts()
+            from sprigcast.app import browser_host
+
+            browser_host.forget_notes(self)
             url = browser.page_url(settings)
             self.root.setProperty("url", QUrl(url) if url else QUrl("about:blank"))
         self._mute()
@@ -319,6 +328,7 @@ class QuickPage:
         from sprigcast.app import browser_host
 
         wanted = [("sprigcast-obs", browser_host.shim(), "DocumentCreation"),
+                  ("sprigcast-media", browser_host.MEDIA_JS, "DocumentCreation"),
                   ("sprigcast-css", browser_host.css_script(str(self.settings.get("css", "") or "")), "DocumentReady")]
         if self.sound is not None:
             from sprigcast.app.browser_audio import CAPTURE_JS, qwebchannel_js
@@ -326,7 +336,8 @@ class QuickPage:
             wanted[1:1] = [("sprigcast-channel", qwebchannel_js(), "DocumentCreation"),
                            ("sprigcast-sound", CAPTURE_JS, "DocumentCreation")]
         self.root.setProperty("scripts", [
-            {"name": name, "sourceCode": code, "injectionPoint": INJECT[point], "worldId": 0, "runsOnSubFrames": False}
+            {"name": name, "sourceCode": code, "injectionPoint": INJECT[point], "worldId": 0,
+             "runsOnSubFrames": name == "sprigcast-media"}
             for name, code, point in wanted])
 
     def _call(self, name: str, *args) -> None:
@@ -346,6 +357,13 @@ class QuickPage:
         if not ok:
             log.info("browser source %s: page didn't load", self.id)
 
+    def _media_note(self, message: str) -> None:
+        from sprigcast.app import browser_host
+
+        note = browser_host.media_note(message)
+        if note is not None:
+            browser_host.page_noted(self, note)
+
     def _crashed(self, status, code) -> None:
         log.warning("browser source %s: page stopped (%s, %s), loading it again", self.id, status, code)
         QTimer.singleShot(2000, lambda: self._call("reloadPage"))
@@ -357,6 +375,9 @@ class QuickPage:
         self._call("run", f"window.__sprigcastSet && window.__sprigcastSet({json.dumps(state)})")
 
     def reload(self) -> None:
+        from sprigcast.app import browser_host
+
+        browser_host.forget_notes(self)
         self._call("reloadPage")
 
     def want_memory(self) -> None:

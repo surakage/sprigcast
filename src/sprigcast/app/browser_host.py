@@ -78,6 +78,61 @@ SHIM = """
 """
 
 
+# Tells SprigCast (once per page and kind) when a <video>/<audio> can't play its file, so the source's status
+# says so instead of the page showing nothing. Runs in every frame (a clip player may sit in an iframe).
+# Chromium in the pip PySide6 wheels has no H.264/AAC: an MP4 clip is blamed on that only while this engine
+# can't play H.264, so a page engine with the codecs never shows it.
+MEDIA_JS = """
+(() => {
+  if (window.__sprigcastMediaWatch) return;
+  window.__sprigcastMediaWatch = true;
+  const told = new Set();
+  const tell = (kind, src) => {
+    if (told.has(kind)) return;
+    told.add(kind);
+    console.info("sprigcast:media " + kind + " " + String(src || "").slice(0, 300));
+  };
+  let h264 = null;
+  const noH264 = () => {
+    if (h264 === null) h264 = document.createElement("video").canPlayType('video/mp4; codecs="avc1.42E01E"') !== "";
+    return !h264;
+  };
+  const looksH264 = (text) => /avc|h264|mp4a|hvc1|hev1|\\.(mp4|m4v|mov)(\\?|#|$)|video\\/mp4|mpegurl|\\.m3u8/i.test(text || "");
+  const blame = (src, type) => (noH264() && looksH264(type + " " + src)) ? "h264" : "format";
+  window.addEventListener("error", (e) => {
+    const el = e.target;
+    if (el instanceof HTMLSourceElement) {
+      const media = el.parentElement;
+      if (!(media instanceof HTMLMediaElement)) return;
+      if ((el.type && media.canPlayType(el.type) === "") || blame(el.src, el.type) === "h264") tell(blame(el.src, el.type), el.src);
+    } else if (el instanceof HTMLMediaElement && el.error && el.error.code === 4) {
+      tell(blame(el.currentSrc || el.src, ""), el.currentSrc || el.src);
+    }
+  }, true);
+  const MS = window.MediaSource;
+  if (MS && MS.prototype.addSourceBuffer) {
+    const add = MS.prototype.addSourceBuffer;
+    MS.prototype.addSourceBuffer = function (type) {
+      try { return add.call(this, type); }
+      catch (err) { if (err && err.name === "NotSupportedError") tell(blame("", type), type); throw err; }
+    };
+  }
+})();
+"""
+
+MEDIA_PREFIX = "sprigcast:media "
+MEDIA_NOTES = {"h264": "Video can't play: page uses H.264 (MP4)", "format": "Video can't play: format not supported"}
+
+
+def media_note(message: str) -> tuple[str, str] | None:
+    """(status, file) for a console line from MEDIA_JS, or None for any other console line."""
+    if not message.startswith(MEDIA_PREFIX):
+        return None
+    kind, _, src = message[len(MEDIA_PREFIX):].partition(" ")
+    note = MEDIA_NOTES.get(kind)
+    return (note, src) if note else None
+
+
 RENDERER_LIMIT = 2  # Chromium page processes for every browser source and web dock together
 
 
@@ -146,6 +201,43 @@ def _turn_on_features(settings) -> None:
         settings.setAttribute(attr, on)
 
 
+_ConsolePage = None
+
+
+def _console_page_class():
+    """QWebEnginePage that hands each console line to its `console` callable (MEDIA_JS speaks through it)."""
+    global _ConsolePage
+    if _ConsolePage is None:
+        from PySide6.QtWebEngineCore import QWebEnginePage
+
+        class ConsolePage(QWebEnginePage):
+            console = None
+
+            def javaScriptConsoleMessage(self, level, message, line, source):  # Qt's name
+                if self.console is not None and message.startswith(MEDIA_PREFIX):
+                    self.console(message)
+
+        _ConsolePage = ConsolePage
+    return _ConsolePage
+
+
+def page_noted(page, note: tuple[str, str]) -> None:
+    """A page (widget or card) said its video can't play: logged once per page and kind, shown in its status."""
+    text, src = note
+    if text in page._media_noted:
+        return
+    page._media_noted.add(text)
+    log.warning("browser source %s: %s (%s)", page.id, text.lower(), src or "no file named")
+    page.host.set_note(page.id, text)
+
+
+def forget_notes(page) -> None:
+    """The page loads again: what it said before no longer holds."""
+    if page._media_noted:
+        page._media_noted.clear()
+        page.host.set_note(page.id, "")
+
+
 class _Painted(QObject):
     """Notices when Chromium has drawn a new picture into the view."""
 
@@ -161,7 +253,7 @@ class _Painted(QObject):
 
 class _Page:
     def __init__(self, host: "BrowserHost", source_id: str, settings: dict[str, Any]):
-        from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineScript
+        from PySide6.QtWebEngineCore import QWebEngineScript
         from PySide6.QtWebEngineWidgets import QWebEngineView
 
         self.host, self.id = host, source_id
@@ -174,7 +266,9 @@ class _Page:
         self.view.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
         self.view.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.view.setStyleSheet("background: transparent")
-        self.page = QWebEnginePage(shared_profile(), self.view)
+        self.page = _console_page_class()(shared_profile(), self.view)
+        self.page.console = self._console
+        self._media_noted: set[str] = set()
         self.page.setBackgroundColor(Qt.GlobalColor.transparent)
         if hasattr(self.page, "permissionRequested"):  # Qt 6.8+: camera, mic, notifications... all no
             self.page.permissionRequested.connect(lambda permission: permission.deny())
@@ -205,6 +299,7 @@ class _Page:
         if any(old.get(k) != settings.get(k) for k in RELOAD_KEYS):
             self._set_up_sound()
             self._scripts()
+            forget_notes(self)
             url = browser.page_url(settings)
             self.page.setUrl(QUrl(url) if url else QUrl("about:blank"))
         self._mute()
@@ -239,6 +334,7 @@ class _Page:
         scripts.clear()
         wanted = [
             ("sprigcast-obs", shim(), S.InjectionPoint.DocumentCreation),
+            ("sprigcast-media", MEDIA_JS, S.InjectionPoint.DocumentCreation),
             ("sprigcast-css", css_script(str(self.settings.get("css", "") or "")), S.InjectionPoint.DocumentReady),
         ]
         if self.sound is not None:
@@ -252,10 +348,15 @@ class _Page:
             script.setSourceCode(source)
             script.setInjectionPoint(point)
             script.setWorldId(S.ScriptWorldId.MainWorld)
-            script.setRunsOnSubFrames(False)
+            script.setRunsOnSubFrames(name == "sprigcast-media")
             scripts.insert(script)
 
     # Events ----------------------------------------------------------------------
+
+    def _console(self, message: str) -> None:
+        note = media_note(message)
+        if note is not None:
+            page_noted(self, note)
 
     def _deny(self, origin, feature) -> None:
         from PySide6.QtWebEngineCore import QWebEnginePage
@@ -311,6 +412,7 @@ class _Page:
         self.host.store(self.id, self.grab())
 
     def reload(self) -> None:
+        forget_notes(self)
         self.page.triggerAction(self.page.WebAction.ReloadAndBypassCache)
 
     def grab(self) -> np.ndarray:
@@ -393,6 +495,7 @@ class BrowserHost(QObject):
         self.pages: dict[str, _Page] = {}
         self._frames: dict[str, np.ndarray] = {}
         self._sounds: dict[str, Any] = {}  # source id -> PageSound, read by the audio thread
+        self._notes: dict[str, str] = {}  # source id -> what its page said is wrong (a video that can't play)
         self._lock = threading.Lock()
         self._request.connect(self._handle, Qt.ConnectionType.QueuedConnection)
         self._shut = False
@@ -417,6 +520,7 @@ class BrowserHost(QObject):
         self._request.emit("close", source_id, None)
         with self._lock:
             self._frames.pop(source_id, None)
+            self._notes.pop(source_id, None)
 
     def pause(self, source_id: str, paused: bool) -> None:
         self._request.emit("pause", source_id, paused)
@@ -435,6 +539,17 @@ class BrowserHost(QObject):
     def sound_note(self, source_id: str) -> str:
         sound = self._sounds.get(source_id)
         return "plays on desktop audio" if sound is not None and sound.on_desktop_reason else ""
+
+    def page_note(self, source_id: str) -> str:
+        """What the page said is wrong, for the source's status ("" when nothing)."""
+        return self._notes.get(source_id, "")
+
+    def set_note(self, source_id: str, text: str) -> None:
+        with self._lock:
+            if text:
+                self._notes[source_id] = text
+            else:
+                self._notes.pop(source_id, None)
 
     def set_sound(self, source_id: str, sound) -> None:
         with self._lock:

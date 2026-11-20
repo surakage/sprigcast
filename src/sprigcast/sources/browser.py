@@ -121,6 +121,11 @@ def page_name(settings: dict[str, Any]) -> str:
     return (word[:1].upper() + word[1:])[:24] if word else "Browser"
 
 
+# Statuses that come from the page itself (they change back to "ok" on their own).
+_PAGE_NOTES = ("Sound plays on desktop audio", "Video can't play: page uses H.264 (MP4)",
+               "Video can't play: format not supported")
+
+
 @register("browser")
 class BrowserSource(Source):
     label = "Browser"
@@ -228,9 +233,12 @@ class BrowserSource(Source):
             self.first_picture = True
 
     def _note_sound(self) -> None:
-        note = getattr(_host, "sound_note", lambda _id: "")(self.id) if _host is not None else ""
-        if self.status in ("ok", "Sound plays on desktop audio"):
-            self.status = "Sound plays on desktop audio" if note else "ok"
+        """Status from what the page and its sound say: a video that can't play first, then desktop sound."""
+        if _host is None or not (self.status == "ok" or self.status in _PAGE_NOTES):
+            return
+        page = getattr(_host, "page_note", lambda _id: "")(self.id)
+        sound = getattr(_host, "sound_note", lambda _id: "")(self.id)
+        self.status = page or ("Sound plays on desktop audio" if sound else "ok")
 
     def video_frame(self) -> np.ndarray | None:
         self._note_sound()

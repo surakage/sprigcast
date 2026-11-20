@@ -14,7 +14,7 @@ doesn't start Chromium again). If it stops, it starts again and opens the same p
 Messages: SprigCast -> helper are JSON lines on its stdin ({"op": "open", "id": ..., "settings": ...}, close,
 pause, reload, state, interact, memory (SprigCast reads a page's pictures itself for now), quit). Helper -> SprigCast are length-prefixed JSON on its stdout, sometimes
 followed by bytes: "frames" (a page's shared memory block), "sound" (float32 stereo, 48 kHz), "desktop" (the
-page's sound plays on the desktop instead, and why), "log".
+page's sound plays on the desktop instead, and why), "note" (the page said its video can't play), "log".
 """
 
 from __future__ import annotations
@@ -185,6 +185,7 @@ class RemoteHost:
         self._paused: dict[str, bool] = {}
         self._frames: dict[str, FrameSlot] = {}
         self._sounds: dict[str, Any] = {}  # source id -> PageSound (fed from the pipe, read by the mixer)
+        self._notes: dict[str, str] = {}  # source id -> what its page said is wrong (a video that can't play)
         self._lock = threading.RLock()
         self._send_lock = threading.Lock()
         self.proc: subprocess.Popen | None = None
@@ -307,6 +308,12 @@ class RemoteHost:
             sound = self._sounds.get(source_id)
             if sound is not None:
                 sound.on_desktop_reason = str(header.get("reason", ""))
+        elif kind == "note":
+            with self._lock:
+                if header.get("text"):
+                    self._notes[source_id] = str(header["text"])
+                else:
+                    self._notes.pop(source_id, None)
         elif kind == "log":
             log.log(int(header.get("level", logging.INFO)), "browser helper: %s", header.get("text", ""))
 
@@ -404,6 +411,7 @@ class RemoteHost:
             self._wanted.pop(source_id, None)
             self._paused.pop(source_id, None)
             self._sounds.pop(source_id, None)
+            self._notes.pop(source_id, None)
             self._asked.pop(source_id, None)
             slot = self._frames.pop(source_id, None)
         if slot is not None:
@@ -456,6 +464,10 @@ class RemoteHost:
     def sound_note(self, source_id: str) -> str:
         sound = self._sounds.get(source_id)
         return "plays on desktop audio" if sound is not None and sound.on_desktop_reason else ""
+
+    def page_note(self, source_id: str) -> str:
+        """What the page said is wrong (a video that can't play), for the source's status."""
+        return self._notes.get(source_id, "")
 
     def reload(self, source_id: str) -> None:
         self._send({"op": "reload", "id": source_id})
@@ -653,6 +665,13 @@ def serve() -> None:
             sound.on_desktop = desktop
 
     host.set_sound = set_sound
+    real_set_note = host.set_note
+
+    def set_note(source_id: str, text: str) -> None:
+        real_set_note(source_id, text)
+        emit({"kind": "note", "id": source_id, "text": text})
+
+    host.set_note = set_note
 
     def send_sound() -> None:
         for source_id, sound in list(host._sounds.items()):
