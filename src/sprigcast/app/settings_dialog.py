@@ -215,6 +215,10 @@ class SettingsDialog(CardDialog):
             tip.setStyleSheet(f"color: {theme.MUTED}")
             form.addRow("", tip)
         self.ok = self.add_buttons("Save")
+        text = self.fields.get("text")
+        if isinstance(text, (QLineEdit, QPlainTextEdit)):  # a text source: type straight away
+            text.selectAll()
+            text.setFocus()
 
     def _check_look(self) -> None:
         """Name the custom look lines that are skipped (they fall back to the plugin's own look)."""

@@ -220,3 +220,62 @@ def test_a_click_on_a_row_that_just_went_does_nothing(tmp_path, monkeypatch):
         w.scene_tree._toggle_folder(None, 0)
     finally:
         w.close()
+
+
+def test_a_press_waits_for_the_release_so_a_drag_never_opens_the_row(tmp_path, monkeypatch):
+    """Pressing a sprig to drag it onto the canvas opened it first, so the drop went into the sprig itself
+    ("'T1' already contains this scene", PC 2026-11-20). A row now opens on release; a drag leaves it shut."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.library import ROLE_ID
+
+    _col, w = _window(tmp_path, monkeypatch, "LibraryPressWaits")
+    try:
+        w.show()
+        w._pick_bloom("h2")
+        tree = w.scene_tree
+
+        def row(scene_id):
+            stack = [tree.invisibleRootItem()]
+            while stack:
+                item = stack.pop()
+                if item.data(0, ROLE_ID) == scene_id:
+                    return tree.visualItemRect(item).center()
+                stack += [item.child(i) for i in range(item.childCount())]
+            raise AssertionError(scene_id)
+
+        QTest.mousePress(tree.viewport(), Qt.MouseButton.LeftButton, pos=row("p1"))
+        assert w.selected_scene_id == "h2"  # held: could still be a drag
+        QTest.mouseRelease(tree.viewport(), Qt.MouseButton.LeftButton, pos=row("p1"))
+        assert w.selected_scene_id == "p1"  # a click: open it
+
+        w._pick_bloom("h2")
+        QTest.mousePress(tree.viewport(), Qt.MouseButton.LeftButton, pos=row("p2"))
+        assert w.selected_scene_id == "h2"
+        tree.holding = False  # what startDrag does once the drop is over
+        tree.drag_ended.emit()
+        QApplication.processEvents()
+        assert w.selected_scene_id == "h2"
+        assert [i.data(0, ROLE_ID) for i in tree.selectedItems()] == ["h2"]
+    finally:
+        w.close()
+
+
+def test_new_text_starts_with_the_text_box_ready_to_type():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    from sprigcast.app.main_window import source_class
+    from sprigcast.app.settings_dialog import SettingsDialog
+
+    cls = source_class("text")
+    defaults = dict(cls.defaults)
+    dialog = SettingsDialog("New Text", defaults, defaults, None, cls=cls)
+    dialog.show()
+    app.processEvents()
+    assert dialog.focusWidget() is dialog.fields["text"]
+    dialog.close()

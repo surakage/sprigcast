@@ -204,7 +204,7 @@ def blank_garden(like: SceneCollection) -> SceneCollection:
 
 
 # Copies SprigCast keeps beside a garden or path: an unreadable one set aside, the one from before sprigs.
-_SPARE_FILES = (".tmp", ".broken.json", ".before-sprigs.json")
+_SPARE_FILES = (".tmp", ".broken.json", ".before-sprigs.json", ".bak.json")  # .bak: backups.last_good
 
 
 class Shelf:
@@ -227,6 +227,13 @@ class Shelf:
     def _repair(self) -> None:
         """First run with gardens, or a hand-edited index: make sure there's one of each in use."""
         changed = False
+        for kind in ("garden", "path"):  # a backup listed as one of them by an older version ("Gaming 2.bak")
+            entries = self.index.gardens if kind == "garden" else self.index.paths
+            spares = [e for e in entries if e.file.endswith(_SPARE_FILES)
+                      and e.id != (self.index.garden if kind == "garden" else self.index.path)]
+            for entry in spares:
+                entries.remove(entry)
+                changed = True
         for kind in ("garden", "path"):  # files the index doesn't list (it was lost or hand-edited) come back
             entries = self.index.gardens if kind == "garden" else self.index.paths
             known = {e.file for e in entries}
@@ -423,9 +430,25 @@ class Shelf:
             while target.exists():
                 target, n = bin_ / f"{kind}-{_slug(entry.name)}-{n}.json", n + 1
             shutil.move(str(file), str(target))
+        self._tidy_after(file)
         entries.remove(entry)
         self.save()
         return entry
+
+    @staticmethod
+    def _tidy_after(file: Path) -> None:
+        """A removed garden's leftovers beside it: its last-good copy, its dated copies and its bloom pictures
+        (the garden itself is kept in removed/). Never raises: leftovers are only clutter."""
+        from sprigcast.core import backups
+
+        for spare in (backups.last_good(file), *backups.copies(file)):
+            try:
+                spare.unlink()
+            except OSError:
+                pass
+        thumbs = file.parent / "thumbs" / file.stem  # main_window._thumbs_dir for a garden in gardens/
+        if thumbs.is_dir():
+            shutil.rmtree(thumbs, ignore_errors=True)
 
     def export(self, kind: str, wanted: str, target: Path, collection: SceneCollection) -> None:
         """Write a garden or path to a file of your choosing (the one on screen as it is now)."""
