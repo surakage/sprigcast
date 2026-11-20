@@ -196,12 +196,12 @@ _video("lut", "Color look (LUT)", [
 ])
 _video("shape", "Shape", [
     Field("shape", "Shape", "rounded", choices=SHAPES),
-    Field("mask_file", "Shape image", "", file_types="Images (*.png *.webp *.jpg *.jpeg)",
+    Field("mask_file", "Mask", "", file_types="Images (*.png *.webp *.jpg *.jpeg)",
           show_when=("shape", ("image",))),
-    Field("roundness", "Corner roundness", 12, 0, 50, 1, "%", show_when=("shape", ("rounded",))),
-    Field("stretch", "Stretch to fill", False,
+    Field("roundness", "Roundness", 12, 0, 50, 1, "%", show_when=("shape", ("rounded",))),
+    Field("stretch", "Stretch", False,
           show_when=("shape", tuple(name for name, _label in SHAPES if name not in ("rounded", "image")))),
-    Field("feather", "Soft edge", 0.0, 0.0, 40.0, 0.5, " px"),
+    Field("feather", "Feather", 0.0, 0.0, 40.0, 0.5, " px"),
     Field("border", "Border", 0, 0, 40, 1, " px"),
     Field("border_color", "Border color", "#3ecf7f"),
 ])
