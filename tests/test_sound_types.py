@@ -1,10 +1,10 @@
-"""Sound types: five to start, and you can add, rename, recolor and remove them and put sounds in them."""
+"""Sound types: seven to start, A to Z, and you can add, rename, recolor and remove them and put sounds in them."""
 
 import os
 
 import pytest
 
-from sprigcast.core.scene import SOUND_TYPES, AudioSettings
+from sprigcast.core.scene import SOUND_TYPES, AudioSettings, SceneCollection
 from tests.test_sound_per_bloom import _collection
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -40,8 +40,27 @@ def window(tmp_path, monkeypatch):
     QSettings().clear()
 
 
-def test_a_garden_starts_with_five_types():
-    assert [t["name"] for t in AudioSettings().sound_types] == ["Voice", "Game", "Alerts", "Music", "Other"]
+def test_a_garden_starts_with_seven_types_a_to_z():
+    assert [t["name"] for t in AudioSettings().sound_types] == ["Browser", "Game", "Music", "Other", "SFX", "TTS",
+                                                                 "Voice"]
+
+
+def test_old_alerts_type_moves_to_the_new_types():
+    old = [{"name": "Voice", "color": "green"}, {"name": "Game", "color": "blue"},
+           {"name": "Alerts", "color": "yellow"}, {"name": "Music", "color": "violet"},
+           {"name": "Other", "color": "gray"}, {"name": "Friends", "color": "teal"}]
+    data = _collection().model_dump(mode="json")
+    data["audio"]["sound_types"] = old
+    data["sources"] += [
+        {"id": "pop", "kind": "app_audio", "name": "Sound alerts", "settings": {"group": "Alerts"}},
+        {"id": "tts", "kind": "app_audio", "name": "TTS", "settings": {"group": "Alerts"}},
+        {"id": "page", "kind": "browser", "name": "Overlay", "settings": {"group": "Alerts"}},
+        {"id": "pal", "kind": "app_audio", "name": "Pal", "settings": {"group": "Friends"}}]
+    col = SceneCollection.model_validate(data)
+    assert [t["name"] for t in col.audio.sound_types] == ["Browser", "Game", "Music", "Other", "SFX", "TTS",
+                                                          "Voice", "Friends"]  # yours stay
+    assert {s: col.source(s).settings["group"] for s in ("pop", "tts", "page", "pal")} == {
+        "pop": "SFX", "tts": "TTS", "page": "Browser", "pal": "Friends"}
 
 
 def test_use_types_and_a_missing_type():
@@ -73,7 +92,7 @@ def test_new_type_takes_the_ticked_sounds():
     assert d.ok.isEnabled()
     d.ticks["desk"].setChecked(True)
     types, moves = d.result_types()
-    assert types[-1] == {"name": "Background", "color": "teal"}  # the first color no type has
+    assert types[-1] == {"name": "Background", "color": "brown"}  # the one color no type has yet
     assert moves == {"desk": "Background"}
 
 
@@ -83,7 +102,7 @@ def test_edit_renames_and_unticked_sounds_leave():
     d.name.setText("Games")
     d.ticks["desk"].setChecked(False)
     types, moves = d.result_types()
-    assert [t["name"] for t in types] == ["Voice", "Games", "Alerts", "Music", "Other"]
+    assert [t["name"] for t in types] == ["Browser", "Games", "Music", "Other", "SFX", "TTS", "Voice"]
     assert moves == {"game": "Games", "desk": "Other"}
 
 
@@ -99,7 +118,8 @@ def test_type_pill_lists_types_and_new_type(window):
     w = window
     strips = w.sound_strips
     texts = [a.text() for a in strips.kind_menu.actions() if not a.isSeparator()]
-    assert texts == ["All types", "Voice (1)", "Game (2)", "Alerts (0)", "Music (0)", "Other (0)", "New type…"]
+    assert texts == ["All types", "Browser (0)", "Game (2)", "Music (0)", "Other (0)", "SFX (0)",
+                     "TTS (0)", "Voice (1)", "New type…"]
     strips.kind_actions["Game"].trigger()
     assert sorted(sid for sid, s in strips.strips.items() if s.isVisibleTo(strips)) == ["desk", "game"]
     assert "Edit Game…" in [a.text() for a in strips.kind_menu.actions()]
@@ -251,10 +271,8 @@ def test_type_colors_are_told_apart():
     assert _closest(theme.type_colors("default").values(), "normal") > 20
     for kind in SEEN:  # the color-blind set, with each kind of color blindness
         assert _closest(theme.type_colors("colorblind").values(), kind) > 14, kind
-    # The five a garden starts with stay further apart (the closest: Okabe-Ito's orange and yellow).
-    starting = [theme.type_colors("colorblind")[t["color"]] for t in SOUND_TYPES]
-    for kind in SEEN:
-        assert _closest(starting, kind) > 16, kind
+    # The seven a garden starts with use seven of the eight colors, each its own.
+    assert len({t["color"] for t in SOUND_TYPES}) == len(SOUND_TYPES) == 7
 
 
 def test_color_swatches_say_their_color():

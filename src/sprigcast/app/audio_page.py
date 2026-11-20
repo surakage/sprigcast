@@ -926,7 +926,7 @@ class AudioPage(QWidget):
         from sprigcast.app.sound_card import auto_group, type_of
 
         st = source.settings
-        return type_of(str(st.get("group") or ("Alerts" if source.kind == "browser"
+        return type_of(str(st.get("group") or ("Browser" if source.kind == "browser"
                                                else auto_group(source.name, source.kind))))
 
     def _sound_filter(self) -> QHBoxLayout:

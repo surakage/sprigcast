@@ -253,7 +253,8 @@ class SoundTypeDialog(CardDialog):
     def result_types(self) -> tuple[list[dict], dict[str, str]]:
         """The new list of types, and {sound id: its new type} for the sounds that move."""
         others = [t for t in self.types if t["name"] != self.editing]
-        fallback = others[-1]["name"] if others else ""
+        names = [t["name"] for t in others]
+        fallback = "Other" if "Other" in names else (names[-1] if names else "")
         moves: dict[str, str] = {}
         if self.removed:
             for sid, _name, kind in self.sounds:

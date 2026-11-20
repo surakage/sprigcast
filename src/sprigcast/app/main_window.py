@@ -3904,7 +3904,7 @@ class MainWindow(QMainWindow):
         monitor = st.get("monitor", False)
         return Sound(
             id=config.id, name=config.name, muted=bool(st.get("muted", False)),
-            group=type_of(str(st.get("group") or ("Alerts" if config.kind == "browser"
+            group=type_of(str(st.get("group") or ("Browser" if config.kind == "browser"
                                                   else auto_group(config.name, config.kind)))),
             pinned=bool(st.get("pinned", False)),
             volume_db=float(st.get("volume_db", 0.0)),

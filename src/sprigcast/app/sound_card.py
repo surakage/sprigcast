@@ -5,7 +5,7 @@
     ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬
       Mic                    −6 dB
       ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬
-    ● Alerts           6     [Mute]
+    ● SFX              6     [Mute]
       ...
       5 quiet ▸
 
@@ -47,9 +47,10 @@ from sprigcast.app.segmented import Segmented
 # Sound types (the Sound card's groups and Build's Type filter). You can add, rename, recolor and remove them;
 # they're kept in the garden (AudioSettings.sound_types). These lists change in place, so every importer sees it.
 TYPE_COLORS = theme.type_colors()  # by key; the color-blind preset has its own set (see theme.TYPE_COLOR_SETS)
-GROUPS: list[str] = ["Voice", "Game", "Alerts", "Music", "Other"]
+GROUPS: list[str] = ["Browser", "Game", "Music", "Other", "SFX", "TTS", "Voice"]  # always A to Z
 GROUP_COLOURS: dict[str, str] = {name: TYPE_COLORS[key] for name, key in
-                                 zip(GROUPS, ("green", "blue", "yellow", "violet", "gray"), strict=True)}
+                                 zip(GROUPS, ("teal", "blue", "violet", "gray", "yellow", "orange", "green"),
+                                     strict=True)}
 
 
 def use_types(types: list[dict] | None) -> bool:
@@ -62,6 +63,7 @@ def use_types(types: list[dict] | None) -> bool:
             colours[name] = TYPE_COLORS.get(str(t.get("color", "")), TYPE_COLORS["gray"])
     if not names:
         return False  # a garden with none keeps what's shown
+    names.sort(key=str.casefold)  # listed A to Z everywhere
     if names == GROUPS and colours == GROUP_COLOURS:
         return False
     GROUPS[:] = names
@@ -71,15 +73,17 @@ def use_types(types: list[dict] | None) -> bool:
 
 
 def type_of(group: str | None) -> str:
-    """A sound's type; one whose type was removed (or never existed) shows under the last one."""
-    return group if group in GROUP_COLOURS else GROUPS[-1]
+    """A sound's type; one whose type was removed (or never existed) shows under Other (or the last one)."""
+    if group in GROUP_COLOURS:
+        return group
+    return "Other" if "Other" in GROUP_COLOURS else GROUPS[-1]
 HEARD_DB = -50.0  # RMS above this counts as playing
 LINGER_S = 4.0  # a sound stays listed this long after it goes quiet
 CHIP_STYLE = theme.button_style(11, "3px 11px", extra="min-height: 16px; font-size: 11px;")
 MUTED_CHIP_STYLE = CHIP_STYLE + f"QPushButton {{ background: {theme.LIVE}; color: #ffffff; border-color: {theme.LIVE_EDGE}; }}"
 _MUSIC = re.compile(r"music|spotify|song|pretzel|playlist|radio", re.IGNORECASE)
-_ALERTS = re.compile(r"alert|tts|speech|ad break|chat|tikfinity|streamer\.?bot|speaker\.?bot|sound ?alert|browser|"
-                     r"donat|sub|follow|bits", re.IGNORECASE)
+_TTS = re.compile(r"tts|text to speech|speech|speaker\.?bot", re.IGNORECASE)
+_SFX = re.compile(r"sfx|alert|ad break|chat|tikfinity|streamer\.?bot|sound ?alert|donat|sub|follow|bits", re.IGNORECASE)
 _GAME = re.compile(r"game|desktop|discord|steam", re.IGNORECASE)
 
 
@@ -90,12 +94,14 @@ def auto_group(name: str, kind: str) -> str:
     if kind == "app_audio":  # named for its type: Music, Voice chat, SFX...
         if re.search(r"voice chat", name, re.IGNORECASE):
             return "Voice"
-        if re.search(r"text to speech|sfx", name, re.IGNORECASE):
-            return "Alerts"
+    if _TTS.search(name):
+        return "TTS"
     if _MUSIC.search(name):
         return "Music"
-    if _ALERTS.search(name):
-        return "Alerts"
+    if kind == "browser" or re.search(r"browser", name, re.IGNORECASE):
+        return "Browser"
+    if _SFX.search(name):
+        return "SFX"
     if _GAME.search(name) or kind == "audio_output":
         return "Game"
     return "Other"
