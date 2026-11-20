@@ -203,6 +203,7 @@ class ThemeTile(QAbstractButton):
         self.colors = colors_for(theme_name, preset)
         self.setCheckable(True)
         self.setAutoExclusive(True)
+        self.setAccessibleName(f"{label} theme")  # each its own: all six were announced as "Theme" (2026-11-20)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMinimumSize(92, 108)
         self.setMaximumSize(150, 108)
