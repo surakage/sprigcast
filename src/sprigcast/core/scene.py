@@ -611,6 +611,25 @@ class SceneCollection(BaseModel):
         """Ids of the sounds that stay quiet in the blooms on air now (picked for other blooms only)."""
         return frozenset(s.id for s in self.sources if s.settings.get("blooms") and not self.sound_plays(s))
 
+    def sounds_off_air(self) -> frozenset[str]:
+        """Ids of sources placed in blooms or sprigs, none of them in a bloom on air now (an on-air bloom's sprigs
+        count, at any depth). A sound placed nowhere (a mic, desktop or app sound) is never one of them."""
+        placed = {item.source for scene in self.scenes for item in scene.items}
+        if not placed:
+            return frozenset()
+        by_id = {scene.id: scene for scene in self.scenes}
+        stack = [by_id[i] for c in self.canvases if c.enabled and (i := self.active_scenes.get(c.id)) in by_id]
+        seen = {scene.id for scene in stack}
+        on_air: set[str] = set()
+        while stack:
+            scene = stack.pop()
+            on_air.update(item.source for item in scene.items)
+            for inner in self.inner_shapes(scene):
+                if inner.id not in seen:
+                    seen.add(inner.id)
+                    stack.append(inner)
+        return frozenset(placed - on_air)
+
     def folders_for(self, canvas_id: str) -> list[SceneFolder]:
         """The bloom folders on a canvas."""
         return [f for f in self.folders if f.canvas == canvas_id and f.holds == "show"]
