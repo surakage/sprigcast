@@ -1,0 +1,133 @@
+name: Page engine with H.264/AAC
+
+# Qt WebEngine (Chromium) for web page sources, with H.264 and AAC: the same version PySide6 ships, built from
+# Qt's source release with FEATURE_webengine_proprietary_codecs=ON (packaging/webengine_codecs.py says why).
+# Run by hand once per PySide6 (Qt) version; takes several stages (each one GitHub job, at most 6 h), then checks
+# an MP4 plays with PySide6 and publishes the zip as a pre-release. Pin it in packaging/webengine_codecs.json.
+on:
+  workflow_dispatch:
+    inputs:
+      qt:
+        description: Qt version (must be the PySide6 version in uv.lock)
+        default: "6.12.0"
+
+permissions:
+  contents: write  # the zip goes on a pre-release (never "latest": the app's updater reads that)
+
+concurrency:
+  group: webengine-codecs
+  cancel-in-progress: false
+
+jobs:
+  stage1:
+    runs-on: windows-latest
+    timeout-minutes: 350
+    outputs: {done: "${{ steps.s.outputs.done }}"}
+    steps:
+      - uses: actions/checkout@v4
+      - id: s
+        uses: ./.github/actions/webengine-stage
+        with: {stage: "1", qt: "${{ inputs.qt }}"}
+  stage2:
+    needs: stage1
+    if: needs.stage1.outputs.done != 'true'
+    runs-on: windows-latest
+    timeout-minutes: 350
+    outputs: {done: "${{ steps.s.outputs.done }}"}
+    steps:
+      - uses: actions/checkout@v4
+      - id: s
+        uses: ./.github/actions/webengine-stage
+        with: {stage: "2", qt: "${{ inputs.qt }}"}
+  stage3:
+    needs: stage2
+    if: needs.stage2.outputs.done != 'true'
+    runs-on: windows-latest
+    timeout-minutes: 350
+    outputs: {done: "${{ steps.s.outputs.done }}"}
+    steps:
+      - uses: actions/checkout@v4
+      - id: s
+        uses: ./.github/actions/webengine-stage
+        with: {stage: "3", qt: "${{ inputs.qt }}"}
+  stage4:
+    needs: stage3
+    if: needs.stage3.outputs.done != 'true'
+    runs-on: windows-latest
+    timeout-minutes: 350
+    outputs: {done: "${{ steps.s.outputs.done }}"}
+    steps:
+      - uses: actions/checkout@v4
+      - id: s
+        uses: ./.github/actions/webengine-stage
+        with: {stage: "4", qt: "${{ inputs.qt }}"}
+  stage5:
+    needs: stage4
+    if: needs.stage4.outputs.done != 'true'
+    runs-on: windows-latest
+    timeout-minutes: 350
+    outputs: {done: "${{ steps.s.outputs.done }}"}
+    steps:
+      - uses: actions/checkout@v4
+      - id: s
+        uses: ./.github/actions/webengine-stage
+        with: {stage: "5", qt: "${{ inputs.qt }}"}
+  stage6:
+    needs: stage5
+    if: needs.stage5.outputs.done != 'true'
+    runs-on: windows-latest
+    timeout-minutes: 350
+    outputs: {done: "${{ steps.s.outputs.done }}"}
+    steps:
+      - uses: actions/checkout@v4
+      - id: s
+        uses: ./.github/actions/webengine-stage
+        with: {stage: "6", qt: "${{ inputs.qt }}"}
+
+  check-and-publish:
+    # Runs after whichever stage finished (a skipped later stage is fine; a failed one stops it).
+    needs: [stage1, stage2, stage3, stage4, stage5, stage6]
+    if: >-
+      always() && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') &&
+      contains(needs.*.outputs.done, 'true')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/download-artifact@v4
+        with: {name: webengine-codecs, path: pack}
+      - name: Lay it over PySide6 and play an MP4
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zip = (Get-ChildItem pack\*.zip | Select-Object -First 1).FullName
+          uv venv --python 3.12 probe
+          uv pip install --python probe "pyside6==${{ inputs.qt }}" "av==19.0.2" numpy
+          $pyside = (& probe\Scripts\python.exe -c "import PySide6, os; print(os.path.dirname(PySide6.__file__))").Trim()
+          "Before (PySide6's own):"
+          & probe\Scripts\python.exe packaging\webengine_probe.py
+          & probe\Scripts\python.exe packaging\webengine_codecs.py overlay $zip $pyside
+          if ($LASTEXITCODE -ne 0) { throw "the zip doesn't fit PySide6 ${{ inputs.qt }}" }
+          & probe\Scripts\python.exe -c "from PySide6 import QtWebEngineCore, QtWebEngineWidgets, QtWebEngineQuick; print('Qt WebEngine modules load')"
+          if ($LASTEXITCODE -ne 0) { throw "PySide6 can't load the new Qt WebEngine" }
+          "After:"
+          & probe\Scripts\python.exe packaging\webengine_probe.py --expect-h264
+          if ($LASTEXITCODE -ne 0) { throw "H.264/AAC still doesn't play" }
+          $sha = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          "$sha  $(Split-Path $zip -Leaf)" | Out-File -Encoding ascii pack\SHA256.txt
+          "ZIP=$zip" >> $env:GITHUB_ENV
+          "SHA=$sha" >> $env:GITHUB_ENV
+      - name: Publish (pre-release, not latest)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "webengine-${{ inputs.qt }}-codecs-r${{ github.run_number }}"
+          $notes = "Qt WebEngine ${{ inputs.qt }} with H.264/AAC for SprigCast's web page sources (built by run ${{ github.run_id }} from qtwebengine-everywhere-src-${{ inputs.qt }}, FEATURE_webengine_proprietary_codecs=ON). Not a SprigCast release. SHA-256: $env:SHA"
+          gh release create $tag $env:ZIP pack\SHA256.txt --prerelease --latest=false --target $env:GITHUB_SHA --title "Page engine ${{ inputs.qt }} with H.264/AAC" --notes $notes
+          if ($LASTEXITCODE -ne 0) { throw "couldn't publish" }
+          $name = Split-Path $env:ZIP -Leaf
+          "Pin in packaging/webengine_codecs.json:" >> $env:GITHUB_STEP_SUMMARY
+          '```json' >> $env:GITHUB_STEP_SUMMARY
+          "{`"qt`": `"${{ inputs.qt }}`", `"url`": `"https://github.com/${{ github.repository }}/releases/download/$tag/$name`", `"sha256`": `"$env:SHA`"}" >> $env:GITHUB_STEP_SUMMARY
+          '```' >> $env:GITHUB_STEP_SUMMARY
