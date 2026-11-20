@@ -121,6 +121,42 @@ def card_layout(window: tuple[int, int]):
     return (win_w + 2 * (PAD + BORDER), win_h + PAD * 2 + BORDER + STRIP), (x, y, win_w, win_h)
 
 
+_PRINT: list[str] = []
+
+
+def print_path() -> str:
+    """"S P R I G C A S T · S N A P" as SVG outlines (assets/snap/print.path: Nunito SemiBold 22 px, its baseline at
+    0, about 286 wide), read once."""
+    if not _PRINT:
+        try:
+            _PRINT.append((_assets_dir() / "print.path").read_text(encoding="ascii").strip())
+        except OSError:
+            log.warning("snap: the polaroid's print is missing")
+            _PRINT.append("")
+    return _PRINT[0]
+
+
+_WARM = threading.Event()
+
+
+def warm_up() -> None:
+    """Load Pillow (which shrinks the screenshot into the polaroid) and Qt's SVG module once, ahead of the first
+    screenshot: on a cold PC loading them took over a second, which the first polaroid waited on. On a worker,
+    and only the imports: Qt's first drawing stays where it was, since two threads creating a PySide enum for the
+    first time at once crashed."""
+    if _WARM.is_set():
+        return
+    _WARM.set()
+
+    def run():
+        import PIL.Image  # noqa: F401
+        import PySide6.QtSvg  # noqa: F401
+
+    from sprigcast.core import workers
+
+    workers.run(run, name="snap-warm")
+
+
 def frame_svg(window: tuple[int, int]) -> bytes:
     """Snap's polaroid as an SVG, made to fit a photo window this size: a warm cream card with leaves on two
     corners and the print along the bottom. The photo shows through the window."""
@@ -133,7 +169,10 @@ def frame_svg(window: tuple[int, int]) -> bytes:
     shadow = f"M{l + 22} {t + 14} H{r - 6} Q{r + 8} {t + 14} {r + 8} {t + 28} V{b} Q{r + 8} {b + 14} {r - 6} {b + 14} " \
              f"H{l + 22} Q{l + 8} {b + 14} {l + 8} {b} V{t + 28} Q{l + 8} {t + 14} {l + 22} {t + 14} Z"
     text_y, mark_x, mark_y = wb + 52, wr - 16, wb + 44
-    words = "S P R I G C A S T   ·   S N A P" if ww >= 420 else ""  # a very narrow card keeps just the mark
+    # The print as outlines (Nunito, made once by tools: see print_path), not text: drawing text makes Qt load
+    # the PC's fonts first, which took over 3 s on a cold Windows PC, so the polaroid came up that much late.
+    words = f'<path transform="translate({x + 4} {text_y})" fill="#a88f63" d="{print_path()}"/>' \
+        if ww >= 420 else ""  # a very narrow card keeps just the mark
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {art_w} {art_h}" width="{art_w}" height="{art_h}">
   <defs>
     <linearGradient id="paper" x1="0" y1="0" x2="0.25" y2="1">
@@ -144,7 +183,7 @@ def frame_svg(window: tuple[int, int]) -> bytes:
   <path fill-rule="evenodd" fill="url(#paper)" d="{card} {hole}"/>
   <path fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="3" d="M{l + 14} {t + 3} H{r - 14}"/>
   <rect x="{x - 2}" y="{y - 2}" width="{ww + 4}" height="{wh + 4}" fill="none" stroke="#b49a68" stroke-width="4"/>
-  <text x="{x + 4}" y="{text_y}" font-family="Segoe UI, Arial, sans-serif" font-size="22" font-weight="600" fill="#a88f63">{words}</text>
+  {words}
   <circle cx="{mark_x}" cy="{mark_y}" r="14" fill="none" stroke="#b49a68" stroke-width="2.5"/>
   <path d="M{mark_x - 8} {mark_y + 7} C{mark_x - 8} {mark_y - 3} {mark_x - 1} {mark_y - 8} {mark_x + 9} {mark_y - 8} C{mark_x + 9} {mark_y + 2} {mark_x + 2} {mark_y + 7} {mark_x - 8} {mark_y + 7} Z" fill="#b49a68"/>
   <ellipse cx="{r - 30}" cy="{t + 4}" rx="58" ry="26" transform="rotate(-35 {r - 30} {t + 4})" fill="#6fa53d"/>
@@ -308,6 +347,7 @@ class SnapSource(Source):
         self._frame = painted.Frame()
         self._still: int | None = None  # the job whose still frame was sent (the polaroid held up)
         self.status = "ok"
+        warm_up()
 
     @property
     def size(self) -> tuple[int, int]:

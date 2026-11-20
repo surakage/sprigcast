@@ -56,7 +56,7 @@ def snap(added, tmp_path):  # noqa: F811
     plugin_hooks.screenshot_taken(NativeApi(host), _shot(tmp_path))
     import time
 
-    deadline = time.monotonic() + 10  # the card is made on a worker: a cold Windows runner's first font load took >3 s
+    deadline = time.monotonic() + 10  # the card is made on a worker (it no longer loads fonts: see the test below)
     while source._job is None or source._job.card is None:
         source.video_frame()
         assert time.monotonic() < deadline
@@ -220,3 +220,17 @@ def test_the_engine_takes_lists_through_the_bridge(snap):
         bridge.close()
     assert not drawn.wanted()
     assert math.isfinite(listed.nbytes)
+
+
+def test_the_polaroid_card_needs_no_fonts(added):  # noqa: F811
+    """The CI flake behind the snap fixture's wait: drawing the print as text made Qt load the PC's fonts on the
+    worker first (over 3 s on a cold Windows runner, and as late a first polaroid on a cold PC). The print is
+    outlines now, so making a card never touches fonts, and Pillow is imported ahead of the first screenshot."""
+    added("snap")
+    snap = sys.modules["sprigcast_plugin_snap"]
+    svg = snap.frame_svg((900, 506)).decode()
+    assert "<text" not in svg and "font" not in svg
+    assert snap.print_path().startswith("M") and len(snap.print_path()) > 1000 and snap.print_path() in svg
+    assert snap.print_path() not in snap.frame_svg((300, 900)).decode()  # too narrow for the print: the mark only
+    create_source("snap", "snap-2", {})
+    assert snap._WARM.is_set()
