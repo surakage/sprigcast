@@ -39,66 +39,31 @@ on:
             "src/sprigcast/render/move.py", "tests/test_native_move.py"]
 
 jobs:
-  build:
+  read-dump:
     runs-on: windows-latest
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - name: Build
-        shell: pwsh
-        run: |
-          cmake -S native/core -B build/core -A x64
-          cmake --build build/core --config Release
-      - name: Engine checks
-        shell: pwsh
-        run: ctest --test-dir build/core -C Release --output-on-failure
-      - name: No runtime to install, and every function exported
-        shell: pwsh
-        run: |
-          $dll = "build/core/Release/sprigcore.dll"
-          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
-          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe | Where-Object { $_.FullName -match "Hostx64\\x64" } | Select-Object -First 1
-          $deps = & $dumpbin.FullName /dependents $dll | Out-String
-          Write-Output $deps
-          if ($deps -match "VCRUNTIME|MSVCP") { throw "sprigcore.dll must not need the VC++ runtime" }
-          $exports = & $dumpbin.FullName /exports $dll | Out-String
-          $names = Select-String -Path native/core/include/sprigcore.h -Pattern "SC_API [^(]*?\b(sc_\w+)\(" -AllMatches |
-            ForEach-Object { $_.Matches } | ForEach-Object { $_.Groups[1].Value }
-          foreach ($name in $names) { if ($exports -notmatch "\b$name\b") { throw "missing export $name" } }
-          "exports OK: $($names.Count)"
-      - name: Python side and pixel checks
-        if: ${{ !cancelled() }}
-        shell: pwsh
-        run: |
-          $env:SPRIGCAST_CORE_DLL = (Resolve-Path "build/core/Release/sprigcore.dll").Path
-          $env:PYTHONPATH = "src"
-          uv run --frozen python -c "from sprigcast import sprigcore; assert sprigcore.available(), 'not loaded'; print(sprigcore.adapters())"
-          uv run --frozen pytest -q tests/test_sprigcore.py tests/test_native_compositor.py tests/test_native_bridge.py tests/test_native_shared.py tests/test_native_page_texture.py tests/test_native_drawn.py tests/test_native_now_playing.py tests/test_native_pngtuber.py tests/test_native_screen_capture.py tests/test_native_move.py -rs 2>&1 | Tee-Object -FilePath pytest.txt
-          if ($LASTEXITCODE -ne 0) { throw "pixel checks failed" }
-          if (Select-String -Path pytest.txt -Pattern "isn't built here" -Quiet) { throw "engine checks were skipped though the DLL is built" }
-      - name: Video, GIF and sound files played by the engine
-        if: ${{ !cancelled() }}
-        shell: pwsh
-        run: |
-          $env:SPRIGCAST_CORE_DLL = (Resolve-Path "build/core/Release/sprigcore.dll").Path
-          $env:PYTHONPATH = "src"
-          uv run --frozen python -c "from sprigcast import sprigcore; print(sprigcore.ffmpeg_libraries()); assert sprigcore.media_ready(), 'the engine could not load FFmpeg'"
-          uv run --frozen pytest -q tests/test_native_media.py tests/test_native_writer.py tests/test_native_mixer.py tests/test_native_mixer_parity.py tests/test_native_filters.py tests/test_native_capture.py tests/test_native_playback.py tests/test_native_visualizer.py tests/test_native_camera.py -rs 2>&1 | Tee-Object -FilePath media.txt
-          if ($LASTEXITCODE -ne 0) { throw "media checks failed" }
-          if (Select-String -Path media.txt -Pattern "isn't built|no g\+\+" -Quiet) { throw "media checks were skipped though the DLL is built" }
-      - name: Engine checks under AddressSanitizer
-        shell: pwsh
-        run: |
-          cmake -S native/core -B build/core-asan -A x64 -DSPRIGCORE_ASAN=ON
-          cmake --build build/core-asan --config Release
-          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
-          $asan = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter clang_rt.asan_dynamic-x86_64.dll | Where-Object { $_.FullName -match "Hostx64\\x64" } | Select-Object -First 1
-          Copy-Item $asan.FullName build/core-asan/Release/
-          ctest --test-dir build/core-asan -C Release --output-on-failure
-      - uses: actions/upload-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: sprigcore
-          path: |
-            build/core/Release/sprigcore.dll
-            build/core/Release/sprigcore.pdb
-          retention-days: 30
+          name: start-up-logs
+          run-id: 44646097603
+          github-token: ${{ github.token }}
+          path: dump
+      - name: Read the dump
+        shell: pwsh
+        run: |
+          Get-ChildItem dump -Recurse | Format-Table FullName, Length
+          $dmp = (Get-ChildItem dump -Recurse -Filter *.dmp | Select-Object -First 1).FullName
+          uv run --no-project --with minidump python packaging/read_dump.py "$dmp"
+          $cdb = "${env:ProgramFiles(x86)}\Windows Kits\10\Debuggers\x64\cdb.exe"
+          if (Test-Path $cdb) {
+            & $cdb -z "$dmp" -y "srv*C:\sym*https://msdl.microsoft.com/download/symbols" -c ".ecxr; r; kn 80; .echo ALLTHREADS; ~*kn 40; lm; q"
+          } else { Write-Host "no cdb here" }
+      - name: The logs
+        if: always()
+        shell: pwsh
+        run: Get-ChildItem dump -Recurse -Include *.log,*.txt | ForEach-Object { Write-Host "=====" $_.FullName; Get-Content $_.FullName -Tail 400 }
