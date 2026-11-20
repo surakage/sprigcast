@@ -544,3 +544,38 @@ def test_apply_writes_the_path_file_at_once(tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_a_place_added_reaches_the_path_file_right_away(tmp_path, monkeypatch):
+    """PC 2026-11-19: YouTube and Kick added at 21:49, the path file still as written at 21:26, no places."""
+    import keyring
+    from PySide6.QtCore import QCoreApplication, QSettings
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("PathFileTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import MainWindow
+    from sprigcast.core.gardens import PathSettings
+
+    c = _three_places()
+    c.outputs = c.outputs[:1]
+    w = MainWindow(c, tmp_path / "scenes.json")
+    try:
+        file = w.gardens.shelf.path_file()
+        assert [o.id for o in PathSettings.load(file).outputs] == ["twitch"]
+        w.collection.outputs.append(Output(id="kick", type="stream", service="kick", canvas="horizontal", enabled=True))
+        w._after_settings()  # Settings saved
+        assert [o.id for o in PathSettings.load(file).outputs] == ["twitch", "kick"]
+        written = file.stat().st_mtime_ns
+        w._keep_path_file()  # nothing changed: not written again
+        assert file.stat().st_mtime_ns == written
+        w.collection.outputs.pop()
+        w._save_soon()
+        w._save_pending()  # closing, or the settle timer
+        assert [o.id for o in PathSettings.load(file).outputs] == ["twitch"]
+    finally:
+        w.close()
+        QSettings().clear()
