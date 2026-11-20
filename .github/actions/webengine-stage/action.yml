@@ -62,6 +62,12 @@ runs:
     - uses: ilammy/msvc-dev-cmd@v1.13.0
       with:
         arch: x64
+    - name: Keep Defender out of the build folders (it scans each of the source's and build's files)
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force C:\qtwe, C:\state | Out-Null
+        Add-MpPreference -ExclusionPath C:\qtwe, C:\state -ErrorAction SilentlyContinue
+        Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
     - name: Sources and Qt (stage 1)
       if: inputs.stage == '1'
       shell: pwsh
@@ -83,20 +89,22 @@ runs:
         # qtwebengine folder is unpacked.
         $whole = (Split-Path $archive -Leaf) -like "qt-everywhere-*"
         $inner = if ($whole) { (Split-Path $archive -Leaf) -replace '\.(tar\.xz|zip|7z)$', '' } else { "" }
-        if ($archive.EndsWith(".7z")) {
-          if ($whole) { & 7z x -y -bso0 -bsp0 "-oC:\qtwe\src" $archive "$inner\qtwebengine\*" }
-          else { & 7z x -y -bso0 -bsp0 "-oC:\qtwe\src" $archive }
-        } elseif ($whole) {
-          C:\Windows\System32\tar.exe -xf $archive -C C:\qtwe\src "$inner/qtwebengine"
-        } else {
-          C:\Windows\System32\tar.exe -xf $archive -C C:\qtwe\src
-        }
-        if ($LASTEXITCODE -ne 0) { throw "couldn't unpack $archive" }
+        # Run 44741063384 sat 5.5 hours in Windows' own tar.exe on windows-2022 with no output: 7-Zip unpacks
+        # instead (xz straight into its tar reader), and the unpack is stopped after 45 minutes.
+        "$((Get-Date).ToUniversalTime().ToString('HH:mm:ss')) unpacking $archive"
+        $pick = if ($whole) { "`"$inner\qtwebengine\*`"" } else { "" }
+        $cmd = if ($archive.EndsWith(".7z")) { "7z x -y -bso0 -bsp0 -snl -oC:\qtwe\src `"$archive`" $pick" }
+               else { "7z x -so `"$archive`" | 7z x -y -bso0 -bsp0 -snl -si -ttar -oC:\qtwe\src $pick" }
+        $u = Start-Process cmd -ArgumentList "/c", $cmd -NoNewWindow -PassThru
+        if (-not $u.WaitForExit(45 * 60 * 1000)) { & taskkill /PID $u.Id /T /F | Out-Null; throw "unpacking $archive took over 45 minutes" }
+        if ($u.ExitCode -ne 0) { throw "couldn't unpack $archive (exit $($u.ExitCode))" }
+        "$((Get-Date).ToUniversalTime().ToString('HH:mm:ss')) unpacked"
         Remove-Item $archive
         $top = if ($whole) { Get-Item "C:\qtwe\src\$inner\qtwebengine" -ErrorAction SilentlyContinue } else { Get-ChildItem C:\qtwe\src -Directory | Where-Object { $_.Name -like "qtwebengine-everywhere*" } | Select-Object -First 1 }
         if (-not $top) { throw "no qtwebengine folder in $archive" }
         Move-Item $top.FullName C:\qtwe\s
         New-Item -ItemType Directory -Force C:\qtwe\b | Out-Null
+        "$((Get-Date).ToUniversalTime().ToString('HH:mm:ss')) configuring"
         Push-Location C:\qtwe\b
         # Exactly PySide6's Qt WebEngine plus H.264/AAC. Qt PDF isn't built (PySide6's own stays), nor Rust parts.
         # qt-cmake, not qt-configure-module: the latter left the build RelWithDebInfo (symbols filled the disk).
