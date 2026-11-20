@@ -465,3 +465,24 @@ def test_sounds_table_stream_clips_and_mute():
     desk = col.source("desktop")
     assert source_tracks(desk) == () and desk.settings["muted"] is True
     assert desk.settings.get("vod", True) is True  # kept for when track 1 is back
+
+
+def test_sounds_row_name_follows_a_device_change():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import AudioPage
+
+    QApplication.instance() or QApplication([])
+    col = _collection()
+    col.source("desktop").settings["device"] = "Realtek Digital Output"
+    page = AudioPage(col, {"audio_output": ["Realtek Digital Output"]})
+    page.finish()
+    while page._rows_waiting:
+        page._more_rows()
+    combo = page.device_combos["desktop"]
+    combo.setCurrentIndex(combo.findData("default"))
+    page.apply_to(col)
+    assert page.name_labels["desktop"].text() == col.source("desktop").name
+    assert "Realtek" not in col.source("desktop").name
