@@ -286,6 +286,14 @@ def with_item(base: VideoEffects, item: VideoEffects) -> VideoEffects:
                                spin=item.spin if item.spin[0] else base.spin, active=True)
 
 
+def switch(flt: Filter, on: bool) -> None:
+    """Switch a filter on or off. A barrel roll plays once, so switching it on (from off) plays it again:
+    the engines time a roll by its `run`, and the same run again would sit still."""
+    if on and not flt.enabled and flt.kind == "barrel_roll":
+        flt.settings = {**flt.settings, "run": int(flt.settings.get("run", 0)) + 1}
+    flt.enabled = on
+
+
 def video_effects(filters) -> VideoEffects:
     """Fold a source's enabled video filters into shader uniforms."""
     fx = VideoEffects()
