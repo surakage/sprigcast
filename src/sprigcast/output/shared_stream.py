@@ -41,6 +41,7 @@ log = logging.getLogger(__name__)
 
 
 SHARE_WITHIN = 0.4  # destinations whose bitrates are this close (of the higher one) share one encoder
+NETWORK_BEHIND_S = 0.25  # a send buffer this full means the upload is what's waited on (not the encoder, not Python)
 LONE_LOWERS = 0.8  # one link alone behind may lower a shared bitrate this far (of what's set), no further
 
 
@@ -267,6 +268,11 @@ class StreamLink:
         self.reconnects = 0
         self.frames = self.dropped = self.bytes_out = 0
         self.mux_seconds = self.longest_stall = 0.0
+        # Time the send buffer held NETWORK_BEHIND_S or more: "waiting on the network". mux_seconds (time handing
+        # packets to FFmpeg) also counts waiting for Python's lock after each send, which a busy garden makes
+        # 41% where the upload had room to spare (PC soak 2026-11-20: 0 dropped, backlog 0; 2% with Python idle).
+        self.behind_seconds = 0.0
+        self._sent_at: float | None = None
         self.started_at = time.monotonic()
         self.error: str | None = None
         self._q: queue.Queue = queue.Queue()
@@ -372,7 +378,8 @@ class StreamLink:
             "dropped_pct": 100 * self.dropped / total if total else 0.0,
             "encode_ms": 1000 * self.shared.encode_seconds / max(1, self.shared.frames),
             "budget_ms": 1000 / self.fps,
-            "network_pct": 100 * self.mux_seconds / running,
+            "network_pct": 100 * self.behind_seconds / running,
+            "sending_pct": 100 * self.mux_seconds / running,
             "longest_stall_s": self.longest_stall,
             "megabytes": self.bytes_out / 1e6,
             "backlog_s": self.backlog_seconds(),
@@ -413,11 +420,13 @@ class StreamLink:
         if not total:
             return f"{self.name}: never connected ({self.status})"
         loss = self.dropped / total
-        waiting = self.mux_seconds / max(1e-6, time.monotonic() - self.started_at)
+        running = max(1e-6, time.monotonic() - self.started_at)
+        waiting = self.behind_seconds / running
         live_s = max(1e-6, time.monotonic() - (self._connected_at or self.started_at))
         average = f"averaged {self.bytes_out * 8 / 1000 / live_s:.0f} kbps (set {self.bitrate_kbps})"
         line = (f"{self.name}: {self.dropped} of {total} frames dropped ({loss:.1%}), {average}, sharing an encoder; "
-                f"waiting on the network {waiting:.0%} of the time, longest stall {self.longest_stall:.1f} s")
+                f"waiting on the network {waiting:.0%} of the time (sending {self.mux_seconds / running:.0%}), "
+                f"longest stall {self.longest_stall:.1f} s")
         if self.reconnects:
             line += f"; {self.reconnects} reconnects"
         if loss > 0.01 and waiting > 0.5:
@@ -498,9 +507,13 @@ class StreamLink:
         packet.stream = streams[p.kind]
         began = time.perf_counter()
         out.mux(packet)
-        waited = time.perf_counter() - began
+        done = time.perf_counter()
+        waited = done - began
         self.mux_seconds += waited
         self.longest_stall = max(self.longest_stall, waited)
+        if self._sent_at is not None and self.backlog_seconds() >= NETWORK_BEHIND_S:
+            self.behind_seconds += done - self._sent_at
+        self._sent_at = done
         self.bytes_out += packet.size
         if p.kind == "video":
             self.frames += 1

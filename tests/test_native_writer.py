@@ -40,6 +40,7 @@ def test_a_recording_has_every_picture_and_its_sound(player_lib, tmp_path):  # n
         stats = finished(writer)
         assert stats.state_name == "finished", stats.error_text
         assert stats.frames_written == 60 and stats.frames_dropped == 0 and stats.bytes > 0
+        assert stats.encode_seconds > 0  # the stream report's "encode ms" (0.0 on every line before, PC 2026-11-20)
     finally:
         writer.close()
     with av.open(str(path)) as f:

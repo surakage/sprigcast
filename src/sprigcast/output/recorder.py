@@ -1312,6 +1312,7 @@ class Recorder:
             if self._counts_drops():
                 self.dropped += lost
         self.bytes_out = int(stats.bytes)
+        self.encode_seconds = float(getattr(stats, "encode_seconds", 0.0))  # the engine encodes: its own timing
         if not self.packets_mode:  # in packets mode, writing them out is timed here (ReplayBuffer._take)
             self.mux_seconds = float(stats.write_seconds)
             self.longest_stall = float(stats.longest_write)
