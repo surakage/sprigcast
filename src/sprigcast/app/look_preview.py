@@ -24,8 +24,16 @@ SYSTEM_COLORS = {
 }
 
 
+_palettes: dict[tuple, dict[str, str]] = {}  # worked out once each: five themes a visit were most of the page's 300 ms
+
+
 def colors_for(theme_name: str, preset: str = "default") -> dict[str, str]:
-    return dict(SYSTEM_COLORS) if theme_name == "system" else theme.palette(theme_name, preset)
+    if theme_name == "system":
+        return dict(SYSTEM_COLORS)
+    key = (theme_name, preset, len(theme._NIGHT_CANOPY))  # colors named later in theme.py make it anew
+    if key not in _palettes:
+        _palettes[key] = theme.palette(theme_name, preset)
+    return dict(_palettes[key])
 
 
 def paint_look(p: QPainter, box: QRectF, colors: dict[str, str], base: QFont, scale: float = 1.0,
