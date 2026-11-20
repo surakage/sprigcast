@@ -102,7 +102,8 @@ PUSH_RELEASE_MS = (0, 100, 250, 500)
 DUCK_PICKS = ((-6.0, "-6 dB"), (-12.0, "-12 dB"), (-18.0, "-18 dB"))
 METER_MS = 80  # how often the Devices meters move, and only while that tab is on screen
 STALE_S = 0.5  # levels older than this are silence (the mixer stopped)
-CHIPS_SHOWN = 4  # sounds named on a track's row before "+2 more"
+CHIPS_SHOWN = 3  # sounds named on a track's row before "+2 more" (4 made Tracks wider than Settings)
+CHIP_TEXT_PX = 104  # a long sound name is cut short on its chip; the tip has all of it
 
 
 def page_style() -> str:
@@ -286,6 +287,16 @@ class AudioPage(QWidget):
         if first in self.TABS:
             self.show_tab(first)
         self.tabs.currentChanged.connect(self._tab_shown)
+        self._fit_tabs()
+
+    def _fit_tabs(self) -> None:
+        """The page is as wide as the tab showing, not the widest tab: Tracks' 922 px made Sounds wider than
+        Settings, cutting off its right side (PC 2026-11-20, Settings at 1076 px)."""
+        now = self.tabs.currentIndex()
+        for i in range(self.tabs.count()):
+            policy = QSizePolicy.Policy.Preferred if i == now else QSizePolicy.Policy.Ignored
+            self.tabs.widget(i).setSizePolicy(policy, policy)
+        self.tabs.updateGeometry()
 
     def build_tab(self, name: str, later=None) -> None:
         """Make one tab's contents (once). later(call): the tab's first card is made now and each further card
@@ -338,6 +349,9 @@ class AudioPage(QWidget):
             self._make_part(part)
         while getattr(self, "_rows_waiting", None):
             self._sound_row(*self._rows_waiting.pop(0))
+        table = getattr(self, "_sound_table", None)
+        if table is not None:
+            table.setVisible(True)
 
     def _ducking(self) -> QWidget:
         """Ducking's everyday picks, under the sounds it lowers. More… opens the rest (voices, timing)."""
@@ -392,6 +406,7 @@ class AudioPage(QWidget):
     # Meters (Devices): only while that tab is on screen ------------------------------------
 
     def _tab_shown(self, *_args) -> None:
+        self._fit_tabs()
         name = self.TABS[self.tabs.currentIndex()]
         want = bool(self.meters) and self._levels is not None and name == "Devices" and self.isVisible()
         if want != self._meter_timer.isActive():
@@ -629,7 +644,7 @@ class AudioPage(QWidget):
             name.setPlaceholderText(TRACK_NAMES[n - 1])
             name.setMaxLength(24)
             name.setToolTip(TRACK_TIPS[n - 1])
-            name.setFixedWidth(220)
+            name.setFixedWidth(150)
             grid.addWidget(name, 2 * n, 1)
             chips = QHBoxLayout()
             chips.setSpacing(6)
@@ -680,6 +695,10 @@ class AudioPage(QWidget):
             for text in shown or ["Nothing yet"]:
                 chip = QLabel(text, self)
                 if shown:
+                    cut = chip.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, CHIP_TEXT_PX)
+                    if cut != text:
+                        chip.setText(cut)
+                        chip.setToolTip(text)
                     chip.setObjectName("audioChip")
                     chip.setTextFormat(Qt.TextFormat.PlainText)
                 else:
@@ -733,10 +752,16 @@ class AudioPage(QWidget):
             self._sound_row(*self._rows_waiting.pop(0))
         # The rest half a row a tick: a whole row was still 57-78 ms a tick on the PC while live (2026-11-18).
         self._rows_waiting = [(*args, half) for args in self._rows_waiting for half in (1, 2)]
+        # The table shows once a screenful of rows is made, all at once: shown from the first row, the list was
+        # seen filling in one row at a time (user 2026-11-20). The rest are made below, off screen.
+        self._sound_table = table
+        self._rows_to_show = min(self.SCREEN_ROWS, len(sounds)) * 2 - self.ROWS_NOW * 2
+        if self._rows_waiting and self._rows_to_show > 0:
+            table.setVisible(False)
         if self._rows_waiting:
             from PySide6.QtCore import QTimer
 
-            QTimer.singleShot(self.ROW_GAP_MS, self, self._more_rows)
+            QTimer.singleShot(0, self, self._more_rows)
         grid.setColumnStretch(0, 1)
         box.addWidget(table)
         return group
@@ -745,20 +770,29 @@ class AudioPage(QWidget):
     # made with the page were most of the 61 ms the Sound gear took to open on the PC while live (2026-11-19).
     ROWS_NOW = 0
     ROWS_PER_TICK = 1  # three were 136 ms a tick on the PC while live (2026-11-18): each row is ~50 calls into Qt
-    ROW_GAP_MS = 15
+    TICK_MS = 4  # more halves in a tick while they're quick; a slow PC still makes one a tick
+    SCREEN_ROWS = 12  # about what the Sounds tab shows without scrolling
 
     def _more_rows(self) -> None:
-        """A few more sound rows. All of them at once (6 boxes and up to 5 ticks each) held the window 263 ms on
+        """More sound rows, a little at a time with no wait in between (a 15 ms gap after every half row made a
+        long list take seconds). All of them at once (6 boxes and up to 5 ticks each) held the window 263 ms on
         the PC while live (2026-11-18 pop-up sweep)."""
+        import time
+
         waiting = self._rows_waiting
-        for _ in range(self.ROWS_PER_TICK):
-            if not waiting:
-                break
+        end = time.perf_counter() + self.TICK_MS / 1000
+        made = 0
+        while waiting and (made < self.ROWS_PER_TICK or time.perf_counter() < end):
             self._sound_row(*waiting.pop(0))
+            made += 1
+        self._rows_to_show = getattr(self, "_rows_to_show", 0) - made
+        table = getattr(self, "_sound_table", None)
+        if table is not None and table.isHidden() and (self._rows_to_show <= 0 or not waiting):
+            table.setVisible(True)
         if waiting:
             from PySide6.QtCore import QTimer
 
-            QTimer.singleShot(self.ROW_GAP_MS, self, self._more_rows)
+            QTimer.singleShot(0, self, self._more_rows)
 
     def _sound_row(self, grid: QGridLayout, row: int, source: SourceConfig, tracks: int, half: int = 0) -> None:
         """A sound's row; half 1 or 2: its first boxes (name to sync offset) or the rest (listeners, tracks)."""
