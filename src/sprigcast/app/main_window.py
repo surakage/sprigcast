@@ -185,7 +185,7 @@ def _dot(colour: str, size: int = 12) -> QIcon:
     p.drawEllipse(1, 1, size - 2, size - 2)
     p.end()
     return QIcon(pix)
-from sprigcast.app.sound_card import Sound, auto_group
+from sprigcast.app.sound_card import GROUP_COLOURS, GROUPS, Sound, auto_group, type_of, use_types
 from sprigcast.app.names import ask_name, plain_problem, short_name, short_status, status_summary, window_name
 
 log = logging.getLogger(__name__)
@@ -459,7 +459,8 @@ class MainWindow(QMainWindow):
         self.build_stage.card_slot.addWidget(self.canvas_away)
         from sprigcast.app.sound_strips import SoundStrips
 
-        self.sound_strips = SoundStrips(self._on_sound_changed, self._open_build_sound, self._sound_strip_menu)
+        self.sound_strips = SoundStrips(self._on_sound_changed, self._open_build_sound, self._sound_strip_menu,
+                                        self._edit_sound_type)
         self.build_stage.below_card.addWidget(self.sound_strips)
         self.modes = QStackedWidget()
         self.modes.addWidget(self.build_stage)
@@ -1413,6 +1414,7 @@ class MainWindow(QMainWindow):
         menu.addAction("Unmute" if muted else "Mute").triggered.connect(
             lambda _=False: self._build_tune_changed(source_id, {"muted": not muted}))
         self._fill_plays_in_menu(menu.addMenu("Plays in"), source_id)
+        self._fill_type_menu(menu.addMenu("Type"), source_id)
         menu.addSeparator()
         menu.addAction("Volume and sound…").triggered.connect(lambda _=False: self._select_sound(source_id))
         menu.addAction("Filters…").triggered.connect(lambda _=False: self._open_filters(source_id, "audio"))
@@ -1427,6 +1429,46 @@ class MainWindow(QMainWindow):
             remove.setToolTip(f"It's in {self._names(placed)}: remove it there")
         else:
             remove.triggered.connect(lambda _=False: self._remove_sound(source_id))
+
+    def _fill_type_menu(self, menu: QMenu, source_id: str) -> None:
+        """Put a sound in one of your types (the Sound card's groups and Build's Type filter), or a new one."""
+        now = self._sound_item(self.collection.source(source_id)).group
+        for group in GROUPS:
+            action = menu.addAction(group)
+            action.setCheckable(True)
+            action.setChecked(group == now)
+            action.triggered.connect(lambda _=False, g=group: self._build_tune_changed(source_id, {"group": g}))
+        menu.addSeparator()
+        # After the menu has closed: a window opened from inside a closing menu could swallow the click.
+        menu.addAction("New type…").triggered.connect(
+            lambda _=False: QTimer.singleShot(0, self, lambda: self._edit_sound_type(None, source_id)))
+
+    def _edit_sound_type(self, name: str | None, ticked: str | None = None) -> None:
+        """New type (name None) or Edit <name>: its name, color and the sounds in it. Every sound's type is
+        saved by name afterwards, so a renamed or removed type takes its sounds along."""
+        from sprigcast.app.sound_type_dialog import SoundTypeDialog
+
+        audio = self.collection.audio
+        use_types(audio.sound_types)
+        sounds = sorted((s for s in self.collection.sources if self._has_sound(s)), key=lambda s: s.name.lower())
+        now = {s.id: self._sound_item(s).group for s in sounds}
+        dialog = SoundTypeDialog(audio.sound_types, [(s.id, s.name, now[s.id]) for s in sounds], name, self)
+        if ticked in dialog.ticks:
+            dialog.ticks[ticked].setChecked(True)
+        if not modal(dialog):
+            return
+        types, moves = dialog.result_types()
+        audio.sound_types = types
+        use_types(types)
+        for source in sounds:
+            source.settings = {**source.settings, "group": moves.get(source.id, now[source.id])}
+        strips = getattr(self, "sound_strips", None)
+        if strips is not None and name and strips.type_shown == name:
+            strips._pick_type("" if dialog.removed else dialog.chosen_name())  # follow the rename
+        self._changed()
+        self._refresh_audio()
+        if self.selected_sound_id and self.build_stage.right_stack.currentIndex() == 1:
+            self._open_build_sound(self.selected_sound_id)  # its Type pill lists the new types
 
     def _fill_plays_in_menu(self, menu: QMenu, source_id: str) -> None:
         """Tick the blooms a sound plays in. None ticked (or Every bloom) means it plays everywhere."""
@@ -3798,12 +3840,14 @@ class MainWindow(QMainWindow):
         timer = getattr(self, "_audio_refresh", None)
         if timer is not None:
             timer.stop()  # this refresh covers any that were waiting
+        use_types(self.collection.audio.sound_types)  # the garden's sound types, before each sound is put in one
         sounds = [s for s in self.collection.sources if self._has_sound(s)]
         items = [self._sound_item(s) for s in sounds]
         ordered = sorted(sounds, key=lambda s: s.name.lower())  # A to Z, like the Sound list on the left
         kinds = {s.id: s.kind for s in ordered}
         tags = {s.id: self._plays_in_tag(s) for s in ordered}
-        shown = (items, kinds, tags, self.collection.audio.ducking, hasattr(self, "sound_strips"))
+        shown = (items, kinds, tags, self.collection.audio.ducking, hasattr(self, "sound_strips"),
+                 tuple(GROUP_COLOURS.items()))
         if shown == getattr(self, "_audio_shown", None):
             return  # nothing changed (Save in Settings redid every strip, holding SprigCast up ~0.7 s while live)
         self._audio_shown = shown
@@ -3830,14 +3874,15 @@ class MainWindow(QMainWindow):
             return
         bloom = next((s for s in self.collection.scenes if s.id == getattr(self, "last_bloom_id", None)), None)
         self.sound_strips.set_where(bloom.name if bloom else "")
+        self.sound_strips.set_here(self.collection.sounds_in(bloom.id) if bloom else None)
 
     def _sound_item(self, config) -> Sound:
         st = config.settings
         monitor = st.get("monitor", False)
         return Sound(
             id=config.id, name=config.name, muted=bool(st.get("muted", False)),
-            group=str(st.get("group") or ("Alerts" if config.kind == "browser"
-                                          else auto_group(config.name, config.kind))),
+            group=type_of(str(st.get("group") or ("Alerts" if config.kind == "browser"
+                                                  else auto_group(config.name, config.kind)))),
             pinned=bool(st.get("pinned", False)),
             volume_db=float(st.get("volume_db", 0.0)),
             monitor="only" if monitor == "only" else bool(monitor),

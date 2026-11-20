@@ -42,9 +42,35 @@ from PySide6.QtWidgets import (
 from sprigcast.app import icons, theme
 from sprigcast.app.live_stage import Elided, Switch, ThinMeter, heading
 
-GROUPS = ("Voice", "Game", "Alerts", "Music", "Other")
-GROUP_COLOURS = {"Voice": theme.ACCENT, "Game": theme.INFO, "Alerts": theme.WARN, "Music": "#c79bff",
-                 "Other": theme.MUTED}
+# Sound types (the Sound card's groups and Build's Type filter). You can add, rename, recolor and remove them;
+# they're kept in the garden (AudioSettings.sound_types). These lists change in place, so every importer sees it.
+TYPE_COLORS = theme.type_colors()  # by key; the color-blind preset has its own set (see theme.TYPE_COLOR_SETS)
+GROUPS: list[str] = ["Voice", "Game", "Alerts", "Music", "Other"]
+GROUP_COLOURS: dict[str, str] = {name: TYPE_COLORS[key] for name, key in
+                                 zip(GROUPS, ("green", "blue", "yellow", "violet", "gray"), strict=True)}
+
+
+def use_types(types: list[dict] | None) -> bool:
+    """Take the garden's sound types ({"name", "color"} each, in order). True when they changed."""
+    names, colours = [], {}
+    for t in types or ():
+        name = str(t.get("name", "")).strip()
+        if name and name not in colours:
+            names.append(name)
+            colours[name] = TYPE_COLORS.get(str(t.get("color", "")), TYPE_COLORS["gray"])
+    if not names:
+        return False  # a garden with none keeps what's shown
+    if names == GROUPS and colours == GROUP_COLOURS:
+        return False
+    GROUPS[:] = names
+    GROUP_COLOURS.clear()
+    GROUP_COLOURS.update(colours)
+    return True
+
+
+def type_of(group: str | None) -> str:
+    """A sound's type; one whose type was removed (or never existed) shows under the last one."""
+    return group if group in GROUP_COLOURS else GROUPS[-1]
 HEARD_DB = -50.0  # RMS above this counts as playing
 LINGER_S = 4.0  # a sound stays listed this long after it goes quiet
 CHIP_STYLE = theme.button_style(11, "3px 11px", extra="min-height: 16px; font-size: 11px;")
@@ -290,7 +316,7 @@ class SoundCard(QWidget):
         items = [s if isinstance(s, Sound) else Sound(s[0], s[1], bool(s[2])) for s in sounds]
         self.sounds = {s.id: s for s in items}
         # Muting changes colours in place (_show_muted): rebuilding every row for it froze the window.
-        shape = tuple((s.id, s.name, s.group, s.pinned) for s in items)
+        shape = (tuple((s.id, s.name, s.group, s.pinned) for s in items), tuple(GROUP_COLOURS.items()))
         if shape != self._shape:
             self._shape = shape
             self._build()
@@ -365,9 +391,9 @@ class SoundCard(QWidget):
                     self._park_rows(part)
                 continue
             if part is None:
-                box = boxes.get(group)
+                box = boxes.get((group, GROUP_COLOURS[group]))  # a recolored type gets a new box
                 if box is None:
-                    box = boxes[group] = self._group_box(group)
+                    box = boxes[(group, GROUP_COLOURS[group])] = self._group_box(group)
                 part = box.part
             self._fill_group(group, part, members)
             self.parts[group] = part
@@ -634,10 +660,18 @@ class PillPick(QPushButton):
         self._text = self.choices[0]
         self.setStyleSheet(CHIP_STYLE + "QPushButton::menu-indicator { width: 0; image: none; }")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        menu = QMenu(self)
+        self.setMenu(QMenu(self))
+        self.set_choices(self.choices)
+
+    def set_choices(self, choices) -> None:
+        """New choices (sound types you added or renamed); the shown one stays when it's still there."""
+        self.choices = list(choices)
+        menu = self.menu()
+        menu.clear()
         for choice in self.choices:
             menu.addAction(choice, lambda c=choice: self.setCurrentText(c))
-        self.setMenu(menu)
+        if self._text not in self.choices and self.choices:
+            self._text = self.choices[0]
         self._show()
 
     def currentText(self) -> str:  # noqa: N802
@@ -817,7 +851,7 @@ class TunePage(QWidget):
 
         _more, box = self._section(col)
         group_row = QHBoxLayout()
-        group_row.addWidget(_muted_label("Group"), 1)
+        group_row.addWidget(_muted_label("Type"), 1)
         self.group = PillPick(GROUPS)
         self.group.currentTextChanged.connect(lambda g: self._send({"group": g}))
         group_row.addWidget(self.group)
@@ -884,6 +918,8 @@ class TunePage(QWidget):
             button.setChecked(track in sound.tracks)
             button.setEnabled(sound.monitor != "only")  # "just me" goes nowhere but your speakers
         self._show_filters(sound.filters)
+        if self.group.choices != GROUPS:
+            self.group.set_choices(GROUPS)
         self.group.setCurrentText(sound.group)
         self.pin.setChecked(sound.pinned)
         self.duck.setChecked(sound.voice)
