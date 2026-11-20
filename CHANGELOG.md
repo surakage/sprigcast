@@ -6,6 +6,10 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- The window no longer stops answering for 2 to 3 seconds when the settings copy is made (30 seconds after
+  start and after every Settings Save): the copying program is now started from a side thread. Seen in a PC log
+  on three starts. Not tried on a PC yet.
+
 - Freeze works on one item: a Freeze filter put on an item (not on its source) holds that item's picture where
   it's placed, while the same source keeps moving everywhere else it shows. Engine side only for now (both
   engines); the plugin, hotkeys and Control API follow. Not tried on a PC yet.
