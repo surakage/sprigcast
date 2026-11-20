@@ -6,6 +6,13 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- A Color is drawn by the new engine at its full size again. Its picture is a few pixels stretched over its size, and
+  the engine was never told the size, so it drew a dot: a Color inside a sprig showed only the checkerboard in Build
+  and nothing in Live. Not tried on a PC yet.
+- Live no longer shows the "Empty bloom" card of a bloom picked in Build over the on-air picture.
+- The start-up check on GitHub says where a crashed start was (module, nearest name, registers and stack) without
+  anyone downloading the dump.
+
 Found with a big garden brought over from OBS (88 scenes, 61 web pages, about 78 nested sprigs). Not tried on a PC yet.
 
 - A web page read from memory (Build with a sprig open, the old engine, a projector) no longer jumps sideways on

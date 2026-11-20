@@ -217,3 +217,36 @@ def test_leaves_drops_land_anywhere_on_a_tall_sprig_row():
 
     view.dropEvent(Drop(tall.top() + tall.height() * 0.7))  # Cam dropped on the lower half of the sprig
     assert moved == [(0, 1)]
+
+
+def test_live_never_shows_the_empty_card_of_a_bloom_picked_in_build(tmp_path, monkeypatch):
+    """An empty bloom picked in Build has a card in its middle. Going to Live left the card over the on-air
+    picture (build 44650482934, 2026-11-20)."""
+    import keyring
+    from PySide6.QtCore import QCoreApplication, QSettings
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(keyring, "get_password", lambda *a: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("EmptyCardTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import MainWindow
+
+    col = SceneCollection(canvases=[Canvas(id=H, width=1920, height=1080)],
+                          sources=[SourceConfig(id="wall", kind="color", name="Wall")],
+                          scenes=[Scene(id="air", name="Main", canvas=H, items=[SceneItem(source="wall")]),
+                                  Scene(id="new", name="New", canvas=H)],
+                          active_scenes={H: "air"})
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        w._set_mode("build")
+        w._pick_bloom("new")
+        assert w.previews[H].hint is not None and col.active_scenes[H] == "air"
+        w._set_mode("live")
+        assert w.previews[H].hint is None and w.engine.staged == {}
+        w._set_mode("build")
+        assert w.previews[H].hint is not None
+    finally:
+        w.close()
+        QSettings().clear()

@@ -128,6 +128,7 @@ class FakeNative:
 
     def upload(self, source_id, frame, order, size):
         self.uploads.append(source_id)
+        self.upload_sizes = {**getattr(self, "upload_sizes", {}), source_id: size}
 
     def attach_media(self, source_id, player, held=False):
         if player is not None:
@@ -474,6 +475,19 @@ def test_frames_the_engine_let_go_of_count_as_the_recordings_drops():
     engine._native.lost = 4  # every take, the engine let 4 go
     _run(engine, fake, seconds=0.1)
     assert rec.frames and rec.dropped == 4 * len(rec.frames)
+
+
+def test_the_engine_is_told_how_big_a_color_is():
+    """A color's picture is 2 x 2 pixels stretched over its size. Sent without the size, the engine drew a dot:
+    a purple 1920 x 1080 Color in a sprig showed nothing in Build or Live (build 44650482934, 2026-11-20)."""
+    engine, fake = _engine(), FakeCompositor()
+    from sprigcast.sources.color import ColorSource
+
+    engine.previews = frozenset({"h"})
+    engine._sources["wall"] = ColorSource("wall", {"color": "#aa00ffff", "width": 1920, "height": 1080})
+    engine._collection.scenes[0].items.append(SceneItem(source="wall"))
+    _run(engine, fake, seconds=0.2)
+    assert engine._native.upload_sizes["wall"] == (1920, 1080)
 
 
 def test_pictures_go_only_to_the_engine_while_python_draws_nothing():
