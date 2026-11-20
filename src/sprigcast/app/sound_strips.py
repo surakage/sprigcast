@@ -185,7 +185,9 @@ class Strip(QFrame):
         self.mute.setCursor(Qt.CursorShape.PointingHandCursor)
         self.mute.setStyleSheet(
             theme.button_style(12, "0"))
-        self.mute.clicked.connect(self._mute_clicked)
+        # toggled, not clicked: Windows accessibility (UIA Toggle, screen readers, test tools) flips a checkable
+        # button without a click, so the sound stayed muted while the button showed unmuted (PC test 2026-11-20).
+        self.mute.toggled.connect(self._mute_clicked)
         more = QPushButton()
         more.setIcon(icons.icon("gear", theme.MUTED, 15))
         more.setFixedSize(34, 26)
@@ -242,7 +244,10 @@ class Strip(QFrame):
         self.fader.muted = sound.muted
         self.fader.update()
         self.db.setText("muted" if sound.muted else f"{sound.volume_db:+.0f} dB" if sound.volume_db else "0 dB")
-        self.mute.setChecked(sound.muted)
+        if self.mute.isChecked() != sound.muted:
+            self.mute.blockSignals(True)  # showing the state, not changing it
+            self.mute.setChecked(sound.muted)
+            self.mute.blockSignals(False)
         self.mute.setIcon(icons.icon("speaker-off" if sound.muted else "speaker",
                                      theme.SELECT_TEXT if sound.muted else theme.TEXT, 16))
         self.mute.setToolTip("Unmute" if sound.muted else "Mute")

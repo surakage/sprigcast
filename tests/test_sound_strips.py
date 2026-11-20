@@ -35,6 +35,12 @@ def test_build_shows_sound_strips_under_the_canvas(tmp_path, monkeypatch):
         strips["mic"].mute.click()
         assert col.source("mic").settings["muted"] is True
         assert w.sound_strips.strips["mic"].db.text() == "muted"
+        strips["mic"].mute.toggle()  # how Windows accessibility (UIA Toggle) presses it: no click
+        assert col.source("mic").settings["muted"] is False and not strips["mic"].mute.isChecked()
+        strips["mic"].mute.toggle()
+        assert col.source("mic").settings["muted"] is True
+        w._refresh_audio()  # showing the saved state again changes nothing
+        assert col.source("mic").settings["muted"] is True and strips["mic"].mute.isChecked()
         w.sound_strips.set_levels({"desk": (-6.0, -6.0)})
         assert w.sound_strips.strips["desk"].fader.level > 0.8
         strips = w.sound_strips.strips
