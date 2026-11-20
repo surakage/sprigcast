@@ -266,18 +266,27 @@ class _ResizeSplitter(QSplitter):
 
 
 class GearWatch(QObject):
-    """Logs mouse presses that reach the Settings gear: the PC once saw clicks on it do nothing, with nothing
-    in the log to say whether they got there. One button, so it costs nothing."""
+    """The Settings gear opens Settings when it's pressed, not when the click is let go: on the PC about every
+    other click did nothing (2026-11-20: the press landed, the button never saw its release, so no click). The
+    press is taken here, so the button itself never half-presses. Keyboard (Space) still clicks it."""
 
-    def __init__(self, button):
+    def __init__(self, button, opener=None):
         super().__init__(button)
+        self.opener = opener
         button.installEventFilter(self)
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802 (Qt naming)
         kind = event.type()
         if kind == QEvent.Type.MouseButtonPress:
             log.info("settings: gear pressed (%s)", "enabled" if obj.isEnabled() else "disabled")
+            if self.opener is not None and obj.isEnabled() and event.button() == Qt.MouseButton.LeftButton:
+                QTimer.singleShot(0, self.opener)  # after the press is done with: Settings runs its own loop
+                return True
+        elif kind in (QEvent.Type.MouseButtonRelease, QEvent.Type.MouseButtonDblClick) and self.opener is not None \
+                and event.button() == Qt.MouseButton.LeftButton:
+            return True  # the press opened it already
         return False
+
 
 class MainWindow(QMainWindow):
     _record_finished = Signal(object, bool)  # a recording's files are closed (from the thread that waited)
@@ -2429,7 +2438,7 @@ class MainWindow(QMainWindow):
         self.settings_button.setStyleSheet(self.palette_button.styleSheet())
         self.settings_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.settings_button.clicked.connect(self._gear_clicked)
-        self._gear_watch = GearWatch(self.settings_button)  # logs presses that reach it (PC test: clicks did nothing)
+        self._gear_watch = GearWatch(self.settings_button, self._gear_clicked)  # logs presses that reach it (PC test: clicks did nothing)
         bar.addWidget(self.settings_button)
         self._set_header_clock("Offline", False)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, bar)
