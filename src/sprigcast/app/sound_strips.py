@@ -20,7 +20,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from types import SimpleNamespace
 
-from PySide6.QtCore import QPointF, QRectF, QSettings, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QSettings, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame,
@@ -449,9 +449,12 @@ class SoundStrips(QFrame):
             self.kind_actions[g] = menu.addAction(_dot(group_colour(g)), f"{g} ({counts[g]})",
                                                   lambda g=g: self._pick_type(g))
         menu.addSeparator()
-        menu.addAction("New type…", lambda: self.on_types(None))
+        # Opened after the menu has closed, as right-click → Type does: a window opened from inside the button's
+        # menu was missing for Windows' UI Automation (PC 2026-11-20) and could swallow the click.
+        later = lambda name: QTimer.singleShot(0, self, lambda: self.on_types(name))  # noqa: E731
+        menu.addAction("New type…", lambda: later(None))
         if self.type_shown:
-            menu.addAction(f"Edit {self.type_shown}…", lambda g=self.type_shown: self.on_types(g))
+            menu.addAction(f"Edit {self.type_shown}…", lambda g=self.type_shown: later(g))
         self.kind.setText(f"{self.type_shown or 'All types'}  ▾")
         self.kind.setIcon(_dot(group_colour(self.type_shown)) if self.type_shown else QIcon())
 
