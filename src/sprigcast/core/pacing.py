@@ -247,6 +247,9 @@ def thread_stacks() -> dict[int, list[tuple[str, int, str]]]:
         at = re.match(r'\s+File "(.*)", line (\d+) in (.*)$', line)
         if at and current is not None:
             current.append((at.group(1), int(at.group(2)), at.group(3)))
+    mine = stacks.get(threading.get_ident())
+    if mine and mine[0][2] == "thread_stacks":
+        del mine[0]  # (the asking thread: not this function itself)
     return stacks
 
 
@@ -653,13 +656,18 @@ def _check_window(now: float) -> None:
 
 def _where(stack, depth: int = 12) -> str:
     """Where a thread is: its innermost frames, file:line name, innermost first. Inside an import, Python's
-    own import machinery is left out (the PC saw 2.4 s and 5.7 s in "<frozen importlib…>"): the first line
-    left is the module being loaded, or the one that asked for it."""
-    importing = any(name == "_find_and_load" and file.startswith("<frozen") for file, _line, name in stack)
-    if importing:
-        stack = [f for f in stack if not f[0].startswith("<frozen")]
-    text = _told(stack, depth) or "?"
-    return f"loading a module: {text}" if importing else text
+    own import machinery is left out and the modules being loaded are named (the PC saw 2.4 s and 5.7 s in
+    "<frozen importlib…>" with no clue which module). A module still being found or read has no line of its own
+    yet: then only the ones that asked for it are named."""
+    import os
+
+    if not any(name == "_find_and_load" and file.startswith("<frozen") for file, _line, name in stack):
+        return _told(stack, depth) or "?"
+    loading = [os.path.splitext(os.path.basename(file))[0] for i, (file, _line, name) in enumerate(stack)
+               if name == "<module>" and i + 1 < len(stack) and stack[i + 1][0].startswith("<frozen")]
+    text = _told([f for f in stack if not f[0].startswith("<frozen")], depth) or "?"
+    # outermost first: what the code asked for, then what that pulled in
+    return f"loading {' > '.join(loading[::-1]) or 'a module'}: {text}"
 
 
 def raise_thread_priority(level: int = HIGHEST) -> bool:
