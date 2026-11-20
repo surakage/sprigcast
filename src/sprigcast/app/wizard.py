@@ -15,6 +15,8 @@ from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFrame,
+    QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -33,6 +35,21 @@ log = logging.getLogger(__name__)
 from sprigcast.core.scene import SceneCollection
 
 TITLE_STYLE = f"font-size: 15pt; font-weight: bold; color: {theme.TEXT_BRIGHT};"
+
+
+# The upload box: a rounded field like Settings' (the plain spin box was the last square input here, user
+# 2026-11-19). No arrow buttons: type, scroll or use the arrow keys.
+UPLOAD_FIELD_STYLE = (
+    f"QDoubleSpinBox {{ background: {theme.FIELD}; color: {theme.TEXT}; border: 1px solid {theme.FIELD_EDGE};"
+    f" border-radius: 13px; padding: 6px 14px; min-height: 16px; }}"
+    f"QDoubleSpinBox:hover {{ border-color: {theme.BUTTON_EDGE_HOVER}; }}"
+    f"QDoubleSpinBox:focus {{ border-color: {theme.ACCENT}; }}"
+    "QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { subcontrol-origin: margin; width: 0px; height: 0px;"
+    " border: none; }"
+)
+LIST_STYLE = (f"QListWidget {{ background: {theme.SECTION}; border: 1px solid {theme.SECTION_EDGE};"
+              f" border-radius: 16px; padding: 8px; }}"
+              "QListWidget::item { padding: 5px 6px; border: none; background: transparent; }")
 
 
 def _label(text: str, style: str = "") -> QLabel:
@@ -115,6 +132,7 @@ class StageButton(QPushButton):
         # Sized in the style sheet too: the app's QPushButton rule would otherwise shrink it to a text button
         self.setStyleSheet("QPushButton { background: transparent; border: none; padding: 0;"
                            " min-height: 108px; max-height: 108px; }")
+        self.setFixedHeight(108)  # the layout keeps it too: squeezed, the names ran into Lighter and Sharper
 
     def paintEvent(self, _event) -> None:
         p = QPainter(self)
@@ -160,6 +178,7 @@ class Gauge(QWidget):
         super().__init__()
         self.title, self.pct, self.caption = title, None, ""
         self.setMinimumSize(QSize(200, 136))
+        self.setFixedHeight(136)
 
     def set(self, pct: int | None, caption: str) -> None:
         self.pct, self.caption = pct, caption
@@ -194,6 +213,9 @@ class Gauge(QWidget):
         p.drawText(QRectF(0, 10 + radius + 28, w, 18), Qt.AlignmentFlag.AlignCenter, self.caption)
 
 
+CHIPS_A_ROW = 3
+
+
 def _chip(text: str, colour: str) -> QLabel:
     chip = QLabel(f"<span style='color:{colour}'>●</span>&nbsp; {text}")
     chip.setStyleSheet(f"background: {theme.PANEL}; border: 1px solid {theme.EDGE}; border-radius: 13px;"
@@ -209,6 +231,15 @@ def _check_on_worker(check: optimize.Check, profile: optimize.PcProfile, results
     except Exception as exc:  # one failed check never stops the rest
         result = f"Couldn't check ({exc})"
     results.put((check, result))
+
+
+def _upload_on_worker(check: optimize.Check, probe: optimize.PcProfile, results: queue.Queue) -> None:
+    """Test again: the upload check alone, filling a profile of its own that comes back through the queue."""
+    try:
+        result = check.run(probe)
+    except Exception as exc:
+        result = f"Couldn't check ({exc})"
+    results.put((probe, result))
 
 
 class OptimizeWizard(CardWindow):
@@ -234,9 +265,11 @@ class OptimizeWizard(CardWindow):
         self.pages.addWidget(self._result_page())
 
         self.back = QPushButton("Back")
-        self.back.clicked.connect(lambda: self.pages.setCurrentIndex(0))
+        self.back.clicked.connect(lambda: (self.pages.setCurrentIndex(0), self._show_buttons()))
         self.cancel = QPushButton("Not now" if first_run else "Cancel")
         self.cancel.clicked.connect(self.reject)
+        for quiet in (self.back, self.cancel):
+            quiet.setAutoDefault(False)  # only Apply is the green one: Cancel turned green once it had the focus
         self.go = QPushButton("Check my PC")
         self.go.setStyleSheet(theme.PRIMARY_STYLE)
         self.go.setDefault(True)
@@ -254,6 +287,10 @@ class OptimizeWizard(CardWindow):
         self._timer = QTimer(self)
         self._timer.setInterval(100)
         self._timer.timeout.connect(self._poll)
+        self._retest: queue.Queue = queue.Queue()
+        self._retest_timer = QTimer(self)
+        self._retest_timer.setInterval(100)
+        self._retest_timer.timeout.connect(self._retest_poll)
         self._show_buttons()
 
     # Pages -------------------------------------------------------------------------
@@ -300,7 +337,10 @@ class OptimizeWizard(CardWindow):
         self.check_list = QListWidget()
         self.check_list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.check_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self.check_list.setStyleSheet(LIST_STYLE)
+        box.addSpacing(8)
         box.addWidget(self.check_list, 1)
+        box.addSpacing(8)
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
         self.progress.setMaximumHeight(6)
@@ -312,21 +352,30 @@ class OptimizeWizard(CardWindow):
         box = QVBoxLayout(page)
         box.setContentsMargins(0, 0, 0, 0)
         self.headline = _label("", f"color: {theme.MUTED};")
-        upload = QHBoxLayout()
-        self.upload_label = QLabel("Upload speed")
-        upload.addWidget(self.upload_label)
+        # Upload speed: its own titled card, with the number to type over and the test to run again by hand.
+        self.upload_row = QGroupBox("Upload speed")
+        upload = QHBoxLayout(self.upload_row)
+        upload.setSpacing(12)
         self.upload = QDoubleSpinBox()
         self.upload.setRange(0, 1000)
         self.upload.setDecimals(1)
         self.upload.setSuffix(" Mbps")
         self.upload.setSpecialValueText("Not tested")
+        self.upload.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.upload.setStyleSheet(UPLOAD_FIELD_STYLE)
+        self.upload.setFixedWidth(150)
         self.upload.setToolTip("Change it to see what fits: a speed test site such as speedtest.net shows it.")
         self.upload.valueChanged.connect(self._upload_changed)
         upload.addWidget(self.upload)
-        upload.addStretch(1)
-        self.upload_row = QWidget()
-        self.upload_row.setLayout(upload)
-        upload.setContentsMargins(0, 0, 0, 0)
+        self.upload_label = QLabel("")
+        self.upload_label.setStyleSheet(theme.MUTED_STYLE)
+        upload.addWidget(self.upload_label, 1)
+        self.test_again = QPushButton("Test again")
+        self.test_again.setAutoDefault(False)
+        self.test_again.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.test_again.setToolTip("Measure the upload again now (about 20 seconds)")
+        self.test_again.clicked.connect(self.test_upload_again)
+        upload.addWidget(self.test_again)
 
         intro = QVBoxLayout()
         intro.setSpacing(2)
@@ -367,17 +416,21 @@ class OptimizeWizard(CardWindow):
         gauges.addWidget(self.upload_gauge)
         box.addLayout(gauges)
 
-        self.chips = QHBoxLayout()
+        self.chips = QGridLayout()  # three to a row: a fourth ran off the edge ("Recordings · 1080p6")
         self.chips.setSpacing(8)
+        self.chips.setColumnStretch(CHIPS_A_ROW, 1)
         chips = QWidget()
         chips.setLayout(self.chips)
         self.chips.setContentsMargins(0, 0, 0, 0)
         box.addWidget(chips)
+        box.addSpacing(8)
         box.addWidget(self.upload_row)
+        box.addSpacing(4)
         self.follows = self.headline  # one line under the title says what fits this PC
 
         self.details_button = QPushButton("Fine-tune each setting")
         self.details_button.setCheckable(True)
+        self.details_button.setAutoDefault(False)
         self.details_button.toggled.connect(self._toggle_details)
         details_row = QHBoxLayout()
         details_row.addWidget(self.details_button)
@@ -387,6 +440,8 @@ class OptimizeWizard(CardWindow):
         self.change_list.setWordWrap(True)
         self.change_list.setSpacing(4)
         self.change_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self.change_list.setStyleSheet(LIST_STYLE)
+        self.change_list.setMinimumHeight(150)
         self.change_list.setVisible(False)
         box.addWidget(self.change_list, 1)
         self.notes = _label("", f"{theme.NOTE_STYLE} padding: 8px 10px;")
@@ -398,7 +453,22 @@ class OptimizeWizard(CardWindow):
     def _toggle_details(self, shown: bool) -> None:
         self.change_list.setVisible(shown)
         self._spacer.setVisible(not shown)
-        self.details_button.setText("Hide the details" if shown else "Fine-tune each setting")
+        self._fit_height()
+
+    def _fit_height(self) -> None:
+        """The window is at least as tall as what it shows (the list of changes, a second row of places): at
+        its starting height those squeezed the stages and gauges into each other."""
+        if self.pages.currentIndex() != 2:
+            return
+        self.card.layout().activate()
+        _, top, _, bottom = self.MARGINS
+        needed = self.card.layout().minimumSize().height() + top + bottom
+        screen = self.screen()
+        if screen is not None:
+            needed = min(needed, screen.availableGeometry().height())  # never taller than the screen
+        self.setMinimumHeight(max(600, needed))
+        if self.height() < self.minimumHeight():
+            self.resize(self.width(), self.minimumHeight())
 
     # Flow ------------------------------------------------------------------------------
 
@@ -482,15 +552,68 @@ class OptimizeWizard(CardWindow):
         self.upload.blockSignals(True)
         self.upload.setValue((self.profile.upload_kbps or 0) / 1000)
         self.upload.blockSignals(False)
-        source = self.profile.extra.get("upload_source")
-        self.upload_label.setText(f"Upload speed ({source} test)" if source else "Upload speed")
+        self._show_upload_source()
         self.profile.extra.pop(optimize.QUALITY, None)
         self._fill_plan()
         self.pages.setCurrentIndex(2)
         self._show_buttons()
+        self._fit_height()
+
+    def _show_upload_source(self, typed: bool = False) -> None:
+        source = self.profile.extra.get("upload_source")
+        if typed:
+            text = "Typed in"
+        elif source:
+            text = f"Measured with {'a hidden Twitch test stream' if source == 'Twitch' else 'a speed test'}"
+        else:
+            text = "Not measured: type it in, or test again" if not self.profile.upload_kbps else ""
+        self.upload_label.setText(text)
+
+    def test_upload_again(self) -> None:
+        """Run only the upload test again, by hand. On a worker that holds a profile of its own and a queue,
+        never this window (see _check_on_worker)."""
+        if not self.test_again.isEnabled():
+            return
+        check = next((c for c in optimize.CHECKS if c.key == "upload"), None)
+        if check is None:
+            return
+        self.test_again.setEnabled(False)
+        self.test_again.setText("Testing…")
+        self.upload_label.setText("Measuring your upload…")
+        probe = optimize.PcProfile()
+        probe.extra["collection"] = self.collection
+        if self.run_in_thread:
+            threading.Thread(target=_upload_on_worker, args=(check, probe, self._retest), daemon=True,
+                             name="optimize-upload-again").start()
+            self._retest_timer.start()
+        else:
+            _upload_on_worker(check, probe, self._retest)
+            self._retest_poll()
+
+    def _retest_poll(self) -> None:
+        try:
+            probe, _result = self._retest.get_nowait()
+        except queue.Empty:
+            return
+        self._retest_timer.stop()
+        self.test_again.setEnabled(True)
+        self.test_again.setText("Test again")
+        if probe.upload_kbps:
+            self.profile.upload_kbps = probe.upload_kbps
+            self.profile.extra["upload_source"] = probe.extra.get("upload_source")
+            log.info("optimize: upload tested again: %s kbps (%s)", probe.upload_kbps, probe.extra.get("upload_source"))
+            self.upload.blockSignals(True)
+            self.upload.setValue(probe.upload_kbps / 1000)
+            self.upload.blockSignals(False)
+            self._show_upload_source()
+            self._fill_plan()
+            self._show_buttons()
+        else:  # offline, or the test site didn't answer: what was there stays
+            self.upload_label.setText("Couldn't measure: type it in, or test again")
 
     def _upload_changed(self, mbps: float) -> None:
         self.profile.upload_kbps = int(mbps * 1000) or None
+        self._show_upload_source(typed=True)
         self._fill_plan()
         self._show_buttons()
 
@@ -530,15 +653,17 @@ class OptimizeWizard(CardWindow):
                 item.widget().deleteLater()
         from sprigcast.output.stream import SERVICES
 
+        chips = []
         for output, step, _ in optimize.stream_steps(self.profile, self.collection, quality):
             service = SERVICES.get(output.service or "custom", SERVICES["custom"])
             limit = step != quality
             text = f"{service.label} · {step[0]}p{step[1]}" + (", its limit" if limit else "")
-            self.chips.addWidget(_chip(text, theme.WARN if limit else theme.ACCENT))
+            chips.append(_chip(text, theme.WARN if limit else theme.ACCENT))
         if self.profile.wants_record:
             rec = self.plan.recording
-            self.chips.addWidget(_chip(f"Recordings · {rec[0]}p{rec[1]}", theme.ACCENT))
-        self.chips.addStretch(1)
+            chips.append(_chip(f"Recordings · {rec[0]}p{rec[1]}", theme.ACCENT))
+        for n, chip in enumerate(chips):
+            self.chips.addWidget(chip, n // CHIPS_A_ROW, n % CHIPS_A_ROW)
 
     def _fill_plan(self) -> None:
         self.plan = optimize.plan(self.profile, self.collection, self.waiting_fps)
@@ -559,6 +684,7 @@ class OptimizeWizard(CardWindow):
             QListWidgetItem("Your settings already fit this PC. Nothing to change.", self.change_list)
         self.notes.setText("\n".join(self.plan.notes))
         self.notes.setVisible(bool(self.plan.notes))
+        QTimer.singleShot(0, self, self._fit_height)  # once the chips and notes just changed are laid out
 
     def _apply(self) -> None:
         self.chosen = [self.change_list.item(i).data(Qt.ItemDataRole.UserRole)
@@ -569,4 +695,5 @@ class OptimizeWizard(CardWindow):
 
     def done(self, result: int) -> None:
         self._timer.stop()
+        self._retest_timer.stop()
         super().done(result)

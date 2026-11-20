@@ -299,3 +299,69 @@ def test_three_places_on_a_fast_line_keep_full_quality():
     p = optimize.PcProfile(**STRONG, upload_kbps=30000)
     labels = [ch.label for ch in optimize.plan(p, c).changes]
     assert sum("1920×1080, 60 fps, 6000 kbps" in lab for lab in labels) == 3
+
+
+def test_the_upload_can_be_tested_again_by_hand_and_shows_in_a_rounded_field(monkeypatch):
+    """User 2026-11-19: the pop-up "still shows the old square looking input ... and there is no option to run
+    it manually"."""
+    from PySide6.QtWidgets import QApplication, QGroupBox
+
+    QApplication.instance() or QApplication([])
+    from sprigcast.app.wizard import OptimizeWizard
+
+    readings = iter([11400, 24300, None])
+
+    def upload(p):
+        p.upload_kbps = next(readings)
+        p.extra["upload_source"] = "Cloudflare" if p.upload_kbps else None
+        return "tested"
+
+    checks = [optimize.Check("encoder", "Video encoder", lambda p: setattr(p, "codec", "h264_nvenc") or "NVENC"),
+              optimize.Check("upload", "Upload speed", upload)]
+    monkeypatch.setattr(optimize, "CHECKS", checks)
+    monkeypatch.setattr(optimize.PcProfile, "weak_reasons", property(lambda self: []))
+    c = _collection()
+    c.outputs = [Output(id=i, type="stream", service=i, canvas="horizontal", enabled=True)
+                 for i in ("twitch", "youtube", "kick")]
+    w = OptimizeWizard(c, run_in_thread=False)
+    try:
+        w.show()
+        w.start_checks()
+        assert w.pages.currentIndex() == 2 and w.upload.value() == 11.4
+        assert isinstance(w.upload_row, QGroupBox) and w.upload_row.title() == "Upload speed"
+        assert "border-radius: 13px" in w.upload.styleSheet() and "width: 0px" in w.upload.styleSheet()
+        assert w.plan.quality == (720, 30)
+        w.test_again.click()  # by hand, without starting over
+        assert w.upload.value() == 24.3 and w.profile.upload_kbps == 24300
+        assert w.plan.quality == (1080, 60) and w.test_again.isEnabled() and w.test_again.text() == "Test again"
+        w.test_again.click()  # offline now: what was measured stays
+        assert w.profile.upload_kbps == 24300 and "Couldn't measure" in w.upload_label.text()
+        w.upload.setValue(30.0)
+        assert w.upload_label.text() == "Typed in"
+        # The list of changes opens without squeezing what's above it into each other.
+        w.details_button.setChecked(True)
+        QApplication.processEvents()
+        assert all(b.height() == 108 for b in w.stages) and w.pc_gauge.height() == 136
+        assert not w.cancel.autoDefault() and not w.back.autoDefault()
+    finally:
+        w.close()
+
+
+def test_places_that_share_an_encoder_cost_the_pc_once():
+    """Three places on one canvas at one quality are one encoder: the gauge counted three."""
+    c = _collection()
+    one = [Output(id="twitch", type="stream", service="twitch", canvas="horizontal", enabled=True)]
+    three = [Output(id=i, type="stream", service=i, canvas="horizontal", enabled=True)
+             for i in ("twitch", "youtube", "kick")]
+    p = optimize.PcProfile(**STRONG, upload_kbps=60000)
+    c.outputs = one
+    alone = optimize.room(p, c, (1080, 60))[0]
+    c.outputs = three
+    assert optimize.room(p, c, (1080, 60))[0] == alone
+    assert optimize._encodes(p, c) == optimize._encodes(p, _with(c, one))
+
+
+def _with(c, outputs):
+    copy = c.model_copy(deep=True)
+    copy.outputs = outputs
+    return copy
