@@ -93,13 +93,63 @@ def test_freeze_hotkeys_and_right_click(added):
     api = NativeApi(FakeHost(col))
     assert plugin_hooks.run_hotkey(api, "plugin:freeze:sprig:p-frame")
     assert freeze_of(col.source("frame-h").filters)[0] == 1
+    assert "plugin:freeze:source:cam" not in actions  # a camera's keys are per item now
+
+
+def test_right_click_and_its_hotkey_freeze_only_that_item(added):
+    """User 2026-11-20: Freeze holds the one you froze, like Pixelate; the same camera elsewhere keeps moving."""
+    from sprigcast.app import hotkeys
+    from sprigcast.plugin_hooks import Place
+
+    added("freeze")
+    col = _collection()
+    col.source("cam").kind = "camera"
+    api = NativeApi(FakeHost(col))
+    chat, frame = col.scene("chat-h"), col.scene("p-frame")
+    place = Place.of(col, chat, "cam")
     entries = {}
-    plugin_hooks.fill_item_menu(api, col.source("frame-h"), lambda label, fn: entries.setdefault(label, fn))
-    assert "Unfreeze" in entries
-    entries["Unfreeze"]()
+    plugin_hooks.fill_item_menu(api, col.source("cam"), lambda label, fn: entries.setdefault(label, fn), place)
+    entries["Freeze for 5 s"]()
+    mine = next(i for i in chat.items if i.source == "cam")
+    run, until = freeze_of(mine.effects)
+    assert run == 1 and until > time.time()
+    assert freeze_of(col.source("cam").filters) is None  # not the camera everywhere
+    assert freeze_of(next(i for i in frame.items if i.source == "cam").effects) is None  # nor the one in the sprig
     entries.clear()
-    plugin_hooks.fill_item_menu(api, col.source("cam"), lambda label, fn: entries.setdefault(label, fn))
+    plugin_hooks.fill_item_menu(api, col.source("cam"), lambda label, fn: entries.setdefault(label, fn), place)
+    entries["Unfreeze"]()
+    assert freeze_of(mine.effects) is None
+    # A sprig's placement freezes the same way, and sounds get no entry.
+    entries.clear()
+    plugin_hooks.fill_item_menu(api, col.source("frame-h"), lambda label, fn: entries.setdefault(label, fn),
+                                Place.of(col, chat, "frame-h"))
     assert "Freeze for 5 s" in entries
+    # Its own hotkey, per item.
+    actions = dict(hotkeys.actions(col))
+    assert actions["plugin:freeze:item:chat-h/cam"] == "Freeze Cam in Chatting"
+    assert actions["plugin:freeze:item:p-frame/cam"] == "Freeze Cam in Frame"
+    assert plugin_hooks.run_hotkey(api, "plugin:freeze:item:chat-h/cam")
+    assert freeze_of(mine.effects)[0] == 2 and freeze_of(next(i for i in frame.items if i.source == "cam").effects) is None
+
+
+def test_apps_freeze_one_item_with_in_and_it_ends_by_itself(added, app):
+    added("freeze")
+    api = NativeApi(FakeHost(_collection()))
+    frame = api.col.scene("p-frame")
+    inner = next(i for i in frame.items if i.source == "cam")
+    out = api.run("freeze.start", {"source": "Cam", "in": "Frame", "seconds": 0.05})
+    assert out["frozen"] == ["Cam in Frame"] and freeze_of(inner.effects)[0] == 1
+    assert freeze_of(api.col.source("cam").filters) is None
+    _wait(app, lambda: freeze_of(inner.effects) is None, 2.0)  # let go when its time is up
+    api.run("freeze.toggle", {"sprig": "Frame", "in": "Chatting"})  # that sprig placed in the bloom
+    placed = next(i for i in api.col.scene("chat-h").items if i.source == "frame-h")
+    assert freeze_of(placed.effects) == (1, 0) and freeze_of(api.col.source("frame-h").filters) is None
+    api.run("freeze.stop", {"sprig": "Frame", "in": "Chatting"})
+    assert freeze_of(placed.effects) is None
+    with pytest.raises(ApiError):
+        api.run("freeze.start", {"source": "Alert", "in": "Frame"})  # not in there
+    api.run("freeze.start", {"source": "Cam", "seconds": 0})  # without "in": everywhere, as before
+    assert freeze_of(api.col.source("cam").filters) == (1, 0)
 
 
 def test_plugins_list_shows_freeze(added):
