@@ -370,8 +370,13 @@ void Core::encode_video(AVFrame *frame, bool key) {
             c.encode_seconds += spent > 0 ? spent : 0;
         }
     } timed{*this, began, written};
-    if (slow_ms > 0 && frame && recoveries > 0)  // tests: an encoder that only just keeps up
-        std::this_thread::sleep_for(std::chrono::milliseconds(slow_ms));
+    if (slow_ms > 0 && frame && recoveries > 0) {  // tests: an encoder that only just keeps up
+        // To the millisecond: Windows' sleep rounds 20 ms up to the next 15.6 ms tick (31 ms), and an encoder at 32
+        // a second never caught up with 30 coming, so the queue filled and frames were repeated (Windows CI on #756:
+        // 7 repeated, passing on a re-run).
+        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(slow_ms);
+        while (std::chrono::steady_clock::now() < until) std::this_thread::yield();
+    }
     if (frame && yuv420) {  // an encoder without NV12: the planes apart, U then V
         if (!i420) {
             i420.reset(ff.av_frame_alloc());
