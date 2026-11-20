@@ -91,6 +91,8 @@ class FlowLayout(QLayout):
     def _place(self, rect, move: bool) -> int:
         x, y, line = rect.x(), rect.y(), 0
         for item in self._items:
+            if item.widget() is not None and item.widget().isHidden():
+                continue  # a hidden one (filtered out) takes no room
             hint = item.sizeHint()
             if x + hint.width() > rect.right() + 1 and line > 0:
                 x, y, line = rect.x(), y + line + self._spacing, 0

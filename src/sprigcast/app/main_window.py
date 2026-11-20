@@ -4012,7 +4012,9 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Hid {config.name!r} from the mixer. It still plays.", 5000)
 
     def _open_ducking(self, parent: QWidget | None = None) -> None:
-        dialog = DuckingDialog(self.collection, parent or self)
+        # Owned by a window, never a widget inside one (Settings → Audio's page): owned by the page it was missing
+        # for Windows' UI Automation (PC 2026-11-20).
+        dialog = DuckingDialog(self.collection, parent.window() if parent is not None else self)
         if modal(dialog):
             dialog.apply_to(self.collection)
             self._changed()
