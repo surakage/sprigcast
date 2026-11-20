@@ -54,3 +54,21 @@ def test_waiting_on_the_network_counts_a_full_send_buffer_not_time_handing_packe
         clock[0] += 0.02
     assert abs(link.behind_seconds - 10 * 0.032) < 0.05
     assert "sending_pct" in link.stats() and "(sending" in link.summary()
+
+
+def test_a_live_flvs_header_note_is_information_not_a_warning(caplog):
+    import logging
+
+    from sprigcast.app.logbook import quiet_live_flv
+
+    quiet_live_flv()
+    quiet_live_flv()  # once only
+    flv = logging.getLogger("libav.flv")
+    with caplog.at_level(logging.INFO):
+        flv.warning("Failed to update header with correct duration.")
+        flv.warning("Failed to update header with correct filesize.")
+        flv.warning("Something else")
+    levels = [(r.levelname, r.getMessage()) for r in caplog.records if r.name == "libav.flv"]
+    assert levels[0] == ("INFO", "Failed to update header with correct duration. (normal when a live stream ends)")
+    assert levels[1][0] == "INFO" and levels[2] == ("WARNING", "Something else")
+    assert sum(1 for f in flv.filters if type(f).__name__ == "LiveFlvQuiet") == 1

@@ -95,6 +95,7 @@ def setup(now: datetime | None = None) -> Path | None:
     handler.setFormatter(_Formatter(FORMAT))
     handler.setLevel(logging.INFO)
     handler.addFilter(Floods())
+    quiet_live_flv()
     root = logging.getLogger()
     if _handler is not None:
         root.removeHandler(_handler)
@@ -188,6 +189,24 @@ class Floods(logging.Filter):
             return True
         seen[2] += 1
         return False
+
+
+class LiveFlvQuiet(logging.Filter):
+    """FFmpeg's FLV muxer can't go back to write the duration and size into a live stream's header when it closes
+    ("Failed to update header with correct duration/filesize"): normal for every stream that stops, so it's logged
+    as information, not a warning (PC test 2026-11-20)."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno == logging.WARNING and "Failed to update header with correct" in str(record.msg):
+            record.levelno, record.levelname = logging.INFO, "INFO"
+            record.msg = f"{record.msg} (normal when a live stream ends)"
+        return True
+
+
+def quiet_live_flv() -> None:
+    logger = logging.getLogger("libav.flv")
+    if not any(isinstance(f, LiveFlvQuiet) for f in logger.filters):
+        logger.addFilter(LiveFlvQuiet())
 
 
 class _Formatter(logging.Formatter):
