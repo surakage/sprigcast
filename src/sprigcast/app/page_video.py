@@ -6,7 +6,7 @@ an MP4 (by its name, or any video on this computer's own servers) is sent to a s
 
 - An MP4 the engine can't play is converted to WebM once (AV1 on the graphics card when it has an encoder, else
   VP8; the sound to Opus) by another program, so SprigCast and its pages never wait on it. The copy is kept
-  (CACHE_BYTES at most, least recently played first out) and served from then on.
+  (CACHE_BYTES at most, least recently played first out, in the local cache folder) and served from then on.
 - Anything else (WebM, MP3, an MP4 with VP9/AV1/Opus inside) goes straight back to where the page asked for it.
 - If converting fails, the page gets the original back and says the video can't play, as before.
 
@@ -297,8 +297,15 @@ class PageVideos:
             def do_HEAD(self):
                 owner._answer(self, body=False)
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.server.daemon_threads = True
+        class Server(ThreadingHTTPServer):
+            daemon_threads = True
+
+            def handle_error(self, request, client_address):
+                # The page engine drops a request it no longer needs (a seek, a clip that changed): no traceback.
+                if not isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError)):
+                    log.exception("page video: a request")
+
+        self.server = Server(("127.0.0.1", 0), Handler)
         self.port = self.server.server_address[1]
         threading.Thread(target=self.server.serve_forever, name="page-videos", daemon=True).start()
 
@@ -519,7 +526,11 @@ def install(profile, base: str | None) -> bool:
         )
 
         if _videos is None:
-            _videos = PageVideos(Path(base) / "page-videos")
+            from PySide6.QtCore import QStandardPaths
+
+            # The local cache folder (%LOCALAPPDATA%), not the roaming profile: up to CACHE_BYTES of clips.
+            cache = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation) or base
+            _videos = PageVideos(Path(cache) / "page-videos")
         videos = _videos
         media = QWebEngineUrlRequestInfo.ResourceType.ResourceTypeMedia
 

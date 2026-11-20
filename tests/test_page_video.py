@@ -149,3 +149,17 @@ def test_a_playable_file_on_a_local_server_goes_back_to_it(tmp_path):
 def test_nothing_is_installed_when_the_engine_plays_h264(monkeypatch):
     monkeypatch.setattr(pv, "engine_plays_h264", lambda: True)
     assert pv.install(object(), "/tmp") is False
+
+
+def test_a_dropped_request_leaves_no_traceback(tmp_path, caplog):
+    import socket
+
+    videos = pv.PageVideos(tmp_path / "cache", run=lambda src, out: pv.CANT)
+    try:
+        s = socket.create_connection(("127.0.0.1", videos.port))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
+        s.close()  # reset, as the page engine does with a request it no longer needs
+        assert _get(videos.port, "/nope")[0] == 404  # still answering
+    finally:
+        videos.close()
+    assert "page video: a request" not in caplog.text
