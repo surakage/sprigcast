@@ -38,6 +38,7 @@ static HANDLE crash_go, crash_written;
 static DWORD crash_thread_id;
 static EXCEPTION_POINTERS *crash_pointers;
 static volatile LONG crash_seen;
+static MINIDUMP_TYPE crash_dump_type = DUMP_TYPE;
 
 static DWORD WINAPI crash_writer(LPVOID unused) {
     (void)unused;
@@ -48,7 +49,7 @@ static DWORD WINAPI crash_writer(LPVOID unused) {
         info.ThreadId = crash_thread_id;
         info.ExceptionPointers = crash_pointers;
         info.ClientPointers = FALSE;
-        crash_dump_fn(GetCurrentProcess(), GetCurrentProcessId(), file, DUMP_TYPE, &info, NULL, NULL);
+        crash_dump_fn(GetCurrentProcess(), GetCurrentProcessId(), file, crash_dump_type, &info, NULL, NULL);
         CloseHandle(file);
     }
     SetEvent(crash_written);
@@ -80,6 +81,12 @@ __declspec(dllexport) int sprigcast_crash_guard(const wchar_t *dump_path) {
     if (crash_dump_fn == NULL)
         return 0;
     wcscpy_s(crash_path, sizeof(crash_path) / sizeof(wchar_t), dump_path);
+    /* The start-up check on GitHub only (SPRIGCAST_DUMP_MEMORY=1): also the kilobyte around whatever a register
+     * or a stack points at, so packaging/read_dump.py can say which object a crash was in. A dump a person sends
+     * never holds memory. */
+    wchar_t memory[4];
+    if (GetEnvironmentVariableW(L"SPRIGCAST_DUMP_MEMORY", memory, 4) == 1 && memory[0] == L'1')
+        crash_dump_type = (MINIDUMP_TYPE)(DUMP_TYPE | MiniDumpWithIndirectlyReferencedMemory);
     crash_go = CreateEventW(NULL, TRUE, FALSE, NULL);
     crash_written = CreateEventW(NULL, TRUE, FALSE, NULL);
     if (crash_go == NULL || crash_written == NULL)
