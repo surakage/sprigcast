@@ -80,10 +80,11 @@ class SoundTypeDialog(CardDialog):
         swatches.setSpacing(8)
         self.colors = QButtonGroup(self)
         used = {t.get("color") for t in self.types if t is not mine}
-        start = mine["color"] if mine else next((c for c in TYPE_COLORS if c not in used), "grey")
+        start = mine["color"] if mine else next((c for c in TYPE_COLORS if c not in used), "gray")
+        names = theme.type_color_names()
         for key, colour in TYPE_COLORS.items():
             dot = _Swatch(colour)
-            dot.setToolTip(key.capitalize())
+            dot.setToolTip(names[key])
             dot.key = key
             dot.setChecked(key == start)
             self.colors.addButton(dot)
@@ -148,7 +149,7 @@ class SoundTypeDialog(CardDialog):
             return others, moves
         name = self.chosen_name()
         picked = self.colors.checkedButton()
-        entry = {"name": name, "color": picked.key if picked else "grey"}
+        entry = {"name": name, "color": picked.key if picked else "gray"}
         if self.editing:
             types = [entry if t["name"] == self.editing else t for t in self.types]
         else:

@@ -39,6 +39,7 @@ from sprigcast.app import icons, theme
 from sprigcast.app.sound_card import (  # the garden's sound types: these change in place
     GROUP_COLOURS,
     GROUPS,
+    type_of,
 )
 
 LOW, HIGH = -60.0, 12.0  # the fader's range, as on the Tune page
@@ -219,8 +220,8 @@ class Strip(QFrame):
 
     def _mute_clicked(self, on: bool) -> None:
         """Show it at once on this strip; the rest of the window catches up when changes settle."""
-        name, db, _muted = getattr(self, "_shown", None) or (self.full_name, self.fader.db, not on)
-        self.show_sound(SimpleNamespace(name=name, volume_db=db, muted=on))
+        name, db = (getattr(self, "_shown", None) or (self.full_name, self.fader.db))[:2]
+        self.show_sound(SimpleNamespace(name=name, volume_db=db, muted=on, group=self.group))
         self.on_change(self.sound_id, {"muted": on})
 
     def _volume(self, db: float) -> None:
@@ -228,14 +229,14 @@ class Strip(QFrame):
         self.on_change(self.sound_id, {"volume_db": db})
 
     def show_sound(self, sound) -> None:
-        shown = (sound.name, sound.volume_db, sound.muted)
+        shown = (sound.name, sound.volume_db, sound.muted, getattr(sound, "group", ""))
         if getattr(self, "_shown", None) == shown:
             return  # nothing to redo: every change used to reset every strip's labels and icons
         self._shown = shown
         self.full_name = sound.name
         metrics = QFontMetrics(_bold(self.name.font()))
         self.name.setText(metrics.elidedText(sound.name, Qt.TextElideMode.ElideRight, STRIP_W - 36))
-        self.name.setToolTip(f"{sound.name}: open its controls")
+        self.name.setToolTip(f"{sound.name} ({type_of(sound.group)}): open its controls")  # the type in words too
         if self.fader.db != sound.volume_db:
             self.fader.db = sound.volume_db
         self.fader.muted = sound.muted

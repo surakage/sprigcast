@@ -44,11 +44,10 @@ from sprigcast.app.live_stage import Elided, Switch, ThinMeter, heading
 
 # Sound types (the Sound card's groups and Build's Type filter). You can add, rename, recolor and remove them;
 # they're kept in the garden (AudioSettings.sound_types). These lists change in place, so every importer sees it.
-TYPE_COLORS = {"green": theme.ACCENT, "blue": theme.INFO, "yellow": theme.WARN, "violet": "#c79bff",
-               "teal": "#5fd0c5", "orange": "#f2a65a", "brown": "#b08968", "grey": theme.MUTED}  # no pink: Live's
+TYPE_COLORS = theme.type_colors()  # by key; the color-blind preset has its own set (see theme.TYPE_COLOR_SETS)
 GROUPS: list[str] = ["Voice", "Game", "Alerts", "Music", "Other"]
-GROUP_COLOURS: dict[str, str] = {"Voice": theme.ACCENT, "Game": theme.INFO, "Alerts": theme.WARN, "Music": "#c79bff",
-                                 "Other": theme.MUTED}
+GROUP_COLOURS: dict[str, str] = {name: TYPE_COLORS[key] for name, key in
+                                 zip(GROUPS, ("green", "blue", "yellow", "violet", "gray"), strict=True)}
 
 
 def use_types(types: list[dict] | None) -> bool:
@@ -58,7 +57,7 @@ def use_types(types: list[dict] | None) -> bool:
         name = str(t.get("name", "")).strip()
         if name and name not in colours:
             names.append(name)
-            colours[name] = TYPE_COLORS.get(str(t.get("color", "")), theme.MUTED)
+            colours[name] = TYPE_COLORS.get(str(t.get("color", "")), TYPE_COLORS["gray"])
     if not names:
         return False  # a garden with none keeps what's shown
     if names == GROUPS and colours == GROUP_COLOURS:

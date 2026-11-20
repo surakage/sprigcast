@@ -399,7 +399,7 @@ class RecordingSettings(BaseModel):
 
 SOUND_TYPES = ({"name": "Voice", "color": "green"}, {"name": "Game", "color": "blue"},
                {"name": "Alerts", "color": "yellow"}, {"name": "Music", "color": "violet"},
-               {"name": "Other", "color": "grey"})
+               {"name": "Other", "color": "gray"})
 
 
 class AudioSettings(BaseModel):

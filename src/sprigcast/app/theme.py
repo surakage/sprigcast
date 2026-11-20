@@ -82,6 +82,35 @@ PRESET_COLORS: dict[str, dict[str, str]] = {
 }
 
 
+# Sound type colors (the Sound card's groups, Build's sound strips and Type filter). Fixed, not turned with the
+# theme: a theme's accent would land on another type's color (Autumn's amber on Orange, Moonlit's aqua on Teal).
+# None is pink (Live's). Each reads at 3:1 or more on every surface in every theme. The color-blind set is told
+# apart with red-green and blue-yellow color blindness (tests/test_sound_types.py simulates both).
+TYPE_COLOR_SETS: dict[str, dict[str, str]] = {
+    "default": {"green": "#4fd88f", "blue": "#7fb8ff", "yellow": "#e6c55a", "violet": "#c79bff",
+                "teal": "#5fd0c5", "orange": "#f2a65a", "brown": "#b08968", "gray": "#8b9a92"},
+    "colorblind": {"green": "#56b4e9", "blue": "#e69f00", "yellow": "#f0e442", "violet": "#91cba9",
+                   "teal": "#dcdcdc", "orange": "#c0826c", "brown": "#9a7a3a", "gray": "#7d8681"},
+}
+TYPE_COLOR_NAMES: dict[str, dict[str, str]] = {  # what each swatch is called under a preset (its tooltip)
+    "default": {"green": "Green", "blue": "Blue", "yellow": "Yellow", "violet": "Violet", "teal": "Teal",
+                "orange": "Orange", "brown": "Brown", "gray": "Gray"},
+    "colorblind": {"green": "Sky blue", "blue": "Orange", "yellow": "Yellow", "violet": "Mint", "teal": "White",
+                   "orange": "Clay", "brown": "Olive", "gray": "Gray"},
+}
+
+
+def type_colors(preset: str | None = None) -> dict[str, str]:
+    """Sound type colors for a color preset (default: the one this run is drawn with)."""
+    preset = colors_in_use if preset is None else preset
+    return dict(TYPE_COLOR_SETS.get(preset, TYPE_COLOR_SETS["default"]))
+
+
+def type_color_names(preset: str | None = None) -> dict[str, str]:
+    preset = colors_in_use if preset is None else preset
+    return dict(TYPE_COLOR_NAMES.get(preset, TYPE_COLOR_NAMES["default"]))
+
+
 def preset_colors(name: str) -> dict[str, str]:
     """The good / warning / bad colors a preset shows (for its preview in Settings)."""
     base = {"ACCENT": "#4fd88f", "WARN": "#e6c55a", "BAD": "#f2665e"}
