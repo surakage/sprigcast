@@ -774,6 +774,72 @@ class SceneCollection(BaseModel):
         part = self._by_id()[1].get(source.settings.get("scene"))
         return part if part is not None and part.kind == "part" and part.shape_of is None else None
 
+    def filter_twins(self, source: SourceConfig) -> list[SourceConfig]:
+        """A placed sprig's other placements that go with it: the same sprig in the same bloom (or sprig) on its
+        other canvases. Each canvas has a placement of its own, so their filters are separate lists."""
+        part = self.part_of(source)
+        if part is None:
+            return []
+        by_id, out = {s.id: s for s in self.sources}, []
+        for scene in self.scenes:
+            if not any(i.source == source.id for i in scene.items):
+                continue
+            if scene.kind == "part":
+                family = [s for s in self.shapes(scene) if s is not scene]
+            else:
+                family = [s for s in self.linked_with(scene.id) if s is not scene]
+            for other in family:
+                for item in other.items:
+                    twin = by_id.get(item.source)
+                    if twin is not None and twin is not source and twin not in out and self.part_of(twin) is part:
+                        out.append(twin)
+        return out
+
+    @staticmethod
+    def shares_filters(source: SourceConfig) -> bool:
+        """Same filters on both canvases (the usual), or this placement keeps its own."""
+        return not source.settings.get("own_filters")
+
+    def share_filters(self, source: SourceConfig) -> list[SourceConfig]:
+        """After a placed sprig's filters changed: its placements on the other canvases get the same filters
+        (switched on or off the same, same settings, same order), unless it keeps its own. Returns those changed."""
+        if not self.shares_filters(source):
+            return []
+        taken = {f.id for s in self.sources for f in s.filters}
+        changed = []
+        for twin in self.filter_twins(source):
+            if not self.shares_filters(twin):
+                continue
+            old = list(twin.filters)
+            new = []
+            for flt in source.filters:
+                mine = next((f for f in old if f.kind == flt.kind), None)  # keeps its id: hotkeys and apps know it
+                if mine is not None:
+                    old.remove(mine)
+                    fid = mine.id
+                else:
+                    n = 1
+                    while f"filter-{n}" in taken:
+                        n += 1
+                    fid = f"filter-{n}"
+                    taken.add(fid)
+                new.append(flt.model_copy(deep=True, update={"id": fid}))
+            if new != twin.filters:
+                twin.filters = new
+                changed.append(twin)
+        return changed
+
+    def set_shares_filters(self, source: SourceConfig, on: bool) -> None:
+        """Switch "Same filters on both canvases" for a placed sprig and its other canvases' placements; switching
+        it on gives them this one's filters."""
+        for one in [source, *self.filter_twins(source)]:
+            settings = {k: v for k, v in one.settings.items() if k != "own_filters"}
+            if not on:
+                settings["own_filters"] = True
+            one.settings = settings
+        if on:
+            self.share_filters(source)
+
     @staticmethod
     def hidden_here(source: SourceConfig) -> set[str]:
         """Sources inside a part that one placement of it hides (its own tweak; other placements still show them)."""

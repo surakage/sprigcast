@@ -68,6 +68,7 @@ FEATURES = (
     "edit.undo",           # edit.undo / edit.redo; {"steps", "one_step": true}: all or none, one undo step
     "steps.dry_run",       # {"steps", "dry_run": true}: nothing kept; answers the layouts and overlaps it would make
     "events.item_moved",   # item.moved when something is moved, sized, cropped or turned
+    "filters.share",       # a placed sprig's filters follow on its other canvases; filters.share, filters.list same_on_both_canvases
     "layout.get",          # layout.get: every item's place, crop, bounds, source size and canvas box; flat, overlaps
 )
 # What {"steps": [...], "one_step": true} and "dry_run": true may hold: changes to the garden only, so all of them
@@ -941,86 +942,153 @@ class NativeApi:
                                          **({"choices": [c for c, _ in f.choices]} if f.choices else {})}
                                         for f in k.fields]} for k in filter_kinds()]}
 
-    @action("filters.list", "A source's filters, top to bottom.", source="name or id")
+    _OWNER = {"source": "?name or id", "sprig": "?a sprig instead: its filters where it's placed",
+              "in": "?with sprig: only where it's placed in this bloom or sprig (both canvases)"}
+
+    def _filter_owners(self, data) -> list[SourceConfig]:
+        """What a filter request is about: a source, or a placed sprig. A sprig has a placement in each bloom and on
+        each canvas, each with filters of its own: {"sprig"} is all of them, with "in" the ones in that bloom or
+        sprig (every canvas of it). "source" may also be one placement's id."""
+        if data.get("sprig") is None:
+            wanted = data.get("source")
+            placed = next((s for s in self.col.sources if s.kind == PART_KIND and s.id == wanted), None)
+            return [placed] if placed is not None else [self._source(data, "source")]
+        sprig = self._sprig(data)
+        placed = [s for s in self.col.sources if self.col.part_of(s) is sprig]
+        holder = data.get("in")
+        if holder is not None:
+            scene = next((s for s in self.col.scenes if s.id == holder), None) or \
+                next((s for s in self.col.scenes if s.name == holder and s.shape_of is None), None)
+            if scene is None:
+                raise _missing(f"No bloom or sprig called {holder!r}.", "in", holder)
+            there = {i.source for s in self.col.scenes
+                     if s.id == scene.id or s.shape_of == scene.id or s.linked_to == scene.id for i in s.items}
+            placed = [s for s in placed if s.id in there]
+        if not placed:
+            raise ApiError("not_allowed", f"{sprig.name!r} isn't placed {'there' if holder is not None else 'in any bloom yet'}.")
+        return placed
+
+    def _each_owner(self, data, one):
+        """Run one(source) for each thing the request is about and save once. A placement the filter isn't on is
+        passed over; when none has it, that's the error. Answers what the first one answered."""
+        answers, missed = [], None
+        for source in self._filter_owners(data):
+            try:
+                answers.append(one(source))
+            except ApiError as error:
+                if error.code not in ("not_found", "not_allowed"):
+                    raise
+                missed = missed or error
+                continue
+            self.col.share_filters(source)  # a placed sprig's other canvases follow, unless it keeps its own
+        if not answers:
+            raise missed
+        self.host.commit("filters")
+        return answers[0]
+
+    @action("filters.list", "A source's or a placed sprig's filters, top to bottom.", **_OWNER)
     def filters_list(self, data):
-        source = self._source(data, "source")
-        return {"filters": [self._filter_info(f) for f in source.filters]}
+        source = self._filter_owners(data)[0]
+        out: dict[str, Any] = {"filters": [self._filter_info(f) for f in source.filters]}
+        if self.col.filter_twins(source):  # a placed sprig with a placement per canvas
+            out["same_on_both_canvases"] = self.col.shares_filters(source)
+        return out
+
+    @action("filters.share", "A placed sprig: the same filters on both canvases (the usual), or its own on each.",
+            on="true or false", **_OWNER)
+    def filters_share(self, data):
+        on = _get(data, "on", bool)
+        owners = [s for s in self._filter_owners(data) if self.col.filter_twins(s)]
+        if not owners:
+            raise ApiError("not_allowed", "That has one set of filters already: it's the same on every canvas.")
+        done: set[str] = set()
+        for source in owners:
+            if source.id not in done:  # the first of a pair gives the other its filters
+                self.col.set_shares_filters(source, on)
+                done |= {source.id, *(t.id for t in self.col.filter_twins(source))}
+        self.host.commit("filters")
+        return {"source": owners[0].name, "same_on_both_canvases": on}
 
     @action("filter.set", "Turn a filter on or off and/or change some of its settings (others stay).",
-            source="name or id", filter="filter name, id or kind", on="?true or false", settings="?{key: value}")
+            filter="filter name, id or kind", on="?true or false", settings="?{key: value}", **_OWNER)
     def filter_set(self, data):
-        source = self._source(data, "source")
-        found = self._filter(source, data)
         on = _get(data, "on", bool, optional=True)
         settings = _get(data, "settings", dict, optional=True)
         if on is None and settings is None:
             raise _bad("Give on, settings or both.")
-        if on is not None:
-            from sprigcast.core.filters import switch
+        return self._each_owner(data, lambda source: self._set_filter(source, data, on, settings))
 
-            switch(found, on)
+    def _set_filter(self, source, data, on, settings):
+        from sprigcast.core.filters import filter_kind, switch
+
+        found = self._filter(source, data)
         if settings:
-            from sprigcast.core.filters import filter_kind
-
             kind = filter_kind(found.kind)
             if kind is not None:
                 unknown = set(settings) - {f.key for f in kind.fields}
                 if unknown:
                     raise _bad(f"{found.kind} has no setting {', '.join(sorted(unknown))}.")
             found.settings = {**found.settings, **settings}
-        self.host.commit("filters")
+        if on is not None:
+            switch(found, on)
         return self._filter_info(found)
 
-    @action("filter.toggle", "Turn a filter on if off, off if on.", source="name or id", filter="name, id or kind")
+    @action("filter.toggle", "Turn a filter on if off, off if on.", filter="name, id or kind", **_OWNER)
     def filter_toggle(self, data):
-        source = self._source(data, "source")
-        found = self._filter(source, data)
-        from sprigcast.core.filters import switch
+        on: list[bool] = []  # the first one decides, so a sprig's placements end up the same
 
-        switch(found, not found.enabled)
-        self.host.commit("filters")
-        return self._filter_info(found)
+        def one(source):
+            found = self._filter(source, data)
+            on.append(not found.enabled)
+            return self._set_filter(source, data, on[0], None)
 
-    @action("filter.add", "Add a filter to a source.", source="name or id", kind="kind from filters.kinds",
-            name="?its name", settings="?{key: value}", on="?true (default) or false")
+        return self._each_owner(data, one)
+
+    @action("filter.add", "Add a filter to a source or a placed sprig.", kind="kind from filters.kinds",
+            name="?its name", settings="?{key: value}", on="?true (default) or false", **_OWNER)
     def filter_add(self, data):
         from sprigcast.core.filters import filter_kind
 
-        source = self._source(data, "source")
         kind = filter_kind(_get(data, "kind", str))
         if kind is None:
             raise _missing("No such filter kind (filters.kinds lists them).", "kind", data.get("kind"))
-        if kind.media == "video" and any(f.kind == kind.kind for f in source.filters):
-            raise ApiError("not_allowed", f"{source.name!r} already has a {kind.label} filter.")
         name = _get(data, "name", str, optional=True, default=kind.label)
         settings = {**kind.defaults, **_get(data, "settings", dict, optional=True, default={})}
-        taken = {f.id for s in self.col.sources for f in s.filters}
-        n = 1
-        while f"filter-{n}" in taken:
-            n += 1
-        new = Filter(id=f"filter-{n}", kind=kind.kind, name=name, settings=settings,
-                     enabled=_get(data, "on", bool, optional=True, default=True))
-        source.filters.append(new)
-        self.host.commit("filters")
-        return self._filter_info(new)
+        enabled = _get(data, "on", bool, optional=True, default=True)
 
-    @action("filter.remove", "Remove a filter from a source.", source="name or id", filter="name, id or kind")
+        def one(source):
+            if kind.media == "video" and any(f.kind == kind.kind for f in source.filters):
+                raise ApiError("not_allowed", f"{source.name!r} already has a {kind.label} filter.")
+            taken = {f.id for s in self.col.sources for f in s.filters}
+            n = 1
+            while f"filter-{n}" in taken:
+                n += 1
+            new = Filter(id=f"filter-{n}", kind=kind.kind, name=name, settings=dict(settings), enabled=enabled)
+            source.filters.append(new)
+            return self._filter_info(new)
+
+        return self._each_owner(data, one)
+
+    @action("filter.remove", "Remove a filter from a source or a placed sprig.", filter="name, id or kind", **_OWNER)
     def filter_remove(self, data):
-        source = self._source(data, "source")
-        found = self._filter(source, data)
-        source.filters = [f for f in source.filters if f is not found]
-        self.host.commit("filters")
+        def one(source):
+            found = self._filter(source, data)
+            source.filters = [f for f in source.filters if f is not found]
 
-    @action("filter.move", "Move a filter to a new place in the list (0 = top).", source="name or id",
-            filter="name, id or kind", index="new position")
+        self._each_owner(data, one)
+
+    @action("filter.move", "Move a filter to a new place in the list (0 = top).",
+            filter="name, id or kind", index="new position", **_OWNER)
     def filter_move(self, data):
-        source = self._source(data, "source")
-        found = self._filter(source, data)
         index = int(_get(data, "index", float))
-        rest = [f for f in source.filters if f is not found]
-        rest.insert(max(0, min(len(rest), index)), found)
-        source.filters = rest
-        self.host.commit("filters")
+
+        def one(source):
+            found = self._filter(source, data)
+            rest = [f for f in source.filters if f is not found]
+            rest.insert(max(0, min(len(rest), index)), found)
+            source.filters = rest
+
+        self._each_owner(data, one)
 
     # Sources -------------------------------------------------------------------------------------
 

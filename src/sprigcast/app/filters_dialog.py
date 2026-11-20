@@ -256,11 +256,19 @@ class FiltersDialog(CardWindow):
     preview updates live. Closing calls on_change(save=True)."""
 
     def __init__(self, source: SourceConfig, on_change: Callable[..., None], parent: QWidget | None = None,
-                 media: str | None = None, sounds: list[tuple[str, str]] | None = None):
+                 media: str | None = None, sounds: list[tuple[str, str]] | None = None, collection=None):
         super().__init__(f"Filters for “{source.name}”", parent, (820, 520))
         self.source = source
         self.sounds = [(sid, name) for sid, name in (sounds or []) if sid != source.id]
-        self.on_change = on_change
+        # A placed sprig has a placement on each canvas: its filters follow there, unless it keeps its own.
+        self.collection = collection if collection is not None and collection.filter_twins(source) else None
+
+        def changed(save: bool = False) -> None:
+            if self.collection is not None:
+                self.collection.share_filters(source)
+            on_change(save=save)
+
+        self.on_change = changed
         self.media = media or media_of(source)  # a browser page has both: the Sound card asks for "audio"
         self.form: FilterForm | None = None
 
@@ -309,6 +317,12 @@ class FiltersDialog(CardWindow):
         left.addWidget(self.empty)
         left.addWidget(self.list, 1)
         left.addLayout(bar)
+        self.same = QCheckBox("Same on both canvases")
+        self.same.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.same.setVisible(self.collection is not None)
+        self.same.setChecked(self.collection is None or self.collection.shares_filters(source))
+        self.same.toggled.connect(self._same_toggled)
+        left.addWidget(self.same)
 
         self.title = QLabel("")
         # A plugin filter that reports how it's doing ("Downloading 40%"): its note beside the name, kept fresh.
@@ -437,6 +451,11 @@ class FiltersDialog(CardWindow):
         filters[a], filters[b] = filters[b], filters[a]
         self._refresh(new)
         self.on_change(save=False)
+
+    def _same_toggled(self, on: bool) -> None:
+        if self.collection is not None:
+            self.collection.set_shares_filters(self.source, on)
+            self.on_change(save=False)
 
     def _toggled(self, item: QListWidgetItem) -> None:
         row, shown = self.list.row(item), self._shown()
