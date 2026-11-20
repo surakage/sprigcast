@@ -28,6 +28,8 @@ def main(path: str) -> int:
     for thread in dump.threads.threads:
         mark = " <- faulting" if thread.ThreadId == faulting else ""
         stack = thread.Stack
+        if not mark:
+            continue
         print(f"thread {thread.ThreadId}{mark}: stack 0x{stack.StartOfMemoryRange:x} +{stack.MemoryLocation.DataSize}")
         try:
             data = reader.read(stack.StartOfMemoryRange, stack.MemoryLocation.DataSize)
@@ -35,7 +37,7 @@ def main(path: str) -> int:
             print("  (stack not read:", exc, ")")
             continue
         shown = 0
-        limit = 160 if mark else 14
+        limit = 150 if mark else 0
         for offset in range(0, len(data) - 7, 8):
             (value,) = struct.unpack_from("<Q", data, offset)
             name = where(value)

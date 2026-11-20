@@ -53,17 +53,15 @@ jobs:
           run-id: 44646097603
           github-token: ${{ github.token }}
           path: dump
+      - name: The logs
+        shell: pwsh
+        run: Get-ChildItem dump -Recurse -Include *.log,*.txt | ForEach-Object { Write-Host "=====" $_.FullName $_.Length; Get-Content $_.FullName -Tail 45 }
       - name: Read the dump
         shell: pwsh
         run: |
-          Get-ChildItem dump -Recurse | Format-Table FullName, Length
           $dmp = (Get-ChildItem dump -Recurse -Filter *.dmp | Select-Object -First 1).FullName
-          uv run --no-project --with minidump python packaging/read_dump.py "$dmp"
+          uv run --no-project --with minidump python packaging/read_dump.py "$dmp" 2>&1 | Select-Object -First 260
           $cdb = "${env:ProgramFiles(x86)}\Windows Kits\10\Debuggers\x64\cdb.exe"
           if (Test-Path $cdb) {
-            & $cdb -z "$dmp" -y "srv*C:\sym*https://msdl.microsoft.com/download/symbols" -c ".ecxr; r; kn 80; .echo ALLTHREADS; ~*kn 40; lm; q"
+            & $cdb -z "$dmp" -y "srv*C:\sym*https://msdl.microsoft.com/download/symbols" -c ".ecxr; r; kn 70; q" 2>&1 | Select-Object -Last 130
           } else { Write-Host "no cdb here" }
-      - name: The logs
-        if: always()
-        shell: pwsh
-        run: Get-ChildItem dump -Recurse -Include *.log,*.txt | ForEach-Object { Write-Host "=====" $_.FullName; Get-Content $_.FullName -Tail 400 }
