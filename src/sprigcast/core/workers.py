@@ -66,15 +66,53 @@ def wait_answering(job: Callable, *args, poll_ms: int = 10):
     import threading
 
     try:
-        from PySide6.QtCore import QCoreApplication, QEventLoop
+        from PySide6.QtCore import QCoreApplication
     except ImportError:
         return job(*args)
     app = QCoreApplication.instance()
     if app is None or threading.current_thread() is not threading.main_thread():
         return job(*args)
-    from concurrent.futures import wait
-
+    global _answering
     future = pool().submit(job, *args)
+    _answering += 1
+    try:
+        _wait(app, future, poll_ms)
+    finally:
+        _answering -= 1
+        if not _answering and _after:
+            later, _after[:] = list(_after), []
+            from PySide6.QtCore import QTimer
+
+            for step in later:
+                QTimer.singleShot(0, step)
+    return future.result()
+
+
+_answering = 0  # wait_answering()s in progress on the window's thread
+_after: list[Callable] = []  # steps held back until they're done (when_free)
+
+
+def answering() -> bool:
+    """True while the window's thread is inside wait_answering()."""
+    return _answering > 0
+
+
+def when_free(step: Callable) -> bool:
+    """Inside wait_answering(): hold `step` until the wait is over and return True. Otherwise False (do it now).
+
+    A pop-up opened in the middle of a wait (Settings from the Sound card's gear, while StreamBridge's bloom
+    screenshot was being made, PC 2026-11-20) held the waiting job's answer for as long as
+    it stayed open, and ran its own event loop under the wait's."""
+    if not answering():
+        return False
+    _after.append(step)
+    return True
+
+
+def _wait(app, future, poll_ms: int) -> None:
+    from concurrent.futures import wait
+    from PySide6.QtCore import QEventLoop
+
     # Poll rather than a nested QEventLoop: on Windows that loop barely woke for the window's timers while it
     # waited (2 of ~20 beats in 200 ms on the PC, 2026-11-17). Each turn hands over every event that's due
     # (clicks and keys wait, so nothing starts twice), then sleeps on the job, not the GIL, for poll_ms.
@@ -82,4 +120,3 @@ def wait_answering(job: Callable, *args, poll_ms: int = 10):
     while not future.done():
         app.processEvents(flags)
         wait([future], timeout=poll_ms / 1000)
-    return future.result()

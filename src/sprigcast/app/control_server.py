@@ -656,11 +656,17 @@ class ControlServer(QObject):
             return  # the body is still arriving
         sock.setProperty("sprigcast_door", "web")
         sock.readAll()
+        QTimer.singleShot(0, lambda: self._answer_web(sock, request))  # outside the socket's signal: see _arrived
+
+    def _answer_web(self, sock: QTcpSocket, request) -> None:
         status, body = web.handle(self.native, request, enabled=self.web_door, password=self.password,
                                   keys=self.keys() if self.password else [], pairing=self.pairing)
         log.info("control: web link %s %s -> %d", request.method, request.path, status)
-        sock.write(web.response(status, body))
-        sock.disconnectFromHost()
+        try:
+            sock.write(web.response(status, body))
+            sock.disconnectFromHost()
+        except RuntimeError:
+            pass  # the asker hung up while the answer was being made: Qt already let the socket go
         self.soon()
 
     def _accept(self) -> None:
@@ -681,7 +687,7 @@ class ControlServer(QObject):
                                   frame_seconds=self.frame_seconds)
                 first = not self._obs()
             self.sessions[socket] = session
-            socket.textMessageReceived.connect(lambda text, s=socket: self._received(s, text))
+            socket.textMessageReceived.connect(lambda text, s=socket: self._arrived(s, text))
             socket.binaryMessageReceived.connect(lambda _data, s=socket: s.close(
                 QWebSocketProtocol.CloseCode(4002), "Only JSON text messages are understood."))
             socket.disconnected.connect(lambda s=socket: self._gone(s))
@@ -725,6 +731,17 @@ class ControlServer(QObject):
         except RuntimeError:  # Qt already freed it (the app is closing): nothing left to tidy
             return
         self.on_clients_changed(len(self.sessions))
+
+    def _arrived(self, socket: QWebSocket, text: str) -> None:
+        """A message, answered once the socket's own signal has returned.
+
+        Answering inside the signal left Qt's socket code waiting under ours. Some answers keep the window
+        answering while they work (a bloom screenshot for StreamBridge: workers.wait_answering), and anything
+        that runs meanwhile can close the connection; the socket was then deleted under that waiting Qt code,
+        which crashed in Qt6Core once the answer came back (PC, build 44779596950, 2026-11-20 17:22 UTC, Settings
+        opened and closed during the wait). Queued, a closed connection is simply skipped: _gone drops its
+        session first, and _pump answers only sessions still here."""
+        QTimer.singleShot(0, lambda: self._received(socket, text))
 
     def _received(self, socket: QWebSocket, text: str) -> None:
         session = self.sessions.get(socket)
