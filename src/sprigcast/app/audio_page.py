@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QTabWidget,
@@ -123,7 +124,8 @@ def page_style() -> str:
         f" min-height: 22px; max-height: 22px; padding: 0px 9px; font-weight: 600; }}"
         f"QPushButton#mixPill:checked {{ background: {t.SELECT_BG}; color: {t.SELECT_TEXT}; }}"
         f"QPushButton#mixPill:disabled {{ color: {t.EDGE_STRONG}; }}"
-        f"QSlider#balance::sub-page:horizontal {{ background: {t.EDGE_STRONG}; }}"
+        + _pick_style()
+        + f"QSlider#balance::sub-page:horizontal {{ background: {t.EDGE_STRONG}; }}"
         f"QSpinBox#audioDelay {{ background: transparent; border: 1px solid transparent; padding: 4px 0px;"
         f" min-height: 18px; }}"
         # No arrows (type, scroll or the arrow keys). NoButtons can't be used: with the app's style sheet it
@@ -132,6 +134,26 @@ def page_style() -> str:
         f" width: 0px; height: 0px; border: none; }}"
         f"QSpinBox#audioDelay:hover, QSpinBox#audioDelay:focus {{ background: {t.FIELD};"
         f" border: 1px solid {t.FIELD_EDGE}; }}"
+    )
+
+
+def _pick_style() -> str:
+    """Drop-downs on this page (Hear it, Music drops when) as the same rounded pill as the Type button beside
+    Find, with the soft chevron: the plain boxes looked like an older app (user 2026-11-20)."""
+    t = theme
+    try:
+        arrow = (f"QComboBox#audioPick::down-arrow {{ image: url({t.nature_pictures()['chevron']});"
+                 " width: 10px; height: 10px; }")
+    except OSError:
+        arrow = ""
+    return (
+        f"QComboBox#audioPick {{ background: {t.BUTTON}; color: {t.TEXT}; border: 1px solid {t.BUTTON_EDGE};"
+        f" border-top-color: {t.BUTTON_TOP}; border-radius: 14px; padding: 3px 12px; min-height: 22px;"
+        " font-weight: 600; }"
+        f"QComboBox#audioPick:hover, QComboBox#audioPick:focus {{ background: {t.BUTTON_HOVER};"
+        f" border-color: {t.ACCENT}; }}"
+        f"QComboBox#audioPick:disabled {{ color: {t.MUTED}; background: transparent; border-color: {t.EDGE}; }}"
+        "QComboBox#audioPick::drop-down { border: none; background: transparent; width: 24px; }" + arrow
     )
 
 
@@ -319,26 +341,37 @@ class AudioPage(QWidget):
 
     def _ducking(self) -> QWidget:
         """Ducking's everyday picks, under the sounds it lowers. More… opens the rest (voices, timing)."""
+        from sprigcast.app.card import field_label
+
         group = QGroupBox("Ducking")
-        form = QFormLayout(group)
-        form.setContentsMargins(0, 0, 0, 0)
-        form.setHorizontalSpacing(18)
-        form.setVerticalSpacing(10)
-        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        # Each pick under its own small label, side by side (as the New type window): a label column on the left
+        # sat off-line with the pills and read as an older form (user 2026-11-20).
+        grid = QGridLayout(group)
+        grid.setContentsMargins(4, 6, 4, 4)
+        grid.setHorizontalSpacing(28)
+        grid.setVerticalSpacing(8)
         self.duck_when = QComboBox()
+        self.duck_when.setObjectName("audioPick")
+        self.duck_when.setAccessibleName("Music drops when")
+        self.duck_when.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.duck_when.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.duck_when.addItem("Never", False)
         self.duck_when.addItem("Mic is talking", True)
-        form.addRow("Music drops when", self.duck_when)
-        row = QHBoxLayout()
-        row.setSpacing(12)
+        grid.addWidget(field_label("Music drops when"), 0, 0)
+        grid.addWidget(self.duck_when, 1, 0, Qt.AlignmentFlag.AlignVCenter)  # in line with the pills beside it
         self.duck_by = Segmented(list(DUCK_PICKS))
+        self.duck_by.setAccessibleName("Lower by")
         self.ducking_button = QPushButton("More…")
         self.ducking_button.setAutoDefault(False)
+        self.ducking_button.setAccessibleName("More ducking settings")
         self.ducking_button.clicked.connect(self._more_ducking)
-        row.addWidget(self.duck_by)
-        row.addWidget(self.ducking_button)
-        row.addStretch(1)
-        form.addRow("Lower by", row)
+        picks = QHBoxLayout()
+        picks.setSpacing(12)
+        picks.addWidget(self.duck_by)
+        picks.addWidget(self.ducking_button)
+        grid.addWidget(field_label("Lower by"), 0, 1)
+        grid.addLayout(picks, 1, 1)
+        grid.setColumnStretch(2, 1)
         self.duck_when.currentIndexChanged.connect(lambda _i: self.duck_by.setEnabled(bool(self.duck_when.currentData())))
         self._load_ducking()
         return group
@@ -706,8 +739,6 @@ class AudioPage(QWidget):
             QTimer.singleShot(self.ROW_GAP_MS, self, self._more_rows)
         grid.setColumnStretch(0, 1)
         box.addWidget(table)
-        legend = " · ".join(f"{n} {self.collection.audio.track_name(n)}" for n in range(1, tracks + 1))
-        box.addWidget(_hint(f"Tracks: {legend}"))
         return group
 
     # Sound rows made with the tab; the rest a few per tick (ROWS_PER_TICK). None now: two rows (~100 calls into Qt)
@@ -777,6 +808,8 @@ class AudioPage(QWidget):
 
     def _row_rest(self, grid, row, source, tracks, st, volume, mono, balance, sync) -> None:
         hear = QComboBox()
+        hear.setObjectName("audioPick")
+        hear.setCursor(Qt.CursorShape.PointingHandCursor)
         current = st.get("monitor", False)
         for text, value in self.HEAR:
             hear.addItem(text, value)

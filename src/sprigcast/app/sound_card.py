@@ -254,7 +254,7 @@ class SoundCard(QWidget):
         overview = QWidget()
         col = QVBoxLayout(overview)
         col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(14)
+        col.setSpacing(10)
         top = QHBoxLayout()
         top.addWidget(heading("Sound"), 1)
         self.edit = QPushButton("Edit")
@@ -286,7 +286,8 @@ class SoundCard(QWidget):
         first.addWidget(self.mic_first)
         col.addLayout(first)
         self.body = QVBoxLayout()
-        self.body.setSpacing(16)
+        # 8, not 16: four types fit the card under the canvas without the last one cut in half (PC 2026-11-20).
+        self.body.setSpacing(8)
         col.addLayout(self.body)
         col.addStretch(1)  # spare height goes below the groups, never between them
         self.pages.addWidget(overview)
