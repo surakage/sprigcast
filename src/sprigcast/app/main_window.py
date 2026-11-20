@@ -1621,9 +1621,14 @@ class MainWindow(QMainWindow):
                         placed.append((child.data(0, ROLE_ID), folder_id))
             return placed, folder_order
 
-        shows, parts = self.collection.scenes_for(self.build_canvas), self.collection.parts()
-        show_folders = [f.id for f in self.collection.folders_for(self.build_canvas)]
-        part_folders = [f.id for f in self.collection.part_folders()]
+        # What the library listed: this shape's blooms and sprigs only (#623). Checked against everything, a
+        # sprig or sprig folder of the other shape made every drop look wrong and it was put back (PC, 2026-11-20).
+        bloom_groups = self.collection.grouped_scenes(self.build_canvas)
+        sprig_groups = self.collection.grouped_parts_on(self.build_canvas)
+        shows = [s for _f, group in bloom_groups for s in group]
+        parts = [p for _f, group in sprig_groups for p in group]
+        show_folders = [f.id for f, _g in bloom_groups if f is not None]
+        part_folders = [f.id for f, _g in sprig_groups if f is not None]
         got_shows, got_parts = read(""), read(PART_ROOT)
         if (got_shows is None or got_parts is None
                 or sorted(sid for sid, _ in got_shows[0]) != sorted(s.id for s in shows)

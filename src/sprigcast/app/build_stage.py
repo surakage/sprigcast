@@ -500,31 +500,65 @@ class InsideList(QListWidget):
             event.acceptProposedAction()
             return
         super().dragEnterEvent(event)
+        if event.source() is self:
+            event.accept()
+
+    def _slot_at(self, y: float) -> int:
+        """Where a row dragged to this height goes: before the row under it (its top half) or after it.
+        Worked out here, not by Qt: a sprig's row is tall (its contents listed under it), and Qt only lets a
+        drop land in a few pixels at its very top or bottom, so most drops did nothing (PC, 2026-11-20)."""
+        for row in range(self.count()):
+            rect = self.visualItemRect(self.item(row))
+            if y < rect.center().y():
+                return row
+        return self.count()
 
     def dragMoveEvent(self, event) -> None:  # noqa: N802
         if event.mimeData().hasFormat(SPRIG_MIME):
             event.acceptProposedAction()
             return
-        super().dragMoveEvent(event)
+        if event.source() is not self:
+            super().dragMoveEvent(event)
+            return
+        slot = self._slot_at(event.position().y())
+        if slot != getattr(self, "_drop_slot", None):
+            self._drop_slot = slot
+            self.viewport().update()
+        event.setDropAction(Qt.DropAction.MoveAction)
+        event.accept()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802
+        self._drop_slot = None
+        self.viewport().update()
+        super().dragLeaveEvent(event)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        slot = getattr(self, "_drop_slot", None)
+        if slot is None or not self.count():
+            return
+        if slot < self.count():
+            y = self.visualItemRect(self.item(slot)).top()
+        else:
+            y = self.visualItemRect(self.item(self.count() - 1)).bottom()
+        p = QPainter(self.viewport())
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(QPen(QColor(theme.ACCENT), 2))
+        p.drawLine(QPointF(8, y), QPointF(self.viewport().width() - 8, y))
+        p.end()
 
     def dropEvent(self, event) -> None:  # noqa: N802
         """Work out where the row was dropped and let the window reorder the bloom (it rebuilds the list)."""
+        self._drop_slot = None
+        self.viewport().update()
         if event.mimeData().hasFormat(SPRIG_MIME):
             event.setDropAction(Qt.DropAction.CopyAction)
             event.accept()
             self.sprig_dropped.emit(bytes(event.mimeData().data(SPRIG_MIME)).decode())
             return
         source = self.currentRow()
-        index = self.indexAt(event.position().toPoint())
-        if not index.isValid():
-            target = self.count() - 1
-        else:
-            target = index.row()
-            below = self.dropIndicatorPosition() == QAbstractItemView.DropIndicatorPosition.BelowItem
-            if below and target < source:
-                target += 1
-            elif not below and target > source:
-                target -= 1
+        slot = self._slot_at(event.position().y())
+        target = slot - 1 if slot > source else slot  # the slot counts the row being moved
         event.setDropAction(Qt.DropAction.IgnoreAction)
         event.accept()
         if source >= 0 and target != source:
