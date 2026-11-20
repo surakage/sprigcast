@@ -152,6 +152,11 @@ def size(path: Path) -> int:
 
 
 def main() -> int:
+    # (What SprigCast printed can hold bytes this console's code page has no letter for: the check then ended
+    # on its own print, with no result, run 44657610013.)
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     seconds = float(sys.argv[1])
     command = sys.argv[2:]
     watchdog = threading.Timer(seconds + HANG_AFTER_S, _hung, args=(seconds + HANG_AFTER_S,))

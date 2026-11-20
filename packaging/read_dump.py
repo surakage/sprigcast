@@ -48,7 +48,7 @@ def refs(dump, path: str, target: int, where) -> None:
             raw.seek(segment.start_file_address)
             blob = raw.read(segment.size)
             at = blob.find(needle)
-            while at >= 0 and shown < 40:
+            while at >= 0 and shown < 8:
                 if at % 8 == 0:
                     shown += 1
                     print(f"  at 0x{segment.start_virtual_address + at:x}:")
@@ -97,7 +97,7 @@ def main(path: str, folder: str) -> int:
         return 0
     record = dump.exception.exception_records[0]
     rec = record.ExceptionRecord
-    print(f"exception 0x{rec.ExceptionCode_raw:08x} at {where(rec.ExceptionAddress)} on thread {record.ThreadId}")
+    print(f"exception 0x{rec.ExceptionCode_raw:08x} {list(rec.ExceptionInformation)[:rec.NumberParameters]} at {where(rec.ExceptionAddress)} on thread {record.ThreadId}")
     registers = {}
     try:
         with open(path, "rb") as raw:
@@ -108,10 +108,10 @@ def main(path: str, folder: str) -> int:
         print("registers not read:", exc)
     for name, value in registers.items():
         print(f"  {name} {value:016x} {where(value)}")
-    for name in ("rcx", "rdx", "rbx", "rsi", "rdi"):
-        if name in registers and not where(registers[name]):
+    for name in ("rcx", "rbx"):
+        if name in registers and registers[name] > 0x10000 and not where(registers[name]):
             print(f"what {name} points at:")
-            words(registers[name], 24, "  ")
+            words(registers[name], 12, "  ")
     target = registers.get("rcx", 0)
     if target > 0x10000 and not where(target):
         refs(dump, path, target, where)
@@ -121,7 +121,7 @@ def main(path: str, folder: str) -> int:
         stack = thread.Stack
         data = reader.read(stack.StartOfMemoryRange, stack.MemoryLocation.DataSize)
         first = max(0, registers.get("rsp", stack.StartOfMemoryRange) - stack.StartOfMemoryRange)
-        print("the stack from where it faulted (return addresses named; the first 40 other words shown too):")
+        print("the stack from where it faulted (return addresses, named; --words shows the words between too):")
         shown = 0
         for offset in range(first, len(data) - 7, 8):
             (value,) = struct.unpack_from("<Q", data, offset)
@@ -131,7 +131,7 @@ def main(path: str, folder: str) -> int:
                 shown += 1
                 if shown >= 60:
                     break
-            elif offset - first < 0x140:
+            elif offset - first < 0x140 and "--words" in sys.argv:
                 print(f"  +0x{offset - first:04x} {value:016x}")
                 if value > 0x10000 and peek(value, 8) is not None:
                     words(value, 8, "        ")
