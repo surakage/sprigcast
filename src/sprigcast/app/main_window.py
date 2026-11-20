@@ -6481,6 +6481,9 @@ class MainWindow(QMainWindow):
         optimize.remember_proven(QSettings(), proven)
         if proven is not None:
             log.info("upload: this stream %s", f"proved {proven} kbps fits" if proven else "had network trouble")
+        else:  # said too: a soak that left no line couldn't be told from one that never got here
+            log.info("upload: this stream proves nothing (%d s, frames sent per place: %s)", seconds,
+                     ", ".join(str(getattr(st, "frames", 0)) for st in streamers) or "none")
         self.statusBar().showMessage(lines[0], 10000)
         if seconds >= 60:  # not for a quick test that never really went out
             self._cheer_goodbye(seconds)

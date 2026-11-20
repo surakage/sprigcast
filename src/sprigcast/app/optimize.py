@@ -426,10 +426,11 @@ def proven_kbps(streamers, audio_kbps: int, seconds: float) -> int | None:
     it proves nothing either way (too short, or nothing connected)."""
     if seconds < PROVEN_MIN_S or not streamers:
         return None
+    sent = [st for st in streamers if st.frames]  # a place that never connected proves nothing, the others still do
+    if not sent:
+        return None
     total = 0
-    for st in streamers:
-        if not st.frames:
-            return None
+    for st in sent:
         pilot = getattr(st, "autopilot", None)
         if st.dropped > st.frames * 0.001 or st.reconnects or (pilot is not None and pilot.steps_down):
             return 0
