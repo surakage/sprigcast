@@ -64,12 +64,22 @@ runs:
         python packaging\qt_sdk.py source $qt qtwebengine C:\qtwe\src
         if ($LASTEXITCODE -ne 0) { throw "Couldn't download Qt WebEngine $qt's source" }
         $archive = (Get-Content C:\qtwe\src\source.txt -Raw).Trim()
-        if ($archive.EndsWith(".7z")) { & 7z x -y -bso0 -bsp0 "-oC:\qtwe\src" $archive }
-        else { C:\Windows\System32\tar.exe -xf $archive -C C:\qtwe\src }
+        # Qt 6.12 has no qtwebengine submodule tarball: then it's the whole qt-everywhere-src, and only its
+        # qtwebengine folder is unpacked.
+        $whole = (Split-Path $archive -Leaf) -like "qt-everywhere-*"
+        $inner = if ($whole) { (Split-Path $archive -Leaf) -replace '\.(tar\.xz|zip|7z)$', '' } else { "" }
+        if ($archive.EndsWith(".7z")) {
+          if ($whole) { & 7z x -y -bso0 -bsp0 "-oC:\qtwe\src" $archive "$inner\qtwebengine\*" }
+          else { & 7z x -y -bso0 -bsp0 "-oC:\qtwe\src" $archive }
+        } elseif ($whole) {
+          C:\Windows\System32\tar.exe -xf $archive -C C:\qtwe\src "$inner/qtwebengine"
+        } else {
+          C:\Windows\System32\tar.exe -xf $archive -C C:\qtwe\src
+        }
         if ($LASTEXITCODE -ne 0) { throw "couldn't unpack $archive" }
         Remove-Item $archive
-        $top = Get-ChildItem C:\qtwe\src -Directory | Where-Object { $_.Name -like "qtwebengine-everywhere*" } | Select-Object -First 1
-        if (-not $top) { throw "no qtwebengine-everywhere* folder in $archive" }
+        $top = if ($whole) { Get-Item "C:\qtwe\src\$inner\qtwebengine" -ErrorAction SilentlyContinue } else { Get-ChildItem C:\qtwe\src -Directory | Where-Object { $_.Name -like "qtwebengine-everywhere*" } | Select-Object -First 1 }
+        if (-not $top) { throw "no qtwebengine folder in $archive" }
         Move-Item $top.FullName C:\qtwe\s
         New-Item -ItemType Directory -Force C:\qtwe\b | Out-Null
         Push-Location C:\qtwe\b

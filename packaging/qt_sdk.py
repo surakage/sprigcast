@@ -70,18 +70,33 @@ def hrefs(listing: str) -> list[str]:
     return re.findall(r'href="([^"?#]+)"', listing)
 
 
+def download(url: str, target: Path, algos: tuple[str, ...]) -> dict[str, str]:
+    """Stream url to target; returns {algo: hexdigest}."""
+    digests = {a: hashlib.new(a) for a in algos}
+    with urllib.request.urlopen(url, timeout=600) as reply, open(target, "wb") as f:
+        for block in iter(lambda: reply.read(1 << 20), b""):
+            f.write(block)
+            for d in digests.values():
+                d.update(block)
+    return {a: d.hexdigest() for a, d in digests.items()}
+
+
 def source(version: str, module: str, out: Path) -> Path:
     """Download <module>'s source release for <version> from download.qt.io (official_releases, then archive,
-    then mirrors; submodules/ or the version folder), check it against Qt's checksums and return the file."""
+    then mirrors), check it against Qt's checksums and return the file. Qt 6.12 doesn't publish qtwebengine as a
+    submodule tarball (run 44668442935), so the whole qt-everywhere-src from single/ is the fallback: the caller
+    unpacks only <module> from it."""
     import re
 
     minor = version.rsplit(".", 1)[0]
-    pattern = re.compile(rf"^{module}-everywhere-(?:opensource-)?src-{re.escape(version)}\.(?:tar\.xz|zip|7z|tar\.gz)$")
+    v = re.escape(version)
+    own = re.compile(rf"^{module}-everywhere-(?:opensource-)?src-{v}\.(?:tar\.xz|zip|7z)$")
+    whole = re.compile(rf"^qt-everywhere-(?:opensource-)?src-{v}\.(?:tar\.xz|zip|7z)$")
     out.mkdir(parents=True, exist_ok=True)
     tried: list[str] = []
-    for base in MIRRORS:
-        for kind in ("official_releases", "archive"):
-            for sub in ("submodules/", "single/", ""):
+    for sub, pattern in (("submodules/", own), ("single/", whole)):
+        for base in MIRRORS:
+            for kind in ("official_releases", "archive"):
                 folder = f"{kind}/qt/{minor}/{version}/{sub}"
                 try:
                     with urllib.request.urlopen(f"{base}/{folder}", timeout=60) as reply:
@@ -91,11 +106,9 @@ def source(version: str, module: str, out: Path) -> Path:
                     continue
                 found = sorted(n for n in names if pattern.match(n))
                 if not found:
-                    tried.append(f"{base}/{folder}: no match among {', '.join(n for n in names if module in n)[:400] or names[:20]}")
+                    tried.append(f"{base}/{folder}: no {pattern.pattern}")
                     continue
                 name = next((n for n in found if n.endswith(".tar.xz")), found[0])
-                url = f"{base}/{folder}{name}"
-                data = urllib.request.urlopen(url, timeout=600).read()
                 check = None
                 for algo, sums in (("sha256", f"{name}.sha256"), ("md5", "md5sums.txt"), ("sha1", f"{name}.sha1")):
                     if sums not in names:
@@ -107,13 +120,15 @@ def source(version: str, module: str, out: Path) -> Path:
                         check = (algo, line[0].lower())
                         break
                 if check is None:
-                    raise RuntimeError(f"{url}: Qt publishes no checksum for it next to it")
-                got = hashlib.new(check[0], data).hexdigest()
-                if got != check[1]:
-                    raise RuntimeError(f"{name}: {check[0]} {got} isn't Qt's {check[1]}")
+                    tried.append(f"{base}/{folder}{name}: no checksum published next to it")
+                    continue
                 target = out / name
-                target.write_bytes(data)
-                print(f"source {url} ({len(data) / 1e6:.0f} MB, {check[0]} matches), sha256 {hashlib.sha256(data).hexdigest()}")
+                url = f"{base}/{folder}{name}"
+                got = download(url, target, (check[0], "sha256"))
+                if got[check[0]] != check[1]:
+                    target.unlink()
+                    raise RuntimeError(f"{name}: {check[0]} {got[check[0]]} isn't Qt's {check[1]}")
+                print(f"source {url} ({target.stat().st_size / 1e6:.0f} MB, {check[0]} matches), sha256 {got['sha256']}")
                 return target
     raise RuntimeError(f"no {module} {version} source release found:\n  " + "\n  ".join(tried))
 
