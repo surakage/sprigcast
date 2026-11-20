@@ -65,7 +65,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Nunito.ttf is missing from the installed copy" }
       - name: Start SprigCast for 30 seconds with a video playing
         shell: pwsh
-        timeout-minutes: 50  # four runs; smoke.py fails itself after 180 s each with the log tail; this only backs it up
+        timeout-minutes: 16  # four runs; smoke.py fails itself after 180 s each with the log tail; this only backs it up
         run: |
           # The whole app, started the way a person starts it (packaging/smoke.py): it must stay open, draw,
           # play a video and log no errors. Catches what only breaks when everything starts at once.
@@ -85,7 +85,7 @@ jobs:
               # Three times: an access violation showed in one run of two (2026-11-19, run 44635754229), and one
               # run says little about a fault that comes and goes.
               $env:SPRIGCAST_ENGINE = "native"; $env:SMOKE_LIGHT = "1"
-              foreach ($round in 1..45) {
+              foreach ($round in 1..3) {
                 & "$home_\python.exe" packaging\smoke.py 30 (Resolve-Path "$home_\SprigCast.exe").Path
                 $code = $LASTEXITCODE
                 if ($code -ne 0) { break }
