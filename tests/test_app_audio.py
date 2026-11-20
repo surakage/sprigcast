@@ -36,6 +36,20 @@ def test_one_capture_per_app_tree():
     assert source.read_block(4).shape == (4, 2)  # nothing caught: silence
 
 
+def test_one_program_by_its_process_id():
+    """StreamBridge's raid clip Edge (its own profile) without the streamer's own Edge tabs (2026-11-20)."""
+    procs = [(1, 0, "explorer.exe"), (40, 1, "msedge.exe"), (41, 40, "msedge.exe"),  # the streamer's Edge
+             (50, 1, "msedge.exe"), (51, 50, "msedge.exe")]  # the one StreamBridge started
+    source = AppAudioSource("s", {"preset": "custom", "apps": ["msedge.exe"], "pids": [50]})
+    assert source.targets(procs) == {50: "msedge.exe"}  # its whole tree, by Windows' process loopback
+    assert source.targets([p for p in procs if p[0] < 50]) == {}  # closed: nothing caught
+    assert AppAudioSource("s", {"preset": "custom", "apps": ["msedge.exe"]}).targets(procs) == {
+        40: "msedge.exe", 50: "msedge.exe"}  # by name: every Edge
+    assert not follows_game({"preset": "games", "pids": [50]})
+    assert describe({"preset": "custom", "pids": ["50", "x", -1]}) == "Programs an app picked"
+    assert app_audio.wanted_pids({"pids": ["50", "x", -1, None]}) == {50}
+
+
 def test_starter_makes_a_row_per_type_and_no_desktop():
     from sprigcast.app.starter import StarterChoice, build_starter
 

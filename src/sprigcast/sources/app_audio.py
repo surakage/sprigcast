@@ -8,6 +8,9 @@ Discord, Games follows the full-screen app in front, and so on.
 Settings:
     preset     "games" | "music" | "sfx" | "tts" | "voice" | "browser" | "custom"
     apps       exe names to catch (case doesn't matter); empty = the preset's usual apps
+    pids       instead of apps: process ids to catch, each with everything it started. An app that launches a
+               program for a moment (StreamBridge's raid clip Edge window, with its own profile) catches just
+               that one, not every program with the same name (the streamer's own Edge tabs).
     auto_game  also catch the full-screen app in front (the Games preset turns this on)
     device     instead of apps: an output to take this sound from, e.g. "Game (Elgato Virtual Audio)"
                when Elgato Wave Link already sorts sound into channels
@@ -85,8 +88,20 @@ def wanted_apps(settings: dict[str, Any]) -> set[str]:
     return set(kind.apps) if kind else set()
 
 
+def wanted_pids(settings: dict[str, Any]) -> set[int]:
+    """The process ids this sound catches (settings "pids"), or none: then it goes by exe names."""
+    out = set()
+    for p in settings.get("pids") or []:
+        try:
+            if int(p) > 0:
+                out.add(int(p))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def follows_game(settings: dict[str, Any]) -> bool:
-    if settings.get("device"):
+    if settings.get("device") or wanted_pids(settings):
         return False
     if "auto_game" in settings:
         return bool(settings["auto_game"])
@@ -100,6 +115,8 @@ def describe(settings: dict[str, Any]) -> str:
         from sprigcast.sources.audio import device_label
 
         return device_label(str(settings["device"]))
+    if wanted_pids(settings):
+        return "Programs an app picked"
     apps = [str(a) for a in settings.get("apps") or []]
     if apps:
         names = [a[:-4] if a.lower().endswith(".exe") else a for a in apps]
@@ -349,7 +366,7 @@ class AppAudioSource(Source):
 
     def update(self, settings: dict[str, Any]) -> None:
         moved = settings.get("device") != self.settings.get("device")
-        changed = any(settings.get(k) != self.settings.get(k) for k in ("apps", "preset", "auto_game"))
+        changed = any(settings.get(k) != self.settings.get(k) for k in ("apps", "pids", "preset", "auto_game"))
         super().update(settings)
         if moved:  # from apps to an output or back, or another output: start again
             self.stop()
@@ -359,6 +376,9 @@ class AppAudioSource(Source):
 
     def targets(self, processes: list[tuple[int, int, str]]) -> dict[int, str]:
         """pid -> exe of what to capture now (the apps' root processes, plus the game in front)."""
+        pids = wanted_pids(self.settings)
+        if pids:  # just those processes (and what they started), while they run
+            return {pid: name for pid, _parent, name in processes if pid in pids}
         found = root_processes(processes, wanted_apps(self.settings))
         if follows_game(self.settings):
             alive = {pid for pid, _p, _n in processes}

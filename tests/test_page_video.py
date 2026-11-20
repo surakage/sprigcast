@@ -191,3 +191,12 @@ def test_a_clip_on_a_server_is_read_once_then_converted(tmp_path):
     finally:
         site.shutdown()
 
+
+
+def test_pages_say_browser_h264_only_with_the_codec_engine(monkeypatch):
+    from sprigcast.control import native
+
+    monkeypatch.setattr(pv, "engine_plays_h264", lambda: False)
+    assert "browser.h264" not in native.features()
+    monkeypatch.setattr(pv, "engine_plays_h264", lambda: True)
+    assert "browser.h264" in native.features()

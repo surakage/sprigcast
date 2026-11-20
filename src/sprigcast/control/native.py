@@ -70,7 +70,19 @@ FEATURES = (
     "events.item_moved",   # item.moved when something is moved, sized, cropped or turned
     "filters.share",       # a placed sprig's filters follow on its other canvases; filters.share, filters.list same_on_both_canvases
     "layout.get",          # layout.get: every item's place, crop, bounds, source size and canvas box; flat, overlaps
+    "app_audio.pids",      # app_audio settings pids: [process id, ...] catches those processes' trees instead of apps
 )
+
+
+def features() -> list[str]:
+    """FEATURES, plus browser.h264 when Web pages play H.264/AAC themselves (<video>, MediaSource, iframes: the
+    page engine with the codecs, whose overlay leaves app/page_video.MARKER). Without it only MP4 files play
+    (converted to WebM), not a streaming player such as Twitch's embed."""
+    from sprigcast.app.page_video import engine_plays_h264
+
+    return [*FEATURES, "browser.h264"] if engine_plays_h264() else list(FEATURES)
+
+
 # What {"steps": [...], "one_step": true} and "dry_run": true may hold: changes to the garden only, so all of them
 # can be taken back together.
 BATCH_ACTIONS = frozenset({
@@ -510,7 +522,7 @@ class NativeApi:
                 "shapes": [c.id for c in self.col.canvases if c.enabled],
                 "canvases": [{"id": c.id, "width": c.width, "height": c.height, "fps": c.fps, "enabled": c.enabled}
                              for c in self.col.canvases],
-                "events": list(EVENT_GROUPS + HIGH_VOLUME), "features": list(FEATURES)}
+                "events": list(EVENT_GROUPS + HIGH_VOLUME), "features": features()}
 
     @action("app.actions", "Every action with what it does and its fields (fields starting with ? are optional).")
     def app_actions(self, data):
