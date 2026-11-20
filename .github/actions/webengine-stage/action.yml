@@ -61,10 +61,24 @@ runs:
         $qtdir = (Get-Content C:\qtwe\qt\prefix.txt -Raw).Trim()
         "QTDIR=$qtdir" | Out-File C:\qtwe\qtdir.txt
         # Qt WebEngine's source release, checked against Qt's own list of checksums.
-        $base = "https://download.qt.io/official_releases/qt/$($qt.Substring(0, $qt.LastIndexOf('.')))/$qt/submodules"
+        # A release moves from official_releases to archive once a newer patch is out; try both, then mirrors.
+        $minor = $qt.Substring(0, $qt.LastIndexOf('.'))
         $name = "qtwebengine-everywhere-src-$qt.tar.xz"
-        Invoke-WebRequest "$base/$name" -OutFile C:\qtwe\$name
-        Invoke-WebRequest "$base/md5sums.txt" -OutFile C:\qtwe\md5sums.txt
+        $got_it = $false
+        foreach ($site in "https://download.qt.io", "https://qt.mirror.constant.com", "https://ftp.fau.de/qtproject") {
+          foreach ($kind in "official_releases", "archive") {
+            $base = "$site/$kind/qt/$minor/$qt/submodules"
+            try {
+              Invoke-WebRequest "$base/md5sums.txt" -OutFile C:\qtwe\md5sums.txt
+              Invoke-WebRequest "$base/$name" -OutFile C:\qtwe\$name
+              "source from $base"
+              $got_it = $true
+              break
+            } catch { "not at $base/${name}: $($_.Exception.Message)" }
+          }
+          if ($got_it) { break }
+        }
+        if (-not $got_it) { throw "couldn't download $name" }
         $want = (Select-String -Path C:\qtwe\md5sums.txt -Pattern ([regex]::Escape($name)) | Select-Object -First 1).Line.Split(' ')[0]
         $got = (Get-FileHash C:\qtwe\$name -Algorithm MD5).Hash.ToLower()
         if (-not $want -or $want -ne $got) { throw "$name doesn't match Qt's checksum ($got vs $want)" }
