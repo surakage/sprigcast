@@ -15,11 +15,11 @@ from __future__ import annotations
 from sprigcast.control.native import ApiError, register_action
 from sprigcast.core.filters import Field, register_filter
 from sprigcast.plugin_hooks import (Place, filter_on, find_filter, not_here, on_air, place_on_air, place_targets,
-                                    register_hotkeys, register_place_menu, target_by_id)
+                                    register_hotkeys, target_by_id)
 
-PLUGIN = {"id": "barrel_roll", "name": "Barrel Roll", "version": 4, "adds": "Effect",
+PLUGIN = {"id": "barrel_roll", "name": "Barrel Roll", "version": 5, "adds": "Effect",
           "about": "Spin a sprig round and round for a few seconds, then it lands back exactly where it was.",
-          "new": "Apps can't ask for more than 10 minutes."}
+          "new": "No right-click entry: add Barrel roll as a filter, then spin it with its hotkey or an app."}
 
 TURNS_PER_SECOND = 1.0  # when a trigger gives seconds but no turns
 ITEM_RUNS = 1_000_000  # an item's own rolls count from here
@@ -140,12 +140,4 @@ def _run_hotkey(api, hid):
 register_hotkeys(_hotkeys, _run_hotkey)
 
 
-def _menu(api, place, add):
-    if place is None or place.kind in ("audio_input", "audio_output", "app_audio"):
-        return
-    flt = find_filter(place, "barrel_roll")
-    secs = float((flt.settings if flt else {}).get("seconds", 3.0))
-    add(f"Barrel roll ({secs:g} s)", lambda: spin(api, [place]))
-
-
-register_place_menu(_menu)
+# No right-click entry: Barrel roll is a filter you add, then spin with its hotkey or an app (user, 2026-11-20).

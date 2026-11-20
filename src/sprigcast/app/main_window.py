@@ -447,6 +447,11 @@ class MainWindow(QMainWindow):
         self.build_bar = BuildBar()
         self.build_stage = BuildStage(self.library, self.build_bar)
         self.build_stage.card_slot.addWidget(self.center)
+        from sprigcast.app import canvas_window
+
+        self.canvas_window = None  # Build's canvas in a window of its own (the monitor button in the top bar)
+        self.canvas_away = canvas_window.placeholder(lambda: self.pop_canvas_button.setChecked(False))
+        self.build_stage.card_slot.addWidget(self.canvas_away)
         from sprigcast.app.sound_strips import SoundStrips
 
         self.sound_strips = SoundStrips(self._on_sound_changed, self._open_build_sound, self._sound_strip_menu)
@@ -813,18 +818,25 @@ class MainWindow(QMainWindow):
 
     def _fill_bloom_add_menu(self, menu: QMenu, parts: list[Scene]) -> None:
         """+ Add in a bloom: its sprigs, by folder, and New sprig. Sources are added inside a sprig."""
+        self._fill_sprig_picks(menu, parts)
+        if menu.actions():
+            menu.addSeparator()
+        menu.addAction(f"New {PART}…").triggered.connect(lambda: self._add_part())
+
+    def _fill_sprig_picks(self, menu: QMenu, parts: list[Scene]) -> None:
+        """The sprigs made for the shape you're editing (user, 2026-11-20: Horizontal lists only horizontal
+        sprigs, Vertical only vertical ones), loose ones first, then one submenu per folder, A to Z."""
         sprig = icons.icon("sprig", theme.ACCENT)
         folders = {f.id: f for f in self.collection.part_folders()}
         scene = self._scene()
         canvas_id = scene.canvas if scene is not None else self.build_canvas
-        on = self.collection.parts_on(canvas_id)
-        others = [p for p in parts if self.collection.main_part(p).id not in on]  # made for the other shape
-        parts = [p for p in parts if p not in others]
+        parts = sorted((p for p in parts if any(s.canvas == canvas_id for s in self.collection.shapes(p))),
+                       key=lambda p: p.name.lower())
         for part in parts:
             if part.folder not in folders:
                 menu.addAction(sprig, literal(part.name)).triggered.connect(
                     lambda _=False, pid=part.id: self._add_part_source(pid))
-        for folder in folders.values():
+        for folder in sorted(folders.values(), key=lambda f: f.name.lower()):
             inside = [p for p in parts if p.folder == folder.id]
             if not inside:
                 continue
@@ -832,15 +844,6 @@ class MainWindow(QMainWindow):
             for part in inside:
                 sub.addAction(sprig, literal(part.name)).triggered.connect(
                     lambda _=False, pid=part.id: self._add_part_source(pid))
-        if others:  # still there to share, out of the way
-            other = next((c for c in self.collection.canvases if c.id != canvas_id), None)
-            sub = menu.addMenu(f"From {other.id if other else 'other'} {PARTS}")
-            for part in sorted(others, key=lambda p: p.name.lower()):
-                sub.addAction(sprig, literal(part.name)).triggered.connect(
-                    lambda _=False, pid=part.id: self._add_part_source(pid))
-        if menu.actions():
-            menu.addSeparator()
-        menu.addAction(f"New {PART}…").triggered.connect(lambda: self._add_part())
 
     def _fill_add_source_menu(self) -> None:
         """+ Add: your real cameras, screens and windows by name (one click adds them), then the rest.
@@ -853,9 +856,8 @@ class MainWindow(QMainWindow):
             self._fill_bloom_add_menu(menu, parts)
             return
         parts_menu = menu.addMenu(icons.icon("sprig", theme.ACCENT), cap(PART))
-        for part in parts:
-            parts_menu.addAction(literal(part.name)).triggered.connect(lambda _=False, pid=part.id: self._add_part_source(pid))
-        if not parts:
+        self._fill_sprig_picks(parts_menu, parts)
+        if not parts_menu.actions():
             parts_menu.addAction(f"No {PARTS} yet: + beside {cap(PARTS)} on the left").setEnabled(False)
         menu.addSeparator()
 
@@ -1288,42 +1290,51 @@ class MainWindow(QMainWindow):
                     lambda _=False, sid=item.source: self.browser_host.reload(sid))
                 menu.addAction("Interact…").triggered.connect(
                     lambda _=False, sid=item.source: self._interact(sid))
-            if item is not None and self.collection.source(item.source).kind not in self.AUDIO_KINDS:
+            if item is not None and self.collection.source(item.source).kind == "media":
+                self._fill_media_menu(menu, item.source)
+            # By how often it's used (user, 2026-11-20): the item's own settings first, then Transform and
+            # Order, then looks, then the rarer moves, and Remove last.
+            if menu.actions():
+                menu.addSeparator()
+            acts = self.item_actions
+            for key in ("settings", "filters", "rename"):
+                menu.addAction(acts[key])
+            menu.addSeparator()
+            transform = menu.addMenu("Transform")
+            for key in ("fit", "fill", "stretch", "center"):
+                transform.addAction(acts[key])
+            transform.addSeparator()
+            for key in ("reset", "uncrop"):
+                transform.addAction(acts[key])
+            transform.addSeparator()
+            hint = transform.addAction("Crop: hold Alt and drag a side")
+            hint.setEnabled(False)
+            order = menu.addMenu("Order")
+            for key in ("front", "up", "down", "back"):
+                order.addAction(acts[key])
+            acts["hide"].setText("Show" if item is not None and not item.visible else "Hide")
+            acts["lock"].setCheckable(True)
+            acts["lock"].setChecked(bool(item and item.locked))
+            menu.addAction(acts["hide"])
+            menu.addAction(acts["lock"])
+            visual = item is not None and self.collection.source(item.source).kind not in self.AUDIO_KINDS
+            if visual:
+                menu.addSeparator()
+                self._fill_quick_filter_menu(menu.addMenu("Shape"), item.source, "shape", "shape", SHAPES)
+                self._fill_quick_filter_menu(menu.addMenu("Color look"), item.source, "lut", "look", LOOKS)
+            if item is not None:
+                self._fill_plugin_menu(menu, item.source)
+            menu.addSeparator()
+            count = len(self.source_list.selectedItems())
+            turn = menu.addAction(f"Group into {a(PART)}…" if count < 2 else f"Group these {count} into {a(PART)}…")
+            turn.setToolTip(f"Move the selected sources into a new reusable {PART}, right where they are")
+            turn.triggered.connect(self._turn_into_part)
+            if visual:
                 if self.collection.source(item.source).kind == PART_KIND:
                     part = self.collection.source(item.source).settings.get("scene", "")
                     self._projector_menu(menu, "bloom", part)
                 else:
                     self._projector_menu(menu, "source", item.source)
-            count = len(self.source_list.selectedItems())
-            turn = menu.addAction(f"Turn into {a(PART)}…" if count < 2 else f"Turn these {count} into {a(PART)}…")
-            turn.setToolTip(f"Move the selected sources into a new reusable {PART}, right where they are")
-            turn.triggered.connect(self._turn_into_part)
-            menu.addSeparator()
-            acts = self.item_actions
-            for key in ("settings", "filters", "rename"):
-                menu.addAction(acts[key])
-            if item is not None and self.collection.source(item.source).kind not in self.AUDIO_KINDS:
-                self._fill_quick_filter_menu(menu.addMenu("Shape"), item.source, "shape", "shape", SHAPES)
-                self._fill_quick_filter_menu(menu.addMenu("Color look"), item.source, "lut", "look", LOOKS)
-            if item is not None and self.collection.source(item.source).kind == "media":
-                menu.addSeparator()
-                self._fill_media_menu(menu, item.source)
-            if item is not None:
-                self._fill_plugin_menu(menu, item.source)
-            menu.addSeparator()
-            size = menu.addMenu("Size and place")
-            for key in ("fit", "fill", "stretch", "center", "reset", "uncrop"):
-                size.addAction(acts[key])
-            size.addSeparator()
-            hint = size.addAction("Crop: hold Alt and drag a side")
-            hint.setEnabled(False)
-            order = menu.addMenu("Order")
-            for key in ("front", "up", "down", "back"):
-                order.addAction(acts[key])
-            acts["lock"].setCheckable(True)
-            acts["lock"].setChecked(bool(item and item.locked))
-            menu.addAction(acts["hide"])
-            menu.addAction(acts["lock"])
             menu.addSeparator()
             menu.addAction(acts["remove"])
         return menu
@@ -2083,6 +2094,34 @@ class MainWindow(QMainWindow):
         """Nothing to fit any more (kept for older callers)."""
         # The blooms now sit in their own card of fixed height under the canvas and scroll inside it.
 
+    def _pop_out_canvas(self) -> None:
+        """Build's canvas goes to a window of its own; the library, Leaves and the inspector stay here."""
+        if self.canvas_window is not None:
+            return
+        from sprigcast.app.canvas_window import CanvasWindow
+
+        shortcuts = [a for a in self.findChildren(QAction) if not a.shortcut().isEmpty()]
+        self.build_stage.card_slot.removeWidget(self.center)
+        self.canvas_window = CanvasWindow(self.center, shortcuts)
+        self.canvas_window.closed.connect(lambda: self.pop_canvas_button.setChecked(False))
+        self.canvas_away.show()
+        if self.mode == "build":
+            self.canvas_window.show()
+        self.pop_canvas_button.setChecked(True)
+
+    def _dock_canvas(self) -> None:
+        """The canvas comes back to its card (closing its window does this too)."""
+        window, self.canvas_window = self.canvas_window, None
+        if window is None:
+            return
+        window.card.removeWidget(self.center)
+        self.build_stage.card_slot.insertWidget(0, self.center)
+        self.center.show()
+        self.canvas_away.hide()
+        window.take_back()
+        window.deleteLater()
+        self.pop_canvas_button.setChecked(False)
+
     def _place_canvases(self) -> None:
         """The canvas previews sit on Live's stage in Live mode and on Build's canvas card in Build mode."""
         if self.mode == "live":
@@ -2103,6 +2142,8 @@ class MainWindow(QMainWindow):
                 preview.align = "center"
                 preview.show_title = preview.twin or self.in_place is not None
         self.modes.setCurrentIndex(1 if self.mode == "live" else 0)
+        if self.canvas_window is not None:  # Live borrows the canvases for its stage: the window waits for Build
+            self.canvas_window.setVisible(self.mode == "build")
         self._sync_engine_staged()
         for preview in self.previews.values():
             preview.update()
@@ -2379,6 +2420,16 @@ class MainWindow(QMainWindow):
         self.screenshot_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.screenshot_button.clicked.connect(lambda: self._screenshot(background=True))
         self._build_only.append(bar.addWidget(self.screenshot_button))  # Live has Screenshot under its canvases
+        self.pop_canvas_button = QToolButton()
+        self.pop_canvas_button.setIcon(icons.icon("monitor", theme.LABEL, 18))
+        self.pop_canvas_button.setIconSize(QSize(18, 18))
+        self.pop_canvas_button.setFixedSize(38, 38)
+        self.pop_canvas_button.setCheckable(True)
+        self.pop_canvas_button.setToolTip("Edit the canvas in its own window")
+        self.pop_canvas_button.setStyleSheet(theme.button_style(19, "0", "QToolButton"))
+        self.pop_canvas_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.pop_canvas_button.toggled.connect(lambda on: self._pop_out_canvas() if on else self._dock_canvas())
+        self._build_only.append(bar.addWidget(self.pop_canvas_button))
         self.palette_button = QToolButton()
         self.palette_button.setIcon(icons.icon("search", theme.LABEL, 18))
         self.palette_button.setIconSize(QSize(18, 18))
@@ -3272,6 +3323,7 @@ class MainWindow(QMainWindow):
         for projector in list(self.projectors):
             projector.close()
         self.panels.close_windows()
+        self._dock_canvas()
         self.chat_panel.shutdown()
         forgetting = getattr(self, "_forgetting", False)  # Clear all my data: save nothing on the way out
         if forgetting:
@@ -3575,7 +3627,7 @@ class MainWindow(QMainWindow):
         kind, swatch = self._kind_and_swatch(config, canvas_id)
         row.setData(ROLE_KIND, kind)  # a sprig: what it shows (camera, chat...), so it reads at a glance
         row.setData(ROLE_SWATCH, swatch)
-        row.setData(ROLE_CHILDREN, self._sprig_children(config, canvas_id))
+        row.setData(ROLE_CHILDREN, [])  # a sprig is one row, its icon and name: what's inside shows when it's open
         detail = "" if status in ("ok", "") else f"\n{status}"
         if hidden:
             detail += f"\n{hidden} hidden here"
@@ -3607,20 +3659,6 @@ class MainWindow(QMainWindow):
             if source is not None and source.kind == "color":
                 return source.settings.get("color")
         return None
-
-    def _sprig_children(self, config, canvas_id: str, depth: int = 0, seen: frozenset = frozenset()) -> list:
-        """(depth, name, is sprig, kind, colour) for what's inside a sprig, nested sprigs opened too (a few
-        levels)."""
-        part = self.collection.part_of(config) if config.kind == PART_KIND else None
-        if part is None or part.id in seen or depth > 2:
-            return []
-        layout = self.collection.shape_for(part, canvas_id) if canvas_id else part
-        rows = []
-        for inner in reversed(layout.items):
-            child = self.collection.source(inner.source)
-            rows.append((depth, child.name, child.kind == PART_KIND, *self._kind_and_swatch(child, canvas_id)))
-            rows += self._sprig_children(child, canvas_id, depth + 1, seen | {part.id})
-        return rows[:12]
 
     def _on_inside_moved(self, source_row: int, target_row: int) -> None:
         """A row was dragged in Inside: reorder the bloom (rows are top-most first, items bottom-most first)."""
@@ -5227,18 +5265,18 @@ class MainWindow(QMainWindow):
         self.item_actions: dict[str, QAction] = {}
         table = (
             ("fit", "Fit to canvas", "Ctrl+F", self._fit_item),
-            ("fill", "Fill the canvas (crop the edges)", "Ctrl+Alt+F", self._fill_item),
-            ("stretch", "Stretch to fill the canvas", "Ctrl+Shift+F", self._stretch_item),
-            ("center", "Center on the canvas", "Ctrl+E", self._center_item),
-            ("reset", "Reset size, crop and rotation", "Ctrl+R", self._reset_item_size),
+            ("fill", "Fill canvas (crop edges)", "Ctrl+Alt+F", self._fill_item),
+            ("stretch", "Stretch to canvas", "Ctrl+Shift+F", self._stretch_item),
+            ("center", "Center on canvas", "Ctrl+E", self._center_item),
+            ("reset", "Reset transform", "Ctrl+R", self._reset_item_size),
             ("uncrop", "Remove crop", "Ctrl+Shift+R", self._reset_crop),
             ("front", "Bring to front", "Ctrl+Shift+Up", lambda: self._to_edge(True)),
             ("up", "Bring forward", "Ctrl+Up", lambda: self._move_item(+1)),
             ("down", "Send backward", "Ctrl+Down", lambda: self._move_item(-1)),
             ("back", "Send to back", "Ctrl+Shift+Down", lambda: self._to_edge(False)),
-            ("hide", "Show / hide", "Ctrl+H", self._toggle_item_visible),
+            ("hide", "Hide", "Ctrl+H", self._toggle_item_visible),
             ("lock", "Lock", "Ctrl+L", lambda: self.prop_locked.setChecked(not self.prop_locked.isChecked())),
-            ("settings", "Settings…", "Ctrl+Return", self._edit_source_settings),
+            ("settings", "Properties…", "Ctrl+Return", self._edit_source_settings),
             ("filters", "Filters…", "Ctrl+Shift+E", self._edit_filters),
             ("rename", "Rename…", "F2", self._rename_item),
             ("remove", "Remove", "Delete", self._remove_item),
