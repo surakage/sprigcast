@@ -332,6 +332,7 @@ def _lib():
         "sc_canvas_read_bgra": (c_int, [vp, vp, c_int]),
         "sc_source_upload": (c_int, [vp, ctypes.c_uint64, vp, ctypes.POINTER(Upload)]),
         "sc_source_forget": (c_int, [vp, ctypes.c_uint64]),
+        "sc_source_hold": (c_int, [vp, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_double]),
         "sc_source_draws": (c_int, [vp, ctypes.c_uint64, c_int, c_int, ctypes.POINTER(Item), c_int]),
         "sc_look_set": (c_int, [vp, ctypes.c_uint64, vp, c_int]),
         "sc_mask_set": (c_int, [vp, ctypes.c_uint64, vp, c_int, c_int, c_int]),
@@ -351,6 +352,7 @@ def _lib():
         "sc_engine_canvas_show": (c_int, [vp, c_int, ctypes.c_uint64]),
         "sc_engine_source_upload": (c_int, [vp, ctypes.c_uint64, vp, ctypes.POINTER(Upload), c_int]),
         "sc_engine_source_forget": (c_int, [vp, ctypes.c_uint64]),
+        "sc_engine_source_hold": (c_int, [vp, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64]),
         "sc_engine_source_draws": (c_int, [vp, ctypes.c_uint64, c_int, c_int, ctypes.POINTER(Item), c_int]),
         "sc_engine_source_media": (c_int, [vp, ctypes.c_uint64, vp]),
         "sc_engine_source_shared": (c_int, [vp, ctypes.c_uint64, ctypes.c_wchar_p]),
@@ -664,6 +666,17 @@ class Device:
     def forget(self, source_id: str) -> None:
         _check(_need().sc_source_forget(self.handle, key(source_id)))
 
+    def hold(self, held_id: str, source: str | None = None, scene: str | None = None, time: float = 0.0) -> bool:
+        """Source ``held_id`` becomes a still copy of ``source``'s picture as it is now, or of the snapshot scene
+        ``scene`` (a sprig) drawn at ``time``: what one item frozen on its own is drawn from. False while there
+        is nothing to copy yet. :meth:`forget` lets it go."""
+        code = _need().sc_source_hold(self.handle, key(held_id), key(source) if source else 0,
+                                      key(scene) if scene else 0, float(time))
+        if code == 1:
+            return False
+        _check(code)
+        return True
+
     def draws(self, source_id: str, width: int, height: int, items) -> None:
         """Source ``source_id`` drawn from a list of pictures (:func:`draw_items`); None drops the list."""
         array, count = draw_items(items)
@@ -884,6 +897,12 @@ class Engine:
 
     def forget(self, source_id: str) -> None:
         _check(_need().sc_engine_source_forget(self.handle, key(source_id)))
+
+    def hold(self, held_id: str, source: str | None = None, scene: str | None = None) -> None:
+        """As :meth:`Device.hold`, made by the frame thread on its next frame that has a picture to copy (and
+        again after a rebuild). :meth:`forget` lets it go."""
+        _check(_need().sc_engine_source_hold(self.handle, key(held_id), key(source) if source else 0,
+                                             key(scene) if scene else 0))
 
     def draws(self, source_id: str, width: int, height: int, items) -> None:
         """As :meth:`Device.draws`, drawn from the next frame on (and again after a rebuild)."""

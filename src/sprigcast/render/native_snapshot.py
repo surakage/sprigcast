@@ -99,10 +99,13 @@ def item_struct(item: SceneItem, fade: float, effects: int, part: str | None) ->
 
 
 def build(scenes: list[SceneDraw], effects: dict[str, VideoEffects],
-          parts: dict[tuple[str, str], str] | None = None) -> Built:
+          parts: dict[tuple[str, str], str] | None = None, holds: dict[str, str] | None = None) -> Built:
     """The snapshot of `scenes`. effects: source id -> its filters. parts: (source id, scene key) -> the key of
-    the sprig drawing that placement shows (a sprig placed in a bloom)."""
+    the sprig drawing that placement shows (a sprig placed in a bloom). holds: item key -> the still copy that
+    item is drawn from (an item frozen on its own, render/native_bridge.py): a plain picture in the item's place,
+    whether it shows a source or a sprig."""
     parts = parts or {}
+    holds = holds or {}
     entries, items, fx_list, fx_index = [], [], [], {}
     used_looks, used_masks = set(), set()
     for draw in scenes:
@@ -123,7 +126,13 @@ def build(scenes: list[SceneDraw], effects: dict[str, VideoEffects],
                     if fx.mask:
                         used_masks.add(fx.mask)
             fade = draw.fades.get(item.source, 1.0) if draw.fades else 1.0
-            items.append(item_struct(item, fade, index, parts.get((item.source, draw.key))))
+            held = holds.get(item_key(draw.scene.id, item.source)) if holds else None
+            if held is not None:
+                struct = item_struct(item, fade, index, None)
+                struct.source = sprigcore.key(held)
+                items.append(struct)
+            else:
+                items.append(item_struct(item, fade, index, parts.get((item.source, draw.key))))
         entries.append(sprigcore.SceneEntry(sprigcore.key(draw.key), int(draw.size[0]), int(draw.size[1]),
                                             first, len(items) - first))
     scene_arr = (sprigcore.SceneEntry * max(1, len(entries)))(*entries)

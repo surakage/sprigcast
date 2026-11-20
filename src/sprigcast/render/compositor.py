@@ -882,6 +882,11 @@ class Compositor:
         # Frozen sprigs (the Freeze plugin, Snap's freeze): (placement source id, canvas id) -> (which freeze,
         # a copy of the sprig's picture when it froze). The sprig itself keeps drawing for anything else showing it.
         self.held: dict[tuple[str, str], tuple[object, moderngl.Texture]] = {}
+        # Items frozen on their own (a Freeze among an item's effects): item key -> which freeze, set by the engine
+        # (hold_items), and item key -> (which freeze, a copy of the picture the item showed when it was first
+        # drawn frozen; None when it couldn't be copied). The source or sprig goes on live wherever else it shows.
+        self.item_holds: dict[str, object] = {}
+        self.item_held: dict[str, tuple[object, moderngl.Texture | None]] = {}
         self.effects: dict[str, VideoEffects] = {}  # source id -> its video filters, set by the engine
         self._spins: dict[tuple[str, int], float] = {}  # (source id, run) -> when its barrel roll started
         self.downscale: dict[str, str] = {}  # canvas id -> how outputs smaller than it are scaled (Canvas.downscale)
@@ -1064,6 +1069,43 @@ class Compositor:
         for key in [k for k, (token, _) in self.held.items() if frozen.get(k[0]) != token]:
             self.held.pop(key)[1].release()
 
+    def hold_items(self, holds: dict) -> None:
+        """Which items are frozen on their own now (item key -> which freeze); the copies of the others go."""
+        self.item_holds = holds
+        for key in [k for k, (token, _) in self.item_held.items() if holds.get(k) != token]:
+            copy = self.item_held.pop(key)[1]
+            if copy is not None:
+                copy.release()
+
+    def _item_still(self, key: str, texture: moderngl.Texture) -> moderngl.Texture:
+        """The picture a frozen item is drawn from: a copy of `texture` (its source's or sprig's picture) made
+        the first time the item is drawn in this freeze. The live picture if it can't be copied."""
+        token = self.item_holds.get(key)
+        if token is None:
+            return texture
+        held = self.item_held.get(key)
+        if held is not None and held[0] == token:
+            return held[1] or texture
+        if held is not None and held[1] is not None:
+            held[1].release()
+        copy = None
+        try:
+            copy = self.ctx.texture(texture.size, texture.components, dtype=texture.dtype)
+            copy.filter, copy.swizzle = texture.filter, texture.swizzle
+            copy.repeat_x, copy.repeat_y = texture.repeat_x, texture.repeat_y
+            source = self.ctx.framebuffer(color_attachments=[texture])
+            try:
+                self.ctx.copy_framebuffer(copy, source)
+            finally:
+                source.release()
+        except Exception:  # this item's problem only: it stays live
+            log.exception("An item's frozen picture couldn't be copied (%s); it stays live", key)
+            if copy is not None:
+                copy.release()
+            copy = None
+        self.item_held[key] = (token, copy)
+        return copy or texture
+
     def forget_part(self, part_id: str) -> None:
         target = self.targets.pop(f"part:{part_id}", None)
         pbos = self.full_pbos.pop(f"part:{part_id}", None)
@@ -1199,7 +1241,8 @@ class Compositor:
         self._draw_pieces((d.source, d.canvas, d.quad, d.opacity) for d in draws)
 
     def _scene_pieces(self, scene: Scene, source_sizes: dict[str, tuple[int, int]], fades: dict[str, float] | None):
-        """A scene's visible items as (source id, canvas id, quad, opacity), bottom first."""
+        """A scene's visible items as (source id, canvas id, quad, opacity, effects key, the item's key if it is
+        frozen on its own), bottom first."""
         for item in scene.items:
             if not item.visible:
                 continue
@@ -1211,7 +1254,7 @@ class Compositor:
             if quad:
                 own = item_key(scene.id, item.source) if item.effects else None
                 yield (item.source, scene.canvas, quad, fades.get(item.source, 1.0) if fades else 1.0,
-                       own if own in self.effects else item.source)
+                       own if own in self.effects else item.source, own if own in self.item_holds else None)
 
     def _draw_pieces(self, pieces) -> None:
         """Draw (source id, canvas id, quad, opacity) pieces in order, onto the framebuffer in use.
@@ -1220,13 +1263,15 @@ class Compositor:
         quads are somewhere between two blooms."""
         planar_on = False
         opacity = 1.0
-        for piece in pieces:  # (source id, canvas id, quad, opacity[, effects key: an item's own])
+        for piece in pieces:  # (source id, canvas id, quad, opacity[, effects key: an item's own[, frozen item]])
             source_id, canvas_id, quad, alpha = piece[:4]
             fx_key = piece[4] if len(piece) > 4 else source_id
             part = self.parts.get((source_id, canvas_id))
             tex = part or self.textures.get(source_id)
             if tex is None:
                 continue
+            if len(piece) > 5 and piece[5] is not None:
+                tex = self._item_still(piece[5], tex)
             fx = self.effects.get(fx_key, NO_EFFECTS)
             if fx.spin[0]:
                 quad = self._spun(fx_key, quad, fx.spin)
@@ -1709,6 +1754,7 @@ class Compositor:
             tex.release()
         for _token, tex in self.held.values():
             tex.release()
+        self.hold_items({})
         for target in self.targets.values():
             target.release()
         for target, _since in self._spare:

@@ -224,6 +224,55 @@ def test_a_freeze_filter_holds_until_it_goes(compositor, added):
     assert _pixel(engine, compositor, 44, 4)[1] > 200
 
 
+def test_one_item_freezes_while_its_source_stays_live_elsewhere(compositor, added):
+    """A Freeze among one item's effects: that item holds its picture (a source's or a sprig's) and the source
+    goes on live for every other item that shows it."""
+    added("freeze")
+    col = _world()
+    col.scene("p-main").items.append(SceneItem(source="cam", x=20))  # the same camera, inside the sprig too
+    main, cam = col.scene("show").items
+    cam.effects.append(Filter(id="fz", kind="freeze", name="Freeze", settings={"run": 1, "until": 0}))
+    engine = _engine(compositor, col)
+    wanted = {s.id: s for s in col.sources}
+    main, cam = engine._collection.scene("show").items  # (the engine's own copy of the layout)
+    engine._sync_filters(compositor, wanted)
+    engine._tick(compositor, 1.0)
+    engine._sources["game"].colour = engine._sources["cam"].colour = (0, 255, 0)
+    engine._tick(compositor, 1.1)
+    assert _pixel(engine, compositor, 44, 4)[0] > 200  # the item holds
+    assert _pixel(engine, compositor, 4, 4)[1] > 200 and _pixel(engine, compositor, 24, 4)[1] > 200  # the rest live
+    assert set(compositor.item_held) == {"show/cam"} and not engine._frozen
+    main.effects.append(Filter(id="fz2", kind="freeze", name="Freeze", settings={"run": 1, "until": 0}))
+    engine._sync_filters(compositor, wanted)
+    engine._tick(compositor, 1.2)  # the sprig placement is caught, green
+    engine._sources["game"].colour = engine._sources["cam"].colour = (0, 0, 255)
+    cam.effects[0].settings["run"] = 2  # the camera's item frozen again: a new picture is caught
+    engine._sync_filters(compositor, wanted)
+    engine._tick(compositor, 1.3)
+    assert _pixel(engine, compositor, 4, 4)[1] > 200 and _pixel(engine, compositor, 24, 4)[1] > 200
+    assert _pixel(engine, compositor, 44, 4)[2] > 200
+    cam.effects[0].enabled = main.effects[0].enabled = False
+    engine._sync_filters(compositor, wanted)
+    engine._tick(compositor, 1.4)
+    assert _pixel(engine, compositor, 4, 4)[2] > 200 and not compositor.item_held
+
+
+def test_an_items_freeze_ends_by_itself(compositor, added):
+    added("freeze")
+    col = _world()
+    col.scene("show").items[1].effects.append(
+        Filter(id="fz", kind="freeze", name="Freeze", settings={"run": 1, "until": time.time() + 0.05}))
+    engine = _engine(compositor, col)
+    engine._sync_filters(compositor, {s.id: s for s in col.sources})
+    engine._tick(compositor, 1.0)
+    engine._sources["cam"].colour = (0, 255, 0)
+    engine._tick(compositor, 1.1)
+    assert _pixel(engine, compositor, 44, 4)[0] > 200
+    time.sleep(0.08)
+    engine._tick(compositor, 1.2)
+    assert _pixel(engine, compositor, 44, 4)[1] > 200 and not compositor.item_held
+
+
 def test_the_screenshot_is_the_frozen_frame(compositor):
     """Snap's freeze: a tick already being drawn when the hold was asked for doesn't count, for the hold or
     the screenshot, so the screenshot is exactly the picture that then stays on stream."""

@@ -157,6 +157,39 @@ def test_a_sprig_snapshot_is_the_engines_own_copy(device):
 
 
 @needs_engine
+def test_a_held_copy_keeps_the_picture_while_the_source_moves_on(device):
+    """Device.hold: a still copy of a source's picture, or of a sprig's drawing, as a source of its own (an item
+    frozen on its own is drawn from it). The source itself goes on live."""
+    first, second = nc.picture(16, 16, seed=1), nc.picture(16, 16, seed=5)
+
+    def drawn(key):
+        with sprigcore.Canvas(device, 16, 16) as c:
+            c.render(key)
+            return np.frombuffer(c.read_bgra(), np.uint8).reshape(16, 16, 4)[..., [2, 1, 0, 3]].astype(int)
+
+    assert device.hold("still", source="a") is False  # nothing to copy yet
+    device.upload("a", first)
+    inner = native_snapshot.SceneDraw("inner", nc.scene("inner", [SceneItem(source="a", align="top_left")]), (16, 16))
+    live = Scene(id="b", name="b", canvas="h", items=[SceneItem(source="a", align="top_left")])
+    froze = Scene(id="f", name="f", canvas="h", items=[SceneItem(source="a", align="top_left")])
+    sprig = Scene(id="s", name="s", canvas="h", items=[SceneItem(source="p", align="top_left")])
+    draws = [inner, native_snapshot.SceneDraw("b", live, (16, 16)), native_snapshot.SceneDraw("f", froze, (16, 16)),
+             native_snapshot.SceneDraw("s", sprig, (16, 16))]
+    parts = {("p", "s"): "inner"}
+    native_snapshot.hand_over(device, native_snapshot.build(draws, {}, parts), native_snapshot.Resources())
+    assert device.hold("still", source="a") and device.hold("still-sprig", scene="inner")
+    assert device.hold("none", scene="no such scene") is False
+    device.upload("a", second)
+    built = native_snapshot.build(draws, {}, parts, {"f/a": "still", "s/p": "still-sprig"})
+    native_snapshot.hand_over(device, built, native_snapshot.Resources())
+    assert np.abs(drawn("b") - second.astype(int)).max() <= 1  # live where it isn't frozen
+    assert np.abs(drawn("f") - first.astype(int)).max() <= 1
+    assert np.abs(drawn("s") - first.astype(int)).max() <= 2
+    for gone in ("a", "still", "still-sprig"):
+        device.forget(gone)
+
+
+@needs_engine
 def test_a_sprig_laid_over_the_whole_canvas_draws_as_its_items_would(device):
     """A sprig placed at 0, 0 at the canvas's size, untouched (what a nested scene from OBS becomes), is drawn
     straight onto the canvas: no picture of its own. The canvas must come out as if its items were placed there,

@@ -227,6 +227,10 @@ class Engine:
         self._holds: dict[str, tuple[object, float, float]] = {}
         self._holds_lock = threading.Lock()
         self._freeze_filters: dict[str, tuple[tuple, float]] = {}
+        # Items frozen on their own (a Freeze among an item's effects): item key -> (("filter", run), its
+        # time.time() end, 0: none), from _sync_filters, and the ones frozen this tick (item key -> which freeze).
+        self._item_freezes: dict[str, tuple[tuple, float]] = {}
+        self._item_frozen: dict[str, object] = {}
         self._frozen: dict[str, object] = {}
         self._caught: dict[str, object] = {}
         self._missed: dict[str, np.ndarray] = {}  # a frozen source's newest picture, shown when it's let go
@@ -1240,6 +1244,7 @@ class Engine:
             new_chain = AudioChain(filters)
             source.audio_chain = new_chain if new_chain.processors else None
         self._filtered = frozenset(effects)  # sources with video filters (a Move draws such a sprig whole)
+        item_freezes = {}
         for scene in self._collection.scenes:  # effects on one item only, under its item key
             for item in scene.items:
                 if item.effects:
@@ -1247,8 +1252,12 @@ class Engine:
                     if own.active:
                         base = effects.get(item.source) or video_effects(())
                         effects[item_key(scene.id, item.source)] = with_item(base, own)
+                    freeze = freeze_of(item.effects)
+                    if freeze is not None:
+                        item_freezes[item_key(scene.id, item.source)] = (("filter", freeze[0]), freeze[1])
         compositor.effects = effects
         self._freeze_filters = freezes
+        self._item_freezes = item_freezes
 
     def _sync_parts(self, compositor) -> None:
         """Tell each nested-part source the size of the layout it shows, and drop textures of layouts that are gone.
@@ -1967,6 +1976,21 @@ class Engine:
             out[(source_id, canvas_id)] = texture
         return out
 
+    def _item_holds(self, compositor) -> dict[str, object]:
+        """Which items are frozen on their own this tick (item key -> which freeze), told to Python's compositor.
+        The native engine gets them with its snapshot (NativeCanvases.sync's holds)."""
+        freezes = self._item_freezes
+        if not freezes and not self._item_frozen and not getattr(compositor, "item_holds", None):
+            return self._item_frozen
+        wall = time.time()
+        frozen = {key: token for key, (token, until) in freezes.items() if not until or wall < until}
+        if frozen != self._item_frozen:
+            self._item_frozen = frozen
+        hold_items = getattr(compositor, "hold_items", None)  # (a compositor made anew is told again)
+        if hold_items is not None and compositor.item_holds != self._item_frozen:
+            hold_items(self._item_frozen)
+        return self._item_frozen
+
     def _freezes(self, compositor) -> dict[str, object]:
         """Which sources and sprig placements are frozen this tick (source id -> which freeze), and let go of
         what the ones that ended held. A hold counts from the first tick that counts itself after it was asked for."""
@@ -2117,6 +2141,7 @@ class Engine:
         slowest = ("", 0.0)
         self._ticks = getattr(self, "_ticks", 0) + 1
         frozen = self._freezes(compositor)
+        self._item_holds(compositor)
         textures = getattr(compositor, "textures", {})
         woke = bool(self._woke or self._waking)  # a bloom is coming back: first pictures are spread out
         # Sources a switch is waiting on: only these are copied for Python's compositor while it waits (their
@@ -2223,7 +2248,8 @@ class Engine:
             kept.update({cid: w[0] for cid, w in self._waking.items()})
             native.sync(self._collection, getattr(compositor, "effects", {}), self._state_view, bool(self._state_fades),
                         {cid: r for cid, r in self._transitions.items() if cid not in self._waking}, self._wipe_map,
-                        views=self._engine_views, held=kept, move_pieces=self._move_layout)
+                        views=self._engine_views, held=kept, move_pieces=self._move_layout,
+                        holds=self._item_frozen)
             native.check(now)
             sprigcore_drain()
             self._mark("native engine")
