@@ -58,7 +58,8 @@ def main(path: str, folder: str) -> int:
     def peek(address: int, size: int = 0x60):
         try:
             return reader.read(address, size)
-        except Exception:  # noqa: BLE001
+        except BaseException as exc:  # noqa: BLE001
+            print("  (peek", hex(address), type(exc).__name__, exc, ")")
             return None
 
     got = peek(receiver)
