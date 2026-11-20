@@ -154,3 +154,19 @@ def test_listening_or_getting_ready_is_not_a_problem():
     assert finding.level == "bad" and "Google key" in finding.text  # a real problem still stops go-live
     assert short_status("Listening") == "" and short_status("Getting the speech model (45%)") == "starting"
     assert all(plain_problem(s, "plugin") is None for s in fine)
+
+
+def test_a_page_video_that_cant_play_is_a_warning_without_plugged_in():
+    from types import SimpleNamespace as NS
+
+    from sprigcast.app import doctor
+    from sprigcast.app.names import plain_problem, short_status
+
+    check = NS(collection=NS(sources=[NS(id="c", name="[B] Clips"), NS(id="s", name="Music")]),
+               statuses={"c": "Video can't play: page uses H.264 (MP4)", "s": "Sound plays on desktop audio"})
+    [finding] = doctor._sources(check)
+    assert finding.level == "warning" and finding.text.startswith("[B] Clips: a video on its page can't play")
+    assert "plugged in" not in finding.text and "H.264" in finding.text
+    assert short_status("Sound plays on desktop audio") == "" and short_status(check.statuses["c"]) == "no video"
+    text, fix = plain_problem(check.statuses["c"], "browser")
+    assert "H.264" in text and fix == "" and plain_problem("Sound plays on desktop audio", "browser") is None
