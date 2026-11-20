@@ -134,6 +134,11 @@ def test_send_report_from_the_help_menu_and_fall_back_to_the_desktop(app, logs, 
             raise OSError("no connection")
 
         card = problem_report.ask(w, CRASH, sender=offline, show_result=False)
+        from PySide6.QtWidgets import QApplication
+
+        # The crash card doesn't hold the window (or the Control API, which runs on its events) either.
+        assert card.isVisible() and not card.isModal() and QApplication.activeModalWidget() is None
+        assert w.isEnabled()
         card.accept()
         _run(app, card.upload)
         saved = list(desktop.glob("SprigCast report *.zip"))

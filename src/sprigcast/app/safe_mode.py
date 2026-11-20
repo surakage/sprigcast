@@ -15,10 +15,17 @@ ARG = "--safe-mode"
 
 log = logging.getLogger(__name__)
 _on = False
+_unattended = False  # the question after a crash went unanswered: nobody's at the PC (see unattended)
 
 
 def on() -> bool:
     return _on
+
+
+def unattended() -> bool:
+    """This start went ahead on its own: the safe mode question counted down with no answer. Whatever else would
+    wait for someone (the crash card) shouldn't sit over the window of a PC nobody is at (2026-11-20)."""
+    return _unattended
 
 
 def choose(argv: list[str], crashed, minimized: bool, ask) -> bool:
@@ -102,6 +109,8 @@ def ask(seconds: int | None = None) -> bool:
         app.removeEventFilter(touch)
         timer.stop()
     chosen = box.clicked is safe
+    global _unattended
+    _unattended = outcome[0] == "no answer"
     log.info("safe mode question: %s, %s", outcome[0], "safe mode" if chosen else "starting normally")
     box.deleteLater()
     return chosen
