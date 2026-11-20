@@ -141,6 +141,7 @@ from sprigcast.core.events import (
     Stats,
 )
 from sprigcast.core import awake
+from sprigcast.core.capture_sound import CAPTURE_KINDS
 from sprigcast.core.edit import cover
 from sprigcast.core.filters import filter_kind, settings_for
 from sprigcast.core.looks import LOOKS, SHAPES
@@ -1211,27 +1212,52 @@ class MainWindow(QMainWindow):
         self._pace_poll()
 
     def _fill_capture_sound_menu(self, menu: QMenu, capture_id: str) -> None:
-        """A capture's own sound, like OBS's Capture audio: none, the app's own, or an output such as
-        Elgato Wave Link's Game channel."""
-        from sprigcast.core.capture_sound import APP, sound_choice
+        """A capture's own sound, like OBS's Capture audio: none, the app's own, an output such as Elgato Wave
+        Link's Game channel, or (a video capture) an input such as a capture card's own sound."""
+        from sprigcast.core.capture_sound import APP, INPUT, sound_choice
         from sprigcast.sources.audio import device_label
 
         current = sound_choice(self.collection, capture_id)
+        camera = self.collection.source(capture_id).kind == "camera"
         group = QActionGroup(menu)
-        choices = [(None, "No sound of its own"), (APP, "The app's own sound")]
-        devices = [d.name for d in list_audio_devices(loopback=True, rescan=False)]
-        if current not in (None, APP) and current not in devices:
-            devices.append(current)  # not plugged in right now: still shown, ticked
-        for i, (value, text) in enumerate(choices + [(d, device_label(d)) for d in devices]):
-            if i == 2:
-                menu.addSeparator()
-                note = menu.addAction("From an output")
-                note.setEnabled(False)
-            act = menu.addAction(text)
-            act.setCheckable(True)
-            act.setChecked(value == current)
-            group.addAction(act)
-            act.triggered.connect(lambda _=False, v=value: self._set_capture_sound(capture_id, v))
+        rows: list[tuple[str | None, str]] = [(None, "No sound of its own")]
+        if not camera:
+            rows.append((APP, "The app's own sound"))
+        lists = []
+        if camera:  # a capture card's sound is an input of its own
+            inputs = [INPUT + d.name for d in list_audio_devices(loopback=False, rescan=False)]
+            lists.append(("From an input", inputs))
+        lists.append(("From an output", [d.name for d in list_audio_devices(loopback=True, rescan=False)]))
+        if current not in (None, APP) and all(current not in names for _, names in lists):
+            lists[0 if current.startswith(INPUT) else -1][1].append(current)  # unplugged now: still shown, ticked
+        for value, text in rows:
+            self._capture_sound_row(menu, group, capture_id, value, text, current)
+        for title, names in lists:
+            menu.addSeparator()
+            note = menu.addAction(title)
+            note.setEnabled(False)
+            for value in names:
+                name = value[len(INPUT):] if value.startswith(INPUT) else value
+                self._capture_sound_row(menu, group, capture_id, value, device_label(name), current)
+
+    def _capture_sound_row(self, menu, group, capture_id: str, value, text: str, current) -> None:
+        act = menu.addAction(text)
+        act.setCheckable(True)
+        act.setChecked(value == current)
+        group.addAction(act)
+        act.triggered.connect(lambda _=False, v=value: self._set_capture_sound(capture_id, v))
+
+    def _pair_capture_card_sound(self, config) -> None:
+        """A capture card (Elgato HD60 X...) lists its sound as an input of its own: a new video capture takes it
+        along when one fits its name, the way OBS's device audio does. Right-click → Sound changes it."""
+        from sprigcast.core.capture_sound import INPUT, capture_sound, paired_input
+
+        if config.id not in {s.id for s in self.collection.sources} or capture_sound(self.collection, config.id):
+            return
+        inputs = [d.name for d in list_audio_devices(loopback=False, rescan=False)]
+        found = paired_input(str(config.settings.get("name") or config.name), inputs)
+        if found:
+            self._set_capture_sound(config.id, INPUT + found)
 
     def _set_capture_sound(self, capture_id: str, choice: str | None) -> None:
         from sprigcast.core.capture_sound import set_capture_sound
@@ -1253,7 +1279,7 @@ class MainWindow(QMainWindow):
             if item is not None and self.collection.source(item.source).kind == PART_KIND:
                 menu.addAction(f"Open {PART}").triggered.connect(self._open_part_item)
                 self._fill_tweaks_menu(menu.addMenu("Just in this " + SHOW), item.source)
-            if item is not None and self.collection.source(item.source).kind in ("window_capture", "game_capture"):
+            if item is not None and self.collection.source(item.source).kind in CAPTURE_KINDS:
                 self._fill_capture_sound_menu(menu.addMenu("Sound"), item.source)
             if item is not None and self.collection.source(item.source).kind == "camera":
                 self._fill_swap_camera_menu(menu.addMenu("Swap camera"), item.source)
@@ -5094,7 +5120,9 @@ class MainWindow(QMainWindow):
             if settings is None:
                 return
             name = ask_name(self, short_name(settings["name"], "Camera"), settings["name"])
-        self._add_item(SourceConfig(id=self.collection.new_id("camera"), kind="camera", name=name, settings=settings))
+        config = SourceConfig(id=self.collection.new_id("camera"), kind="camera", name=name, settings=settings)
+        self._add_item(config)
+        self._pair_capture_card_sound(config)
         # Where it goes: 1280 x 720 in the middle once its picture arrives, like every source (_place_new_sources).
 
     def _fit_item(self, checked: bool = False, size: tuple[int, int] | None = None) -> None:
