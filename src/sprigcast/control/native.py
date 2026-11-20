@@ -63,8 +63,19 @@ FEATURES = (
     "record.pause",        # record.pause / resume / toggle_pause / chapter, record.status paused, record.paused event
     "place.bandwidth_test",  # place.set bandwidth_test (Twitch test mode); places.list says it where there is one
     "screenshot.bloom_off_air",  # screenshot.take {bloom, shape}: any bloom on its canvas without putting it on air
+    "item.place_full",     # item.place crop, bounds, bounds_width/height, bounds_align, align
+    "item.edit",           # item.lock, item.remove, item.duplicate, source.remove, source.refresh
+    "edit.undo",           # edit.undo / edit.redo; {"steps", "one_step": true}: all or none, one undo step
+    "steps.dry_run",       # {"steps", "dry_run": true}: nothing kept; answers the layouts and overlaps it would make
+    "events.item_moved",   # item.moved when something is moved, sized, cropped or turned
     "layout.get",          # layout.get: every item's place, crop, bounds, source size and canvas box; flat, overlaps
 )
+# What {"steps": [...], "one_step": true} and "dry_run": true may hold: changes to the garden only, so all of them
+# can be taken back together.
+BATCH_ACTIONS = frozenset({
+    "item.add", "item.place", "item.order", "item.show", "item.hide", "item.toggle", "item.lock", "item.remove",
+    "item.duplicate", "source.new", "source.set", "source.rename", "source.rotate", "source.remove",
+    "filter.add", "filter.set", "filter.remove", "filter.move", "items.list", "layout.get"})
 PREVIEW = API_VERSION == 0
 EVENT_GROUPS = ("bloom", "item", "sprig", "sound", "filter", "source", "output", "transition", "media", "custom",
                 "plugin", "garden", "path")
@@ -695,13 +706,63 @@ class NativeApi:
             shape="?both (default), horizontal or vertical", x="?left edge, canvas pixels", y="?top edge",
             scale="?size, 1 = as big as the source", scale_x="?width only, 1 = as wide as the source",
             scale_y="?height only, 1 = as tall as the source", rotation="?degrees clockwise",
-            dx="?pixels to move right (negative: left)", dy="?pixels to move down (negative: up)")
+            dx="?pixels to move right (negative: left)", dy="?pixels to move down (negative: up)",
+            crop="?{left, top, right, bottom} in source pixels (the sides you give change)",
+            bounds="?off, fit, fill or stretch: squeeze it into a box", bounds_width="?the box's width, canvas pixels",
+            bounds_height="?the box's height", bounds_align="?where the picture sits in its box (top_left ... center ... bottom_right)",
+            align="?the point it turns around (top_left ... center ... bottom_right); the picture stays where it is")
     def item_place(self, data):
-        _, items = self._items(data)
+        from sprigcast.core.scene import ALIGNS, BOUNDS
+
+        holder, items = self._items(data)
         keys = ("x", "y", "scale", "scale_x", "scale_y", "rotation", "dx", "dy")
         values = {key: _get(data, key, float, optional=True) for key in keys}
-        if all(v is None for v in values.values()):
-            raise _bad("Give x, y, scale, scale_x, scale_y, rotation, dx or dy.")
+        crop = _get(data, "crop", dict, optional=True)
+        bounds = _get(data, "bounds", str, optional=True)
+        box = {key: _get(data, key, float, optional=True) for key in ("bounds_width", "bounds_height")}
+        aligns = {key: _get(data, key, str, optional=True) for key in ("bounds_align", "align")}
+        more = crop is not None or bounds is not None or any(v is not None for v in (*box.values(), *aligns.values()))
+        if all(v is None for v in values.values()) and not more:
+            raise _bad("Give x, y, scale, scale_x, scale_y, rotation, dx, dy, crop, bounds or align.")
+        if crop is not None:
+            if not crop or any(k not in ("left", "top", "right", "bottom") for k in crop):
+                raise _bad("crop takes left, top, right and bottom.")
+            if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v <= 100_000 for v in crop.values()):
+                raise _bad("crop sides are pixels, 0 or more.")
+        if bounds is not None and bounds not in BOUNDS:
+            raise _bad(f"bounds must be one of {', '.join(BOUNDS)}.")
+        for key, value in box.items():
+            if value is not None and not 1 <= value <= 100_000:
+                raise _bad(f"{key} must be 1 to 100000.")
+        for key, value in aligns.items():
+            if value is not None and value not in ALIGNS:
+                raise _bad(f"{key} must be one of {', '.join(ALIGNS)}.")
+        if more:
+            sizes = dict(getattr(self.host, "source_sizes", dict)() or {})
+            for item in items:
+                wide = (box["bounds_width"] or item.bounds_size[0], box["bounds_height"] or item.bounds_size[1])
+                mode = bounds if bounds is not None else item.bounds
+                if mode != "off" and (bounds is not None or any(v is not None for v in box.values())) \
+                        and not (wide[0] > 0 and wide[1] > 0):
+                    raise _bad("Give bounds_width and bounds_height with bounds.")
+            for item in items:
+                if crop is not None:
+                    sides = dict(zip(("left", "top", "right", "bottom"), item.crop))
+                    sides.update({k: int(v) for k, v in crop.items()})
+                    item.crop = (sides["left"], sides["top"], sides["right"], sides["bottom"])
+                if box["bounds_width"] is not None or box["bounds_height"] is not None:
+                    item.bounds_size = (box["bounds_width"] or item.bounds_size[0],
+                                        box["bounds_height"] or item.bounds_size[1])
+                if bounds is not None:
+                    item.bounds = bounds
+                if aligns["bounds_align"] is not None:
+                    item.bounds_align = aligns["bounds_align"]
+                if aligns["align"] is not None:
+                    size = self._size_of(item, sizes)
+                    if size:
+                        item.set_align(size, aligns["align"])  # the picture stays put; only the pin moves
+                    else:
+                        item.align = aligns["align"]
         for key in ("scale", "scale_x", "scale_y"):
             if values[key] is not None and not 0.01 <= values[key] <= 100:
                 raise _bad(f"{key} must be 0.01 to 100.")
@@ -722,7 +783,72 @@ class NativeApi:
         self.host.commit("items")
         stretch = values["scale_x"] is not None or values["scale_y"] is not None
         return {"items": [{"x": i.x, "y": i.y, "scale": i.scale, "rotation": i.rotation,
-                           **({"scale_x": i.scale, "scale_y": i.sy} if stretch else {})} for i in items]}
+                           **({"scale_x": i.scale, "scale_y": i.sy} if stretch else {}),
+                           **({"crop": dict(zip(("left", "top", "right", "bottom"), i.crop)),
+                               "bounds": {"mode": i.bounds, "width": i.bounds_size[0], "height": i.bounds_size[1],
+                                          "align": i.bounds_align}, "align": i.align} if more else {})}
+                          for i in items]}
+
+    def _size_of(self, item: SceneItem, sizes: dict) -> tuple[int, int] | None:
+        """An item's source's own size (a sprig: its canvas), or None while it isn't known."""
+        from sprigcast.control import layout as lay
+
+        scene = next((sc for sc in self.col.scenes if any(i is item for i in sc.items)), None)
+        return lay.source_size(self.col, item, scene.canvas if scene is not None else "", sizes)
+
+    def _placed(self, data: dict[str, Any]) -> tuple[Scene, list[tuple[Scene, SceneItem]]]:
+        """Like _items, with the layout each item sits in (for taking one out or copying it)."""
+        holder, items = self._items(data)
+        return holder, [(scene, item) for item in items for scene in self.col.scenes
+                        if any(i is item for i in scene.items)]
+
+    @action("item.lock", "Lock something in place in Build, or unlock it (no locked: toggle).", item="name or id",
+            bloom="?bloom it's in", sprig="?sprig it's in", shape="?both (default), horizontal or vertical",
+            locked="?true or false")
+    def item_lock(self, data):
+        _, items = self._items(data)
+        locked = _get(data, "locked", bool, optional=True)
+        locked = (not items[0].locked) if locked is None else locked
+        for item in items:
+            item.locked = locked
+        self.host.commit("items")
+        return {"locked": locked}
+
+    @action("item.remove", "Take something out of a bloom or sprig. Its source stays (source.remove removes that).",
+            item="name or id", bloom="?bloom it's in", sprig="?sprig it's in",
+            shape="?both (default), horizontal or vertical")
+    def item_remove(self, data):
+        holder, placed = self._placed(data)
+        name = self._item_name(placed[0][1].source)
+        for scene, item in placed:
+            scene.items[:] = [i for i in scene.items if i is not item]
+        self.host.commit("items")
+        return {"removed": name, "shapes": sorted({scene.canvas for scene, _ in placed})}
+
+    @action("item.duplicate", "Copy something in a bloom or sprig: a new source with the same settings and filters, "
+                              "placed the same way, on top. Sprigs can't be copied this way.",
+            item="name or id", bloom="?bloom it's in", sprig="?sprig it's in",
+            shape="?both (default), horizontal or vertical", name="?the copy's name (default: its name and a number)")
+    def item_duplicate(self, data):
+        holder, placed = self._placed(data)
+        source = next((s for s in self.col.sources if s.id == placed[0][1].source), None)
+        if source is None or source.kind == PART_KIND:
+            raise _bad("Sprigs can't be copied this way.")
+        taken = {s.name for s in self.col.sources if s.kind != PART_KIND}
+        name = (_get(data, "name", str, optional=True) or "").strip()
+        if name and name in taken:
+            raise ApiError("busy", f"There's already a source called {name!r}.")
+        n = 2
+        while not name:
+            name, n = (f"{source.name} {n}" if f"{source.name} {n}" not in taken else ""), n + 1
+        copy = source.model_copy(deep=True, update={"id": self.col.new_id(source.kind), "name": name})
+        for flt in copy.filters:
+            flt.id = secrets.token_hex(4)
+        self.col.sources.append(copy)
+        for scene, item in placed:
+            scene.items.append(item.model_copy(deep=True, update={"source": copy.id, "locked": False}))
+        self.host.commit("items")
+        return {"item": copy.id, "name": copy.name, "shapes": sorted({scene.canvas for scene, _ in placed})}
 
     @action("item.order", "Bring something forward or send it back.", item="name or id", bloom="?bloom it's in",
             sprig="?sprig it's in", shape="?both (default), horizontal or vertical",
@@ -958,6 +1084,117 @@ class NativeApi:
             raise _bad("name is empty.")
         source.name = name
         self.host.commit("items")
+
+    @action("source.remove", "Remove a source, taking it out of every bloom and sprig it's in.", source="name or id")
+    def source_remove(self, data):
+        source = self._source(data, "source")
+        places = 0
+        for scene in self.col.scenes:
+            before = len(scene.items)
+            scene.items[:] = [i for i in scene.items if i.source != source.id]
+            places += before - len(scene.items)
+        self.col.sources = [s for s in self.col.sources
+                            if s.id != source.id and s.settings.get("capture_of") != source.id]
+        self.host.commit("scenes")
+        return {"removed": source.name, "places": places}
+
+    @action("source.refresh", "Load a web page source again, now.", source="name or id")
+    def source_refresh(self, data):
+        source = self._source(data, "source")
+        if source.kind != "browser":
+            raise _bad(f"{source.name} isn't a web page.")
+        running = getattr(self.host, "source_instance", lambda _id: None)(source.id)
+        if running is None or not getattr(running, "_open", False):
+            raise ApiError("not_allowed", f"{source.name} isn't open right now (it's off screen), so there's "
+                                          "nothing to load again. It loads fresh when it's shown.")
+        running.reload()
+        return {"refreshed": source.name}
+
+    # Undo, and several changes as one --------------------------------------------------------------
+
+    @action("edit.undo", "Undo the last change to the garden (as Ctrl+Z in SprigCast).")
+    def edit_undo(self, data):
+        undo = getattr(self.host, "undo", None)
+        if undo is None:
+            raise ApiError("not_allowed", "Undo isn't possible here.")
+        return {"undone": bool(undo())}
+
+    @action("edit.redo", "Put back the change that was just undone (as Ctrl+Y in SprigCast).")
+    def edit_redo(self, data):
+        redo = getattr(self.host, "redo", None)
+        if redo is None:
+            raise ApiError("not_allowed", "Redo isn't possible here.")
+        return {"redone": bool(redo())}
+
+    def run_batch(self, steps: list, dry_run: bool = False) -> dict[str, Any]:
+        """Several layout changes as one: all of them or none, saved and sent once, as one step for undo.
+
+        They run on a copy of the garden, so the real one is never half changed: only when every step worked is
+        the copy put in its place (and then saved and drawn once). dry_run: the copy is thrown away; the answer
+        says where things would end up (the layouts the steps name, with overlaps). Only BATCH_ACTIONS may be in
+        it: anything that does more than change the garden (go live, take a screenshot) can't be taken back."""
+        from sprigcast.core.scene import SceneCollection
+
+        real_host, committed = self.host, []
+        copy = SceneCollection.model_validate_json(self.col.to_text())
+
+        class Quiet:  # the host, showing the copy, with saving and redrawing held back
+            collection = copy
+
+            def __getattr__(self, name):
+                if name == "commit_settings":
+                    raise AttributeError(name)
+                return getattr(real_host, name)
+
+            def commit(self, what: str) -> None:
+                committed.append(what)
+
+        results: list[dict[str, Any]] = []
+        layouts: list[dict[str, Any]] = []
+        self.host = Quiet()
+        try:
+            for step in steps:
+                name = step.get("do") if isinstance(step, dict) else None
+                if not isinstance(name, str) or name not in BATCH_ACTIONS:
+                    results.append({"ok": False, "error": {
+                        "code": "bad_request",
+                        "message": f"{name!r} can't be in one step. These can: {', '.join(sorted(BATCH_ACTIONS))}."}})
+                    break
+                result = answer(self, step)
+                result.pop("id", None)
+                results.append(result)
+                if not result["ok"]:
+                    break
+            ok = len(results) == len(steps) and all(r["ok"] for r in results)
+            if dry_run and ok:
+                asked = []
+                for step in steps:
+                    key = next((k for k in ("bloom", "sprig") if step.get(k) is not None), None)
+                    ref = (key, step[key]) if key else None
+                    if ref is not None and ref not in asked:
+                        asked.append(ref)
+                for key, ref in asked:
+                    try:
+                        layouts.append(self.layout_get({key: ref, "overlaps": True}))
+                    except ApiError:
+                        continue  # removed by the steps themselves
+        finally:
+            self.host = real_host
+        applied = ok and not dry_run and bool(committed)
+        if applied:
+            for name in type(self.col).model_fields:  # in place: everything holding the garden sees the change
+                setattr(self.col, name, getattr(copy, name))
+            fresh = getattr(real_host, "new_undo_step", None)
+            if fresh is not None:
+                fresh()  # never merged into the change before it: undo takes back exactly this batch
+            replaced = getattr(real_host, "garden_replaced", None)
+            if replaced is not None:
+                replaced()
+            real_host.commit("scenes" if "scenes" in committed else committed[-1])
+        out: dict[str, Any] = {"steps": results, "applied": applied}
+        if dry_run:
+            out.update(dry_run=True, layouts=layouts)
+        return out
 
     # Stream, record, clips -------------------------------------------------------------------------
 
@@ -1426,10 +1663,17 @@ class NativeApi:
         for scene in col.scenes:
             for i, item in enumerate(scene.items):
                 items[(scene.id, i, item.source)] = item.visible
+        if not full and last is not None and "places" in last:
+            places = last["places"]  # a move ends with a full look (an edit), so the watch needn't write these out
+        else:
+            places = {(scene.id, i.source): (i.x, i.y, i.scale, i.sy, i.rotation, i.crop, i.bounds, i.bounds_size,
+                                             i.bounds_align, i.align)
+                      for scene in col.scenes for i in scene.items}
         return {
             "onAir": dict(col.active_scenes),
             "blooms": [(b.id, b.name) for b in self._blooms()],
             "items": items,
+            "places": places,
             "sounds": {s.id: (bool(s.settings.get("muted", False)), float(s.settings.get("volume_db", 0.0)))
                        for s in col.sources if self._has_sound(s)},
             "filters": filters,
@@ -1510,6 +1754,24 @@ class NativeApi:
                 out.append(("item.changed", {**where, "shape": scene.canvas if scene else None,
                                              "item": self._item_name(key[2]), "itemId": self._item_key(key[2]),
                                              "visible": visible}))
+        if now["places"] is not last.get("places"):
+            for key, place in now["places"].items():
+                before = last.get("places", {}).get(key)
+                scene = scenes.get(key[0])
+                if before is None or before == place or scene is None:
+                    continue
+                if scene.kind == "part":
+                    part = self.col.main_part(scene)
+                    where = {"sprig": part.name, "blooms": owners.setdefault(part.id, self._blooms_showing(part))}
+                else:
+                    where = bloom_ref(key[0])
+                x, y, sx, sy, rotation, crop, bounds, bounds_size, bounds_align, align = place
+                out.append(("item.moved", {
+                    **where, "shape": scene.canvas, "item": self._item_name(key[1]), "itemId": self._item_key(key[1]),
+                    "x": x, "y": y, "scale_x": sx, "scale_y": sy, "rotation": rotation, "align": align,
+                    "crop": dict(zip(("left", "top", "right", "bottom"), crop)),
+                    "bounds": {"mode": bounds, "width": bounds_size[0], "height": bounds_size[1],
+                               "align": bounds_align}}))
         for sid, (muted, db) in now["sounds"].items():
             old = last["sounds"].get(sid)
             if old is not None and old != (muted, db):
@@ -1719,6 +1981,17 @@ class NativeSession:
         first failure. Other messages keep working while a list waits."""
         steps = message.get("steps")
         problem = None
+        dry_run, one_step = message.get("dry_run") is True, message.get("one_step") is True
+        if (dry_run or one_step) and isinstance(steps, list) and steps and len(steps) <= MAX_STEPS:
+            if any(not isinstance(step, dict) or "wait" in step for step in steps):
+                problem = "Steps taken as one can't wait: only actions."
+            else:
+                result = self.api.run_batch(steps, dry_run)
+                ok = all(r["ok"] for r in result["steps"]) and len(result["steps"]) == len(steps)
+                yield json.dumps({"id": message.get("id"), "ok": ok, "result": result}, default=str)
+                return
+            yield json.dumps({"id": message.get("id"), "ok": False, "error": {"code": "bad_request", "message": problem}})
+            return
         if not isinstance(steps, list) or not steps:
             problem = "steps must be a list of actions and waits."
         elif len(steps) > MAX_STEPS:

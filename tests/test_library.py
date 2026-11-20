@@ -124,10 +124,13 @@ def test_opening_a_sprig_says_where_it_shows_and_goes_back(tmp_path, monkeypatch
         w._refresh_scenes()
         w._show_part_editor()
         assert w.center.currentIndex() == 1
-        assert "in 1 bloom: " in w.part_uses_note.text() and '>Just Chatting</a>' in w.part_uses_note.text()
-        assert w.part_back.text() == "← Just Chatting"
         assert w.build_bar.where.text().endswith("Webcam frame")
-        w._close_part()
+        assert not w.part_preview.show_title  # the canvas has the card to itself (user, 2026-11-20)
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        w.part_preview.setFocus()
+        QTest.keyClick(w.part_preview, Qt.Key.Key_Escape)  # Esc goes back
         assert w.selected_scene_id == "h2" and w.center.currentIndex() == 0
     finally:
         w.close()
