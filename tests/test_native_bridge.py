@@ -141,8 +141,9 @@ class FakeNative:
         pass
 
     def sync(self, collection, effects, state_view, fading, transitions=None, wipe_picture=None, views=None,
-             held=None, move_pieces=None):
+             held=None, move_pieces=None, holds=None):
         self.synced += 1
+        self.holds = dict(holds or {})
         self.move_pieces = move_pieces
         self.transitions = dict(transitions or {})
         self.views = dict(views or {})
@@ -918,6 +919,56 @@ def test_a_stinger_hands_the_engine_its_clip_cut_and_matte(monkeypatch):
     assert previous == "from:h" and spec.mode == sprigcore.STINGER_MODE and round(spec.seconds, 3) == 1.5
     assert spec.overlay == sprigcore.key("stinger:x") and round(spec.cut_seconds, 3) == 0.4
     assert sprigcore.STINGER_MATTES[spec.matte] == "right" and spec.matte_only == 1
+
+
+def test_an_item_frozen_on_its_own_is_drawn_from_a_still_copy(monkeypatch):
+    """sync's holds: the engine is asked once per freeze for a copy of the item's source or sprig, the snapshot
+    draws that item from it, and the copy goes only after a snapshot that no longer uses it."""
+    calls, built = [], []
+
+    class Holding(FakeEngine):
+        def hold(self, held_id, source=None, scene=None):
+            calls.append(("hold", held_id, source, scene))
+
+        def forget(self, source_id):
+            calls.append(("forget", source_id))
+
+        def __getattr__(self, name):
+            return lambda *a, **k: None
+
+    def hand_over(engine, snapshot, resources):
+        calls.append(("snapshot",))
+        built.append(snapshot)
+
+    monkeypatch.setattr(sprigcore, "Engine", Holding)
+    monkeypatch.setattr(native_bridge.native_snapshot, "hand_over", hand_over)
+    col, fx = _collection(), {}
+    bridge = native_bridge.NativeCanvases(col)
+
+    def drawn_from(snapshot, scene_key):
+        s = snapshot.struct
+        entry = next(s.scenes[i] for i in range(s.scene_count) if s.scenes[i].id == sprigcore.key(scene_key))
+        return [(s.items[i].source, s.items[i].part)
+                for i in range(entry.first_item, entry.first_item + entry.item_count)]
+
+    bridge.sync(col, fx, _plain_state, False, holds={"show-h/red": ("filter", 1), "show-h/cam": ("filter", 1)})
+    sprig = native_bridge.snapshot_draws(col, _plain_state)[1][("cam", "canvas:h")]
+    assert calls == [("hold", "hold:show-h/cam:1", None, sprig), ("hold", "hold:show-h/red:2", "red", None),
+                     ("snapshot",)]
+    assert drawn_from(built[-1], "canvas:h") == [(sprigcore.key("hold:show-h/cam:1"), 0),
+                                               (sprigcore.key("hold:show-h/red:2"), 0)]
+    assert (sprigcore.key("red"), 0) in drawn_from(built[-1], sprig)  # inside the sprig the source is live
+    bridge.sync(col, fx, _plain_state, False, holds={"show-h/red": ("filter", 1), "show-h/cam": ("filter", 1)})
+    assert len(built) == 1  # nothing changed: nothing handed over, nothing copied again
+    del calls[:]
+    bridge.sync(col, fx, _plain_state, False, holds={"show-h/red": ("filter", 2)})  # frozen anew; the sprig let go
+    assert calls == [("hold", "hold:show-h/red:3", "red", None), ("snapshot",),
+                     ("forget", "hold:show-h/cam:1"), ("forget", "hold:show-h/red:2")]
+    assert drawn_from(built[-1], "canvas:h")[1] == (sprigcore.key("hold:show-h/red:3"), 0)
+    assert drawn_from(built[-1], "canvas:h")[0][1] == sprigcore.key(sprig)
+    del calls[:]
+    bridge.sync(col, fx, _plain_state, False)
+    assert calls == [("snapshot",), ("forget", "hold:show-h/red:3")] and not bridge._item_holds
 
 
 def test_a_move_hands_the_engine_its_pieces_once(monkeypatch):

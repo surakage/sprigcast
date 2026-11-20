@@ -752,6 +752,73 @@ SC_API int sc_source_forget(sc_device *device, uint64_t id) {
     });
 }
 
+SC_API int sc_source_hold(sc_device *device, uint64_t id, uint64_t source, uint64_t scene, double time) {
+    return device_call(device, "sc_source_hold", [&]() -> int {
+        if (!id || (source != 0) == (scene != 0) || id == source)
+            return fail(SC_ERR_ARGUMENT, "sc_source_hold: no id, or not exactly one of a source and a scene");
+        std::lock_guard<std::mutex> lock(device->lock);
+        auto &comp = device->comp;
+        Source held;
+        if (scene) {  // a sprig: drawn once more, into a picture of its own
+            std::shared_ptr<const Snapshot> snap = comp.snapshot;
+            if (!snap || !snap->by_id.count(scene)) return SC_NOT_YET;
+            const sc_scene &laid = snap->scenes[snap->by_id.at(scene)];
+            if (laid.width <= 0 || laid.height <= 0) return SC_NOT_YET;
+            Target t;
+            int code = make_target(device->device.Get(), laid.width, laid.height, t);
+            if (code != SC_OK) return code;
+            code = render_scene(*device, t.target.Get(), laid.width, laid.height, scene, time);
+            if (code != SC_OK) return code;
+            held.texture = t.texture;
+            held.view = t.view;
+            held.data_w = held.pic_w = held.layout_w = laid.width;
+            held.data_h = held.pic_h = held.layout_h = laid.height;
+            held.format = SC_FMT_RGBA;
+            held.premultiplied = true;
+        } else {
+            ID3D11Texture2D *from = nullptr;
+            auto drawn = comp.drawn.find(source);
+            if (drawn != comp.drawn.end()) {  // a source drawn from a list: its picture as last drawn
+                const Target &t = drawn->second.target;
+                if (!t.texture) return SC_NOT_YET;
+                from = t.texture.Get();
+                held.data_w = held.pic_w = held.layout_w = t.width;
+                held.data_h = held.pic_h = held.layout_h = t.height;
+                held.format = SC_FMT_RGBA;
+                held.premultiplied = true;
+            } else {
+                auto found = comp.sources.find(source);
+                if (found == comp.sources.end() || !found->second.texture) return SC_NOT_YET;
+                const Source &live = found->second;
+                from = live.texture.Get();
+                held.data_w = live.data_w;
+                held.data_h = live.data_h;
+                held.pic_w = live.pic_w;
+                held.pic_h = live.pic_h;
+                held.layout_w = live.layout_w;
+                held.layout_h = live.layout_h;
+                held.format = live.format;
+                held.planar = live.planar;
+                std::memcpy(held.yuv, live.yuv, sizeof held.yuv);
+                held.premultiplied = live.premultiplied;
+            }
+            D3D11_TEXTURE2D_DESC td = {};
+            from->GetDesc(&td);
+            td.Usage = D3D11_USAGE_DEFAULT;
+            td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            td.CPUAccessFlags = 0;
+            td.MiscFlags = 0;
+            HRESULT hr = device->device->CreateTexture2D(&td, nullptr, &held.texture);
+            if (SUCCEEDED(hr)) hr = device->device->CreateShaderResourceView(held.texture.Get(), nullptr, &held.view);
+            if (FAILED(hr)) return fail_hr(SC_ERR_DEVICE, "Creating an item's held picture", hr);
+            device->context->CopyResource(held.texture.Get(), from);
+        }
+        comp.drawn.erase(id);
+        comp.sources[id] = std::move(held);
+        return SC_OK;
+    });
+}
+
 SC_API int sc_source_draws(sc_device *device, uint64_t id, int width, int height, const sc_item *items, int count) {
     return device_call(device, "sc_source_draws", [&]() -> int {
         if (!id) return fail(SC_ERR_ARGUMENT, "sc_source_draws: no id");

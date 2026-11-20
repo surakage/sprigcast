@@ -6,6 +6,10 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- Freeze works on one item: a Freeze filter put on an item (not on its source) holds that item's picture where
+  it's placed, while the same source keeps moving everywhere else it shows. Engine side only for now (both
+  engines); the plugin, hotkeys and Control API follow. Not tried on a PC yet.
+
 - Fixed a rare crash about 15 seconds after start ("access violation", seen about one start in 40 in the start-up
   check on GitHub, never caught on a PC). When SprigCast noted where its window was busy, it could end up freeing
   that moment's objects on the wrong thread; a 2-second timer of one of them (the card shadow's) then ticked on
