@@ -21,12 +21,13 @@ from collections.abc import Callable
 from types import SimpleNamespace
 
 from PySide6.QtCore import QPointF, QRectF, QSettings, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -39,7 +40,8 @@ from sprigcast.app import icons, theme
 LOW, HIGH = -60.0, 12.0  # the fader's range, as on the Tune page
 STRIP_W, STRIP_H = 104, 220
 FOLD_KEY = "build/sound_strips_open"
-SHOW_KEY = "build/sound_strips_show"  # "all", "here" (this bloom) or a group: the chip you last picked
+SHOW_KEY = "build/sound_strips_show"  # "all" or "here" (this bloom): the chip you last picked
+TYPE_KEY = "build/sound_strips_type"  # "" (all types) or a group: the type you last picked
 GROUPS = ("Voice", "Game", "Alerts", "Music", "Other")
 
 
@@ -326,7 +328,7 @@ class SoundStrips(QFrame):
         self.add.clicked.connect(lambda: self.on_menu(None, self.add.mapToGlobal(self.add.rect().bottomLeft())))
         head.addWidget(self.add)
         col.addLayout(head)
-        # A long list: find one by name, or show one group (coloured as on Live) or this bloom's sounds only.
+        # A long list: find one by name, show this bloom's sounds only, or one type (coloured as on Live).
         self.finder = QWidget()
         find = QHBoxLayout(self.finder)
         find.setContentsMargins(0, 0, 0, 0)
@@ -341,24 +343,40 @@ class SoundStrips(QFrame):
         self.search.textChanged.connect(lambda _t: self._filter())
         find.addWidget(self.search)
         self.chips: dict[str, QPushButton] = {}
-        for key, text in (("all", "All"), ("here", "This bloom"), *((g, g) for g in GROUPS)):
+        for key, text in (("all", "All"), ("here", "This bloom")):
             chip = QPushButton(text)
             chip.setCheckable(True)
             chip.setAutoExclusive(True)
             chip.setCursor(Qt.CursorShape.PointingHandCursor)
-            if key in GROUPS:
-                chip.setIcon(_dot(group_colour(key)))
             chip.setFixedHeight(26)  # every chip as tall, so each keeps its round ends
             chip.setStyleSheet(theme.button_style(12, "0px 11px", extra="font-size: 12px;"))
             chip.clicked.connect(lambda _on=False, k=key: self._pick(k))
             self.chips[key] = chip
             find.addWidget(chip)
+        self.kind = QPushButton()  # the sound's type: a pill that lists Voice, Game, Alerts, Music and Other
+        self.kind.setFixedHeight(26)
+        self.kind.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.kind.setToolTip("Show one type")
+        self.kind.setStyleSheet(theme.button_style(12, "0px 11px", extra="font-size: 12px;")
+                                + "QPushButton::menu-indicator { width: 0; image: none; }")
+        self.kind_menu = QMenu(self.kind)
+        theme.rounded_menus(self.kind_menu)
+        self.kind_actions = {"": self.kind_menu.addAction("All types", lambda: self._pick_type(""))}
+        for g in GROUPS:
+            self.kind_actions[g] = self.kind_menu.addAction(_dot(group_colour(g)), g,
+                                                            lambda g=g: self._pick_type(g))
+        self.kind.setMenu(self.kind_menu)
+        find.addSpacing(4)
+        find.addWidget(self.kind)
         find.addStretch(1)
         col.addWidget(self.finder)
         self.showing = str(QSettings().value(SHOW_KEY, "all"))
         if self.showing not in self.chips:
             self.showing = "all"
         self.chips[self.showing].setChecked(True)
+        self.type_shown = str(QSettings().value(TYPE_KEY, ""))
+        if self.type_shown not in GROUPS:
+            self.type_shown = ""
         self.here: set[str] | None = None  # the sounds heard in the bloom you're building ("This bloom")
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -415,6 +433,11 @@ class SoundStrips(QFrame):
         QSettings().setValue(SHOW_KEY, key)
         self._filter()
 
+    def _pick_type(self, group: str) -> None:
+        self.type_shown = group
+        QSettings().setValue(TYPE_KEY, group)
+        self._filter()
+
     def set_here(self, ids: set[str] | None) -> None:
         """The sounds heard in the bloom you're building (for "This bloom")."""
         self.here = set(ids) if ids is not None else None
@@ -424,13 +447,13 @@ class SoundStrips(QFrame):
         text = self.search.text().strip().casefold() if hasattr(self, "search") else ""
         if text and text not in strip.full_name.casefold():
             return False
-        showing = getattr(self, "showing", "all")
-        if showing == "here":
-            return self.here is None or sid in self.here
-        return showing == "all" or strip.group == showing
+        group = getattr(self, "type_shown", "")
+        if group and strip.group != group:
+            return False
+        return getattr(self, "showing", "all") != "here" or self.here is None or sid in self.here
 
     def _filter(self) -> None:
-        """Show the strips the search and chip let through; the chips count what's in each group."""
+        """Show the strips the search, chip and type let through; each type says how many it has."""
         if not hasattr(self, "chips"):
             return
         shown = 0
@@ -440,8 +463,10 @@ class SoundStrips(QFrame):
             shown += keep
         counts = {g: sum(s.group == g for s in self.strips.values()) for g in GROUPS}
         for g in GROUPS:
-            self.chips[g].setText(f"{g} {counts[g]}" if counts[g] else g)
-            self.chips[g].setVisible(bool(counts[g]) or self.showing == g)
+            self.kind_actions[g].setText(f"{g} ({counts[g]})")
+        picked = self.type_shown
+        self.kind.setText(f"{picked or 'All types'}  ▾")
+        self.kind.setIcon(_dot(group_colour(picked)) if picked else QIcon())
         self.chips["all"].setText(f"All {len(self.strips)}")
         open_ = getattr(self, "is_open", True)
         self.none_found.setVisible(open_ and bool(self.strips) and not shown)
