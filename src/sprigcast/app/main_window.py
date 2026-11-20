@@ -3177,6 +3177,9 @@ class MainWindow(QMainWindow):
         self._remember_for_undo()
         self.engine.send(ReplaceCollection(self.collection.snapshot()))
         self._sync_push_key()
+        if getattr(self, "_audio_on_air", None) != self.collection.active_scenes:
+            self._audio_shown = None  # another bloom on air: Live's Sound card lists its sounds
+            self._refresh_audio_soon()
         self._chat_sources_changed()
         control = getattr(self, "control", None)
         if control is not None:
@@ -3804,7 +3807,12 @@ class MainWindow(QMainWindow):
         if shown == getattr(self, "_audio_shown", None):
             return  # nothing changed (Save in Settings redid every strip, holding SprigCast up ~0.7 s while live)
         self._audio_shown = shown
-        self.live_side.show_sound(items)
+        # Live lists the sounds of the blooms on air: one placed only in other blooms, or picked to play in
+        # other blooms only, waits for them (user 2026-11-20: Starting Soon's music showed on Ending Soon).
+        # "Always show" keeps one listed anyway.
+        away = self.collection.sounds_off_here() | self.collection.sounds_off_air()
+        self._audio_on_air = dict(self.collection.active_scenes)
+        self.live_side.show_sound([i for i in items if i.id not in away or i.pinned])
         if hasattr(self, "sound_strips"):
             by_id = {item.id: item for item in items}
             self.sound_strips.show_sound([by_id[s.id] for s in ordered], kinds, tags)
