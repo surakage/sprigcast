@@ -424,7 +424,7 @@ class AudioSettings(BaseModel):
     def push_mic(self, collection: "SceneCollection") -> str:
         """The mic push to talk holds: the global mic, else the first mic (its source id, "" for none)."""
         ids = collection.global_device_ids()
-        mics = [s for s in collection.sources if s.kind == "audio_input"]
+        mics = [s for s in collection.sources if s.kind == "audio_input" and not s.settings.get("capture_of")]
         return next((s.id for s in mics if s.id in ids), mics[0].id if mics else "")
 
     def track_name(self, number: int) -> str:
