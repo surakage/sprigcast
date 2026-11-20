@@ -515,9 +515,9 @@ class SoundStrips(QFrame):
         for sound in sounds:
             strip = self.strips[sound.id]
             group = getattr(sound, "group", "Other") or "Other"
-            if (group, group_colour(group)) != (strip.group, getattr(strip, "colour", None)):  # follows its type
+            if (group, group_colour(group)) != (strip.group, getattr(strip, "shade", None)):  # follows its type
                 strip.group = group
-                strip.colour = group_colour(group)
+                strip.shade = group_colour(group)
                 strip.name.setIcon(icons.icon(_kind_icon(kinds.get(sound.id, "")), group_colour(group), 14))
                 strip._selected = None
             strip.show_sound(sound)
