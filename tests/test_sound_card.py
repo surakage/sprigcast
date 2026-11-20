@@ -204,3 +204,37 @@ def test_low_cut_and_de_esser_keep_the_block_shape():
     assert out.shape == rumble.shape and np.abs(out[2048:]).max() < 0.2  # 30 Hz rumble mostly gone
     chain = AudioChain([Filter(id="s", kind="de_esser", name="De-esser")])
     assert chain.process(rumble[:1024]).shape == (1024, 2)
+
+
+def test_a_new_set_of_sounds_reuses_the_rows(app):
+    """PC test, 2026-11-20: after a garden switch, making every group and row again held the window 332 ms
+    while live. Rows are now used again, and still act for the sound they show."""
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+
+    from sprigcast.app.sound_card import Sound, SoundCard
+
+    changes = []
+    card = SoundCard(lambda sid, ch: changes.append((sid, ch)), lambda sid: None)
+    card.resize(320, 600)
+    card.show()
+    card.set_editing(True)
+    card.show_sound([Sound("mic", "Mic", group="Voice"), Sound("game", "Game", group="Game"),
+                     Sound("pc", "Desktop", group="Game", muted=True)])
+    rows = set(map(id, card.rows.values()))
+    card.show_sound([Sound("mic2", "Other mic", group="Voice", volume_db=-6.0),
+                     Sound("music", "Music", group="Game", muted=True), Sound("x", "Extra", group="Game")])
+    assert set(map(id, card.rows.values())) == rows  # the same widgets, showing the new sounds
+    assert card.names["mic2"].text() == "Other mic" and card.notes["mic2"].text() == "-6 dB"
+    assert card.notes["music"].text() == "muted" and card.notes["x"].text() == ""
+    assert card.parts["Game"]["count"] == 2 and card.parts["Game"]["ids"] == ["music", "x"]
+    meter = card.meters["x"]
+    QTest.mouseClick(meter, Qt.MouseButton.LeftButton, pos=QPoint(6, meter.height() // 2))
+    assert changes[-1] == ("x", {"volume_db": -60.0})
+    card.parts["Game"]["mute"].click()  # mutes the group's sounds now, not the old ones
+    assert ("x", {"muted": True}) in changes and not any(sid in ("game", "pc") for sid, _ in changes)
+    card.show_sound([Sound("solo", "Solo", group="Voice")])  # fewer sounds: the rest wait unseen
+    assert list(card.parts) == ["Voice"] and card.rows["solo"].isVisible()
+    card.show_sound([])
+    assert not card.rows
+    card.close()

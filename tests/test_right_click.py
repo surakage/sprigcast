@@ -124,3 +124,32 @@ def test_window_capture_sound_menu(app, tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_right_click_on_a_leaf_in_an_open_sprig(app, tmp_path, monkeypatch):
+    """PC test, 2026-11-20: right-clicking a leaf on the canvas of an open sprig showed no menu."""
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("RightClickSprigTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import MainWindow
+
+    col = _collection()
+    col.scenes.append(Scene(id="p1", name="Frame", canvas="horizontal", kind="part", items=[SceneItem(source="bg")]))
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        w._set_mode("build")
+        w.selected_scene_id = "p1"
+        w._refresh_scenes()
+        w._show_part_editor()
+        canvas = w.part_preview.canvas_id
+        assert canvas == "part:p1"
+        w._on_preview_selected(canvas, 0)
+        on_item = _texts(w._preview_menu(canvas, 0))
+        assert "Properties…" in on_item and "Transform" in on_item and on_item[-1] == "Remove"
+        assert _texts(w._preview_menu(canvas, -1)) == ["Snapping"]
+    finally:
+        w.close()
+        QSettings().clear()

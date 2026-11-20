@@ -446,7 +446,7 @@ class MainWindow(QMainWindow):
         from sprigcast.app import canvas_window
 
         self.canvas_window = None  # Build's canvas in a window of its own (the monitor button in the top bar)
-        self.canvas_away = canvas_window.placeholder(lambda: self.pop_canvas_button.setChecked(False))
+        self.canvas_away = canvas_window.placeholder(self._dock_canvas)  # straight back: no toggle in between
         self.build_stage.card_slot.addWidget(self.canvas_away)
         from sprigcast.app.sound_strips import SoundStrips
 
@@ -971,11 +971,16 @@ class MainWindow(QMainWindow):
     def _preview_menu(self, canvas_id: str, index: int) -> QMenu:
         """Right-click in a preview: the same menu as the Sources list for what's under the mouse.
         In Live (nothing to edit) it offers Pop out and this canvas's settings."""
-        if canvas_id.startswith("part:") or (self.mode == "live" and canvas_id in self.previews):
+        part = canvas_id.startswith("part:")
+        if part and index < 0:  # an open sprig's empty space: just Snapping
             menu = QMenu(self)
-        else:
+            self._snap_menu(menu)
+            return menu
+        if self.mode == "live" and canvas_id in self.previews:
+            menu = QMenu(self)
+        else:  # a leaf in an open sprig gets the same menu as one in a bloom (PC test, 2026-11-20)
             menu = self._source_menu(index >= 0 and self._item() is not None)
-        if index < 0 and not canvas_id.startswith("part:"):
+        if index < 0:
             if menu.actions():
                 menu.addSeparator()
             if self.mode == "live":
@@ -2068,11 +2073,12 @@ class MainWindow(QMainWindow):
         shortcuts = [a for a in self.findChildren(QAction) if not a.shortcut().isEmpty()]
         self.build_stage.card_slot.removeWidget(self.center)
         self.canvas_window = CanvasWindow(self.center, shortcuts)
-        self.canvas_window.closed.connect(lambda: self.pop_canvas_button.setChecked(False))
+        self.canvas_window.closed.connect(self._dock_canvas)
         self.canvas_away.show()
         if self.mode == "build":
             self.canvas_window.show()
-        self.pop_canvas_button.setChecked(True)
+        self._show_canvas_out(True)
+        log.info("build canvas popped out")
 
     def _dock_canvas(self) -> None:
         """The canvas comes back to its card (closing its window does this too)."""
@@ -2085,7 +2091,14 @@ class MainWindow(QMainWindow):
         self.canvas_away.hide()
         window.take_back()
         window.deleteLater()
-        self.pop_canvas_button.setChecked(False)
+        self._show_canvas_out(False)
+        log.info("build canvas back in its card")
+
+    def _show_canvas_out(self, out: bool) -> None:
+        """The monitor button shows where the canvas is, without asking for another move."""
+        blocked = self.pop_canvas_button.blockSignals(True)
+        self.pop_canvas_button.setChecked(out)
+        self.pop_canvas_button.blockSignals(blocked)
 
     def _place_canvases(self) -> None:
         """The canvas previews sit on Live's stage in Live mode and on Build's canvas card in Build mode."""
@@ -2393,7 +2406,8 @@ class MainWindow(QMainWindow):
         self.pop_canvas_button.setToolTip("Edit the canvas in its own window")
         self.pop_canvas_button.setStyleSheet(theme.button_style(19, "0", "QToolButton"))
         self.pop_canvas_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.pop_canvas_button.toggled.connect(lambda on: self._pop_out_canvas() if on else self._dock_canvas())
+        self.pop_canvas_button.clicked.connect(
+            lambda: self._dock_canvas() if self.canvas_window is not None else self._pop_out_canvas())
         self._build_only.append(bar.addWidget(self.pop_canvas_button))
         self.palette_button = QToolButton()
         self.palette_button.setIcon(icons.icon("search", theme.LABEL, 18))
