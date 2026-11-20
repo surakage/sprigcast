@@ -62,6 +62,7 @@ FEATURES = (
     "effects.freeze",      # freeze.start / freeze.stop / freeze.toggle (Freeze plugin), effect.ended "freeze.start"
     "record.pause",        # record.pause / resume / toggle_pause / chapter, record.status paused, record.paused event
     "place.bandwidth_test",  # place.set bandwidth_test (Twitch test mode); places.list says it where there is one
+    "layout.get",          # layout.get: every item's place, crop, bounds, source size and canvas box; flat, overlaps
 )
 PREVIEW = API_VERSION == 0
 EVENT_GROUPS = ("bloom", "item", "sprig", "sound", "filter", "source", "output", "transition", "media", "custom",
@@ -607,6 +608,28 @@ class NativeApi:
             {"id": self._item_key(i.source), "name": self._item_name(i.source), "visible": i.visible,
              "locked": i.locked, "sprig": self._item_key(i.source) != i.source}
             for i in reversed(layout.items)] for layout in layouts}}  # top of the list first, as in Build
+
+    @action("layout.get", "Where everything in a bloom or sprig sits, per shape, top of the stack first: each item's "
+            "place, crop, bounds, its source's own size and its box on the canvas. Sprigs carry what's inside them.",
+            bloom="?name or id", sprig="?name or id", shape="?both (default), horizontal or vertical",
+            flat="?true: only the things themselves (no sprigs), as they end up on the canvas",
+            overlaps="?true: also the pairs of shown things whose boxes overlap")
+    def layout_get(self, data):
+        from sprigcast.control import layout as lay
+
+        flat = _get(data, "flat", bool, optional=True, default=False)
+        want_overlaps = _get(data, "overlaps", bool, optional=True, default=False)
+        holder, layouts = self._holder(data)
+        sizes = dict(getattr(self.host, "source_sizes", dict)() or {})
+        shapes = {}
+        for layout in layouts:
+            canvas = next((c for c in self.col.canvases if c.id == layout.canvas), None)
+            rows = lay.describe(self.col, layout, sizes, self._item_name, self._item_key)
+            shapes[layout.canvas] = {
+                "canvas": {"width": canvas.width, "height": canvas.height} if canvas is not None else None,
+                "items": lay.flatten(rows) if flat else rows,
+                **({"overlaps": lay.overlaps(rows)} if want_overlaps else {})}
+        return {"bloom" if holder.kind == "show" else "sprig": holder.name, "id": holder.id, "shapes": shapes}
 
     def _add_to(self, data) -> tuple[Scene, list[Scene]]:
         """Where item.add puts things: a sprig's layouts, or a bloom's own sprig (blooms hold sprigs only)."""
