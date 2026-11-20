@@ -1,4 +1,9 @@
-"""Temporary: say where a crash dump faulted, with Qt's exported names."""
+"""Say where a crash dump (crash *.dmp in the Logs folder, app/crash_dump.py) faulted, without symbols: the
+faulting address and the stack's return addresses as module + nearest exported name, the registers, and what
+the registers and the top of the stack point at when the dump holds that memory (SPRIGCAST_DUMP_MEMORY=1).
+
+    uv run --no-project --with minidump --with pefile python packaging/read_dump.py <dump> <folder with the DLLs>
+"""
 
 import bisect
 import glob
@@ -10,7 +15,10 @@ import pefile
 from minidump.minidumpfile import MinidumpFile
 
 WANT = ("Qt6Core.dll", "Qt6Widgets.dll", "Qt6Gui.dll", "shiboken6.abi3.dll", "pyside6.abi3.dll", "QtCore.pyd",
-        "QtWidgets.pyd", "python312.dll")
+        "QtWidgets.pyd", "QtGui.pyd", "python312.dll", "sprigcore.dll")
+REGISTERS = {"rax": 0x78, "rcx": 0x80, "rdx": 0x88, "rbx": 0x90, "rsp": 0x98, "rbp": 0xA0, "rsi": 0xA8, "rdi": 0xB0,
+             "r8": 0xB8, "r9": 0xC0, "r10": 0xC8, "r11": 0xD0, "r12": 0xD8, "r13": 0xE0, "r14": 0xE8, "r15": 0xF0,
+             "rip": 0xF8}  # where each sits in Windows' x64 CONTEXT
 
 
 def exports(folder: str) -> dict:
@@ -22,21 +30,17 @@ def exports(folder: str) -> dict:
         pe = pefile.PE(found[0], fast_load=True)
         pe.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY["IMAGE_DIRECTORY_ENTRY_EXPORT"]])
         table = sorted((e.address, (e.name or b"?").decode()) for e in pe.DIRECTORY_ENTRY_EXPORT.symbols if e.address)
-        out[name.lower()] = ([a for a, _ in table], [n for _, n in table], pe.FILE_HEADER.TimeDateStamp)
+        out[name.lower()] = ([a for a, _ in table], [n for _, n in table])
     return out
 
 
 def main(path: str, folder: str) -> int:
     names = exports(folder)
     dump = MinidumpFile.parse(path)
-    modules = sorted((m.baseaddress, m.baseaddress + m.size, m.name.split("\\")[-1], m.timestamp)
-                     for m in dump.modules.modules)
-    for _s, _e, name, stamp in modules:
-        if name.lower() in names:
-            print(f"{name}: dump timestamp {stamp:x}, local {names[name.lower()][2]:x}")
+    modules = sorted((m.baseaddress, m.baseaddress + m.size, m.name.split("\\")[-1]) for m in dump.modules.modules)
 
     def where(address: int) -> str:
-        for start, end, name, _stamp in modules:
+        for start, end, name in modules:
             if start <= address < end:
                 rva = address - start
                 table = names.get(name.lower())
@@ -48,39 +52,62 @@ def main(path: str, folder: str) -> int:
         return ""
 
     reader = dump.get_reader()
-    faulting = None
-    for record in dump.exception.exception_records:
-        rec = record.ExceptionRecord
-        faulting = record.ThreadId
-        print(f"exception 0x{rec.ExceptionCode_raw:08x} at {where(rec.ExceptionAddress)} thread {record.ThreadId}")
-    receiver = 0x22094c4ff80
 
-    def peek(address: int, size: int = 0x60):
+    def peek(address: int, size: int):
         try:
             return reader.read(address, size)
-        except BaseException as exc:  # noqa: BLE001
-            print("  (peek", hex(address), type(exc).__name__, exc, ")")
+        except Exception:  # noqa: BLE001 (not in the dump)
             return None
 
-    got = peek(receiver)
-    print("receiver memory:", "not in the dump" if got is None else "")
-    if got is not None:
-        for i in range(0, len(got), 8):
-            (v,) = struct.unpack_from("<Q", got, i)
-            print(f"  +0x{i:02x} {v:016x} {where(v)}")
+    def words(address: int, count: int, indent: str) -> None:
+        blob = peek(address, 8 * count)
+        if blob is None:
+            print(f"{indent}(0x{address:x}: not in the dump)")
+            return
+        for i in range(0, len(blob), 8):
+            (value,) = struct.unpack_from("<Q", blob, i)
+            print(f"{indent}+0x{i:02x} {value:016x} {where(value)}")
+
+    if dump.exception is None:
+        print("no exception in this dump")
+        return 0
+    record = dump.exception.exception_records[0]
+    rec = record.ExceptionRecord
+    print(f"exception 0x{rec.ExceptionCode_raw:08x} at {where(rec.ExceptionAddress)} on thread {record.ThreadId}")
+    registers = {}
+    try:
+        with open(path, "rb") as raw:
+            raw.seek(record.ThreadContext.Rva)
+            context = raw.read(record.ThreadContext.DataSize)
+        registers = {name: struct.unpack_from("<Q", context, at)[0] for name, at in REGISTERS.items()}
+    except Exception as exc:  # noqa: BLE001
+        print("registers not read:", exc)
+    for name, value in registers.items():
+        print(f"  {name} {value:016x} {where(value)}")
+    for name in ("rcx", "rdx", "rbx", "rsi", "rdi"):
+        if name in registers and not where(registers[name]):
+            print(f"what {name} points at:")
+            words(registers[name], 10, "  ")
     for thread in dump.threads.threads:
-        if thread.ThreadId != faulting:
+        if thread.ThreadId != record.ThreadId:
             continue
         stack = thread.Stack
         data = reader.read(stack.StartOfMemoryRange, stack.MemoryLocation.DataSize)
-        for offset in range(0x10d0, 0x1300, 8):
+        first = max(0, registers.get("rsp", stack.StartOfMemoryRange) - stack.StartOfMemoryRange)
+        print("the stack from where it faulted (return addresses named; the first 40 other words shown too):")
+        shown = 0
+        for offset in range(first, len(data) - 7, 8):
             (value,) = struct.unpack_from("<Q", data, offset)
-            note = where(value)
-            blob = None if note else peek(value, 0x40)
-            if blob is not None and struct.pack("<Q", receiver) in blob:
-                note = "POINTS AT A BLOCK HOLDING THE RECEIVER: " + " ".join(
-                    f"{struct.unpack_from('<Q', blob, i)[0]:x}" for i in range(0, 0x40, 8))
-            print(f"  stack +0x{offset:05x} {value:016x} {note}")
+            name = where(value)
+            if name:
+                print(f"  +0x{offset - first:04x} {name}")
+                shown += 1
+                if shown >= 60:
+                    break
+            elif offset - first < 0x140:
+                print(f"  +0x{offset - first:04x} {value:016x}")
+                if value > 0x10000 and peek(value, 8) is not None:
+                    words(value, 8, "        ")
     return 0
 
 
