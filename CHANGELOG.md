@@ -33,6 +33,10 @@ Found with a big garden brought over from OBS (88 scenes, 61 web pages, about 78
   leftover could be used by the next opening without SprigCast being told where it was.
 - Pages brought over from OBS sleep while not on screen, like any SprigCast page. OBS keeps every page running
   unless told otherwise, and that was carried over. One note after the import says so.
+- A web page whose video can't play now says so in the source's status ("Video can't play: page uses H.264 (MP4)")
+  and once in the log, with the file. SprigCast's page engine has no H.264 or AAC yet, so a clip player that plays
+  MP4s (StreamBridge's Random Clip Player, alert boxes with video) showed nothing and said nothing. Also caught in
+  iframes and in streaming players (MSE). Playing those videos needs a page engine built with the codecs: next.
 
 ## 0.2.0 (2026-11-19)
 

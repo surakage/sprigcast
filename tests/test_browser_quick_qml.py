@@ -48,3 +48,41 @@ def test_the_page_settings_go_through_the_root_item():
 def test_python_never_asks_for_the_view_itself():
     source = (Path(__file__).resolve().parents[1] / "src/sprigcast/app/browser_quick.py").read_text("utf-8")
     assert 'property("view")' not in source and "self.view" not in source
+
+
+NOTE_SCRIPT = """
+import sys
+from PySide6.QtWebEngineQuick import QtWebEngineQuick, QQuickWebEngineProfile
+QtWebEngineQuick.initialize()
+from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlComponent, QQmlEngine
+from PySide6.QtQuick import QQuickWindow
+app = QGuiApplication(sys.argv)
+from sprigcast.app import browser_quick
+engine = QQmlEngine()
+component = QQmlComponent(engine)
+component.setData(browser_quick.QML, QUrl())
+root = component.create()
+window = QQuickWindow()
+root.setParentItem(window.contentItem())
+root.setWidth(64)
+root.setHeight(64)
+profile = QQuickWebEngineProfile("sprigcast-test")
+root.setProperty("profile", profile)
+got = []
+root.mediaNote.connect(lambda message: (got.append(message), app.quit()))
+root.setProperty("url", QUrl("data:text/html,<script>console.log('other');console.info('sprigcast:media h264 x')</script>"))
+QTimer.singleShot(20000, app.quit)
+app.exec()
+print(got)
+"""
+
+
+def test_the_card_page_passes_on_a_video_that_cant_play():
+    """A card page's console line from MEDIA_JS reaches Python (other console lines don't)."""
+    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen", "QTWEBENGINE_CHROMIUM_FLAGS": "--no-sandbox",
+           "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
+    out = subprocess.run([sys.executable, "-c", NOTE_SCRIPT], env=env, capture_output=True, text=True, timeout=120,
+                         check=False)
+    assert out.stdout.strip().endswith("['sprigcast:media h264 x']"), out.stderr[-2000:]

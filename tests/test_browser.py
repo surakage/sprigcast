@@ -349,3 +349,85 @@ def test_a_cut_to_a_closed_page_waits_for_its_first_paint():
         assert engine._still_waking(Comp, "h", now + WAKE_WAIT_S + 0.1) is None  # never later than the cap
     finally:
         browser.set_host(None)
+
+
+def _clip(path, codec: str, fmt: str) -> None:
+    """A 1 s 64x64 clip in `codec` (skips when this PyAV has no such encoder)."""
+    av = pytest.importorskip("av")
+    if codec not in av.codecs_available:
+        pytest.skip(f"no {codec} encoder here")
+    with av.open(str(path), "w", format=fmt) as out:
+        stream = out.add_stream(codec, rate=10)
+        stream.width = stream.height = 64
+        stream.pix_fmt = "yuv420p"
+        for i in range(10):
+            frame = av.VideoFrame.from_ndarray(np.full((64, 64, 3), i * 20, dtype=np.uint8), format="rgb24")
+            for packet in stream.encode(frame):
+                out.mux(packet)
+        for packet in stream.encode():
+            out.mux(packet)
+
+
+def _wait_note(app, host, source_id: str, seconds: float) -> str:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if host.page_note(source_id):
+            break
+        time.sleep(0.02)
+    return host.page_note(source_id)
+
+
+def test_a_video_the_page_engine_cant_play_shows_in_the_status(tmp_path):
+    """The pip PySide6 page engine has no H.264/AAC: a clip player's MP4 used to show nothing, silently
+    (StreamBridge's Random Clip Player, 2026-11-20). The source's status says so now, logged once per page."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--no-sandbox")
+    pytest.importorskip("PySide6.QtWebEngineWidgets")
+    from PySide6.QtCore import QCoreApplication, Qt
+    from PySide6.QtWidgets import QApplication
+
+    QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
+    app = QApplication.instance() or QApplication([])
+    from sprigcast.app.browser_host import MEDIA_NOTES, start_host
+
+    _clip(tmp_path / "clip.mp4", "libx264", "mp4")
+    _clip(tmp_path / "clip.webm", "libvpx-vp9", "webm")
+    (tmp_path / "mp4.html").write_text(
+        "<body><video autoplay muted src='clip.mp4'></video><script>document.title ="
+        " document.createElement('video').canPlayType('video/mp4; codecs=\"avc1.42E01E\"') || 'no'</script></body>")
+    (tmp_path / "frame.html").write_text("<body><iframe src='mp4.html'></iframe></body>")
+    (tmp_path / "mse.html").write_text(  # a streaming player (MSE) asking for H.264
+        "<body><video></video><script>const ms = new MediaSource(); document.querySelector('video').src ="
+        " URL.createObjectURL(ms); ms.addEventListener('sourceopen', () => { try {"
+        " ms.addSourceBuffer('video/mp4; codecs=\"avc1.42E01E\"') } catch (e) {} })</script></body>")
+    (tmp_path / "webm.html").write_text("<body><video autoplay muted loop src='clip.webm'></video></body>")
+    host = start_host()
+    try:
+        host.open("w", {"file": str(tmp_path / "webm.html"), "width": 64, "height": 64, "fps": 10})
+        host.open("m", {"file": str(tmp_path / "mp4.html"), "width": 64, "height": 64, "fps": 10})
+        host.open("f", {"file": str(tmp_path / "frame.html"), "width": 200, "height": 200, "fps": 10})
+        host.open("s", {"file": str(tmp_path / "mse.html"), "width": 64, "height": 64, "fps": 10})
+        note = _wait_note(app, host, "m", 20)
+        if host.pages["m"].page.title() not in ("", "no"):
+            assert note == "", "a page engine that plays H.264 blamed an MP4 on it"
+            return
+        assert note == MEDIA_NOTES["h264"]
+        assert _wait_note(app, host, "f", 10) == MEDIA_NOTES["h264"]  # a clip player inside an iframe too
+        assert _wait_note(app, host, "s", 10) == MEDIA_NOTES["h264"]
+        assert _wait_note(app, host, "w", 1) == ""  # VP9 plays: nothing to say
+
+        source = BrowserSource("m", {"file": str(tmp_path / "mp4.html")})
+        source._open, source.status = True, "ok"
+        source.video_frame()
+        assert source.status == MEDIA_NOTES["h264"]
+
+        host.reload("m")  # loaded again: the note goes until the page says it again
+        app.processEvents()
+        assert host.page_note("m") == ""
+        assert _wait_note(app, host, "m", 20) == MEDIA_NOTES["h264"]
+        host.close("m")
+        app.processEvents()
+        assert host.page_note("m") == ""
+    finally:
+        host.shutdown()

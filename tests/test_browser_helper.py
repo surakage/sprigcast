@@ -224,3 +224,29 @@ def test_page_sound_comes_through_the_pipe_to_the_mixer(tmp_path, qt):
     finally:
         set_host(None)
         host.shutdown()
+
+
+def test_a_video_that_cant_play_is_told_through_the_pipe(tmp_path, qt):
+    """The helper's page says its MP4 can't play: SprigCast's source shows it (the pip page engine has no H.264)."""
+    from sprigcast.app.browser_host import MEDIA_NOTES
+    from sprigcast.sources.browser import BrowserSource, set_host
+
+    page = tmp_path / "clip.html"  # names an MP4 the engine can't open: a format error like a real H.264 clip
+    (tmp_path / "clip.mp4").write_bytes(b"\0" * 64)
+    page.write_text("<body><video autoplay muted src='clip.mp4'></video></body>")
+    host = RemoteHost()
+    set_host(host)
+    try:
+        settings = {"file": str(page), "width": 64, "height": 64, "fps": 10}
+        host.open("v", settings)
+        source = BrowserSource("v", settings)
+        source._open, source.status = True, "ok"
+        assert _wait(lambda: bool(host.page_note("v")), app=qt), "the page's note never came"
+        assert host.page_note("v") in (MEDIA_NOTES["h264"], MEDIA_NOTES["format"])
+        source.engine_tick()
+        assert source.status == host.page_note("v")
+        host.close("v")
+        assert host.page_note("v") == ""
+    finally:
+        set_host(None)
+        host.shutdown()
