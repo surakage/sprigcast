@@ -10,6 +10,9 @@ on:
       qt:
         description: Qt version (must be the PySide6 version in uv.lock)
         default: "6.12.0"
+      webengine:
+        description: Qt WebEngine version PySide6 ships (separate from Qt since 6.12; qWebEngineVersion())
+        default: "6.140.0"
 
 permissions:
   contents: write  # the zip goes on a pre-release (never "latest": the app's updater reads that)
@@ -27,7 +30,7 @@ jobs:
       - uses: actions/checkout@v4
       - id: s
         uses: ./.github/actions/webengine-stage
-        with: {stage: "1", qt: "${{ inputs.qt }}"}
+        with: {stage: "1", qt: "${{ inputs.qt }}", webengine: "${{ inputs.webengine }}"}
   stage2:
     needs: stage1
     if: needs.stage1.outputs.done != 'true'
@@ -38,7 +41,7 @@ jobs:
       - uses: actions/checkout@v4
       - id: s
         uses: ./.github/actions/webengine-stage
-        with: {stage: "2", qt: "${{ inputs.qt }}"}
+        with: {stage: "2", qt: "${{ inputs.qt }}", webengine: "${{ inputs.webengine }}"}
   stage3:
     needs: stage2
     if: needs.stage2.outputs.done != 'true'
@@ -49,7 +52,7 @@ jobs:
       - uses: actions/checkout@v4
       - id: s
         uses: ./.github/actions/webengine-stage
-        with: {stage: "3", qt: "${{ inputs.qt }}"}
+        with: {stage: "3", qt: "${{ inputs.qt }}", webengine: "${{ inputs.webengine }}"}
   stage4:
     needs: stage3
     if: needs.stage3.outputs.done != 'true'
@@ -60,7 +63,7 @@ jobs:
       - uses: actions/checkout@v4
       - id: s
         uses: ./.github/actions/webengine-stage
-        with: {stage: "4", qt: "${{ inputs.qt }}"}
+        with: {stage: "4", qt: "${{ inputs.qt }}", webengine: "${{ inputs.webengine }}"}
   stage5:
     needs: stage4
     if: needs.stage4.outputs.done != 'true'
@@ -71,7 +74,7 @@ jobs:
       - uses: actions/checkout@v4
       - id: s
         uses: ./.github/actions/webengine-stage
-        with: {stage: "5", qt: "${{ inputs.qt }}"}
+        with: {stage: "5", qt: "${{ inputs.qt }}", webengine: "${{ inputs.webengine }}"}
   stage6:
     needs: stage5
     if: needs.stage5.outputs.done != 'true'
@@ -82,7 +85,7 @@ jobs:
       - uses: actions/checkout@v4
       - id: s
         uses: ./.github/actions/webengine-stage
-        with: {stage: "6", qt: "${{ inputs.qt }}"}
+        with: {stage: "6", qt: "${{ inputs.qt }}", webengine: "${{ inputs.webengine }}"}
 
   check-and-publish:
     # Runs after whichever stage finished (a skipped later stage is fine; a failed one stops it).
@@ -123,7 +126,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = "webengine-${{ inputs.qt }}-codecs-r${{ github.run_number }}"
-          $notes = "Qt WebEngine ${{ inputs.qt }} with H.264/AAC for SprigCast's web page sources (built by run ${{ github.run_id }} from qtwebengine-everywhere-src-${{ inputs.qt }}, FEATURE_webengine_proprietary_codecs=ON). Not a SprigCast release. SHA-256: $env:SHA"
+          $notes = "Qt WebEngine ${{ inputs.webengine }} (PySide6 ${{ inputs.qt }}) with H.264/AAC for SprigCast's web page sources (built by run ${{ github.run_id }} from qtwebengine-everywhere-src-${{ inputs.webengine }} against Qt ${{ inputs.qt }}, FEATURE_webengine_proprietary_codecs=ON). Not a SprigCast release. SHA-256: $env:SHA"
           gh release create $tag $env:ZIP pack\SHA256.txt --prerelease --latest=false --target $env:GITHUB_SHA --title "Page engine ${{ inputs.qt }} with H.264/AAC" --notes $notes
           if ($LASTEXITCODE -ne 0) { throw "couldn't publish" }
           $name = Split-Path $env:ZIP -Leaf

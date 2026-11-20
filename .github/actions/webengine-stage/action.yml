@@ -11,6 +11,9 @@ inputs:
   qt:
     description: Qt version (PySide6's)
     required: true
+  webengine:
+    description: Qt WebEngine version (PySide6's; its own numbering since Qt 6.12, e.g. 6.140.0)
+    required: true
   build-minutes:
     description: How long this stage may build before it saves its tree
     default: "285"
@@ -41,7 +44,7 @@ runs:
     - name: Build tools (html5lib, ninja, gperf, bison, flex, zstd)
       shell: pwsh
       run: |
-        python -m pip install --quiet html5lib==1.1 ninja==1.13.0 aqtinstall==3.3.0
+        python -m pip install --quiet html5lib==1.1 ninja==1.13.0
         choco install -y --no-progress gperf winflexbison3 zstandard
         if ($LASTEXITCODE -ne 0) { throw "choco couldn't install the build tools" }
     - uses: ilammy/msvc-dev-cmd@v1.13.0
@@ -54,27 +57,33 @@ runs:
         $ErrorActionPreference = "Stop"
         $qt = "${{ inputs.qt }}"
         New-Item -ItemType Directory -Force C:\qtwe, C:\qtwe\qt | Out-Null
-        # The official Qt PySide6's wheels are built from (aqt installs the same binaries the Qt installer does).
-        $arch = (python -m aqt list-qt windows desktop --arch $qt) -split '\s+' | Where-Object { $_ -match '^win64_msvc20\d\d_64$' } | Sort-Object | Select-Object -Last 1
-        if (-not $arch) { throw "No 64-bit MSVC Qt $qt to build against" }
-        "Qt $qt $arch"
-        python -m aqt install-qt windows desktop $qt $arch --outputdir C:\qtwe\qt -m qtwebchannel qtpositioning qtwebsockets
-        if ($LASTEXITCODE -ne 0) { throw "aqt couldn't install Qt $qt" }
-        $qtdir = (Get-ChildItem C:\qtwe\qt\$qt -Directory | Select-Object -First 1).FullName
+        # The official Qt PySide6's wheels are built from, straight from Qt's online repository (aqt 3.3 couldn't
+        # read Qt 6.12's), each archive checked against Qt's SHA-1.
+        python packaging\qt_sdk.py $qt C:\qtwe\qt qtwebchannel qtpositioning qtwebsockets
+        if ($LASTEXITCODE -ne 0) { throw "Couldn't install Qt $qt" }
+        $qtdir = (Get-Content C:\qtwe\qt\prefix.txt -Raw).Trim()
         "QTDIR=$qtdir" | Out-File C:\qtwe\qtdir.txt
-        # Qt WebEngine's source release, checked against Qt's own list of checksums.
-        $base = "https://download.qt.io/official_releases/qt/$($qt.Substring(0, $qt.LastIndexOf('.')))/$qt/submodules"
-        $name = "qtwebengine-everywhere-src-$qt.tar.xz"
-        Invoke-WebRequest "$base/$name" -OutFile C:\qtwe\$name
-        Invoke-WebRequest "$base/md5sums.txt" -OutFile C:\qtwe\md5sums.txt
-        $want = (Select-String -Path C:\qtwe\md5sums.txt -Pattern ([regex]::Escape($name)) | Select-Object -First 1).Line.Split(' ')[0]
-        $got = (Get-FileHash C:\qtwe\$name -Algorithm MD5).Hash.ToLower()
-        if (-not $want -or $want -ne $got) { throw "$name doesn't match Qt's checksum ($got vs $want)" }
-        "source sha256: $((Get-FileHash C:\qtwe\$name -Algorithm SHA256).Hash.ToLower())"
-        tar -xf C:\qtwe\$name -C C:\qtwe
-        if ($LASTEXITCODE -ne 0) { throw "couldn't unpack $name" }
-        Rename-Item "C:\qtwe\qtwebengine-everywhere-src-$qt" C:\qtwe\s
-        Remove-Item C:\qtwe\$name
+        # Qt WebEngine's source release (official_releases, archive or mirrors), checked against Qt's checksums.
+        python packaging\qt_sdk.py source ${{ inputs.webengine }} qtwebengine C:\qtwe\src
+        if ($LASTEXITCODE -ne 0) { throw "Couldn't download Qt WebEngine $qt's source" }
+        $archive = (Get-Content C:\qtwe\src\source.txt -Raw).Trim()
+        # Qt 6.12 has no qtwebengine submodule tarball: then it's the whole qt-everywhere-src, and only its
+        # qtwebengine folder is unpacked.
+        $whole = (Split-Path $archive -Leaf) -like "qt-everywhere-*"
+        $inner = if ($whole) { (Split-Path $archive -Leaf) -replace '\.(tar\.xz|zip|7z)$', '' } else { "" }
+        if ($archive.EndsWith(".7z")) {
+          if ($whole) { & 7z x -y -bso0 -bsp0 "-oC:\qtwe\src" $archive "$inner\qtwebengine\*" }
+          else { & 7z x -y -bso0 -bsp0 "-oC:\qtwe\src" $archive }
+        } elseif ($whole) {
+          C:\Windows\System32\tar.exe -xf $archive -C C:\qtwe\src "$inner/qtwebengine"
+        } else {
+          C:\Windows\System32\tar.exe -xf $archive -C C:\qtwe\src
+        }
+        if ($LASTEXITCODE -ne 0) { throw "couldn't unpack $archive" }
+        Remove-Item $archive
+        $top = if ($whole) { Get-Item "C:\qtwe\src\$inner\qtwebengine" -ErrorAction SilentlyContinue } else { Get-ChildItem C:\qtwe\src -Directory | Where-Object { $_.Name -like "qtwebengine-everywhere*" } | Select-Object -First 1 }
+        if (-not $top) { throw "no qtwebengine folder in $archive" }
+        Move-Item $top.FullName C:\qtwe\s
         New-Item -ItemType Directory -Force C:\qtwe\b | Out-Null
         Push-Location C:\qtwe\b
         # Exactly PySide6's Qt WebEngine plus H.264/AAC. Qt PDF isn't built (PySide6's own stays), nor Rust parts.
