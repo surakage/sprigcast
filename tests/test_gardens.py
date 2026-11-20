@@ -408,3 +408,30 @@ def test_missing_files_window_looks_on_a_worker_and_lists_them(tmp_path):
         app.processEvents()
         names = [label.text() for label in box.rows.findChildren(QLabel)]
     assert "gone.png" in names and box.look.isVisibleTo(box)
+
+
+def test_a_backup_is_never_a_garden_and_remove_tidies_up(setup):
+    """A garden's .bak copy was listed as a garden of its own ("Gaming 2.bak", PC 2026-11-20); removing a garden
+    leaves its .bak, dated copies and bloom pictures behind no more."""
+    from datetime import date
+
+    from sprigcast.core import backups
+    from sprigcast.core.gardens import Entry
+
+    folder, shelf, col = setup
+    other = shelf.new_garden("Other", col)
+    file = folder / other.file
+    file.write_text(file.read_text(encoding="utf-8"), encoding="utf-8")
+    backups.keep(file, date(2026, 11, 19))
+    assert backups.last_good(file).exists() and backups.copies(file)
+    thumbs = file.parent / "thumbs" / file.stem
+    thumbs.mkdir(parents=True)
+    (thumbs / "b1.png").write_bytes(b"x")
+    # An older version listed the .bak as a garden; it's dropped on the next start, and never added again.
+    shelf.index.gardens.append(Entry(id="x.bak", name="Other.bak", file=f"gardens/{backups.last_good(file).name}"))
+    shelf.save()
+    shelf = Shelf(folder)
+    assert [g.name for g in shelf.gardens()] == ["Main", "Other"]
+    shelf.remove("garden", other.id)
+    assert not backups.last_good(file).exists() and not backups.copies(file) and not thumbs.exists()
+    assert list((folder / "removed").glob("*.json"))  # the garden itself is kept

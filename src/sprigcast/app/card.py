@@ -159,9 +159,15 @@ class ChoiceDialog(CardDialog):
                 self.box.addItem(icon, short)
             if short != name:  # the whole name on hover
                 self.box.setItemData(self.box.count() - 1, name, Qt.ItemDataRole.ToolTipRole)
-        self.box.setCurrentIndex(max(0, min(current, self.box.count() - 1)))
+        if current < 0:  # nothing picked to start with (removing one: never offer one for you)
+            self.box.setPlaceholderText("Pick one")
+            self.box.setCurrentIndex(-1)
+        else:
+            self.box.setCurrentIndex(max(0, min(current, self.box.count() - 1)))
         self.body.addWidget(self.box)
         self.ok = self.add_buttons(primary)
+        self.ok.setEnabled(self.box.currentIndex() >= 0)
+        self.box.currentIndexChanged.connect(lambda i: self.ok.setEnabled(i >= 0))
         self.box.setFocus()
 
     def choice(self) -> int:
@@ -191,7 +197,7 @@ class TextDialog(CardDialog):
 
 def ask_choice(parent: QWidget | None, title: str, label: str, items: list, current: int = 0,
                primary: str = "OK") -> int | None:
-    """The picked index, or None on Cancel."""
+    """The picked index, or None on Cancel. current -1: nothing picked until you pick."""
     from sprigcast.app.modal import modal
 
     dialog = ChoiceDialog(title, label, items, current, parent, primary)

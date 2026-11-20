@@ -597,6 +597,9 @@ class MainWindow(QMainWindow):
         self.scene_tree.delegate.plus_clicked.connect(self._library_plus)
         self.library.search.textChanged.connect(lambda _text: self._refresh_scenes())
         self.scene_tree.itemSelectionChanged.connect(self._on_scene_selected)
+        self._open_on_release = False
+        self.scene_tree.let_go.connect(self._list_let_go)
+        self.scene_tree.drag_ended.connect(self._list_drag_ended)
         # No double-click to put on air: Build never changes what's on air (user, 2026-11-19). Live does that.
         self.scene_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.scene_tree.dot_clicked.connect(self._pick_folder_colour)
@@ -4071,6 +4074,9 @@ class MainWindow(QMainWindow):
     def _on_scene_selected(self) -> None:
         if self._updating:
             return
+        if self.scene_tree.holding:  # a press may still turn into a drag: open the row on release
+            self._open_on_release = True
+            return
         selected = self.scene_tree.selectedItems()
         if selected and selected[0].data(0, ROLE_ROW) == "sound":
             self._open_build_sound(selected[0].data(0, ROLE_ID))
@@ -4094,6 +4100,18 @@ class MainWindow(QMainWindow):
             self.selected_scene_id = scene_id
             self._refresh_sources()
             self._show_part_editor()
+
+    def _list_let_go(self) -> None:
+        """A click on the list ended without a drag: now open the row it picked."""
+        if self._open_on_release:
+            self._open_on_release = False
+            self._on_scene_selected()
+
+    def _list_drag_ended(self) -> None:
+        """A drag from the list is over: the row stays shut and the list points back at what's being edited."""
+        if self._open_on_release:
+            self._open_on_release = False
+            QTimer.singleShot(0, self._refresh_scenes)  # after the drop has been read back from the rows
 
     def _make_active(self) -> None:
         scene = self._scene()

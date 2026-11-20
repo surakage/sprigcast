@@ -386,8 +386,8 @@ class GardenControl:
         if not others:
             return
         names = [e.name for e in others]
-        at = popups.ask_choice(self.w, f"Remove {word}", cap(word), names, 0, "Remove")
-        if at is None:
+        at = popups.ask_choice(self.w, f"Remove {word}", cap(word), names, -1, "Remove")  # none picked for you
+        if at is None or at < 0:
             return
         entry = others[at]
         answer = msgbox.question(self.w, "SprigCast", f"Remove {entry.name}?")

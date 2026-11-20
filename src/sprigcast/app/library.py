@@ -249,6 +249,8 @@ class LibraryTree(QTreeWidget):
 
     dropped = Signal()
     dot_clicked = Signal(str, object)  # a folder's id and the global point under its dot: pick a colour
+    let_go = Signal()  # the mouse button came up on the list (a click, not a drag)
+    drag_ended = Signal()  # a drag that started on the list is over (dropped or called off)
 
     def __init__(self):
         super().__init__()
@@ -272,6 +274,9 @@ class LibraryTree(QTreeWidget):
             "#library::item, #library::item:hover, #library::item:selected { background: transparent; }"
             "#library::branch { background: transparent; image: none; border: none; }")
         self.itemClicked.connect(self._toggle_folder)
+        # True while the left button is held on a row: a press may become a drag, so the main window waits
+        # for the release before opening the row (else dragging a sprig opened it first: PC, 2026-11-20)
+        self.holding = False
 
     def event(self, event) -> bool:  # noqa: D102
         handled = theme.view_activation(self, event)  # no repaint when a pop-up takes the focus
@@ -317,14 +322,28 @@ class LibraryTree(QTreeWidget):
         x = CARD_PAD + 4 + max(0, depth - 1) * INDENT + 10 + 16
         return QRectF(x - 5, rect.center().y() - 9.5, 19, 19)
 
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        self.holding = event.button() == Qt.MouseButton.LeftButton
+        super().mousePressEvent(event)
+
     def mouseReleaseEvent(self, event) -> None:  # noqa: N802
         item = self.itemAt(event.position().toPoint())
         if (event.button() == Qt.MouseButton.LeftButton and item is not None
                 and item.data(0, ROLE_ROW) == "folder" and self.dot_rect(item).contains(event.position())):
             self.dot_clicked.emit(item.data(0, ROLE_FOLDER), event.globalPosition().toPoint())
             event.accept()
-            return
-        super().mouseReleaseEvent(event)
+        else:
+            super().mouseReleaseEvent(event)
+        if self.holding:
+            self.holding = False
+            self.let_go.emit()
+
+    def startDrag(self, actions) -> None:  # noqa: N802 (Qt naming)
+        try:
+            super().startDrag(actions)
+        finally:
+            self.holding = False
+            self.drag_ended.emit()
 
     def mimeData(self, items):  # noqa: N802 (Qt naming)
         """A dragged sprig also carries its id, so the canvas or Inside can take it."""
