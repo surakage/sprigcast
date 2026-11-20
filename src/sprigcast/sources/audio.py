@@ -410,6 +410,68 @@ class MicSource(_WasapiSource):
     loopback = False
 
 
+def leaves_out_sprigcast(settings: dict[str, Any]) -> bool:
+    """Desktop sound on the Windows default: captured as every app's sound except SprigCast's own, so what you
+    listen to through SprigCast never comes back into the stream (user 2026-11-20: it played SprigCast back into
+    itself). Needs Windows 10 2004+; SPRIGCAST_PLAIN_DESKTOP_SOUND=1 goes back to plain loopback."""
+    import os
+    import sys
+
+    if sys.platform != "win32" or os.environ.get("SPRIGCAST_PLAIN_DESKTOP_SOUND"):
+        return False
+    from sprigcast.winver import windows_build
+
+    return str(settings.get("device", DEFAULT)) == DEFAULT and windows_build() >= 19041
+
+
 @register("audio_output")
 class DesktopAudioSource(_WasapiSource):
     loopback = True
+
+    def __init__(self, source_id: str, settings: dict[str, Any]):
+        super().__init__(source_id, settings)
+        self.leaves_out_sprigcast = leaves_out_sprigcast(settings)  # read by audio/native_mixer.py
+        self._others = None  # the open "everything but SprigCast" capture (sources/app_audio._ProcessCapture)
+
+    def read_block(self, n: int) -> np.ndarray:
+        if self.leaves_out_sprigcast:
+            others = self._others
+            return others.ring.read(n) if others is not None else np.zeros((n, CHANNELS), dtype=np.float32)
+        return super().read_block(n)
+
+    def needs_new(self, settings: dict[str, Any]) -> bool:
+        """To or from the Windows default: a new source opens in the other way of capturing."""
+        return leaves_out_sprigcast(settings) != self.leaves_out_sprigcast
+
+    def _run(self) -> None:
+        if not self.leaves_out_sprigcast:
+            super()._run()
+            return
+        import os
+
+        from sprigcast.sources import app_audio
+
+        app_audio._com_init()
+        wait = RETRY_SECONDS
+        try:
+            while not self._stop.is_set():
+                others = self._others
+                if others is None or not others.alive:
+                    if others is not None:
+                        others.close()
+                        self._others = None
+                    try:
+                        self._others = app_audio._ProcessCapture(os.getpid(), "everything but SprigCast", self.id,
+                                                                 exclude=True)
+                        self.status = "capturing everything but SprigCast"
+                        wait = RETRY_SECONDS
+                    except Exception as exc:  # noqa: BLE001 - Windows refused: plain loopback instead
+                        log.info("audio %s: can't leave SprigCast out (%s); plain desktop sound", self.id, exc)
+                        self.leaves_out_sprigcast = False
+                        super()._run()
+                        return
+                self._stop.wait(wait)
+        finally:
+            others, self._others = self._others, None
+            if others is not None:
+                others.close()

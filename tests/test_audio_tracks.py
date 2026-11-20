@@ -421,3 +421,47 @@ def test_a_tabs_further_cards_can_be_made_a_tick_apart_in_their_places():
     again.build_tab("Devices", later=lambda call: None)
     again.finish()  # makes what was still waiting
     assert not again._parts_waiting and hasattr(again, "listen_through")
+
+
+def test_audio_page_none_removes_desktop_sound():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import NO_DEVICE, AudioPage
+
+    QApplication.instance() or QApplication([])
+    col = _collection()
+    page = AudioPage(col, {"audio_output": ["UG-08S"]})
+    combo = page.device_combos["desktop"]
+    assert combo.itemText(0) == "None" and combo.currentData() == "default"
+    combo.setCurrentIndex(combo.findData(NO_DEVICE))
+    page.apply_to(col)
+    assert "desktop" not in {s.id for s in col.sources} and "desktop" not in col.global_device_ids()
+    assert "mic" in col.global_device_ids()
+
+
+def test_sounds_table_stream_clips_and_mute():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import AudioPage
+
+    QApplication.instance() or QApplication([])
+    col = _collection()
+    page = AudioPage(col, {})
+    page.finish()
+    while page._rows_waiting:
+        page._more_rows()
+    row, ticks = page.sound_rows["desktop"], page.track_ticks["desktop"]
+    assert row["stream"].isChecked() and row["clips"].isChecked() and ticks[1].isChecked()
+    ticks[0].setChecked(False)
+    assert not ticks[1].isChecked() and not ticks[1].isEnabled()  # VOD-safe never shows on without track 1
+    row["stream"].setChecked(False)
+    row["clips"].setChecked(False)
+    row["mute"].setChecked(True)
+    page.apply_to(col)
+    desk = col.source("desktop")
+    assert source_tracks(desk) == () and desk.settings["muted"] is True
+    assert desk.settings.get("vod", True) is True  # kept for when track 1 is back

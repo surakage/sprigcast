@@ -563,6 +563,8 @@ class NativeMixer:
             why = "it has filters only Python has (" + ", ".join(_python_only(source)) + ")"
         elif sid in heard:
             why = "a plugin listens to it"
+        elif getattr(source, "leaves_out_sprigcast", False):
+            why = "it leaves out SprigCast's own sound"
         else:
             try:
                 key = tuple(get())

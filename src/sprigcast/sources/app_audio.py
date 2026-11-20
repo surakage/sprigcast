@@ -516,13 +516,14 @@ def _activation_types():
     return LoopbackParams, Blob, PropVariant, QI, REF, COMPLETED, VTable, Handler
 
 
-def _activate(pid: int):
-    """IAudioClient for one process tree's sound (blocks up to 5 s for Windows to hand it over)."""
+def _activate(pid: int, exclude: bool = False):
+    """IAudioClient for one process tree's sound, or (exclude) every sound but that tree's (blocks up to 5 s for
+    Windows to hand it over)."""
     import ctypes
     from ctypes import wintypes
 
     LoopbackParams, Blob, PropVariant, QI, REF, COMPLETED, VTable, Handler = _activation_types()
-    params = LoopbackParams(1, pid, 0)  # PROCESS_LOOPBACK, include the process tree
+    params = LoopbackParams(1, pid, 1 if exclude else 0)  # PROCESS_LOOPBACK, include (0) or exclude (1) the tree
     prop = PropVariant(vt=65, blob=Blob(ctypes.sizeof(params), ctypes.cast(ctypes.pointer(params), ctypes.c_void_p)))
     done = threading.Event()
     result: dict[str, Any] = {}
@@ -577,7 +578,7 @@ def _activate(pid: int):
 class _ProcessCapture:
     """One app's sound (its whole process tree) as 48 kHz stereo float, read by its own thread."""
 
-    def __init__(self, pid: int, name: str, owner: str):
+    def __init__(self, pid: int, name: str, owner: str, exclude: bool = False):
         import ctypes
         from ctypes import wintypes
 
@@ -585,7 +586,7 @@ class _ProcessCapture:
         self.ring = AudioRing()
         self._stop = threading.Event()
         self.alive = True
-        self._client = _activate(pid)
+        self._client = _activate(pid, exclude)
         self._capture = None
         self._event = None
         try:
