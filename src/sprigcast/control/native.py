@@ -70,6 +70,7 @@ FEATURES = (
     "events.item_moved",   # item.moved when something is moved, sized, cropped or turned
     "filters.share",       # a placed sprig's filters follow on its other canvases; filters.share, filters.list same_on_both_canvases
     "layout.get",          # layout.get: every item's place, crop, bounds, source size and canvas box; flat, overlaps
+    "app_audio.pids",      # app_audio settings pids: [process id, ...] catches those processes' trees instead of apps
 )
 # What {"steps": [...], "one_step": true} and "dry_run": true may hold: changes to the garden only, so all of them
 # can be taken back together.
