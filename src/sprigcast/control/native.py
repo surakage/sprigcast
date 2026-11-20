@@ -36,6 +36,7 @@ from typing import Any
 
 from sprigcast import __version__
 from sprigcast.control.protocol import Close, Sleep, auth_string
+from sprigcast.control.who import sound_changed
 from sprigcast.core.scene import MOVE_EASINGS, MOVE_UNMATCHED, PART_KIND, TRANSITION_KINDS, Filter, Scene, SceneItem, SourceConfig
 
 log = logging.getLogger(__name__)
@@ -940,7 +941,9 @@ class NativeApi:
         return {"sounds": [self._sound_info(s) for s in self.col.sources if self._has_sound(s)]}
 
     def _set_sound(self, source: SourceConfig, changes: dict[str, Any]):
+        before = source.settings
         source.settings = {**source.settings, **changes}
+        sound_changed(source, before)
         self.host.commit("sound")
         return self._sound_info(source)
 
@@ -1155,7 +1158,9 @@ class NativeApi:
     def source_set(self, data):
         source = self._source(data, "source")
         settings = _checked_settings(self.col, source.kind, _get(data, "settings", dict))
+        before = source.settings
         source.settings = {**source.settings, **settings}
+        sound_changed(source, before)
         self.host.commit("sources")
         return {"id": source.id, "settings": dict(source.settings)}
 
