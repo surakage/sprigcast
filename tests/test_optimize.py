@@ -250,6 +250,16 @@ def test_proven_kbps_only_counts_clean_long_streams():
     assert optimize.proven_kbps([st(autopilot=NS(steps_down=1))], 160, 120) == 0
 
 
+def test_a_place_that_never_connected_does_not_void_what_the_others_proved():
+    from types import SimpleNamespace as NS
+
+    def st(**kw):
+        return NS(**{"frames": 3600, "dropped": 0, "reconnects": 0, "autopilot": None, "bitrate_kbps": 6000, **kw})
+
+    assert optimize.proven_kbps([st(), st(frames=0)], 160, 3600) == 6160
+    assert optimize.proven_kbps([st(frames=0)], 160, 3600) is None
+
+
 def test_a_lighter_clean_stream_keeps_the_most_proven():
     class Settings(dict):
         def setValue(self, k, v):
