@@ -27,6 +27,10 @@ Found with a big garden brought over from OBS (88 scenes, 61 web pages, about 78
 - A stinger waiting for its clip to open stays with the engine, which shows the old bloom until the clip is there.
   The wait used to hand the canvas and its stream frames to the older drawing code and back at every switch (frames
   of 55 to 114 ms and a jump of the picture with the imported garden).
+- A web page that was opened, closed and opened again in quick succession (switching blooms back and forth) could
+  stay empty for good, with "the engine stopped taking its pictures, a new texture" in the log once a second. The
+  page helper let go of the page's picture memory when the close was asked for, not when the page closed, so a
+  leftover could be used by the next opening without SprigCast being told where it was.
 - Pages brought over from OBS sleep while not on screen, like any SprigCast page. OBS keeps every page running
   unless told otherwise, and that was carried over. One note after the import says so.
 
