@@ -618,7 +618,9 @@ def stream_rule(p: PcProfile, c: SceneCollection) -> list[Change]:
 
         def apply(o=o, size=size, fps=fps, kbps=kbps):
             o.size, o.bitrate_kbps, o.auto_bitrate = size, kbps, True
-            o.fps = None if fps == _canvas_fps(p, c, o.canvas) else fps
+            # Always the place's own: "same as the canvas" drifted when the canvas change queued with it was
+            # lost or another garden opened, 720p at 60 fps on 2600 kbps (PC, 2026-11-19). Never above the canvas.
+            o.fps = fps
 
         name = service.label if o.service in SERVICES else (o.service or "Stream")
         changes.append(Change("Stream", f"{name}: {_size_text(new_size)}, {fps} fps, {kbps} kbps",
