@@ -7,10 +7,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, QSize, Qt
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QPushButton
 
-from sprigcast.app import theme
+from sprigcast.app import icons, theme
 
 
 class ZoomControl(QFrame):
@@ -24,10 +24,14 @@ class ZoomControl(QFrame):
         row = QHBoxLayout(self)
         row.setContentsMargins(4, 4, 4, 4)
         row.setSpacing(4)
-        self.out = QPushButton("−")
+        self.out = QPushButton()
+        self.out.setIcon(icons.icon("minus", theme.TEXT, 14))
+        self.out.setIconSize(QSize(14, 14))
         self.label = QPushButton("100%")
         self.label.setMinimumWidth(64)
-        self.inn = QPushButton("+")
+        self.inn = QPushButton()
+        self.inn.setIcon(icons.icon("plus", theme.TEXT, 14))
+        self.inn.setIconSize(QSize(14, 14))
         self.fit = QPushButton("Fit")
         self.out.setToolTip("Zoom out (Ctrl+-)")
         self.inn.setToolTip("Zoom in (Ctrl+=)")

@@ -619,7 +619,9 @@ class MainWindow(QMainWindow):
         self.link_menu = QMenu(self)
         self.link_menu.aboutToShow.connect(lambda: self._fill_link_menu(self.link_menu))
         self.link_button = QToolButton()
-        self.link_button.setText("⇄ Link")
+        self.link_button.setText("Link")
+        self.link_button.setIcon(icons.icon("swap", theme.LABEL, 16))
+        self.link_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.link_button.setAutoRaise(True)
         self.link_button.setMinimumSize(30, 28)
         self.link_button.setMenu(self.link_menu)
@@ -1903,7 +1905,6 @@ class MainWindow(QMainWindow):
         """Above the canvas, on the right: Link (vertical blooms) and Safe zones. No Put on air: what's on air
         is picked on Live, so editing in Build while streaming never changes the show (user, 2026-11-19)."""
         style = theme.SMALL_PILL_STYLE
-        self.link_button.setText("⇄ Link")
         for button in (self.link_button, self.safe_zone_button):
             button.setStyleSheet(style)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2355,7 +2356,7 @@ class MainWindow(QMainWindow):
         divider.setStyleSheet(f"background: {theme.EDGE_STRONG};")
         bar.addWidget(divider)
         self.screenshot_button = QToolButton()
-        self.screenshot_button.setIcon(icons.icon("shutter", theme.MUTED, 18))
+        self.screenshot_button.setIcon(icons.icon("shutter", theme.LABEL, 18))
         self.screenshot_button.setIconSize(QSize(18, 18))
         self.screenshot_button.setFixedSize(38, 38)
         self.screenshot_button.setToolTip("Screenshot every canvas, to your Screenshots folder")
@@ -2363,7 +2364,7 @@ class MainWindow(QMainWindow):
         self.screenshot_button.clicked.connect(lambda: self._screenshot(background=True))
         self._build_only.append(bar.addWidget(self.screenshot_button))  # Live has Screenshot under its canvases
         self.palette_button = QToolButton()
-        self.palette_button.setIcon(icons.icon("search", theme.MUTED, 18))
+        self.palette_button.setIcon(icons.icon("search", theme.LABEL, 18))
         self.palette_button.setIconSize(QSize(18, 18))
         self.palette_button.setFixedSize(38, 38)
         self.palette_button.setToolTip("Search commands, blooms and settings (Ctrl+K)")
@@ -2374,7 +2375,7 @@ class MainWindow(QMainWindow):
         self.screenshot_button.setStyleSheet(self.palette_button.styleSheet())
         bar.addWidget(self.palette_button)
         self.settings_button = QToolButton()
-        self.settings_button.setIcon(icons.icon("gear", theme.MUTED, 18))
+        self.settings_button.setIcon(icons.icon("gear", theme.LABEL, 18))
         self.settings_button.setIconSize(QSize(18, 18))
         self.settings_button.setFixedSize(38, 38)
         self.settings_button.setToolTip("Settings (Ctrl+,)")
