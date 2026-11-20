@@ -7261,12 +7261,16 @@ class MainWindow(QMainWindow):
             return False
         _, fps = lowend.light_changes(self.collection, apply=True, pending_fps=lowend.waiting_fps(), cpu_encoding=cpu,
                                       older=older, hdd=hdd)
-        lowend.store_fps(fps)
+        waits = lowend.store_fps(fps, self.collection) if fps else False
         lowend.store_tier("light")
         self.collection.save(self.scenes_path)
+        try:  # the path's own file too, like Optimize
+            self.gardens.shelf.sync_path(self.collection)
+        except OSError as exc:
+            log.warning("light settings: could not save the path: %s", exc)
         self._after_settings()  # a canvas switched off, clips and browser sources: bring the docks in line
         self.statusBar().showMessage(
-            "Light settings are on." + (" Restart SprigCast for 30 fps." if fps else ""), 15000)
+            "Light settings are on." + (" Restart SprigCast for 30 fps." if waits else ""), 15000)
         return True
 
     def open_starter(self) -> bool:
@@ -7337,15 +7341,19 @@ class MainWindow(QMainWindow):
         fps = wizard.plan.apply(wizard.chosen)
         for change in wizard.chosen:
             log.info("optimize: applied %s (was %s)", change.label, change.now)
-        lowend.store_fps(fps)
+        waits = lowend.store_fps(fps, self.collection) if fps else False
         try:
             lowend.store_tier(lowend.tier(lowend.pc_facts()))
         except Exception as exc:  # noqa: BLE001 (only the label on Settings → General)
             log.debug("optimize: no tier: %s", exc)
         self.collection.save(self.scenes_path)
+        try:  # the path's own file too, now: it used to wait for a path switch or a later save
+            self.gardens.shelf.sync_path(self.collection)
+        except OSError as exc:
+            log.warning("optimize: could not save the path: %s", exc)
         self._after_settings()
         self.statusBar().showMessage(
-            "Optimized for this PC." + (" Restart SprigCast for the new frame rate." if fps else ""), 15000)
+            "Optimized for this PC." + (" Restart SprigCast for the new frame rate." if waits else ""), 15000)
         return True
 
     def _health_records(self) -> list:

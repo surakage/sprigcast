@@ -505,3 +505,42 @@ def test_a_place_keeps_the_frame_rate_optimize_chose_when_the_canvas_does_not_fo
         canvas.fps = 60  # the queued change never arrived
     again = optimize.plan(p, c)
     assert not [ch for ch in again.changes if ch.group == "Stream"]  # still 30: nothing to put right
+
+
+def test_apply_writes_the_path_file_at_once(tmp_path, monkeypatch):
+    """PC 2026-11-19: after Apply the path's own file kept the old values until a path switch or a later save."""
+    import keyring
+    from PySide6.QtCore import QCoreApplication, QSettings
+    from PySide6.QtWidgets import QApplication, QDialog
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("OptimizeApplyTest")
+    QSettings().clear()
+    from sprigcast.app import main_window
+    from sprigcast.app.main_window import MainWindow
+    from sprigcast.core.gardens import PathSettings
+
+    c = _three_places()
+    for o in c.outputs:
+        o.bitrate_kbps, o.size = 3000, (1280, 720)
+    w = MainWindow(c, tmp_path / "scenes.json")
+    try:
+        shelf = w.gardens.shelf
+        assert {o.bitrate_kbps for o in PathSettings.load(shelf.path_file()).outputs} == {3000}
+
+        def modal(wizard):
+            wizard.profile = optimize.PcProfile(**STRONG, upload_kbps=40000)
+            wizard.plan = optimize.plan(wizard.profile, wizard.collection, wizard.waiting_fps)
+            wizard.chosen = list(wizard.plan.changes)
+            wizard.close()
+            return QDialog.DialogCode.Accepted
+
+        monkeypatch.setattr(main_window, "modal", modal)
+        assert w.open_optimizer()
+        saved = PathSettings.load(shelf.path_file())
+        assert [(o.bitrate_kbps, o.fps) for o in saved.outputs] == [(6000, 60)] * 3
+    finally:
+        w.close()
+        QSettings().clear()
