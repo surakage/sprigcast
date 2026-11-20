@@ -96,7 +96,7 @@ def test_leaves_tags_are_icons():
     assert tag_badges("waiting") == [("clock", theme.MUTED)]
 
 
-def test_a_capture_card_is_called_one_and_fills_the_canvas(tmp_path, monkeypatch):
+def test_a_capture_card_is_called_one(tmp_path, monkeypatch):
     """Adding the Elgato HD60 X from Video capture: titled Video capture, full HD, filling the canvas, its own
     icon (PC, 2026-11-19)."""
     import keyring
@@ -128,10 +128,45 @@ def test_a_capture_card_is_called_one_and_fills_the_canvas(tmp_path, monkeypatch
         w._pick_bloom("b")
         w._add_camera(card)
         item = w._item()  # in the bloom's sprig
-        assert (item.x, item.y, item.scale) == (0, 0, 1)
         assert w._kind_and_swatch(col.source(item.source), H)[0] == "capture_card"
-        w._add_camera(cam)
-        assert w._item().x > 1000  # a webcam still starts small in the corner
+        w._place_new_sources({item.source: (1920, 1080)})
+        assert (item.x, item.y, round(item.scale * 1920)) == (320, 180, 1280)  # 1280 x 720, centred
+    finally:
+        w.close()
+        QSettings().clear()
+
+
+def test_new_sources_start_at_720p_but_text(tmp_path, monkeypatch):
+    """Every new source starts 1280 x 720 in the middle of a 1080p canvas, kept inside a vertical one; text
+    keeps the size its words make (user, 2026-11-19)."""
+    import keyring
+    from PySide6.QtCore import QCoreApplication, QSettings
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    monkeypatch.setattr(keyring, "get_password", lambda *a: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("StartSizeTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import MainWindow
+
+    col = SceneCollection(canvases=[Canvas(id=H, width=1920, height=1080), Canvas(id=V, width=1080, height=1920)],
+                          scenes=[Scene(id="b", name="Main", canvas=H), Scene(id="v", name="Tall", canvas=V)])
+    w = MainWindow(col, tmp_path / "scenes.json")
+    try:
+        w._pick_bloom("b")
+        w._add_item(SourceConfig(id="screen", kind="display_capture", name="Screen"))
+        w._add_item(SourceConfig(id="words", kind="text", name="Words"))
+        w._add_item(SourceConfig(id="mic", kind="audio_input", name="Mic"))
+        assert set(w._start_sizes) == {"screen"}
+        w._place_new_sources({"screen": (2560, 1440)})
+        screen = next(i for s in col.scenes for i in s.items if i.source == "screen")
+        assert (screen.x, screen.y, round(2560 * screen.scale)) == (320, 180, 1280) and not w._start_sizes
+        w._pick_bloom("v")
+        w._add_item(SourceConfig(id="pic", kind="image", name="Pic"))
+        w._place_new_sources({"pic": (1920, 1080)})
+        pic = next(i for s in col.scenes for i in s.items if i.source == "pic")
+        assert round(1920 * pic.scale) == 1080 and pic.x == 0  # as wide as the tall canvas, not past it
     finally:
         w.close()
         QSettings().clear()
