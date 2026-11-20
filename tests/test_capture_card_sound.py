@@ -40,6 +40,7 @@ def test_its_sound_is_a_sound_of_its_own_that_never_acts_as_a_mic():
     assert sound.kind == "audio_input" and sound.name == "Console sound"
     assert sound.settings["device"] == "Game Capture HD60 X" and sound.settings["capture_of"] == "card"
     assert sound.settings["group"] == "Game" and sound.settings["duck_voice"] is False  # never ducks the game
+    assert sound.settings["monitor"] is True  # you hear the card in your headphones
     assert sound_choice(col, "card") == INPUT + "Game Capture HD60 X"
     assert col.global_device_ids() == ["mic"] and col.audio.push_mic(col) == "mic"  # still your mic
     col.scenes[0].items = []
@@ -96,3 +97,15 @@ def test_a_new_capture_card_brings_its_sound_and_right_click_changes_it(window):
     w.collection.sources.append(cam)
     w._pair_capture_card_sound(cam)
     assert capture_sound(w.collection, "face") is None  # a webcam with no sound of its own gets none
+
+
+def test_live_sound_card_back_button_is_a_round_icon():
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication, QPushButton
+
+    QApplication.instance() or QApplication([])
+    from sprigcast.app.sound_card import TunePage
+
+    page = TunePage(lambda *a: None, lambda *a: None, lambda: None)
+    back = next(b for b in page.findChildren(QPushButton) if b.toolTip() == "Back to all sounds")
+    assert back.text() == "" and not back.icon().isNull() and back.size().width() == back.size().height() == 30

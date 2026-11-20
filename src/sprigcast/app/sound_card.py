@@ -22,7 +22,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame,
@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sprigcast.app import theme
+from sprigcast.app import icons, theme
 from sprigcast.app.live_stage import Elided, Switch, ThinMeter, heading
 
 GROUPS = ("Voice", "Game", "Alerts", "Music", "Other")
@@ -608,18 +608,22 @@ class TunePage(QWidget):
         col.setSpacing(14)
 
         top = QHBoxLayout()
-        back = QPushButton("‹")
-        back.setStyleSheet(theme.LINK_STYLE + "QPushButton { font-size: 18px; padding: 0px 6px 0px 0px; }")
+        top.setSpacing(10)
+        back = QPushButton()  # a drawn chevron in a round button: the "‹" letter sat low and cramped
+        back.setIcon(icons.icon("chevron-left", theme.TEXT))
+        back.setIconSize(QSize(18, 18))
+        back.setFixedSize(30, 30)
+        back.setStyleSheet(theme.button_style(15, "0px"))
         back.setCursor(Qt.CursorShape.PointingHandCursor)
         back.setToolTip("Back to all sounds")
         back.clicked.connect(on_back)
-        top.addWidget(back)
+        top.addWidget(back, 0, Qt.AlignmentFlag.AlignVCenter)
         self.title = heading("")
         self.title.setWordWrap(True)
-        top.addWidget(self.title, 1)
+        top.addWidget(self.title, 1, Qt.AlignmentFlag.AlignVCenter)
         self.mute = _chip("Mute", checkable=True)
         self.mute.toggled.connect(lambda on: self._send({"muted": on}))
-        top.addWidget(self.mute)
+        top.addWidget(self.mute, 0, Qt.AlignmentFlag.AlignVCenter)
         col.addLayout(top)
         self.meter = ThinMeter()
         col.addWidget(self.meter)
@@ -701,13 +705,13 @@ class TunePage(QWidget):
         pair.addWidget(self.delay, 1)
         box.addLayout(pair)
 
-        _route, box = self._section(col, "Listeners")
+        _route, box = self._section(col, "Who hears it")
         hear = QHBoxLayout()
         hear.setSpacing(6)
         self.hear: dict[object, QPushButton] = {}
-        for value, text, tip in ((False, "Stream", "On the stream and recordings, not your speakers"),
-                                 (True, "Both", "On the stream and your speakers"),
-                                 ("only", "Just me", "Only your speakers: never on the stream")):
+        for value, text, tip in ((False, "Stream", "On the stream and recordings, not your headphones"),
+                                 (True, "Stream + me", "On the stream and in your headphones"),
+                                 ("only", "Just me", "Only your headphones: never on the stream")):
             b = _chip(text, checkable=True)
             b.setToolTip(tip)
             b.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)  # share the width, never overflow
