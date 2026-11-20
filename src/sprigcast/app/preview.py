@@ -72,6 +72,7 @@ class Preview(QWidget):
     menu_requested = Signal(str, int, QPoint)
     # canvas id: the small "twin" of the other shape in Build was clicked (swap to editing it)
     swap_requested = Signal(str)
+    back_requested = Signal()  # Esc with nothing open inside: the sprig editor goes back to its bloom
     # A sprig dragged in from the library: canvas id, part id.
     sprig_dropped = Signal(str, str)
     zoom_changed = Signal()  # the zoom or the widget's size changed (Build's top-bar % follows it)
@@ -869,6 +870,8 @@ class Preview(QWidget):
         if event.key() == Qt.Key.Key_Escape and self.inner is not None:
             self.opened.emit(self.canvas_id, -1)
             return
+        if event.key() == Qt.Key.Key_Escape:
+            self.back_requested.emit()
         selected = self._selected_item() if self.editable else None
         steps = {
             Qt.Key.Key_Left: (-1, 0),
