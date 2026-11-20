@@ -177,6 +177,9 @@ def shared_profile():
         _profile.setPersistentCookiesPolicy(QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies)
         _profile.setHttpCacheMaximumSize(64 * 1024 * 1024)
         _turn_on_features(_profile.settings())
+        from sprigcast.app import page_video
+
+        page_video.install(_profile, base)  # MP4 clips this engine can't play, converted to WebM
     return _profile
 
 
