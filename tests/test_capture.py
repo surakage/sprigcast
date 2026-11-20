@@ -180,3 +180,22 @@ def test_obs_window_match_priority_imports():
     assert _source(obs, None, []).settings["match"] == "title"  # OBS's "Window title must match"
     obs["settings"]["priority"] = 0
     assert "match" not in _source(obs, None, []).settings  # same app, our default
+
+
+def test_a_closed_window_shows_nothing_not_its_last_picture():
+    """PC 2026-11-20: a window capture kept a closed window's last picture for good (StreamBridge's raid clip
+    window). Once it closes the item goes empty, until the window is back."""
+    source = create_source("window_capture", "w", {"title": "x"})
+    picture = np.full((4, 4, 4), 200, np.uint8)
+    source._frames.put(picture)
+    assert source.video_frame() is not None
+    source.status = "capturing"
+    source._closed()
+    assert source.status == "target closed, retrying"
+    empty = source.video_frame()
+    assert empty is not None and empty.shape == (2, 2, 4) and not empty.any()  # once: see-through
+    assert source.video_frame() is None  # then nothing new
+    source.status = "capturing"
+    source._closed()
+    source._frames.put(picture)  # back before anything was shown: its new picture, and no clearing after
+    assert source.video_frame() is not None and source.video_frame() is None

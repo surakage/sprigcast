@@ -78,6 +78,7 @@ class _CaptureSource(Source):
         self._feed: capture_helper.Feed | None = None  # the capture helper captures it (the engine takes its block)
         self._helper_refused = False  # the helper couldn't: the engine captures it itself (ENGINE_AGAIN_SECONDS)
         self._helper_refused_at = 0.0
+        self._cleared = False  # the window closed: show nothing (once), not its last picture, until it's back
         self._serial = 0
 
     # Subclasses say what to capture. Return None when the target is not available right now.
@@ -143,7 +144,22 @@ class _CaptureSource(Source):
         target = self._engine_target or self._feed
         if target is not None and target.linked:  # captured by the engine: read back for a frame Python draws
             return target.read()
-        return self._frames.take()
+        frame = self._frames.take()
+        if frame is not None or not self._cleared:
+            self._cleared = self._cleared and frame is None  # back before anything was shown: nothing to clear
+            return frame
+        self._cleared = False
+        return np.zeros((2, 2, 4), dtype=np.uint8)  # see-through: nothing, as the window is gone
+
+    def _closed(self) -> None:
+        """Its window (or display) went: the item shows nothing until it's back, not a stale last picture
+        (PC 2026-11-20: a closed window's last picture stayed for good)."""
+        if self.status == "target closed, retrying":
+            return
+        self.status = "target closed, retrying"
+        self._frames = FrameRing()
+        self._cleared = True
+        log.info("%s: its window closed; nothing shows until it's back", self.id)
 
     @property
     def engine_player(self) -> sprigcore.CaptureTarget | capture_helper.Feed | None:
@@ -312,7 +328,7 @@ class _CaptureSource(Source):
                     self._engine_refused, self._engine_refused_at = True, time.monotonic()
                 elif outcome == "ended" and not (stop.is_set() or self._restart.is_set()):
                     if self.status == "capturing" or self.status.startswith("capturing "):
-                        self.status = "target closed, retrying"
+                        self._closed()
                         quick = QUICK_TRIES
                     self._restart.wait(QUICK_RETRY_SECONDS if quick > 0 else RETRY_SECONDS)
                     quick = max(0, quick - 1)
@@ -379,7 +395,7 @@ class _CaptureSource(Source):
             except Exception:
                 pass
             if ended.is_set() and not (stop.is_set() or self._restart.is_set()):
-                self.status = "target closed, retrying"
+                self._closed()
                 quick = QUICK_TRIES
                 time.sleep(QUICK_RETRY_SECONDS)
 
