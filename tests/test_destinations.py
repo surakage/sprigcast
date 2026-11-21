@@ -425,9 +425,12 @@ def test_where_it_goes_switches_and_edit_adds_nothing(app, tmp_path, monkeypatch
 
         monkeypatch.setattr(twitch_auth, "connected_account", lambda: None)
         side.add_menu.actions()[1].trigger()  # YouTube
+        assert len(col.outputs) == 2  # not from inside the menu's click: once the menu has closed
+        QApplication.processEvents()
         assert len(col.outputs) == 3 and col.outputs[2].service == "youtube" and opened[-1] == col.outputs[2].id
         monkeypatch.setattr(twitch_auth, "connected_account", lambda: "someone")
         side.add_menu.actions()[0].trigger()  # Twitch with a connected account: ready, nothing to open
+        QApplication.processEvents()
         assert col.outputs[3].twitch_account and len(opened) == 2
         # A place + Add made: Settings closed without saving takes it away again; saved without a key, it stays
         # but switched off; saved with its server and key, it stays on.
