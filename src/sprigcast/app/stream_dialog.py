@@ -740,10 +740,11 @@ class StreamPage(QWidget):
             from sprigcast.output import stream_details
 
             central = stream_details.account(output.service or "")
-            name = central or output.account
+            gives_key = (output.service or "") in service_signin.GIVES_KEY
+            # A key's account outlives a sign-out (the key still works); TikTok's sign-in is the whole story.
+            name = central or (output.account if gives_key else "")
             self.signin_state.setText(f"Signed in as {name}" if name else "Not signed in")
             self.sign_out_button.setVisible(bool(central))
-            gives_key = (output.service or "") in service_signin.GIVES_KEY
             # TikTok shares no key with apps: its sign-in only shows which account is connected.
             self.sign_in_button.setVisible(gives_key or not central)
             self.sign_in_button.setText("Get key" if central else "Sign in")
