@@ -567,6 +567,7 @@ struct Link {
     std::string url, format;
     double bytes_per_s = 750000, delay_s = 0, max_backlog = 4, resume_backlog = 2, behind_s = 0.25;
     double connect_s = 10, send_s = 20;
+    int slow_ms = 0;  // SPRIGCAST_LINK_SLOW_MS (tests): each packet takes this long to send (a slow upload)
 
     struct Packet {
         int track = 0;
@@ -791,6 +792,7 @@ void Link::session(AVFormatContext *&ctx) {
             ff.av_packet_rescale_ts(pkt, p->tb, st->time_base);
             const double began = now_s();
             deadline = began + send_s;
+            if (slow_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(slow_ms));
             w = ff.av_interleaved_write_frame(ctx, pkt);
             spent = now_s() - began;
             ff.av_packet_unref(pkt);
@@ -1497,6 +1499,7 @@ SC_API int sc_link_open(sc_writer *w, const sc_link_config *cfg, sc_link **out) 
         if (cfg->connect_timeout_ms > 0) l->connect_s = cfg->connect_timeout_ms / 1000.0;
         if (cfg->send_timeout_ms > 0) l->send_s = cfg->send_timeout_ms / 1000.0;
         l->deadline = now_s() + 3600;
+        l->slow_ms = std::clamp(std::atoi(env_text("SPRIGCAST_LINK_SLOW_MS").c_str()), 0, 1000);
         {
             std::lock_guard<std::mutex> hold(w->core->lock);
             if (w->core->done) return sc::fail(SC_ERR_ARGUMENT, "sc_link_open: the writer has ended");

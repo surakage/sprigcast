@@ -520,7 +520,7 @@ def test_a_link_that_cant_connect_or_loses_its_writer_fails_and_says_why(player_
     assert link.stats().state_name == "failed"  # closed: still safe to ask
 
 
-def test_a_link_behind_skips_until_a_keyframe_and_a_delay_holds_packets(player_lib, tmp_path):  # noqa: F811
+def test_a_link_behind_skips_until_a_keyframe_and_a_delay_holds_packets(player_lib, tmp_path, monkeypatch):  # noqa: F811
     """A stream delay holds every packet that long; a link with more than max_backlog waiting skips pictures (and,
     alone on its writer, asks for a keyframe to come back at)."""
     writer = sprigcore.Writer(str(tmp_path / "streams.nut"), "libx264", W, H, fps=30,
@@ -538,7 +538,9 @@ def test_a_link_behind_skips_until_a_keyframe_and_a_delay_holds_packets(player_l
         assert time.monotonic() - began >= 0.95
         delayed.close()
         delayed = None
-        # kbps 1: any packet waiting is "seconds" of backlog, so the second one offered finds it behind
+        # kbps 1: any packet waiting is "seconds" of backlog, and each takes 40 ms to send (a slow upload), so
+        # packets offered meanwhile find it behind
+        monkeypatch.setenv("SPRIGCAST_LINK_SLOW_MS", "40")
         late = writer.link(str(tmp_path / "late.flv"), 1, delay_s=0, max_backlog_s=0.001, resume_backlog_s=1e9)
         _until(lambda: late.stats().state_name == "ready")
         _fed(writer, 60, start=30, pace=0.005)
