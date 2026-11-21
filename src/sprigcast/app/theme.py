@@ -984,6 +984,17 @@ def section_title_rule(pic: dict[str, str], selector: str = "QGroupBox::title") 
             " background-repeat: no-repeat; background-position: left center; }")
 
 
+def combo_arrow_rule(selector: str = "QComboBox") -> str:
+    """A drop-down's mark: the drawn chevron at its right end (the stock arrow is a tiny triangle, or nothing
+    at all once the button part is styled). "" when the picture can't be written."""
+    try:
+        pic = nature_pictures()
+    except OSError:
+        return ""
+    return (f"{selector}::down-arrow {{ image: url({pic['chevron']}); width: 12px; height: 12px;"
+            " margin-right: 8px; }")
+
+
 def nature_rules(folder: str | None = None) -> str:
     """Style sheet rules that swap tick boxes, radio buttons and slider handles for leaf-cut boxes and seeds."""
     try:

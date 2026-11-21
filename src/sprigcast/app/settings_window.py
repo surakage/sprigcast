@@ -140,8 +140,9 @@ def window_style() -> str:
     t = theme
     try:
         leaf = t.section_title_rule(t.nature_pictures(), "#settingsWindow QGroupBox::title")
+        arrow = t.combo_arrow_rule("#settingsWindow QComboBox")
     except OSError:  # can't write the picture: titles without the leaf
-        leaf = ""
+        leaf = arrow = ""
     return f"""
 #settingsWindow {{ background: {t.BG}; border: none; }}
 #settingsNav {{ background: transparent; border: none; padding: 0px; outline: none; }}
@@ -163,7 +164,8 @@ def window_style() -> str:
     padding: 6px 13px; }}
 #settingsWindow QLineEdit:focus, #settingsWindow QSpinBox:focus, #settingsWindow QDoubleSpinBox:focus,
 #settingsWindow QComboBox:focus {{ border-color: {t.ACCENT}; }}
-#settingsWindow QComboBox::drop-down {{ border: none; width: 26px; background: transparent; }}
+#settingsWindow QComboBox::drop-down {{ border: none; width: 34px; background: transparent; }}
+{arrow}
 #settingsWindow QSpinBox::up-button, #settingsWindow QSpinBox::down-button,
 #settingsWindow QDoubleSpinBox::up-button, #settingsWindow QDoubleSpinBox::down-button {{
     border: none; background: transparent; width: 18px; }}

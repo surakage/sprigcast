@@ -66,6 +66,10 @@ SERVICES: dict[str, Service] = {
     # the site's own numbers weren't found; the limit is then left open (50000) rather than made up.
     "facebook": Service("Facebook", "", 50000, "horizontal",
                         "Server and key: Facebook Live Producer → Go live → Streaming software.", 1920, 60, 6000),
+    # BEAM and SharePlay: asked for by name (user, 2026-11-20). Their pages could not be read for the menu path,
+    # so the line only says the site gives both.
+    "beam": Service("BEAM", "", 50000, "horizontal", "Server and key: from your BEAM stream settings.",
+                    1920, 60, 6000),
     "chzzk": Service("CHZZK", "", 50000, "horizontal",
                      "Server and key: CHZZK Creator Dashboard → Broadcasting settings → Stream key.", 1920, 60, 6000),
     "mixcloud": Service("Mixcloud", "", 50000, "horizontal",
@@ -76,6 +80,8 @@ SERVICES: dict[str, Service] = {
                         1280, 30, 3000),
     "restream": Service("Restream", "", 50000, "horizontal",
                         "Server and key: Restream → New stream → Encoder | RTMP.", 1920, 60, 6000),
+    "shareplay": Service("SharePlay", "", 50000, "horizontal",
+                         "Server and key: from your SharePlay stream settings.", 1920, 60, 6000),
     "showroom": Service("SHOWROOM", "", 50000, "horizontal",
                         "Server and key: SHOWROOM → Go live → External encoder settings.", 1280, 30, 2500),
     "soop": Service("SOOP", "", 50000, "horizontal",

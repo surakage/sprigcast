@@ -379,6 +379,7 @@ PLATFORM_TILES = {
     "chzzk": ("Cz", "#00ffa3", "#0b0f0d"), "mixcloud": ("Mx", "#5000ff", "#ffffff"),
     "niconico": ("Nc", "#252525", "#ffffff"), "restream": ("Rs", "#ff5a1f", "#0b0f0d"),
     "showroom": ("Sr", "#f5c518", "#0b0f0d"), "soop": ("So", "#0545b1", "#ffffff"),
+    "beam": ("Be", "#7c5cff", "#ffffff"), "shareplay": ("Sp", "#2ec4b6", "#0b0f0d"),
     "vimeo": ("Vm", "#1ab7ea", "#0b0f0d"), "whowatch": ("Ww", "#ffd43b", "#0b0f0d"),
 }
 

@@ -142,6 +142,8 @@ PAGE_STYLE = (
     f" border: 1px solid {theme.FIELD_EDGE}; border-radius: 10px; padding: 6px 13px; min-height: 20px; }}"
     + f"#streamCard QLineEdit:focus, #streamCard QComboBox:focus, #streamCard QSpinBox:focus"
     f" {{ border-color: {theme.ACCENT}; }}"
+    + "#streamCard QComboBox::drop-down { border: none; width: 34px; background: transparent; }"
+    + theme.combo_arrow_rule("#streamCard QComboBox")
     + _leaf_rule()
 )
 
