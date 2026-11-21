@@ -412,7 +412,9 @@ class _Feed:
             if self._stop.is_set() or self._restart.is_set():
                 continue
             if not opened:
-                self.status = "camera not found, retrying" if device is None else self.status
+                picked = self.settings.get("name") or self.settings.get("path")
+                if device is None:  # a Video Capture just added from + Add has none picked yet
+                    self.status = "camera not found, retrying" if picked else "no camera picked"
             self._restart.wait(RETRY_SECONDS)
 
     def _deliver(self, frame: np.ndarray, order: str = "BGR", size: tuple[int, int] | None = None,
