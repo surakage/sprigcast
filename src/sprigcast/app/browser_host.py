@@ -614,6 +614,7 @@ class BrowserHost(QObject):
 
         self.sizes = PageSizes()  # what each page says it holds, for the log (page_rest)
         self._measuring = False
+        self._asked_sizes = False  # the first asking comes sooner (page_rest.MEASURE_FIRST_S)
 
     # Any thread ---------------------------------------------------------------------
 
@@ -757,7 +758,9 @@ class BrowserHost(QObject):
             if line:
                 log.info(line)
 
-        QTimer.singleShot(int(page_rest.MEASURE_EVERY_S * 1000), ask)
+        wait = page_rest.MEASURE_EVERY_S if self._asked_sizes else page_rest.MEASURE_FIRST_S
+        self._asked_sizes = True
+        QTimer.singleShot(int(wait * 1000), ask)
 
     def _check_state(self) -> None:
         if not self.pages:

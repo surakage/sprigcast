@@ -25,7 +25,8 @@ def test_a_growing_page_is_named_at_once_and_the_rest_every_third_round():
     for page_id, text in (("browser-1", "400,90000000,1,0"), ("browser-2", "120,90000000,0,2"),
                           ("browser-3", "60,31000000,0,0")):
         sizes.feed(page_id, text, 0.0)
-    assert sizes.line() is None  # the first round: nothing to compare yet, and not a third round
+    # The first round is said, so a short run's log has the line (PC test 2026-11-21: none in 8 minutes).
+    assert sizes.line().startswith("pages: 3 asked; none growing; script memory 90 MB for 2 pages")
     sizes.feed("browser-1", "4300,270000000,9,0", 3600.0)
     sizes.feed("browser-2", "130,270000000,0,2", 3600.0)
     sizes.feed("browser-3", "", 3600.0)  # couldn't say this time: its last answer stays
