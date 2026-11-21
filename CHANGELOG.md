@@ -6,6 +6,9 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- Test builds for testers: pushing a `test-*` tag (for example `test-2026-11-21`) builds the installer and publishes it
+  as a GitHub pre-release with docs/tester-guide.md as its text, so testers get a download link that lasts. The
+  in-app updater skips pre-releases.
 - Help improve SprigCast: after each stream of a minute or more, SprigCast can send that stream's report and
   today's log to the developer, with stream keys, passwords, names and addresses removed first. Off unless
   you turn it on: asked once after your first stream, and in Settings → General → Logs. Summaries go to the
