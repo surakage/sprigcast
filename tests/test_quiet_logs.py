@@ -35,4 +35,4 @@ def test_chat_waiting_is_logged_now_and_then(caplog, monkeypatch):
         hub.ChatHub._state(fake, "youtube", "waiting: not live yet")
     hub.ChatHub._state(fake, "youtube", "live")
     lines = [r.getMessage() for r in caplog.records]
-    assert len(lines) == 3 and lines[-1] == "chat youtube me: live"
+    assert len(lines) == 3 and lines[-1] == "chat youtube: live"  # no channel names in the log

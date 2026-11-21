@@ -91,7 +91,7 @@ def test_mask_for_the_screen_hides_the_enhanced_key_with_its_own_question_mark()
     message = f"quality 1: [Errno 10053] Error number -10053 occurred: '{url}'"
     shown = privacy.mask(message, [ENHANCED_KEY, url, TWITCH_KEY])
     assert _leaks(shown) == []
-    assert "rtmp://ingest.global-contribute.live-video.net/****" in shown
+    assert "rtmp://ingest.global-contribute.live-video.net/app/****" in shown
 
 
 def test_streamer_redact_hides_the_key_and_the_address_path():

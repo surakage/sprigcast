@@ -117,7 +117,7 @@ def test_multitrack_stream_aligns_keyframes_and_tags_them(tmp_path):
     st = EnhancedStreamer("Twitch", cfg, [h, v], start, user_key="live_user")
     st._url = str(tmp_path / "out.flv")
     assert st.canvas_ids() == ["horizontal", "vertical"]
-    assert st.redact("rtmp://x/app/live_cfgkey?a and live_user") == "rtmp://x/app/****?a and ****"
+    assert st.redact("rtmp://x/app/live_cfgkey?a and live_user") == "rtmp://x/app/**** and ****"
     st.start()
     for i in range(45):
         t = start + i / 30
