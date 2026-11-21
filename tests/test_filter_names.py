@@ -14,20 +14,28 @@ NEW = {"barrel_roll": "Spin", "blackout": "Curtain", "blur": "Mist", "chroma_key
        "freeze": "Freeze", "glow": "Glow", "shadow": "Shadow"}
 
 
-def _load_plugin_filters():
-    import sprigcast.store.barrel_roll  # noqa: F401
-    import sprigcast.store.freeze  # noqa: F401
-    import sprigcast.store.hide_it  # noqa: F401
+from test_store_effects import added, app  # noqa: E402,F401
 
 
-def test_every_video_filter_has_its_one_word_name():
+@pytest.fixture
+def _load_plugin_filters(added):  # noqa: F811
+    """The store's filters, added for one test and removed after it: imported straight in, they stayed for every
+    later test, and "without the plugin, Freeze does nothing" then failed in a full run (2026-11-21)."""
+    def load():
+        for pid in ("barrel_roll", "freeze", "hide_it"):
+            added(pid)
+
+    return load
+
+
+def test_every_video_filter_has_its_one_word_name(_load_plugin_filters):
     _load_plugin_filters()
     for kind, label in NEW.items():
         assert filter_kind(kind).label == label
         assert " " not in label
 
 
-def test_old_and_new_names_find_the_kind():
+def test_old_and_new_names_find_the_kind(_load_plugin_filters):
     _load_plugin_filters()
     assert kind_for_label("Chroma Key") == kind_for_label("greenscreen") == "chroma_key"
     assert kind_for_label("Color look (LUT)") == "lut"
