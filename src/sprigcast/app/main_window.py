@@ -12,7 +12,7 @@ import sys
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, QSettings, QSize, QStandardPaths, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QSettings, QSize, QStandardPaths, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -297,6 +297,19 @@ BLANK_KINDS = {
     "Display Capture": "display_capture", "Game Capture": "game_capture", "Image": "image", "Text": "text",
     "Video Capture": "camera", "Video File": "media:video", "Window Capture": "window_capture",
 }
+def fit_window(rect: tuple[int, int, int, int], free: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """A window's inside (x, y, width, height) made to fit a screen's free area with its frame and title bar:
+    no bigger than the area, and wholly on it. Windows refuses a window whose frame is larger than that."""
+    side, top, bottom = 8, 32, 8  # the frame Windows draws around the inside
+    x, y, width, height = rect
+    fx, fy, fw, fh = free
+    width = max(200, min(width, fw - side * 2))
+    height = max(150, min(height, fh - top - bottom))
+    x = min(max(x, fx + side), fx + fw - side - width)
+    y = min(max(y, fy + top), fy + fh - bottom - height)
+    return x, y, width, height
+
+
 ADD_ICON_KINDS = {"media:video": "media", "media:sound": "sound_file"}  # + Add's chips for the two file entries
 BLANK_TIPS = {
     "Application Audio": "The sound of the apps you pick: games, music, voice chat…",
@@ -800,9 +813,32 @@ class MainWindow(QMainWindow):
     def _restore_layout(self) -> None:
         """Put the window and docks back where they were last time (if the screen still fits them)."""
         settings = QSettings()
-        geometry = settings.value("window/geometry")
-        if geometry is not None:
+        place = settings.value("window/place")  # x, y, width, height of the un-maximized window, then maximized
+        if place is not None:
+            try:
+                x, y, width, height, maximized = (int(v) for v in str(place).split(","))
+            except ValueError:
+                place = None
+        if place is not None:
+            # Set here, sized to fit its screen. Qt's restoreGeometry asked Windows for a window whose frame was
+            # bigger than the screen's free area when it had been maximized ("Unable to set geometry
+            # 1918x1006…" at every start, PC test 2026-11-20).
+            screen = QGuiApplication.screenAt(QPoint(x + width // 2, y + height // 2)) or QGuiApplication.primaryScreen()
+            if screen is not None:
+                x, y, width, height = fit_window((x, y, width, height), screen.availableGeometry().getRect())
+            self.setGeometry(x, y, width, height)
+            if maximized:
+                self.setWindowState(self.windowState() | Qt.WindowState.WindowMaximized)
+        elif (geometry := settings.value("window/geometry")) is not None:  # saved by an older SprigCast
             self.restoreGeometry(geometry)
+            maximized = self.isMaximized()
+            normal = self.normalGeometry() if maximized else self.geometry()
+            screen = QGuiApplication.screenAt(normal.center()) or QGuiApplication.primaryScreen()
+            if normal.isValid() and screen is not None:  # the same fit, before the window is first shown
+                self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMaximized)
+                self.setGeometry(*fit_window(normal.getRect(), screen.availableGeometry().getRect()))
+                if maximized:
+                    self.setWindowState(self.windowState() | Qt.WindowState.WindowMaximized)
         if settings.value("window/mode", "build") == "live":
             self._set_mode("live")
         self.panels.set_mode(self.mode)
@@ -811,6 +847,10 @@ class MainWindow(QMainWindow):
     def _save_layout(self) -> None:
         settings = QSettings()
         settings.setValue("window/geometry", self.saveGeometry())
+        normal = self.normalGeometry() if self.isMaximized() or self.isFullScreen() else self.geometry()
+        rect = normal.getRect() if normal.isValid() else tuple(str(settings.value("window/place") or "").split(",")[:4])
+        if len(rect) == 4:  # maximized with no un-maximized size known: the last one saved
+            settings.setValue("window/place", ",".join(str(v) for v in (*rect, int(self.isMaximized()))))
 
     def _build_sources_dock(self) -> None:
         self.source_list = InsideList()
