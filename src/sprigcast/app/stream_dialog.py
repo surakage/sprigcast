@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -207,6 +208,18 @@ class StreamPage(QWidget):
         self.list.currentRowChanged.connect(self._load)
         self.list.model().rowsInserted.connect(lambda *_: self._fit_list())
         self.list.model().rowsRemoved.connect(lambda *_: self._fit_list())
+        # Drag a place to a new spot in the list (the order Live's Destinations shows them in too); Alt+Up and
+        # Alt+Down do the same from the keyboard.
+        self.list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        self.list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.list.setDragDropOverwriteMode(False)
+        self.list.setToolTip("Drag to reorder")
+        self.list.model().rowsMoved.connect(lambda *_: self._order_changed())
+        self.list.model().rowsInserted.connect(lambda *_: self._order_changed())  # (a drop done as take and put)
+        for keys, step in (("Alt+Up", -1), ("Alt+Down", 1)):
+            shortcut = QShortcut(QKeySequence(keys), self.list)
+            shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+            shortcut.activated.connect(lambda step=step: self.move_place(step))
         left.addWidget(self.list)
         self.add_button = QPushButton("+ Add place")
         self.add_button.setObjectName("streamAdd")
@@ -472,13 +485,33 @@ class StreamPage(QWidget):
         self._loading = True
         self.list.clear()
         for output in self.outputs:
-            self.list.addItem(self._card_text(output))
+            item = QListWidgetItem(self._card_text(output))
+            item.setData(Qt.ItemDataRole.UserRole, output.id)
+            self.list.addItem(item)
         self._loading = False
         self.form_widget.setEnabled(bool(self.outputs))
         if not self.outputs:
             self.hero.setText("Nothing here yet. Press + Add.")
         if self.outputs:
             self.list.setCurrentRow(max(0, min(row, len(self.outputs) - 1)))
+
+    def _order_changed(self) -> None:
+        """A place was dragged to a new spot: the places follow the list's order, and the one dragged stays picked."""
+        by_id = {o.id: o for o in self.outputs}
+        ids = [self.list.item(row).data(Qt.ItemDataRole.UserRole) for row in range(self.list.count())]
+        if self._loading or sorted(ids) != sorted(by_id) or ids == [o.id for o in self.outputs]:
+            return  # the list being filled, or nothing moved
+        self.outputs[:] = [by_id[i] for i in ids]
+        self._load(self.list.currentRow())
+
+    def move_place(self, step: int) -> None:
+        """The picked place one spot up (-1) or down (1)."""
+        row = self.list.currentRow()
+        to = row + step
+        if not (0 <= row < len(self.outputs) and 0 <= to < len(self.outputs)):
+            return
+        self.outputs.insert(to, self.outputs.pop(row))
+        self._refresh_list(to)
 
     def _current(self) -> Output | None:
         row = self.list.currentRow()
