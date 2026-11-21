@@ -93,6 +93,10 @@ HEADER_RECORDING_STYLE = HEADER_RECORD_STYLE + (
     f"QPushButton {{ background: {theme.LIVE}; color: #ffffff; border-color: {theme.LIVE_EDGE}; }}"
     f" QPushButton:hover {{ background: {theme.LIVE_HOVER}; border-color: {theme.LIVE_HOVER}; }}"
 )
+# A place whose server won't connect, named beside Go live before it's pressed: amber, never pink (pink is Live).
+HEADER_WARN_STYLE = theme.button_style(20, "0 16px") + (
+    f"QPushButton {{ color: {theme.WARN}; border-color: {theme.WARN}; background: transparent; }}"
+    f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; border-color: {theme.WARN}; }}")
 HEADER_GO_STYLE = (
     f"QPushButton {{ background: {theme.ACCENT}; color: {theme.ACCENT_TEXT}; border: none; border-radius: 20px;"
     f" padding: 0 26px; font-size: 15px; font-weight: 700; }}"
@@ -655,6 +659,14 @@ class LiveSide(QWidget):
         self.pause.setFixedHeight(HEADER_PILL_HEIGHT)
         self.pause.hide()
         head.addWidget(self.pause)
+        self.on_unreachable: Callable[[], None] = lambda: None  # opens the Stream doctor
+        self.unreachable = pill("", HEADER_WARN_STYLE)
+        self.unreachable.setIcon(_dot_icon(theme.WARN))
+        self.unreachable.setFixedHeight(HEADER_PILL_HEIGHT)
+        self.unreachable.clicked.connect(lambda: self.on_unreachable())
+        self.unreachable.hide()
+        head.addWidget(self.unreachable)
+        self._unreachable_names: list[str] = []
         self.live = pill("Go live", HEADER_GO_STYLE)
         self.live.setMinimumWidth(150)  # "End stream" fits, and Go live doesn't jump when it changes
         self.live.clicked.connect(on_live)
@@ -832,7 +844,18 @@ class LiveSide(QWidget):
             switch.setToolTip(SWITCH_TIP_LIVE if live else SWITCH_TIP)  # live: ends or starts just this place
         self.live.setText("End stream" if live else "Go live")
         self.live.setStyleSheet(HEADER_END_STYLE if live else HEADER_GO_STYLE)
+        self.unreachable.setVisible(bool(self._unreachable_names) and not live)
 
+    def set_unreachable(self, names: list[str], why: str = "", text: str | None = None) -> None:
+        """The places whose server wouldn't connect when last tried, named beside Go live (hidden while live:
+        Destinations shows each place's health then). Go live still sends to the others."""
+        self._unreachable_names = list(names)
+        if names:
+            text = text or (f"{names[0]} won't connect" if len(names) == 1 else f"{len(names)} places won't connect")
+            self.unreachable.setText("  " + text)
+            self.unreachable.setToolTip((why + "\n\n" if why else "") + "Go live still sends to the others. "
+                                        "Click for the Stream doctor.")
+        self.unreachable.setVisible(bool(names) and not self.is_live)
     def set_view(self, view: str, choices: bool) -> None:
         """Which canvases the stage shows ("both", "horizontal", "vertical"); no choice with one canvas."""
         for key, button in self.view_buttons.items():

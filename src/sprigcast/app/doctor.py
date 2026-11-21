@@ -103,6 +103,7 @@ class Checkup:
     # source id -> (the size its device delivers, the size the source uses); filled for cameras and capture cards
     camera_sizes: dict[str, tuple[tuple[int, int], tuple[int, int]]] = field(default_factory=dict)
     busy_apps: list[tuple[str, float]] | None = None  # other programs' CPU, (name, % of the whole PC); None: not asked
+    unreachable: list[str] = field(default_factory=list)  # places whose server wouldn't connect (output/preflight.py)
 
 
 class PeakWatch:
@@ -137,6 +138,7 @@ def examine(c: Checkup) -> list[Finding]:
     found += _sources(c)
     found += _oversized(c)
     found += _busy(c)
+    found += [Finding("warning", "Places", line) for line in c.unreachable]
     if c.recording_planned and c.free_gb is not None and c.free_gb < LOW_DISK_GB:
         found.append(Finding("warning", "Disk", f"Only {c.free_gb:.1f} GB free for recordings: "
                                                 "clear some space or pick another folder in Settings → Recording."))
@@ -474,7 +476,7 @@ def load_last_streams(settings) -> dict[str, LastStream]:
 
 
 AREA_ICONS = {"Keys": "key", "Upload": "upload", "Encoder": "gear", "GPU": "monitor", "Audio": "mic", "Sources": "camera",
-              "Disk": "disk", "PC": "monitor", "All": "leaf"}  # drawn by app/icons.py
+              "Disk": "disk", "PC": "monitor", "Places": "broadcast", "All": "leaf"}  # drawn by app/icons.py
 BADGES = {"bad": "✕", "warning": "!", "good": "✓", "checking": "…"}
 SUBTITLES = {
     "bad": "Fix the red ones before you go live.",
