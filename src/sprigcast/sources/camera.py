@@ -581,7 +581,8 @@ class _Feed:
                 if text == "ok" and info.width > 0:
                     self.status = f"capturing {info.width}x{info.height}"
                     self.picture = (info.width, info.height)
-                    self.given = (info.given_width, info.given_height) if info.given_width > 0 else self.picture
+                    given = (getattr(info, "given_width", 0), getattr(info, "given_height", 0))
+                    self.given = given if min(given) > 0 else self.picture
                     for source in list(self.subscribers):
                         source._size = source.fit(self.picture)
                     if lost is not None:

@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 42
+#define SC_INTERFACE_VERSION 43
 
 enum {
     SC_OK = 0,
@@ -648,7 +648,7 @@ typedef struct sc_media_info {
     uint64_t picture_bytes;  /* the largest picture handed out so far: a buffer this big always fits */
     char status[96];       /* "starting", "no file", "ok" or "can't play: ..." */
     int hardware;          /* the pictures now are decoded on the graphics card (sc_media_set_decode) */
-    int given_width, given_height;  /* what the file or device gives, before it is shrunk to fit (version 41) */
+    int given_width, given_height;  /* what the file or device gives, before it is shrunk to fit (version 43) */
 } sc_media_info;
 
 /* What sc_media_video_frame answered. */
