@@ -522,6 +522,12 @@ def test_one_camera_in_two_modes_opens_once_at_the_bigger(fake_cv2):
         small.set_shrink(1.0)
         big.set_shrink(0.25)  # the big one shown small: the small one still needs half the picture
         assert small._feed.shrink() == 0.5
+        # The camera came up in its own, bigger mode (none asked was taken): no picture bigger than the biggest
+        # source is made (PC 2026-11-21: 1.1 GB of full-size pictures for 1080p and 720p sources).
+        big.set_shrink(1.0)
+        small._feed.picture = (256, 144)
+        assert small._feed.shrink() == 0.25
+        small._feed.picture = (64, 36)
         big.stop()  # it doesn't shrink back while the camera runs
         assert small._feed.settings["width"] == 64
     finally:

@@ -409,6 +409,7 @@ class _Feed:
         # hands it to the engine, and no picture passes through Python. None while Python reads it.
         self.player: sprigcore.MediaPlayer | None = None
         self._engine_refused = False  # the engine's player couldn't: Python reads it from now on
+        self.picture: tuple[int, int] | None = None  # the size the engine's player plays (its own mode's, at times)
 
     def start(self, after: "_Feed | None" = None) -> None:
         """after: the same camera still closing after a sleep(); this feed opens it once that's done."""
@@ -488,8 +489,11 @@ class _Feed:
 
     def shrink(self) -> float:
         """The least any source of this camera may be shrunk (one shown big keeps it full size for all). A source
-        asking a smaller mode than the feed's is already that much smaller."""
-        width = max(1, self._mode()[0])
+        asking a smaller mode than the feed's is already that much smaller. So is every source when the camera
+        came up bigger than any asked: the PC's HD60 X (2026-11-21) took none of its listed modes and opened in its
+        own, and its full-size pictures (32 MB each) were made and kept for sources laid out at 1080p and 720p:
+        SprigCast held 1.1 GB more on that bloom."""
+        width = max(1, self._mode()[0], (getattr(self, "picture", None) or (0, 0))[0])
         return max((min(1.0, getattr(s, "shrink", 1.0) * min(1.0, _mode_of(s.settings)[0] / width))
                     for s in list(self.subscribers)), default=1.0)
 
