@@ -20,6 +20,7 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QFontMetrics,
+    QIcon,
     QLinearGradient,
     QPainter,
     QPainterPath,
@@ -201,7 +202,7 @@ KIND_TINTS = {  # each kind its own colour, so a list reads at a glance (pink st
     "game_capture": "#b388ff", "display_capture": "#7fb8ff", "window_capture": "#9aa7ff", "camera": "#4cc9f0",
     "chat": "#ffd23f", "browser": "#5fe0d0", "image": "#a6e36b", "slideshow": "#c8e86b", "media": "#ff9f5a",
     "text": "#dfe7e2", "audio_input": "#ffb35c", "audio_output": "#f2c46b", "app_audio": "#ffc98a",
-    "capture_card": "#e08cff", "scene": "#e6e0ff", "nested": "#9aa7ff", "empty": "#9fb3a9",
+    "capture_card": "#e08cff", "sound_file": "#ff9f5a", "scene": "#e6e0ff", "nested": "#9aa7ff", "empty": "#9fb3a9",
 }
 
 
@@ -306,6 +307,8 @@ def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None
             for i, h in enumerate((4, 9, 6, 11, 5)):
                 x = cx - 6 + i * 3
                 p.drawLine(QPointF(x, cy + h / 2), QPointF(x, cy - h / 2))
+    elif kind == "sound_file":  # a sound file: a note
+        icons.paint_icon(p, QRectF(cx - 7.5, cy - 7.5, 15, 15), "note", ink, 1.4)
     elif kind == "media":  # a play triangle in a frame
         p.drawRoundedRect(QRectF(cx - 7, cy - 5.5, 14, 11), 2.5, 2.5)
         tri = QPainterPath()
@@ -570,3 +573,16 @@ class InsideList(QListWidget):
         event.accept()
         if source >= 0 and target != source:
             self.moved.emit(source, max(0, min(self.count() - 1, target)))
+
+
+def kind_icon(kind: str, size: int = 20) -> QIcon:
+    """The Leaves list's chip for a kind as an icon, for menus (+ Add), sharp on high-DPI screens."""
+    from PySide6.QtGui import QPixmap
+
+    pix = QPixmap(size * 2, size * 2)
+    pix.setDevicePixelRatio(2)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    paint_kind_icon(p, QRectF(0, 0, size, size), kind)
+    p.end()
+    return QIcon(pix)

@@ -297,9 +297,10 @@ BLANK_KINDS = {
     "Display Capture": "display_capture", "Game Capture": "game_capture", "Image": "image", "Text": "text",
     "Video Capture": "camera", "Video File": "media:video", "Window Capture": "window_capture",
 }
+ADD_ICON_KINDS = {"media:video": "media", "media:sound": "sound_file"}  # + Add's chips for the two file entries
 BLANK_TIPS = {
     "Application Audio": "The sound of the apps you pick: games, music, voice chat…",
-    "Audio File": "Music or a sound clip: it goes in Sound and plays when you press play",
+    "Audio File": "Music or a sound clip from your PC: a leaf that plays while its bloom is on air, with its strip in Sound",
     "Audio Input": "A mic: plays in every bloom unless you pick some",
     "Audio Output": "Everything a speaker or headset plays",
     "Browser": "A web page: alerts, widgets, overlays",
@@ -902,23 +903,28 @@ class MainWindow(QMainWindow):
             if not seen:
                 sub.addAction("Nothing to mirror yet").setEnabled(False)
 
-        # A to Z, the way OBS lists them (sprigs stay on top: they're SprigCast's own). One click adds the leaf;
-        # double-click it to pick the screen, window, camera or file (user, 2026-11-20: professional names, and
-        # "one leaf that you add then you double click to add the source"). Mirror still lists what to mirror.
-        entries = [(label, kind) for label, kind in BLANK_KINDS.items()] + [("Mirror", None)]
+        # A to Z (sprigs stay on top: they're SprigCast's own). Each kind opens to New… (adds the leaf and opens
+        # its picker straight away) and the leaves of that kind you already have (user, 2026-11-20, from a
+        # video of the menu they liked). Sounds list what's in Sound; picking one opens its controls.
+        from sprigcast.app.build_stage import kind_icon
+
+        # Sounds are not here (user, 2026-11-20): the + on the Sound card adds them, and a sound's inspector
+        # changes its mic, device, apps or file.
+        entries = [(label, kind) for label, kind in BLANK_KINDS.items()
+                   if kind not in self.AUDIO_KINDS and kind != "media:sound"] + [("Mirror", None)]
         for label, kind in sorted(entries, key=lambda e: e[0].lower()):
+            sub = menu.addMenu(label)
+            sub.setToolTipsVisible(True)
+            sub.menuAction().setToolTip(BLANK_TIPS.get(label, ""))
             if kind is None:
-                sub = menu.addMenu(label)
-                sub.setToolTipsVisible(True)
-                sub.menuAction().setToolTip(BLANK_TIPS["Mirror"])
-                sub.aboutToShow.connect(lambda s=sub: (s.clear(), mirrors(s)) if not s.actions() else None)
+                sub.setIcon(icons.icon("link", theme.TEXT, 16))
+                sub.aboutToShow.connect(lambda s=sub: (s.clear(), mirrors(s)))
             else:
-                act = menu.addAction(label)
-                act.setToolTip(BLANK_TIPS.get(label, ""))
-                act.triggered.connect(lambda _=False, k=kind, n=label: self._add_blank(k, n))
+                sub.setIcon(kind_icon(ADD_ICON_KINDS.get(kind, kind)))
+                sub.aboutToShow.connect(lambda s=sub, k=kind, n=label: (s.clear(), self._fill_add_kind_menu(s, k, n)))
         menu.setToolTipsVisible(True)
         menu.addSeparator()
-        plugins = menu.addMenu("Plugins")
+        plugins = menu.addMenu(icons.icon("plug", theme.TEXT, 16), "Plugins")
         self.more_menu = plugins
         plugins.aboutToShow.connect(self._fill_more_menu)  # store plugins can arrive while SprigCast runs
         self._fill_more_menu()
@@ -1743,7 +1749,7 @@ class MainWindow(QMainWindow):
         from sprigcast.app.sound_card import TunePage
 
         self.build_tune = TunePage(self._build_tune_changed, lambda sid: self._open_filters(sid, "audio"),
-                                   self._close_build_sound, self._pick_app_sound_apps,
+                                   self._close_build_sound, self._change_sound_source,
                                    on_blooms=lambda _sid: self._plays_in_popup())
         # In a scroll area: the titled sections are taller than a short window (a 768 px laptop screen).
         tune_scroll = QScrollArea()
@@ -3929,8 +3935,58 @@ class MainWindow(QMainWindow):
             filters=[f.name for f in config.filters if f.enabled],
             can_monitor=config.kind != "audio_output",  # desktop audio already plays on your speakers
             tracks=planned_tracks(config),  # Just me shows where it goes once it is back
-            apps=self._app_sound_text(config) if config.kind == "app_audio" else None,
+            apps=self._sound_source_text(config),
         )
+
+    def _sound_source_text(self, config) -> str | None:
+        """The inspector's Source card: the apps, device or file a sound comes from (None: nothing to change)."""
+        if config.kind == "app_audio":
+            return self._app_sound_text(config)
+        if config.kind in ("audio_input", "audio_output"):
+            device = str(config.settings.get("device", "default") or "default")
+            return "Default (follows Windows)" if device == "default" else sound_label(device)
+        if config.kind == "media":
+            path = str(config.settings.get("path", "") or "")
+            return Path(path).name if path else "No file yet"
+        return None
+
+    def _change_sound_source(self, source_id: str) -> None:
+        """The inspector's Source → Change: another mic or output, other apps, another file (user, 2026-11-20:
+        "so I can change the mic to a different"). The sound keeps its volume, filters and where it plays."""
+        config = next((c for c in self.collection.sources if c.id == source_id), None)
+        if config is None:
+            return
+        if config.kind == "app_audio":
+            self._pick_app_sound_apps(source_id)
+            return
+        if config.kind in ("audio_input", "audio_output"):
+            old = str(config.settings.get("device", "default") or "default")
+            device = self._pick_audio_device(config.kind, old, config.name, "Save")
+            if device is None or device == old:
+                return
+            base = "Desktop audio" if config.kind == "audio_output" else "Mic"
+            if config.name in (base, f"{base} ({old})", short_name(old, base)):  # a name you chose stays
+                config.name = base if device == "default" else short_name(device, base)
+            config.settings = {**config.settings, "device": device}
+        elif config.kind == "media":
+            from sprigcast.app.media_dialog import MediaDialog
+
+            only = config.settings.get("only") or ("sound" if is_sound_file(str(config.settings.get("path", ""))) else None)
+            dialog = MediaDialog(config.name, config.settings, self, only=only)
+            if not modal(dialog):
+                return
+            old_stem = Path(str(config.settings.get("path", "") or "")).stem
+            config.settings = {**config.settings, **dialog.values()}
+            new_stem = Path(str(config.settings.get("path", "") or "")).stem
+            if new_stem and config.name in (old_stem, old_stem.replace("_", " ")):  # named after its file: follows it
+                config.name = new_stem.replace("_", " ")
+        else:
+            return
+        self._changed()
+        self._refresh_audio()
+        self._refresh_scenes()
+        if self.selected_sound_id == source_id:
+            self._open_build_sound(source_id)
 
     @staticmethod
     def _app_sound_text(config) -> str:
@@ -4813,6 +4869,59 @@ class MainWindow(QMainWindow):
         self._show_part_editor()
         return shape
 
+    def _existing_of_kind(self, kind: str) -> list:
+        """+ Add's list for a kind: the leaves (or sounds) of that kind already in the garden, A to Z."""
+        here = {i.source for i in scene.items} if (scene := self._scene()) is not None else set()
+        placed = {i.source for s in self.collection.scenes for i in s.items}
+        if kind in self.AUDIO_KINDS:
+            found = [c for c in self.collection.sources if c.kind == kind and c.settings.get("capture_of") is None]
+        elif kind in ("media:sound", "media:video"):  # placed files of that kind
+            sound = kind == "media:sound"
+            found = [c for c in self.collection.sources if c.kind == "media" and c.id in placed and c.id not in here
+                     and (c.settings.get("only") == "sound" if not c.settings.get("path")
+                          else is_sound_file(str(c.settings["path"]))) == sound]
+        else:
+            found = [c for c in self.collection.sources if c.kind == kind and c.id in placed and c.id not in here]
+        return sorted(found, key=lambda c: c.name.lower())
+
+    def _fill_add_kind_menu(self, sub: QMenu, kind: str, label: str) -> None:
+        """One kind in + Add: New…, then what you already have of it (a leaf goes in as a mirror: the same
+        leaf again, nothing new running; a sound opens its controls in Sound)."""
+        sub.addAction(icons.icon("plus", theme.TEXT, 16), "New…").triggered.connect(
+            lambda _=False: self._add_new(kind, label))
+        found = self._existing_of_kind(kind)
+        if not found:
+            return
+        sub.addSeparator()
+        sound = kind in self.AUDIO_KINDS
+        for config in found:
+            act = sub.addAction(literal(config.name))
+            if sound:
+                act.triggered.connect(lambda _=False, sid=config.id: QTimer.singleShot(0, lambda: self._show_sound(sid)))
+            else:
+                act.triggered.connect(lambda _=False, sid=config.id: self._add_mirror(sid))
+
+    def _show_sound(self, source_id: str) -> None:
+        if self.mode == "build":
+            self._open_build_sound(source_id)
+
+    def _add_new(self, kind: str, label: str) -> None:
+        """+ Add → a kind → New…: the leaf goes in, then its picker opens (after the menu has closed), so you
+        choose the screen, window, camera or file right away. Cancel keeps the leaf: double-click it later."""
+        before = {c.id for c in self.collection.sources}
+        self._add_blank(kind, label)
+        new = [c for c in self.collection.sources if c.id not in before and c.kind not in self.AUDIO_KINDS]
+        if not new or not new[0].settings.get("blank"):
+            return
+        source_id = new[0].id
+
+        def pick() -> None:
+            item = self._item()
+            if item is not None and item.source == source_id:
+                self._edit_source_settings()
+
+        QTimer.singleShot(0, pick)
+
     def _add_blank(self, kind: str, label: str) -> None:
         """+ Add: the leaf goes in at once, named after the entry; double-click it to pick its screen, window,
         camera, device or file (user, 2026-11-20). Sounds go in Sound, ready to use with Windows' default."""
@@ -4841,11 +4950,8 @@ class MainWindow(QMainWindow):
             msgbox.information(self, "SprigCast", "Select a scene first.")
             return
         settings: dict = {"blank": True}
-        if kind == "media:sound":  # no leaf to double-click (it lives in Sound): pick the file now
-            self._add_media(sound=True)
-            return
-        if kind == "media:video":
-            settings.update(path="", volume_db=0.0, muted=False, loop=False)
+        if kind in ("media:video", "media:sound"):  # a leaf like the rest: plays while its bloom is on air
+            settings.update(path="", volume_db=0.0, muted=False, loop=False, only=kind.split(":")[1])
             kind = "media"
         elif kind == "display_capture":
             settings.update(monitor=1, cursor=True)
@@ -5716,7 +5822,7 @@ class MainWindow(QMainWindow):
             elif config.kind == "media":
                 from sprigcast.app.media_dialog import MediaDialog
 
-                dialog = MediaDialog(config.name, config.settings, self)
+                dialog = MediaDialog(config.name, config.settings, self, only=config.settings.get("only"))
             elif config.kind == "text":
                 from sprigcast.app.text_leaf_dialog import TextLeafDialog
 

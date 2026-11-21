@@ -123,7 +123,7 @@ class Sound:
     filters: list[str] = field(default_factory=list)
     can_monitor: bool = True
     tracks: tuple[str, ...] = ("stream", "recording", "clips")  # the named tracks it goes to
-    apps: str | None = None  # an app sound: what it catches ("Spotify, Apple Music…"); None for other sounds
+    apps: str | None = None  # where it comes from: its apps, device or file; None when there's nothing to change
 
 
 class VolumeMeter(ThinMeter):
@@ -757,11 +757,11 @@ class TunePage(QWidget):
                                         lambda: on_blooms and on_blooms(self.sound_id)))
         self.blooms_card.setVisible(on_blooms is not None)
 
-        # An app sound (Games, Music, Voice chat...): which apps it catches, and a way to change them.
-        self.apps_card, box = self._section(col, "Comes from")
+        # Where the sound comes from (its apps, mic, output or file), and a way to change it.
+        self.apps_card, box = self._section(col, "Source")
         self.apps = _muted_label("")
         self.apps.setWordWrap(True)
-        change = self._with_button(self.apps, "Change", "Pick the apps this sound catches",
+        change = self._with_button(self.apps, "Change", "Change where this sound comes from",
                                    lambda: on_apps and on_apps(self.sound_id))
         change.itemAt(1).widget().setVisible(on_apps is not None)
         box.addLayout(change)
