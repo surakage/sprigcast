@@ -289,6 +289,25 @@ def button_style(radius: int = 13, padding: str = "6px 14px", selector: str = "Q
     )
 
 
+def round_button_style(size: int = 28) -> str:
+    """A round icon button (the mute and gear under each sound strip): a soft fill with no hard edge, a lighter
+    fill on hover, a soft red when checked (muted: "off", never green) and a green ring only for keyboard focus.
+    Its height is pinned in the style too: the app's min-height otherwise squeezed these to 20 px, too short for
+    their round ends, so Qt drew them square (StreamBridge / user 2026-11-21)."""
+    bad = QColor(BAD)
+    off = f"rgba({bad.red()}, {bad.green()}, {bad.blue()}, 46)"
+    inner = size - 4  # within the 2 px focus ring
+    return (
+        f"QPushButton {{ background: {BUTTON}; border: 2px solid transparent; border-radius: {size // 2}px;"
+        f" padding: 0; min-height: {inner}px; max-height: {inner}px; min-width: {inner}px; max-width: {inner}px; }}"
+        f"QPushButton:hover {{ background: {BUTTON_HOVER}; }}"
+        f"QPushButton:pressed {{ background: {BUTTON_PRESSED}; }}"
+        f"QPushButton:checked {{ background: {off}; }}"
+        f"QPushButton:checked:hover {{ background: {off}; border-color: transparent; }}"
+        f"QPushButton:focus {{ border-color: {ACCENT}; }}"
+    )
+
+
 _CROSS_ICONS: dict = {}  # (colour, size): one drawn × for every button that shows it
 
 

@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from types import SimpleNamespace
 
-from PySide6.QtCore import QPointF, QRectF, QSettings, Qt, QTimer, Signal
+from PySide6.QtCore import QPointF, QRectF, QSettings, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame,
@@ -45,6 +45,7 @@ from sprigcast.app.sound_card import (  # the garden's sound types: these change
 
 LOW, HIGH = -60.0, 12.0  # the fader's range, as on the Tune page
 STRIP_W, STRIP_H = 104, 220
+BUTTON_PX, ICON_PX = 28, 16  # the round mute and gear buttons, and their icons
 FOLD_KEY = "build/sound_strips_open"
 SHOW_KEY = "build/sound_strips_show"  # "all" or "here" (this bloom): the chip you last picked
 TYPE_KEY = "build/sound_strips_type"  # "" (all types) or a group: the type you last picked
@@ -216,22 +217,27 @@ class Strip(QFrame):
         self.db.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px; background: transparent;")
         col.addWidget(self.db)
         buttons = QHBoxLayout()
-        buttons.setSpacing(4)
+        buttons.setSpacing(8)
+        round_style = theme.round_button_style(BUTTON_PX)
         self.mute = QPushButton()
         self.mute.setCheckable(True)
-        self.mute.setFixedSize(34, 26)
+        self.mute.setFixedSize(BUTTON_PX, BUTTON_PX)
+        self.mute.setIconSize(QSize(ICON_PX, ICON_PX))  # drawn at the size shown: a stretched icon looked soft
+        self.mute.setFocusPolicy(Qt.FocusPolicy.TabFocus)  # the focus ring for the keyboard, not after a click
         self.mute.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.mute.setStyleSheet(
-            theme.button_style(12, "0"))
+        self.mute.setStyleSheet(round_style)
         # toggled, not clicked: Windows accessibility (UIA Toggle, screen readers, test tools) flips a checkable
         # button without a click, so the sound stayed muted while the button showed unmuted (PC test 2026-11-20).
         self.mute.toggled.connect(self._mute_clicked)
-        more = QPushButton()
-        more.setIcon(icons.icon("gear", theme.MUTED, 15))
-        more.setFixedSize(34, 26)
+        more = self.more = QPushButton()
+        more.setIcon(icons.icon("gear", theme.MUTED, ICON_PX))
+        more.setIconSize(QSize(ICON_PX, ICON_PX))
+        more.setFixedSize(BUTTON_PX, BUTTON_PX)
+        more.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         more.setCursor(Qt.CursorShape.PointingHandCursor)
         more.setToolTip("Volume, listeners, filters and tracks")
-        more.setStyleSheet(theme.button_style(12, "0"))
+        more.setAccessibleName(f"Settings for {sound.name}")
+        more.setStyleSheet(round_style)
         more.clicked.connect(lambda: self.on_open(self.sound_id))
         buttons.addStretch(1)
         buttons.addWidget(self.mute)
@@ -313,8 +319,10 @@ class Strip(QFrame):
             self.mute.setChecked(sound.muted)
             self.mute.blockSignals(False)
         self.mute.setIcon(icons.icon("speaker-off" if sound.muted else "speaker",
-                                     theme.SELECT_TEXT if sound.muted else theme.TEXT, 16))
+                                     theme.BAD if sound.muted else theme.TEXT, ICON_PX))
         self.mute.setToolTip("Unmute" if sound.muted else "Mute")
+        self.mute.setAccessibleName(f"{'Unmute' if sound.muted else 'Mute'} {sound.name}")
+        self.more.setAccessibleName(f"Settings for {sound.name}")
 
 
 def _dot(colour: str):
@@ -399,7 +407,7 @@ class SoundStrips(QFrame):
         self.add.setFixedSize(26, 26)
         self.add.setCursor(Qt.CursorShape.PointingHandCursor)
         self.add.setToolTip("Add a mic, desktop sound, app sound or sound file")
-        self.add.setStyleSheet(theme.button_style(12, "0"))
+        self.add.setStyleSheet(theme.button_style(13, "0", extra="min-height: 24px; max-height: 24px;"))  # kept round
         self.add.clicked.connect(lambda: self.on_menu(None, self.add.mapToGlobal(self.add.rect().bottomLeft())))
         head.addWidget(self.add)
         col.addLayout(head)
