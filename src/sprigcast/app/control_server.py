@@ -31,6 +31,7 @@ from sprigcast.control import secret_store
 from sprigcast.control.native import Later, NativeApi, NativeSession
 from sprigcast.control.pairing import Pairing
 from sprigcast.control.protocol import Close, Session, Sleep, Step, Sub, new_password
+from sprigcast.control.who import asking
 from sprigcast.core.quiet import Every
 
 if TYPE_CHECKING:
@@ -820,7 +821,20 @@ class ControlServer(QObject):
             if getattr(session, "may_change", True):
                 self.soon()  # a request may have changed something: tell everyone (and the asker) once it settles
 
+    def _who(self, socket: QWebSocket) -> str:
+        """The asking app, for the log: its paired name, else what kind of app it is (never its key)."""
+        session = self.sessions.get(socket)
+        what = "a SprigCast API app" if isinstance(session, NativeSession) else "an OBS-style app"
+        key = getattr(session, "key", "") or ""
+        pairing = getattr(self, "pairing", None)  # only for the log: never in a request's way
+        device = next((d for d in (pairing.devices if pairing else ()) if key and d.key == key), None)
+        return f"{device.name} ({what})" if device is not None else what
+
     def _pump(self, socket: QWebSocket, steps: Iterator[Step]) -> None:
+        with asking(self._who(socket)):
+            self._pump_steps(socket, steps)
+
+    def _pump_steps(self, socket: QWebSocket, steps: Iterator[Step]) -> None:
         for step in steps:
             if socket not in self.sessions:
                 return

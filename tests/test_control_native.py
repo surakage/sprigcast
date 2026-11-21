@@ -427,3 +427,31 @@ def test_only_asking_never_starts_a_full_look():
     assert socket.sent and looks == []
     server._received(socket, json.dumps({"do": "record.start", "id": 2}))
     assert looks
+
+
+def test_sound_changes_are_logged_with_the_asking_app(caplog):
+    """PC, 2026-11-20: 38 pages went silent and the log couldn't say which connected app did it."""
+    import logging
+
+    from sprigcast.control.who import asking
+
+    api, _host = _api()
+    with caplog.at_level(logging.INFO, logger="sprigcast.control"), asking("StreamBridge (a SprigCast API app)"):
+        _ok(api, "sound.mute", sound="Mic")
+        _ok(api, "source.set", source="Alert", settings={"color": "#00ff00ff"})  # not a sound setting: no line
+    lines = [r.getMessage() for r in caplog.records if "sound:" in r.getMessage()]
+    assert lines == ["control: StreamBridge (a SprigCast API app) changed Mic (mic) sound: muted None -> True"]
+
+
+def test_the_asking_app_is_named_never_by_its_key():
+    from types import SimpleNamespace
+
+    pytest.importorskip("PySide6.QtWebSockets")
+    from sprigcast.app import control_server
+
+    server = control_server.ControlServer.__new__(control_server.ControlServer)
+    server.pairing = SimpleNamespace(devices=[SimpleNamespace(name="StreamBridge", key="sc_secret")])
+    paired, other = object(), object()
+    server.sessions = {paired: NativeSession(api=None, key="sc_secret"), other: NativeSession(api=None)}
+    assert server._who(paired) == "StreamBridge (a SprigCast API app)"
+    assert server._who(other) == "a SprigCast API app"

@@ -25,6 +25,7 @@ from typing import Any, Protocol
 
 from sprigcast import __version__
 from sprigcast.control.protocol import OBS_WEBSOCKET_VERSION, RPC_VERSION, RequestError, Status, Sub
+from sprigcast.control.who import sound_changed
 from sprigcast.core.scene import PART_KIND, TRANSITION_KINDS, Scene, SceneCollection, SceneItem, SourceConfig
 
 VENDOR = "sprigcast"
@@ -677,7 +678,9 @@ class ControlApi:
         self._set_sound(source, {"monitor": values[kind]})
 
     def _set_sound(self, source: SourceConfig, changes: dict[str, Any]) -> None:
+        before = source.settings
         source.settings = {**source.settings, **changes}
+        sound_changed(source, before)
         self.host.commit("sound")
 
     # Scene items ---------------------------------------------------------------------
@@ -1116,6 +1119,7 @@ class ControlApi:
         if not isinstance(overlay, bool):
             raise RequestError(Status.INVALID_REQUEST_FIELD_TYPE, "overlay has the wrong type.")
         theirs = settings_from_obs(source.kind, settings)
+        before = source.settings
         if overlay:
             source.settings = {**source.settings, **theirs}
         else:  # OBS's "replace": back to the kind's defaults (so nothing it needs goes missing), mixer settings kept
@@ -1124,6 +1128,7 @@ class ControlApi:
             defaults = dict(getattr(source_class(source.kind), "defaults", None) or {})
             kept = {k: v for k, v in source.settings.items() if k in KEEP_ON_REPLACE}
             source.settings = {**defaults, **kept, **theirs}
+        sound_changed(source, before)
         self.host.commit("sources")
 
     def req_SetInputName(self, data):
