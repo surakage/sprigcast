@@ -269,6 +269,12 @@ class StreamPage(QWidget):
         self.remove_button.clicked.connect(self._remove)
         hero.addWidget(self.remove_button)
         groups.addLayout(hero)
+        # A place that is sending right now can't be changed: its switch on the Live screen ends just that one.
+        self.live_ids: set[str] = set()
+        self.live_note = QLabel("Live now. Switch it off in Destinations to change it.")
+        self.live_note.setObjectName("streamWarn")
+        self.live_note.hide()
+        groups.addWidget(self.live_note)
         groups.addSpacing(2)
 
         # Account: which service and how SprigCast signs in.
@@ -539,7 +545,7 @@ class StreamPage(QWidget):
 
     def _remove(self) -> None:
         output = self._current()
-        if output is None:
+        if output is None or output.id in self.live_ids:
             return
         self.outputs.remove(output)
         if output.key_ref:
@@ -549,10 +555,28 @@ class StreamPage(QWidget):
 
     # Form ------------------------------------------------------------------------
 
+    def set_live(self, ids) -> None:
+        """The places sending right now (while live): shown, but locked until they're ended."""
+        self.live_ids = set(ids)
+        for row, output in enumerate(self.outputs):
+            self.list.item(row).setText(self._card_text(output))
+        self._lock_live()
+
+    def _lock_live(self) -> None:
+        output = self._current()
+        live = output is not None and output.id in self.live_ids
+        self.live_note.setVisible(live)
+        for card in self.form_widget.findChildren(QFrame, "streamCard"):
+            card.setEnabled(not live)
+        for widget in (self.enabled, self.enabled_label, self.bandwidth_test, self.bandwidth_label,
+                       self.remove_button):
+            widget.setEnabled(not live)
+
     def _load(self, row: int) -> None:
         output = self._current()
         if output is None or self._loading:
             return
+        self._lock_live()
         self._loading = True
         self.enabled.setChecked(output.enabled)
         if output.id in self._unpicked:
@@ -659,7 +683,12 @@ class StreamPage(QWidget):
         self.list.setMaximumHeight(max(4, rows + 4))
 
     def _card_text(self, output: Output) -> str:
-        return f"{NEW_PLACE}\n{PICK_SERVICE}" if output.id in self._unpicked else place_card_text(output)
+        if output.id in self._unpicked:
+            return f"{NEW_PLACE}\n{PICK_SERVICE}"
+        text = place_card_text(output)
+        if output.id in self.live_ids:  # sending right now, whatever its switch says for next time
+            text = text.removesuffix(" · Off") + " · Live"
+        return text
 
     def _show_unpicked(self, unpicked: bool) -> None:
         """A new place shows only the service to pick; the rest appears once one is picked."""
@@ -950,5 +979,10 @@ class StreamPage(QWidget):
             log.info("places: %s (%s) removed in Settings", output_id, before[output_id] or "custom")
         for output_id in after.keys() - before.keys():
             log.info("places: %s (%s) added in Settings", output_id, after[output_id] or "custom")
-        collection.outputs = others + [o.model_copy() for o in picked]  # copies: later edits wait for Apply
+        sending = {o.id: o for o in collection.outputs if o.type == "stream" and o.id in self.live_ids}
+        # copies: later edits wait for Apply. A place sending right now stays exactly as it went live.
+        collection.outputs = others + [sending.get(o.id, o).model_copy() for o in picked]
+        for output in sending.values():  # (and can't be removed from under its stream)
+            if all(o.id != output.id for o in collection.outputs):
+                collection.outputs.append(output)
         return True

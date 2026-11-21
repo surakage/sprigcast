@@ -417,6 +417,7 @@ class SettingsWindow(QDialog):
         audio_devices,  # {"audio_input": [...], "audio_output": [...]}, or a Future of that
         streaming: bool = False,
         recording: bool = False,
+        live_places=None,  # while streaming: the ids of the places sending now (the others can be changed)
         control=None,
         check_updates=None,
         tab: str = "General",
@@ -433,6 +434,7 @@ class SettingsWindow(QDialog):
         self.collection = collection
         self.default_recordings_folder = default_recordings_folder
         self.streaming, self.recording = streaming, recording
+        self.live_places = set(live_places or ())  # ids of the places sending right now
         self.check_updates = check_updates
         self._expert = expert_on()
 
@@ -1148,9 +1150,8 @@ class SettingsWindow(QDialog):
         places = QWidget()
         box = QVBoxLayout(places)
         box.setContentsMargins(0, 4, 0, 0)
-        if self.streaming:
-            self.stream_page.setEnabled(False)
-            box.addWidget(_hint("You're live. End the stream to change these."))
+        if self.streaming:  # only the places sending right now are locked; the rest can be fixed and started
+            self.stream_page.set_live(self.live_places)
         box.addWidget(self.stream_page, 1)
         self.stream_tabs = QTabWidget()
         self.stream_tabs.addTab(places, "Places")
@@ -1568,7 +1569,7 @@ class SettingsWindow(QDialog):
         self._flush_slices()  # the parts of made pages still waiting for their tick
         built = self._built
         if "Stream" in built:
-            if not self.streaming and not self.stream_page.apply_to(self.collection):
+            if not self.stream_page.apply_to(self.collection):
                 self.open_tab("Stream/Places")
                 return False
             self.stream_quality.apply_to(self.collection)
