@@ -239,8 +239,11 @@ class WindowHost:
         now = time.monotonic()
         for _, st in session.streamers:
             connected = getattr(st, "connected", True)
+            tries = int(getattr(st, "reconnects", 0))
             out[getattr(st, "output_id", None) or st.name] = {
                 "on": True,
+                "state": "live" if connected else "reconnecting" if tries else "connecting",
+                "reconnects": tries,  # how often it dropped so far (each new try counts one more)
                 "reconnecting": not connected and not getattr(st, "delay_left", lambda: 0.0)(),
                 "seconds": round(now - getattr(st, "started_at", session.started_at), 1),
                 "skipped": getattr(st, "dropped", 0),

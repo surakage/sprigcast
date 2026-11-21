@@ -37,6 +37,7 @@ from typing import Any
 
 from sprigcast import __version__
 from sprigcast.control.protocol import Close, Sleep, auth_string
+from sprigcast.control.places import find_place, place_names, place_state
 from sprigcast.control.who import sound_changed
 from sprigcast.core.scene import MOVE_EASINGS, MOVE_UNMATCHED, PART_KIND, TRANSITION_KINDS, Filter, Scene, SceneItem, SourceConfig, new_filter_id
 
@@ -75,6 +76,9 @@ FEATURES = (
     "layout.get",          # layout.get: every item's place, crop, bounds, source size and canvas box; flat, overlaps
     "source.state",        # source.get loaded, state ("capturing 1920x1080"), size, cameraSize, asleep
     "places.size",         # places.list size [w, h], fps, and enhanced where the service has it
+    "events.place_changed",  # place.changed: one place started, dropped, is trying again, came back or stopped
+    "places.names",  # places take their name ("Twitch (horizontal)") as well as their id; places.list fullName, state
+    "source.id_aliases",  # a source answers to its id with its kind's older or newer prefix too (camera-3, capture-3)
     "clip.save_note",  # clip.save answers clip, and a note when no clip was saved
     "screenshot.bloom_id",  # screenshot.take: every canvas or bloom picture says bloom and bloomId (null: nothing on air there)
     "screenshot.skipped",  # screenshot.take {bloom}: every shape it's in, skipped names a shape left out; canvas pictures are on black
@@ -426,6 +430,10 @@ class NativeApi:
         sources = [s for s in self.col.sources if s.kind != PART_KIND]
         source = next((s for s in sources if s.id == wanted), None) or next((s for s in sources if s.name == wanted), None)
         if source is None:
+            source = self.col.source_by_id(wanted)  # its id as it was spelled before, or is now
+            if source is not None and source.kind == PART_KIND:
+                source = None
+        if source is None:
             raise _missing(f"No source called {wanted!r}.", "source", wanted)
         return source
 
@@ -464,6 +472,10 @@ class NativeApi:
             for item in layout.items:
                 if wanted in (self._item_key(item.source), item.source, self._item_name(item.source)):
                     out.append(item)
+        if not out:
+            alias = self.col.source_by_id(wanted)  # its id as it was spelled before, or is now
+            if alias is not None and alias.id != wanted:
+                return self._matching_items(layouts, alias.id)
         return out
 
     def _items(self, data: dict[str, Any]) -> tuple[Scene, list[SceneItem]]:
@@ -904,7 +916,7 @@ class NativeApi:
         n = 2
         while not name:
             name, n = (f"{source.name} {n}" if f"{source.name} {n}" not in taken else ""), n + 1
-        copy = source.model_copy(deep=True, update={"id": self.col.new_id(source.kind), "name": name})
+        copy = source.model_copy(deep=True, update={"id": self.col.new_source_id(source.kind), "name": name})
         for flt in copy.filters:
             flt.id = secrets.token_hex(4)
         self.col.sources.append(copy)
@@ -1210,7 +1222,7 @@ class NativeApi:
             raise ApiError("busy", f"There's already a source called {name!r}.")
         defaults = dict(getattr(source_class(kind), "defaults", None) or {})
         settings = _checked_settings(self.col, kind, settings)
-        source = SourceConfig(id=self.col.new_id(kind), kind=kind, name=name, settings={**defaults, **settings})
+        source = SourceConfig(id=self.col.new_source_id(kind), kind=kind, name=name, settings={**defaults, **settings})
         self.col.sources.append(source)
         self.host.commit("sources")
         return {"id": source.id, "name": source.name, "kind": kind, "settings": dict(source.settings)}
@@ -1371,16 +1383,15 @@ class NativeApi:
 
     def _places_now(self) -> list[dict[str, Any]]:
         """Each place: id, name, on (sending now), reconnecting, seconds, skipped and frames."""
-        from sprigcast.output.stream import SERVICES
-
         running = getattr(self.host, "stream_places", dict)() or {}
+        names = place_names(self.col)
         out = []
         for o in self.col.outputs:
             if o.type != "stream":
                 continue
-            service = SERVICES.get(o.service or "custom", SERVICES["custom"])
             now = running.get(o.id)
-            out.append({"id": o.id, "name": f"{service.label} ({o.canvas})", "service": o.service, "shape": o.canvas,
+            out.append({"id": o.id, "name": names[o.id], "service": o.service, "shape": o.canvas,
+                        "state": place_state(now), "reconnects": int(now.get("reconnects", 0)) if now else 0,
                         "on": now is not None, "reconnecting": bool(now and now.get("reconnecting")),
                         "seconds": round(float(now.get("seconds", 0.0)), 1) if now else 0.0,
                         "skipped": int(now.get("skipped", 0)) if now else 0,
@@ -1389,7 +1400,7 @@ class NativeApi:
 
     def _place(self, data) -> Any:
         wanted = _get(data, "place", str)
-        output = next((o for o in self.col.outputs if o.type == "stream" and wanted in (o.id, o.service)), None)
+        output = find_place(self.col, wanted)
         if output is None:
             raise _missing(f"No place {wanted!r}.", "place", wanted)
         return output
@@ -1477,13 +1488,14 @@ class NativeApi:
         from sprigcast.output.stream import SERVICES
 
         out = []
+        names = place_names(self.col)
         for o in self.col.outputs:
             if o.type != "stream":
                 continue
             service = SERVICES.get(o.service or "custom", SERVICES["custom"])
             why = getattr(self.host, "place_problem", lambda _id: None)(o.id)
             place = {"id": o.id, "service": o.service, "shape": o.canvas, "on": o.enabled, "bitrateKbps": o.bitrate_kbps,
-                     "name": service.label, "ready": why is None, "problem": why}
+                     "name": service.label, "fullName": names[o.id], "ready": why is None, "problem": why}
             canvas = next((c for c in self.col.canvases if c.id == o.canvas), None)
             size = o.size or ((canvas.width, canvas.height) if canvas is not None else None)
             place["size"] = list(size) if size else None  # what is sent: the place's own, else its shape's
@@ -1503,7 +1515,7 @@ class NativeApi:
         from sprigcast.output.stream import SERVICES
 
         wanted = _get(data, "place", str)
-        output = next((o for o in self.col.outputs if o.type == "stream" and wanted in (o.id, o.service)), None)
+        output = find_place(self.col, wanted)
         if output is None:
             raise _missing(f"No place {wanted!r}.", "place", wanted)
         on = _get(data, "on", bool, optional=True)
@@ -1922,6 +1934,8 @@ class NativeApi:
             "record": self.host.record_status() is not None,
             "recordPaused": bool((self.host.record_status() or {}).get("paused")),
             "clips": self.host.clips_ready(),
+            "placeStates": {pid: (place_state(now), int(now.get("reconnects", 0)))
+                            for pid, now in (getattr(self.host, "stream_places", dict)() or {}).items()},
             "camera": bool(getattr(self.host, "camera_on", lambda: False)()),
             "transition": (col.transition.kind, col.transition.duration_ms),
             "states": {p.id: p.state for p in col.parts()},
@@ -2078,6 +2092,7 @@ class NativeApi:
                           ("camera", "camera.changed")):
             if now.get(key) != last.get(key):
                 out.append((name, {"on": now[key]}))
+        out += self._place_events(last.get("placeStates"), now["placeStates"])
         if "recordPaused" in last and now["recordPaused"] != last["recordPaused"] and now["record"]:
             out.append(("record.paused", {"paused": now["recordPaused"]}))
         if now["transition"] != last["transition"]:
@@ -2088,6 +2103,25 @@ class NativeApi:
         for sid, state in now["media"].items():
             if sid in last["media"] and last["media"][sid] != state and state is not None:
                 out.append(("media.changed", self._media_info(sources[sid])))
+        return out
+
+    def _place_events(self, last: dict | None, now: dict) -> list[tuple[str, dict[str, Any]]]:
+        """place.changed: one place started, dropped, is trying again (each try says so) or came back, or stopped."""
+        if last is None:
+            return []
+        out = []
+        names = place_names(self.col)
+        outputs = {o.id: o for o in self.col.outputs}
+        for pid in [*now, *(p for p in last if p not in now)]:
+            state, tries = now.get(pid, ("stopped", last.get(pid, ("", 0))[1]))
+            was, was_tries = last.get(pid, ("stopped", 0))
+            if (state, tries) == (was, was_tries):
+                continue
+            o = outputs.get(pid)
+            out.append(("place.changed", {
+                "place": pid, "name": names.get(pid, pid), "service": o.service if o else None,
+                "shape": o.canvas if o else None, "state": state, "was": was, "reconnects": tries,
+                "dropped": tries > was_tries and "live" in (was, state)}))  # it lost its connection (also between looks)
         return out
 
     EFFECTS = {"pixelate": "hide.pixelate", "blackout": "hide.blackout", "barrel_roll": "roll.spin",
@@ -2124,7 +2158,7 @@ def event_group(name: str) -> str:
     if head in _PLUGIN_EVENTS:
         return "plugin"
     return {"blooms": "bloom", "stream": "output", "record": "output", "clips": "output",
-            "places": "output", "camera": "output", "items": "item", "gardens": "garden", "paths": "path",
+            "places": "output", "place": "output", "camera": "output", "items": "item", "gardens": "garden", "paths": "path",
             "sources": "source", "plugins": "plugin", "effect": "filter"}.get(head, head)
 
 

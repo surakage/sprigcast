@@ -171,7 +171,12 @@ def test_obs_door_outputs_per_place():
     api, host = _obs()
     listed = {o["outputName"]: o for o in _obs_ok(api, "GetOutputList")["outputs"]}
     flags = {"OBS_OUTPUT_AUDIO": True, "OBS_OUTPUT_VIDEO": True, "OBS_OUTPUT_ENCODED": True, "OBS_OUTPUT_SERVICE": True}
-    assert listed["simple_stream"]["outputFlags"] == flags and listed["sprigcast:out-1"]["outputFlags"] == flags
+    # A place is listed by its name; the id and the older sprigcast:<id> are beside it, and all three are understood.
+    named = next(o for o in listed.values() if o.get("outputAlias") == "sprigcast:out-1")
+    assert named["outputId"] == "out-1" and not named["outputName"].startswith("sprigcast:")
+    assert listed["simple_stream"]["outputFlags"] == flags and named["outputFlags"] == flags
+    for spelling in (named["outputName"], "out-1", "sprigcast:out-1"):
+        assert _obs_ok(api, "GetOutputStatus", {"outputName": spelling})["outputActive"] is False
     status = _obs_ok(api, "GetOutputStatus", {"outputName": "sprigcast:out-1"})
     assert set(status) == {"outputActive", "outputReconnecting", "outputTimecode", "outputDuration",
                            "outputCongestion", "outputBytes", "outputSkippedFrames", "outputTotalFrames"}
@@ -612,3 +617,93 @@ def test_a_paired_app_that_sends_no_name_leaves_under_its_paired_name(caplog, mo
         cs.ControlServer._gone(server, socket)
     line = next(r.getMessage() for r in caplog.records if "disconnected after" in r.getMessage())
     assert line.startswith("control: Streamer.bot (an OBS-style app) disconnected after")
+
+
+def test_a_place_that_drops_tries_again_and_comes_back_says_so_on_both_doors():
+    """One place dropping while the others carry on (user 2026-11-21: so Streamer.bot can post an alert)."""
+    host = _host()
+    native, _ = _native(host)
+    obs = ControlApi(host)
+    host.live = {"seconds": 1.0}
+    host.places = {"out-1": {"state": "live", "reconnects": 0, "reconnecting": False},
+                   "out-2": {"state": "live", "reconnects": 0, "reconnecting": False}}
+    native.changes(), obs.changes()
+
+    def looks():
+        return ([d for n, d in native.changes(False) if n == "place.changed"],
+                [d["eventData"] for t, _, d in obs.changes() if t == "VendorEvent" and d["eventType"] == "PlaceStateChanged"],)
+
+    assert looks() == ([], [])
+    host.places["out-1"].update(state="reconnecting", reconnects=1, reconnecting=True)  # dropped
+    events, vendor = looks()
+    assert events == [{"place": "out-1", "name": "Twitch (horizontal)", "service": "twitch", "shape": "horizontal",
+                       "state": "reconnecting", "was": "live", "reconnects": 1, "dropped": True}]
+    assert vendor == [{"outputName": "Twitch (horizontal)", "outputId": "out-1", "service": "twitch",
+                       "canvas": "horizontal", "state": "reconnecting", "was": "live", "reconnects": 1, "dropped": True}]
+    host.places["out-1"]["reconnects"] = 2  # another try failed
+    events, _ = looks()
+    assert [(e["state"], e["was"], e["reconnects"], e["dropped"]) for e in events] == [("reconnecting", "reconnecting", 2, False)]
+    host.places["out-1"].update(state="live", reconnecting=False)  # back
+    events, vendor = looks()
+    assert [(e["state"], e["was"], e["dropped"]) for e in events] == [("live", "reconnecting", False)]
+    assert vendor[0]["state"] == "live"
+    host.places["out-2"]["reconnects"] = 1  # dropped and came back between two looks
+    events, _ = looks()
+    assert [(e["place"], e["state"], e["was"], e["dropped"]) for e in events] == [("out-2", "live", "live", True)]
+    del host.places["out-2"]  # stopped by hand
+    events, _ = looks()
+    assert [(e["place"], e["state"], e["was"]) for e in events] == [("out-2", "stopped", "live")]
+    assert looks() == ([], [])
+    from sprigcast.control.native import event_group
+
+    assert event_group("place.changed") == "output"
+
+
+def test_obs_door_says_the_stream_is_reconnecting_and_back():
+    host = _host()
+    obs = ControlApi(host)
+    host.live = {"seconds": 1.0}
+    obs.changes()
+    host.live = {"seconds": 2.0, "reconnecting": True}
+    assert [d["outputState"] for t, _, d in obs.changes() if t == "StreamStateChanged"] == ["OBS_WEBSOCKET_OUTPUT_RECONNECTING"]
+    host.live = {"seconds": 3.0, "reconnecting": False}
+    assert [d for t, _, d in obs.changes() if t == "StreamStateChanged"] == [
+        {"outputActive": True, "outputState": "OBS_WEBSOCKET_OUTPUT_RECONNECTED"}]
+    host.live = None
+    assert [d["outputState"] for t, _, d in obs.changes() if t == "StreamStateChanged"] == ["OBS_WEBSOCKET_OUTPUT_STOPPED"]
+
+
+def test_places_answer_to_their_names_and_two_alike_get_a_number():
+    api, host = _native()
+    host.collection.outputs.append(Output(id="out-3", type="stream", service="twitch", canvas="horizontal"))
+    listed = {p["id"]: p for p in _ok(api, "places.list")["places"]}
+    assert listed["out-1"]["name"] == "Twitch" and listed["out-1"]["fullName"] == "Twitch (horizontal)"
+    assert listed["out-3"]["fullName"] == "Twitch (horizontal) 2"
+    _ok(api, "place.set", place="Twitch (horizontal) 2", on=True)
+    assert host.collection.outputs[2].enabled is True
+    _ok(api, "place.set", place="sprigcast:out-3", on=False)
+    assert host.collection.outputs[2].enabled is False
+    _ok(api, "place.set", place="twitch", on=False)  # a service: the first of them, as before
+    assert host.collection.outputs[0].enabled is False
+
+
+def test_new_source_ids_say_what_they_are_and_both_spellings_find_a_source():
+    from sprigcast.core.scene import SourceConfig, source_id_prefix
+
+    api, host = _native()
+    col = host.collection
+    assert [source_id_prefix(k) for k in ("camera", "display_capture", "audio_input", "app_audio", "browser", "my_plugin")] == \
+        ["capture", "display", "audio-in", "app-audio", "browser", "my-plugin"]
+    assert col.new_source_id("camera") == "capture-1"
+    col.sources.append(SourceConfig(id="camera-3", kind="camera", name="Elgato"))  # made by an older SprigCast
+    col.sources.append(SourceConfig(id="capture-4", kind="camera", name="Facecam"))  # made by this one
+    assert _ok(api, "source.get", source="capture-3")["id"] == "camera-3"  # stored ids aren't rewritten
+    assert _ok(api, "source.get", source="camera-4")["id"] == "capture-4"
+    assert _ok(api, "source.get", source="camera-3")["id"] == "camera-3"
+    assert _fails(api, "source.get", source="capture-9") == "not_found"
+    assert _fails(api, "source.get", source="display-3") == "not_found"  # another kind's prefix finds nothing
+    col.sources.append(SourceConfig(id="capture-3", kind="camera", name="Third"))
+    assert _ok(api, "source.get", source="capture-3")["name"] == "Third"  # an exact id always wins
+    assert _ok(api, "source.get", source="camera-3")["name"] == "Elgato"
+    obs = ControlApi(host)
+    assert _obs_ok(obs, "GetInputSettings", {"inputUuid": "camera-4"})["inputKind"]
