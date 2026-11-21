@@ -420,6 +420,8 @@ class WindowCaptureSource(_CaptureSource):
         from sprigcast.sources.win32_enum import find_window
 
         title, process = str(self.settings.get("title", "")), str(self.settings.get("process", ""))
+        if not title and not process:  # a Window Capture just added from + Add: nothing picked yet
+            return None
         if self.settings.get("match") == "title":  # Find it again by: Exact title
             window = find_window(title, process, exact=True)
         else:  # Same app (the default): a browser whose title changes is still found

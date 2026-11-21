@@ -44,12 +44,12 @@ def test_add_menu_is_a_to_z_with_the_new_entries(tmp_path, monkeypatch):
         assert labels[0] == "Sprig" and labels[-1] == "Plugins"
         middle = labels[1:-1]
         assert middle == sorted(middle, key=str.lower)
-        for name in ("Video capture", "Game capture", "Mirror", "Microphone", "Desktop sound",
-                     "App sound"):
-            assert name in middle
-        assert "Camera" not in middle and not any(t.startswith("Sound (") for t in middle)
-        # User, 2026-11-20: a video and a sound file are added from entries of their own
-        assert "Video or sound file…" not in middle and {"Video file…", "Sound file…"} <= set(middle)
+        # User, 2026-11-20: professional names, and each entry adds one leaf (double-click picks what it shows)
+        assert middle == ["Application Audio", "Audio File", "Audio Input", "Audio Output", "Browser", "Chat",
+                          "Color", "Display Capture", "Game Capture", "Image", "Mirror", "Text", "Video Capture",
+                          "Video File", "Window Capture"]
+        submenus = [a.text() for a in w.add_source_menu.actions() if a.menu() is not None]
+        assert submenus == ["Sprig", "Mirror", "Plugins"]  # nothing else lists devices before adding
     finally:
         w.close()
 
@@ -105,5 +105,32 @@ def test_bloom_add_menu_offers_sprigs_only_and_sources_go_into_its_sprig(tmp_pat
         w.selected_scene_id = "b"
         w._add_item(SourceConfig(id="t2", kind="text", name="Two", settings={"text": "2"}))
         assert [i.source for i in sprig.items] == ["t", "t2"] and len(show.items) == 1  # the same sprig
+    finally:
+        w.close()
+
+
+def test_add_puts_in_a_blank_leaf_and_double_click_picks_what_it_shows(tmp_path, monkeypatch):
+    """User, 2026-11-20: "one leaf that you add then you double click to add the source"."""
+    col, w = _window(tmp_path, monkeypatch)
+    try:
+        w.selected_scene_id = "p"
+        w._refresh_scenes()
+        w._fill_add_source_menu()
+        actions = {a.text(): a for a in w.add_source_menu.actions()}
+        for label in ("Window Capture", "Display Capture", "Video Capture", "Image", "Video File", "Browser"):
+            actions[label].trigger()
+        added = {c.name: c for c in col.sources if c.settings.get("blank")}
+        assert set(added) == {"Window Capture", "Display Capture", "Video Capture", "Image", "Video File", "Browser"}
+        assert all(any(i.source == c.id for i in col.scene("p").items) for c in added.values())  # leaves now
+        assert added["Window Capture"].settings["title"] == "" and added["Video Capture"].settings["name"] == ""
+
+        # Double-click the display capture: pick monitor 2, and it's named after it
+        display = added["Display Capture"]
+        w.selected_scene_id = "p"
+        index = next(n for n, i in enumerate(col.scene("p").items) if i.source == display.id)
+        monkeypatch.setattr(w, "_item", lambda: col.scene("p").items[index])
+        monkeypatch.setattr(w, "_display_dialog", lambda settings: {"monitor": 2, "cursor": True})
+        w._edit_source_settings()
+        assert display.name == "Monitor 2" and "blank" not in display.settings
     finally:
         w.close()
