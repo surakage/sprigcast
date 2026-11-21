@@ -4,6 +4,8 @@
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
+; SprigCast holds this mutex while it runs (APP_MUTEX in app/main.py).
+#define AppMutexName "SprigCastAppMutex"
 
 [Setup]
 AppId={{6F0D2B1E-5C83-4E8B-9D57-3A2C5F1B7E44}
@@ -24,9 +26,9 @@ WizardStyle=modern dark hidebevels
 WizardBackColor=#0e1311
 WizardImageBackColor=#0e1311
 WizardSmallImageBackColor=#0e1311
-; SprigCast holds this mutex while it runs (app/main.py): Setup and Uninstall ask you to close it first,
-; so files aren't left behind and a running copy doesn't outlive its uninstall.
-AppMutex=SprigCastAppMutex
+; While SprigCast runs, Setup and Uninstall ask you to close it first, so files aren't left behind and a running
+; copy doesn't outlive its uninstall. A silent Setup closes it itself (InitializeSetup).
+AppMutex={#AppMutexName}
 CloseApplications=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -392,6 +394,42 @@ end;
 // ---- Uninstall: keep your settings for next time, or delete everything ----
 var
   DeleteData: Boolean;
+
+// A silent install (the in-app updater, a script) can't answer "SprigCast is running": with its message boxes
+// suppressed the AppMutex check cancels Setup. So a silent Setup closes SprigCast itself first: asked nicely,
+// then made to after 20 s. Setup checks AppMutex after this returns. A normal install still asks you.
+function SprigCastRunning: Boolean;
+begin
+  Result := CheckForMutexes('{#AppMutexName}');
+end;
+
+procedure WaitWhileRunning(Tenths: Integer);
+begin
+  while SprigCastRunning and (Tenths > 0) do
+  begin
+    Sleep(100);
+    Tenths := Tenths - 1;
+  end;
+end;
+
+function InitializeSetup: Boolean;
+var
+  Code: Integer;
+begin
+  Result := True;
+  if not (WizardSilent and SprigCastRunning) then
+    Exit;
+  Log('SprigCast is running: closing it for a silent install');
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/im SprigCast.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  WaitWhileRunning(200);
+  if SprigCastRunning then
+  begin
+    Log('SprigCast didn''t close in 20 s: ending it');
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im SprigCast.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
+    WaitWhileRunning(100);
+  end;
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /im SprigCastCapture.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
+end;
 
 // Asks once, before anything is removed. Unticked (the default) keeps settings and blooms, so a reinstall
 // picks up where you left off. A silent uninstall keeps them too. Keys and sign-ins always go.
