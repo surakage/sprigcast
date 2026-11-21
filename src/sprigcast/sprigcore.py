@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 38  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 39  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 PUSH_OFF, PUSH_TALK, PUSH_MUTE = 0, 1, 2  # sc_mixer_push_set modes
 DLL_NAME = "sprigcore.dll"
 
@@ -104,7 +104,16 @@ class Effects(ctypes.Structure):
         ("blur", ctypes.c_float), ("pixelate", ctypes.c_float), ("blackout", ctypes.c_float),
         ("spin_turns", ctypes.c_float), ("spin_seconds", ctypes.c_float), ("spin_run", ctypes.c_int),
         ("halo_count", ctypes.c_int), ("halos", Halo * 4),
+        ("bg_mode", ctypes.c_int), ("bg_blur", ctypes.c_float), ("bg_edge", ctypes.c_float),
+        ("bg_picture", ctypes.c_uint64),
     ]
+
+
+class BackgroundStatus(ctypes.Structure):
+    _fields_ = [("state", ctypes.c_int), ("gpu_ms", ctypes.c_float), ("masks_per_second", ctypes.c_float)]
+
+
+BACKGROUND_STATES = ("idle", "running", "no_card", "too_slow")  # include/sprigcore.h SC_BACKGROUND_IDLE ...
 
 
 class Item(ctypes.Structure):
@@ -336,6 +345,7 @@ def _lib():
         "sc_source_draws": (c_int, [vp, ctypes.c_uint64, c_int, c_int, ctypes.POINTER(Item), c_int]),
         "sc_look_set": (c_int, [vp, ctypes.c_uint64, vp, c_int]),
         "sc_mask_set": (c_int, [vp, ctypes.c_uint64, vp, c_int, c_int, c_int]),
+        "sc_background_info": (c_int, [ctypes.POINTER(BackgroundStatus)]),
         "sc_snapshot_set": (c_int, [vp, ctypes.POINTER(Snapshot)]),
         "sc_canvas_render": (c_int, [vp, ctypes.c_uint64, ctypes.c_double]),
         "sc_debug_fault": (c_int, [vp, c_int]),
@@ -530,6 +540,20 @@ def drain_log() -> int:
             # PC's camera lines never reached the log after a start with ten engine lines before them (2026-11-21).
             log.log(_LEVELS.get(int(level) if level.isdigit() else 20, logging.INFO), "engine: " + message)
             moved += 1
+
+
+def background_status() -> dict | None:
+    """How the Background filter's person finder is doing (state: BACKGROUND_STATES; gpu_ms: graphics card time a
+    mask, None before it's measured; per_second: masks a second). None without the native engine."""
+    lib = _lib()
+    if lib is None:
+        return None
+    info = BackgroundStatus()
+    if lib.sc_background_info(ctypes.byref(info)) != SC_OK:
+        return None
+    state = BACKGROUND_STATES[info.state] if 0 <= info.state < len(BACKGROUND_STATES) else "idle"
+    return {"state": state, "gpu_ms": info.gpu_ms if info.gpu_ms >= 0 else None,
+            "per_second": info.masks_per_second}
 
 
 def _check(code: int) -> None:

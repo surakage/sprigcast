@@ -24,11 +24,16 @@ cbuffer Draw : register(b0) {
     float4 uv_rect;
     float4 sil_radius4;    // xy
     float4 sil_color;
+    float4 p7;             // bg_mode, bg_edge, has_backdrop, unused
+    float4 seg_map;        // the picture's u, v into the person mask's: scale.xy, offset.zw
+    float4 back_map;       // the quad's local 0..1 into the background picture's u, v: scale.xy, offset.zw
 };
 
 Texture2D tex : register(t0);
 Texture3D lut : register(t1);
 Texture2D mask : register(t2);
+Texture2D<float> person_mask : register(t3);  // the Background filter (segmenter.h): 1 = the person
+Texture2D backdrop : register(t4);            // what shows behind them: the room blurred, or a picture
 SamplerState wrap_s : register(s0);    // source pictures repeat at their edges, as moderngl's do
 SamplerState clamp_s : register(s1);   // looks and shape pictures
 
@@ -72,6 +77,9 @@ SamplerState clamp_s : register(s1);   // looks and shape pictures
 #define sil_boost p6.y
 #define sil_px p6.z
 #define sil_radius sil_radius4.xy
+#define bg_mode ((int)p7.x)
+#define bg_edge p7.y
+#define has_backdrop (p7.z > 0.5)
 
 struct VOut {
     float4 pos : SV_Position;
@@ -277,6 +285,13 @@ float4 blurred(float2 st, float2 r) {
     return premul ? acc : float4(acc.rgb / max(acc.a, 0.0001), acc.a);
 }
 
+// How much of the picture at `st` is the person (the Background filter), the mask's edge softened to taste.
+float person(float2 st) {
+    float m = person_mask.SampleLevel(clamp_s, st * seg_map.xy + seg_map.zw, 0);
+    float e = lerp(0.04, 0.4, bg_edge);
+    return smoothstep(0.5 - e, 0.5 + e, m);
+}
+
 float key_keep(float3 rgb) {
     if (key_mode == 1) {
         return pow(saturate((distance(cbcr(rgb), cbcr(key_color)) - similarity) / smoothness), 1.5);
@@ -294,8 +309,12 @@ float body(float2 l) {
     if (l.x < 0.0 || l.y < 0.0 || l.x > 1.0 || l.y > 1.0) {
         return 0.0;
     }
-    float4 c = src(lerp(uv_rect.xy, uv_rect.zw, l));
+    float2 at = lerp(uv_rect.xy, uv_rect.zw, l);
+    float4 c = src(at);
     float a = c.a;
+    if (bg_mode == 1) {
+        a *= person(at);
+    }
     if (key_mode > 0) {
         a *= key_keep(premul && c.a > 0.0 ? c.rgb / c.a : c.rgb);
     }
@@ -360,6 +379,16 @@ float4 ps_main(VOut i) : SV_Target {
     float4 c = blur > 0.0 ? blurred(st, tpx * blur) : src(st);
     if (premul && c.a > 0.0) {
         c.rgb /= c.a;
+    }
+    if (bg_mode > 0) {  // the Background filter: the person stays, the room goes, blurs or becomes a picture
+        float m = person(st);
+        if (bg_mode == 1 || !has_backdrop) {
+            c.a *= m;
+        } else {
+            float2 bt = bg_mode == 2 ? st * seg_map.xy + seg_map.zw : i.local * back_map.xy + back_map.zw;
+            float4 b = backdrop.SampleLevel(clamp_s, bt, 0);
+            c = lerp(b, c, m);
+        }
     }
     if (sharpen > 0.0) {
         float2 px = tpx;

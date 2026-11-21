@@ -11,6 +11,12 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
   the others. Reconnecting, stream delay, skipping when the upload can't keep up, auto bitrate and the numbers
   in Stats work as before. Twitch Enhanced Broadcasting's own connection is still sent the old way for now.
   `SPRIGCAST_NO_NATIVE_LINK=1` turns it off. Not tried on a PC yet.
+- Backdrop filter for cameras and capture cards: blur the room behind you, swap it for a picture, or take it
+  out. A small person-finding model (MediaPipe Selfie Segmentation, Apache 2.0) runs inside the engine as
+  graphics card programs: no AI library, nothing on the processor, about 0.2 MB added to the engine. It makes a
+  mask up to 30 times a second (15 on a slow card) only while the picture shows; a card older than Direct3D 11,
+  or one that takes over 40 ms a mask, leaves the picture as it is and the Filters window says so. The blurred
+  room leaves the person out, so their colors don't glow around them. Native engine only. Not tried on a PC yet.
 
 - Nothing personal in the logs: every line of the day log, each stream report, crash.log and the console now
   goes through one scrubber that hides stream keys, sign-in tokens, the API password and device keys (the values

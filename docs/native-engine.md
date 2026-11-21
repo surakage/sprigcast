@@ -295,7 +295,7 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   key at the same instants (Twitch needs that). Python tags each keyframe with the broadcast metrics, puts the
   packets on the connection's clock (a reconnect starts from the next keyframe), lets them go while the network
   can't keep up and sends them; the sound is encoded as before. `SPRIGCAST_NO_PACKET_WRITER=1` keeps the old way.
-- **Streams sent by the engine (interface 38, `sc_link_*`, `writer.cpp` `Link`).** A place that shares a
+- **Streams sent by the engine (interface 39, `sc_link_*`, `writer.cpp` `Link`).** A place that shares a
   packets-mode writer (every ordinary stream: `output/shared_stream.py` `StreamLink`) is connected, packed (FLV)
   and sent by a thread of the engine's own, straight from the writer's packets: no packet is queued, packed or
   sent under Python's lock, so a busy window can't hold up what goes out. The engine keeps `StreamLink`'s rules:

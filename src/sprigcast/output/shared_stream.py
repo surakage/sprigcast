@@ -520,7 +520,7 @@ class StreamLink:
 
     def _engine_writer(self):
         """The shared encoder's writer when the engine can send this connection itself (packets mode, interface
-        38), else None: PyAV sends it from this thread as before (SPRIGCAST_NO_NATIVE_LINK=1 too)."""
+        39), else None: PyAV sends it from this thread as before (SPRIGCAST_NO_NATIVE_LINK=1 too)."""
         if not self._engine_may_send():
             return None
         writer = getattr(self.shared, "writer", None)
