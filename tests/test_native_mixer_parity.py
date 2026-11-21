@@ -271,3 +271,9 @@ def test_sounds_that_ran_dry_are_summed_up_in_the_log(caplog):
         line = mixer._note_short({"Card": 9, "Mic": 16}, now=94.0, loud={"Card": -120.0, "Mic": -18.0})
         assert line is not None and "Mic 4 times" in line and "Card" not in line
     assert "Mic 7 times" in caplog.text
+    # a sound the engine captures says how fast its device really delivers, and what Windows said it lost
+    mixer._capture_now = {"Elgato sound": (100.0, 48_000 * 100, 2, 48000, 2)}
+    mixer._capture_then = {"Elgato sound": (70.0, 48_000 * 70, 0, 48000, 2)}
+    assert mixer._capture_note("Elgato sound") == (" (engine capture, 48000 Hz 2 ch: delivered 48,000 a second"
+                                                   " of 48,000, 2 lost by Windows)")
+    assert mixer._capture_note("Mic") == ""

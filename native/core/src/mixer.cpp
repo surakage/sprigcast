@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdint>
 #include <cstring>
 #include <deque>
 #include <map>
@@ -35,6 +36,14 @@ constexpr int MAX_DELAY_MS = 2000;
 constexpr unsigned FILTERS_MAJOR = LIBAVCODEC_VERSION_MAJOR - 51;
 constexpr size_t MAX_QUEUED = RATE / 5;                 // a pushed sound keeps at most 200 ms queued
 constexpr size_t LEAD = BLOCK;                            // ... and plays once it has a block ahead
+// A sound that delivers in uneven bursts (a capture card's sound while it also sends 1440p60 video, a busy Python)
+// ran dry about once a second (PC 2026-11-21: the Elgato HD60 X, 30 gaps every 30 s). Each time it runs dry it keeps
+// half a block more ahead, up to four blocks (85 ms); after a calm minute it gives a quarter block back. One that
+// stays well ahead of that for two seconds (a capture whose clock runs fast) drops the extra, so the delay can't build.
+constexpr size_t CUSHION_STEP = BLOCK / 2;
+constexpr size_t MAX_CUSHION = BLOCK * 4;
+constexpr int CUSHION_WINDOW = 94;  // blocks: about 2 s
+constexpr int CALM_WINDOWS = 30;    // windows without running dry: about a minute
 constexpr size_t TAP_QUEUE = 64;                          // blocks an output keeps until taken (about 1.4 s)
 constexpr int MONITOR = SC_MIXER_MONITOR;                 // a tap entry: the monitor mix
 constexpr int SOURCE_TAP = SC_MIXER_SOURCE_TAP;           // a tap entry: one sound after its volume
@@ -313,6 +322,9 @@ struct Source {
     float peak_db = FLOOR_DB, rms_db = FLOOR_DB, level = 0.0f;
     bool measured = false;
     uint64_t underruns = 0;
+    size_t cushion = 0;                  // frames kept ahead beyond the block being played (grows when it runs dry)
+    size_t lowest = SIZE_MAX;            // the fewest frames left after a read in this window
+    int window = 0, calm = 0;
     Block block = Block(BLOCK * 2);  // this tick's, after shaping, the fade and ducking (volume not applied)
     std::vector<Filter> filters;     // its built-in filters, in order (before mono, balance and delay)
     bool peeked = false;             // a tap wants it before its filters (the Filters window)
@@ -377,6 +389,24 @@ struct sc_mixer {
         }
     }
 
+    // A pushed sound that plays on: drop what has stayed well ahead for two seconds (the cushion and a block more
+    // stay), and give back some of the cushion after a calm minute.
+    static void keep_even(Source &s) {
+        s.lowest = std::min(s.lowest, s.queued.size() / 2);
+        if (++s.window < CUSHION_WINDOW) return;
+        const size_t keep = s.cushion + LEAD;
+        if (s.lowest != SIZE_MAX && s.lowest > keep + LEAD / 2) {
+            const size_t extra = s.lowest - keep;
+            s.queued.erase(s.queued.begin(), s.queued.begin() + static_cast<std::ptrdiff_t>(extra * 2));
+        }
+        s.window = 0;
+        s.lowest = SIZE_MAX;
+        if (++s.calm >= CALM_WINDOWS) {
+            s.calm = 0;
+            s.cushion -= std::min(s.cushion, CUSHION_STEP / 2);
+        }
+    }
+
     // One sound's next block into s.block: pushed samples or the player's, then mono, balance and delay.
     void read(Source &s) {
         float *b = s.block.data();
@@ -387,14 +417,18 @@ struct sc_mixer {
                 std::fill(s.block.begin(), s.block.end(), 0.0f);
             }
         } else {
-            if (!s.primed && s.queued.size() >= LEAD * 2) s.primed = true;
+            if (!s.primed && s.queued.size() >= (LEAD + s.cushion) * 2) s.primed = true;
             if (s.primed) {
                 const size_t have = std::min(s.queued.size(), static_cast<size_t>(BLOCK * 2));
                 std::copy(s.queued.begin(), s.queued.begin() + static_cast<std::ptrdiff_t>(have), b);
                 s.queued.erase(s.queued.begin(), s.queued.begin() + static_cast<std::ptrdiff_t>(have));
-                if (have < static_cast<size_t>(BLOCK * 2)) {  // ran dry: waits for a block ahead again
+                if (have < static_cast<size_t>(BLOCK * 2)) {  // ran dry: waits for a block (and its cushion) again
                     s.primed = false;
                     ++s.underruns;
+                    s.cushion = std::min(MAX_CUSHION, s.cushion + CUSHION_STEP);
+                    s.calm = 0;
+                } else {
+                    keep_even(s);
                 }
             }
         }
