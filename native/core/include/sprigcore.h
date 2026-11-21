@@ -918,6 +918,7 @@ enum { SC_TRACK_STREAM = 0, SC_TRACK_RECORDING, SC_TRACK_VOD, SC_TRACK_VOICE, SC
        SC_TRACK_TRACK5, SC_TRACK_CLEAN };
 #define SC_MIXER_MONITOR (-1)      /* a tap entry: the monitor mix (sounds with monitor on) */
 #define SC_MIXER_SOURCE_TAP 1000   /* a tap entry SC_MIXER_SOURCE_TAP + id: that sound, after its volume */
+#define SC_MIXER_SOURCE_RAW_TAP 2000000  /* a tap entry + id: that sound before its filters (the Filters window) */
 #define SC_MIXER_MASTER 0          /* sc_mixer_levels: the stream track; level = the ducking gain now */
 typedef struct sc_mixer_source_settings {
     float gain;      /* volume, 1 = as it is */

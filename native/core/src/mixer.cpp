@@ -38,6 +38,7 @@ constexpr size_t LEAD = BLOCK;                            // ... and plays once 
 constexpr size_t TAP_QUEUE = 64;                          // blocks an output keeps until taken (about 1.4 s)
 constexpr int MONITOR = SC_MIXER_MONITOR;                 // a tap entry: the monitor mix
 constexpr int SOURCE_TAP = SC_MIXER_SOURCE_TAP;           // a tap entry: one sound after its volume
+constexpr int RAW_TAP = SC_MIXER_SOURCE_RAW_TAP;          // a tap entry: one sound before its filters
 
 using Block = std::vector<float>;  // BLOCK * 2 interleaved floats
 
@@ -314,6 +315,8 @@ struct Source {
     uint64_t underruns = 0;
     Block block = Block(BLOCK * 2);  // this tick's, after shaping, the fade and ducking (volume not applied)
     std::vector<Filter> filters;     // its built-in filters, in order (before mono, balance and delay)
+    bool peeked = false;             // a tap wants it before its filters (the Filters window)
+    Block raw = Block(BLOCK * 2);    // this tick's before its filters, when peeked
 };
 
 struct Tap {
@@ -377,6 +380,7 @@ struct sc_mixer {
                 }
             }
         }
+        if (s.peeked) std::copy(s.block.begin(), s.block.end(), s.raw.begin());
         for (Filter &f : s.filters) {
             double other = 0.0;
             if (f.settings.kind == SC_FILTER_DUCKING) {
@@ -473,6 +477,18 @@ struct sc_mixer {
 
     void mix_one() {
         float voice_db = FLOOR_DB;
+        for (auto &[id, s] : sources) {  // kept before its filters only while a tap asks
+            s.peeked = false;
+            (void)id;
+        }
+        for (auto &[tap_id, tap] : taps) {
+            for (int what : tap.what) {
+                if (what < RAW_TAP) continue;
+                auto found = sources.find(what - RAW_TAP);
+                if (found != sources.end()) found->second.peeked = true;
+            }
+            (void)tap_id;
+        }
         if (!push_down && push_hold > 0) --push_hold;  // a let-go waits out its delay block by block
         for (auto &[id, s] : sources) {
             read(s);
@@ -532,6 +548,14 @@ struct sc_mixer {
                                tracks[static_cast<size_t>(what)].end());
                 } else if (what == MONITOR) {
                     out.insert(out.end(), monitor.begin(), monitor.end());
+                } else if (what >= RAW_TAP) {  // before its filters (the Filters window)
+                    auto found = sources.find(what - RAW_TAP);
+                    const size_t at = out.size();
+                    out.resize(at + BLOCK * 2, 0.0f);
+                    if (found != sources.end() && found->second.peeked) {
+                        const Block &from = found->second.raw;
+                        std::copy(from.begin(), from.end(), out.begin() + static_cast<std::ptrdiff_t>(at));
+                    }
                 } else {
                     auto found = sources.find(what - SOURCE_TAP);
                     const size_t at = out.size();

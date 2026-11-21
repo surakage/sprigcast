@@ -4296,8 +4296,20 @@ class MainWindow(QMainWindow):
     def _open_filters(self, source_id: str, media: str | None = None) -> None:
         sounds = sorted(((c.id, c.name) for c in self.collection.sources if self._has_sound(c)),
                         key=lambda pair: pair[1].lower())
+        from sprigcast.app.filters_dialog import EngineGrab
+
+        engine = getattr(self, "engine", None)
+        grab = None if engine is None else EngineGrab(engine, self.collection)
+        hear = None
+        if engine is not None and getattr(engine, "mixer", None) is not None:
+            from sprigcast.audio.preview import Preview
+
+            device = self.collection.audio.monitor_device or None  # Listen through, as the sound card's headphones
+
+            def hear(sid: str, filters: list) -> Preview:
+                return Preview(sid, filters, device=device)
         modal(FiltersDialog(self.collection.source(source_id), self._changed, self, media, sounds=sounds,
-                            collection=self.collection))
+                            collection=self.collection, grab=grab, hear=hear))
         if self._has_sound(self.collection.source(source_id)):
             self._refresh_audio_soon()  # the Sound card lists filter names
         self._refresh_sources(keep_row=self.source_list.currentRow())

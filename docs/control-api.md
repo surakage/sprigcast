@@ -198,8 +198,8 @@ for. The connection closes next. Look again in a second or two: it's often a res
 {"do": "sprig.state", "sprig": "Cam frame", "state": "Alert showing"}
 {"do": "sound.mute", "sound": "Mic"}
 {"do": "sound.volume", "sound": "Music", "change": -6}
-{"do": "filter.set", "source": "Facecam", "filter": "Blur", "on": true}
-{"do": "filter.set", "source": "Facecam", "filter": "Color Correction", "settings": {"saturation": 0.4}}
+{"do": "filter.set", "source": "Facecam", "filter": "Mist", "on": true}
+{"do": "filter.set", "source": "Facecam", "filter": "Tone", "settings": {"saturation": 0.4}}
 {"do": "source.set", "source": "Goal text", "settings": {"text": "Sub goal: 42 / 50"}}
 {"do": "clip.save"}
 {"do": "media.restart", "media": "Intro video"}
@@ -264,6 +264,8 @@ for. The connection closes next. Look again in a second or two: it's often a res
 | `filters.kinds` | Filter kinds you can add, with their settings and limits. | none |
 | `filters.list` | A source's or a placed sprig's filters, top to bottom. | `source` (optional): name or id, `sprig` (optional): a sprig instead: its filters where it's placed, `in` (optional): with sprig: only where it's placed in this bloom or sprig (both canvases) |
 | `filters.share` | A placed sprig: the same filters on both canvases (the usual), or its own on each. | `on`: true or false, `source` (optional): name or id, `sprig` (optional): a sprig instead: its filters where it's placed, `in` (optional): with sprig: only where it's placed in this bloom or sprig (both canvases) |
+
+**Filter names.** A filter is found by its id, its name, its kind, or its kind's name today or before the one-word names (2026-11-21), so `"Chroma Key"` and `"Greenscreen"` both find a `chroma_key` filter. Kinds never change: Spin `barrel_roll`, Curtain `blackout`, Mist `blur`, Greenscreen `chroma_key`, Tone `color_correction`, Colorcut `color_key`, Mood `lut`, Lightcut `luma_key`, Mosaic `pixelate`, Drift `scroll`, Frame `shape`, Crisp `sharpen`, Outline `stroke`; Freeze, Glow and Shadow kept their names.
 
 A sprig placed in a bloom has a placement on each canvas, and each placement has filters of its own. They're kept the same: change one (in the Filters window or with any request here) and the other canvas follows. `filters.share` with `on: false`, or unticking **Same on both canvases** in its Filters window, lets each canvas keep its own. Name the sprig with `sprig` to change its filters wherever it's placed, or add `in` for one bloom: `{"do": "filter.set", "sprig": "Elgato", "in": "Gameplay", "filter": "barrel_roll", "on": true}`. A placement that doesn't have the filter is passed over. `filters.list` says `same_on_both_canvases` for a placed sprig. A source's filters were always one list on every canvas.
 

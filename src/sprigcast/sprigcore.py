@@ -1368,6 +1368,7 @@ MIXER_BLOCK = 1024  # SC_MIXER_BLOCK
 MIXER_TRACKS = ("stream", "recording", "vod", "voice", "clips", "track4", "track5", "clean")  # SC_TRACK_* order
 MIXER_MONITOR = -1  # SC_MIXER_MONITOR
 MIXER_SOURCE_TAP = 1000  # SC_MIXER_SOURCE_TAP
+MIXER_SOURCE_RAW_TAP = 2000000  # SC_MIXER_SOURCE_RAW_TAP: + a sound, before its filters
 MIXER_MASTER = 0  # SC_MIXER_MASTER
 
 

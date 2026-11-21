@@ -167,7 +167,7 @@ class Engine:
         self._monitoring = False
         self._taps: dict[str, list[Callable[[Frame], None]]] = {}  # canvas id -> recorders, later streams
         self._taps_lock = threading.Lock()
-        self._grabs: list[tuple[str | None, Callable[[np.ndarray | None], None]]] = []  # see grab_source
+        self._grabs: list[tuple] = []  # (source id, callback, raw, limit, filters): see grab_source
         self._transitions: dict[str, Running] = {}  # canvas id -> the transition it is in
         self._warm: dict[tuple, object] = {}  # (path, limit, gain) -> a stinger player opened ahead (_warm_stingers)
         self._ending = False  # the render loop is ending: nothing more is opened ahead
@@ -275,18 +275,21 @@ class Engine:
         with self._taps_lock:
             self._taps.setdefault(canvas_id, []).append((callback, nv12_size))
 
-    def grab_source(self, source_id: str | None, callback: Callable[[np.ndarray | None], None]) -> None:
-        """Hand the next picture of one source (with its filters), or of what's on air when source_id is
-        None, to callback as an H x W x 4 RGBA array (None if there's nothing to picture). The callback
-        runs on the render thread and must not block."""
+    def grab_source(self, source_id: str | None, callback: Callable[[np.ndarray | None], None],
+                    raw: bool = False, limit: int = 1920, filters: list | None = None) -> None:
+        """Hand the next picture of one source (with its filters, or without them when raw), or of what's on
+        air when source_id is None, to callback as an H x W x 4 RGBA array (None if there's nothing to
+        picture), its longest side at most `limit`. With `filters` (copies, not the garden's own) it is drawn with
+        those instead of its own: the Filters window's unapplied changes. The callback runs on the render thread
+        and must not block."""
         with self._taps_lock:
-            self._grabs.append((source_id, callback))
+            self._grabs.append((source_id, callback, raw, limit, filters))
 
     def _serve_grabs(self, compositor, sizes) -> None:
         with self._taps_lock:
             grabs, self._grabs = self._grabs, []
         canvases = [c for c in self._collection.canvases if c.enabled] or self._collection.canvases
-        for source_id, callback in grabs:
+        for source_id, callback, raw, limit, filters in grabs:
             picture = None
             try:
                 if source_id is None:
@@ -297,7 +300,12 @@ class Engine:
                 else:
                     canvas_id = next((c.id for c in canvases if (source_id, c.id) in compositor.parts),
                                      canvases[0].id if canvases else "")
-                    picture = compositor.render_source(source_id, sizes, canvas_id)
+                    fx = None
+                    if filters is not None and not raw:
+                        from sprigcast.core.filters import video_effects
+
+                        fx = video_effects(filters)
+                    picture = compositor.render_source(source_id, sizes, canvas_id, limit, raw=raw, fx=fx)
             except Exception:
                 log.exception("grabbing %s failed", source_id or "the stream")
             try:

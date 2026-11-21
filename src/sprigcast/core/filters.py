@@ -129,6 +129,47 @@ def settings_for(kind: str, settings: dict[str, Any]) -> dict[str, Any]:
     return {key: settings.get(key, default) for key, default in info.defaults.items()}
 
 
+# Names ----------------------------------------------------------------------------------------
+
+# What each filter was called before the one-word names (user, 2026-11-21). Filters added before then keep
+# their saved names; the Filters window shows them by today's name, and the Control API still finds a filter
+# by either name (Streamer.bot actions and StreamBridge that say "Chroma Key" keep working).
+OLD_LABELS = {
+    "barrel_roll": "Barrel roll", "blackout": "Blackout", "blur": "Blur", "chroma_key": "Chroma Key",
+    "color_correction": "Color Correction", "color_key": "Color Key", "lut": "Color look (LUT)",
+    "luma_key": "Luma Key", "pixelate": "Pixelate", "scroll": "Scroll", "shape": "Shape", "sharpen": "Sharpen",
+    "stroke": "Stroke",
+}
+
+
+# Filter kinds only the native engine draws (the Background filter's Backdrop). The Filters window's After
+# picture for a source with one of these comes from the native engine, not Python's compositor.
+NATIVE_DRAWN: set[str] = set()
+
+
+def kind_for_label(text: str) -> str | None:
+    """The filter kind a name means, today's or the old one, any case ("chroma key" -> "chroma_key")."""
+    wanted = text.strip().lower()
+    for kind, info in _KINDS.items():
+        if info.label.lower() == wanted or OLD_LABELS.get(kind, "").lower() == wanted:
+            return kind
+    return None
+
+
+def shown_name(kind: str, name: str) -> str:
+    """A filter's name as the Filters window shows it: an old default name ("Chroma Key", "Blur 2") reads as
+    today's ("Greenscreen", "Mist 2"); a name someone chose stays as it is. Saved data is never changed."""
+    old, info = OLD_LABELS.get(kind), _KINDS.get(kind)
+    if not old or info is None or old == info.label:
+        return name
+    if name == old:
+        return info.label
+    head, _, tail = name.rpartition(" ")
+    if head == old and tail.isdigit():
+        return f"{info.label} {tail}"
+    return name
+
+
 # Video ----------------------------------------------------------------------------------------
 
 
@@ -136,7 +177,7 @@ def _video(kind: str, label: str, fields: list[Field]) -> None:
     _KINDS[kind] = FilterKind(kind, label, "video", fields)
 
 
-_video("color_correction", "Color Correction", [
+_video("color_correction", "Tone", [
     Field("gamma", "Gamma", 0.0, -3.0, 3.0, 0.01),
     Field("contrast", "Contrast", 0.0, -4.0, 4.0, 0.01),
     Field("brightness", "Brightness", 0.0, -1.0, 1.0, 0.01),
@@ -145,23 +186,23 @@ _video("color_correction", "Color Correction", [
     Field("opacity", "Opacity", 100, 0, 100, 1, "%"),
     Field("color", "Color Multiply", "#ffffff"),
 ])
-_video("chroma_key", "Chroma Key", [
+_video("chroma_key", "Greenscreen", [
     Field("key_color", "Key Color", "#00ff00"),
     Field("similarity", "Similarity", 400, 1, 1000, 1),
     Field("smoothness", "Smoothness", 80, 1, 1000, 1),
     Field("spill", "Key Color Spill Reduction", 100, 1, 1000, 1),
 ])
-_video("luma_key", "Luma Key", [
+_video("luma_key", "Lightcut", [
     Field("luma_min", "Luma Min", 0.0, 0.0, 1.0, 0.01),
     Field("luma_max", "Luma Max", 1.0, 0.0, 1.0, 0.01),
     Field("smoothness", "Smoothness", 0.0, 0.0, 1.0, 0.01),
 ])
-_video("color_key", "Color Key", [
+_video("color_key", "Colorcut", [
     Field("key_color", "Key Color", "#000000"),
     Field("similarity", "Similarity", 80, 1, 1000, 1),
     Field("smoothness", "Smoothness", 50, 1, 1000, 1),
 ])
-_video("blur", "Blur", [
+_video("blur", "Mist", [
     Field("mode", "Type", "blur", choices=(("blur", "Blur"), ("pixelate", "Pixelate"))),
     Field("size", "Size", 8.0, 0.0, 64.0, 0.5, " px"),
 ])
@@ -177,24 +218,24 @@ _video("glow", "Glow", [
     Field("strength", "Strength", 80, 0, 100, 1, "%"),
     Field("size", "Size", 16.0, 1.0, 60.0, 0.5, " px"),
 ])
-_video("stroke", "Stroke", [
+_video("stroke", "Outline", [
     Field("color", "Color", "#ffffff"),
     Field("opacity", "Opacity", 100, 0, 100, 1, "%"),
     Field("width", "Width", 4.0, 0.5, 40.0, 0.5, " px"),
 ])
-_video("sharpen", "Sharpen", [Field("sharpness", "Sharpness", 0.08, 0.0, 1.0, 0.01)])
-_video("scroll", "Scroll", [
+_video("sharpen", "Crisp", [Field("sharpness", "Sharpness", 0.08, 0.0, 1.0, 0.01)])
+_video("scroll", "Drift", [
     Field("speed_x", "Horizontal Speed", 0.0, -500.0, 500.0, 1.0, " px/s"),
     Field("speed_y", "Vertical Speed", 0.0, -500.0, 500.0, 1.0, " px/s"),
 ])
 
 
-_video("lut", "Color look (LUT)", [
+_video("lut", "Mood", [
     Field("look", "Look", "canopy", choices=LOOKS + ((FROM_FILE, "From a .cube file…"),)),
     Field("file", "Cube file", "", file_types="LUT (*.cube)", show_when=("look", (FROM_FILE,))),
     Field("amount", "Strength", 100, 0, 100, 1, "%"),
 ])
-_video("shape", "Shape", [
+_video("shape", "Frame", [
     Field("shape", "Shape", "rounded", choices=SHAPES),
     Field("mask_file", "Mask", "", file_types="Images (*.png *.webp *.jpg *.jpeg)",
           show_when=("shape", ("image",))),
@@ -238,6 +279,7 @@ _KINDS[BACKGROUND] = FilterKind(BACKGROUND, "Backdrop", "video", [
           show_when=("mode", ("picture",))),
     Field("edge", "Soft Edges", 30, 0, 100, 1, "%"),
 ], status=_background_status)
+NATIVE_DRAWN.add(BACKGROUND)  # its After picture in the Filters window comes from the native engine
 
 
 PLUGIN_VIDEO_KINDS = ("pixelate", "blackout", "barrel_roll", "freeze")  # drawn by the GPU, offered by plugins
