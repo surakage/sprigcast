@@ -147,6 +147,43 @@ def test_a_pushed_sound_that_runs_dry_is_silent_then_waits_for_a_whole_block(mix
     assert sum(1 for _, data, _ in blocks if np.allclose(data, 0.5)) == 9
 
 
+def test_a_sound_arriving_in_uneven_bursts_keeps_a_little_more_ahead(mixer):
+    """A capture card's sound while it also sends 1440p60 video comes in uneven bursts: 10 ms packets, each up to
+    30 ms late. It ran dry about once a second (PC 2026-11-21, Elgato HD60 X); now it keeps a little more ahead
+    after the first few."""
+    rng = np.random.default_rng(7)
+    packet = 480
+    seconds = 60
+    arrive = sorted((i * 0.010 + rng.uniform(0, 0.030), i) for i in range(seconds * 100))
+    s = mixer.add_source(tracks=("stream",))
+    at = 0
+    dry_at = []
+    for tick in range(int(seconds * 48000 / BLOCK)):
+        now = tick * BLOCK / 48000
+        while at < len(arrive) and arrive[at][0] <= now:
+            mixer.push(s, tone(0.5, packet))
+            at += 1
+        before = mixer.levels(s)[3]
+        mixer.tick(1)
+        if mixer.levels(s)[3] > before:
+            dry_at.append(now)
+    late = [t for t in dry_at if t > 10]
+    assert len(late) <= 2, f"ran dry {len(dry_at)} times, {len(late)} after the first 10 s"
+
+
+def test_a_sound_well_ahead_drops_the_extra(mixer):
+    """A capture whose clock runs a little fast builds up delay; what stays well ahead for 2 s is dropped."""
+    s = mixer.add_source(tracks=("stream",))
+    tap = mixer.add_tap([0])
+    mixer.push(s, tone(0.0, BLOCK * 6))  # six blocks ahead from the start
+    for t in range(1, 201):
+        mixer.push(s, tone(t / 1000))  # each block says when it was pushed
+        mixer.tick(1)
+    last = take_all(mixer, tap, 1)[-1][1]
+    late = 200 - round(float(np.ravel(last)[0]) * 1000)
+    assert mixer.levels(s)[3] == 0 and late <= 2  # never ran dry, and no longer six blocks late
+
+
 def test_levels_and_a_full_tap_drops_its_oldest(mixer):
     s = mixer.add_source(gain=0.5, tracks=("stream",))
     tap = mixer.add_tap([0])

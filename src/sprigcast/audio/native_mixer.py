@@ -678,6 +678,9 @@ class NativeMixer:
                 self._problem("a capture's state", exc)
                 continue
             if st["state"] == "capturing":
+                name = getattr(source, "name", None) or getattr(source, "id", "?")
+                self.__dict__.setdefault("_capture_now", {})[name] = (now, st["frames"], st["gaps"], st["rate"],
+                                                                     st["channels"])
                 source.status = f"capturing {st['device']}"
                 if st["channels"] > 2:
                     source.status += f" ({st['channels']} channels mixed to stereo)"
@@ -877,9 +880,25 @@ class NativeMixer:
         if not worst:
             return None
         line = (f"sound ran dry (gaps you hear) in the last {self.SHORT_EVERY_S:.0f} s: "
-                + ", ".join(f"{name} {count} times" for name, count in worst))
+                + ", ".join(f"{name} {count} times{self._capture_note(name)}" for name, count in worst))
+        self._capture_then = dict(self.__dict__.get("_capture_now", {}))
         log.warning(line)
         return line
+
+    def _capture_note(self, name: str) -> str:
+        """For a sound the engine captures: how fast its device really delivers and how often Windows said it lost
+        samples, since the last line. A device that gives fewer than 48,000 a second (its clock, or a capture card
+        following its HDMI source's) runs dry however much is kept ahead."""
+        now_st = self.__dict__.get("_capture_now", {}).get(name)
+        then = self.__dict__.get("_capture_then", {}).get(name)
+        if now_st is None:
+            return ""
+        t1, frames1, gaps1, rate, channels = now_st
+        if then is None or t1 - then[0] < 1.0 or frames1 < then[1]:
+            return f" (engine capture, {rate} Hz {channels} ch)"
+        per_s = (frames1 - then[1]) / (t1 - then[0])
+        return (f" (engine capture, {rate} Hz {channels} ch: delivered {per_s:,.0f} a second of 48,000,"
+                f" {gaps1 - then[2]} lost by Windows)")
 
     def _let_go_of_players(self) -> None:
         for sound in self._known.values():
