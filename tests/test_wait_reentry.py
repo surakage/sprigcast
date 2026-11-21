@@ -169,14 +169,29 @@ def test_settings_asked_for_between_answers_opens_before_the_next_one(monkeypatc
 
     host = FakeHost(_collection())
     server = ControlServer(ControlApi(host), native=NativeApi(host))
+    import threading
+
     events = []
+    clicked = threading.Event()
+
+    def open_settings():  # like MainWindow._open_settings: mid-wait it holds itself back again
+        if not workers.when_free(open_settings):
+            events.append("settings")
+
+    def click():  # the gear, clicked while answer 0 still waits
+        if not workers.when_free(open_settings):
+            events.append("settings now")  # not mid-wait: would open at once (wrong here)
+        clicked.set()
 
     def answer(n):
         def run():
             if n == 0:
-                QTimer.singleShot(20, lambda: workers.when_free(lambda: events.append("settings")) or
-                                  events.append("settings now"))
-            workers.wait_answering(time.sleep, 0.1)
+                QTimer.singleShot(20, click)
+                # The work lasts until the click has come (not a fixed 0.1 s a loaded machine can outlast before the
+                # timer fires): the click always lands inside this wait, and the order is all that's checked.
+                workers.wait_answering(clicked.wait, 10.0)
+            else:
+                workers.wait_answering(time.sleep, 0.05)
             events.append(n)
         return run
 
