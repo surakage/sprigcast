@@ -307,7 +307,7 @@ def test_the_late_frame_line_says_when_the_render_thread_waited_instead_of_worke
     engine = Engine.__new__(Engine)
     cpu = [10.0]
     monkeypatch.setattr(engine_mod.time, "thread_time", lambda: cpu[0])
-    engine._worked_at = 10.0
+    engine._ran_from = 10.0
     engine._marks = [("start", 0.0), ("sprigs", 0.002), ("vertical streams and recordings", 0.408)]
     cpu[0] = 10.004  # it ran 4 ms of the 408
     line = engine._where()

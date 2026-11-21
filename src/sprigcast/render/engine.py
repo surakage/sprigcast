@@ -2382,7 +2382,7 @@ class Engine:
         where it stood while it waited (for Python's lock, held by the window's thread, or for a turn on a busy
         PC), not work of that step: "vertical streams and recordings 406.0" on the PC was a web panel's browser
         being made on the window's thread, with every processor busy (2026-11-21, on a stream)."""
-        started = getattr(self, "_worked_at", None)
+        started = getattr(self, "_ran_from", None)
         if started is None or len(marks) < 2:
             return ""
         took = marks[-1][1] - marks[0][1]
@@ -2407,7 +2407,7 @@ class Engine:
 
     def _tick(self, compositor, now: float) -> None:
         self._marks = [("start", time.perf_counter())]
-        self._worked_at = time.thread_time()  # this thread's own processor time, for _waited
+        self._ran_from = time.thread_time()  # this thread's own processor time, for _waited
         self._window_at = ""
         self._tick_now = now
         if self._rests(now):
