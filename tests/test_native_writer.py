@@ -659,3 +659,55 @@ def test_a_recording_that_cant_be_written_fails_alone_and_one_outlives_its_write
     _until(lambda: kept.stats().state_name == "finished")  # the writer ended: the file is closed properly
     kept.close()
     assert len(_lumas(tmp_path / "kept.mkv")) == 30
+
+
+def test_the_engine_keeps_the_last_seconds_and_saves_a_clip(player_lib, tmp_path):  # noqa: F811
+    """sc_writer_keep: the last seconds stay (from a keyframe, in a ring file), a clip taken now is written later
+    from them with times from zero, and with nobody taking packets none are queued."""
+    writer = _packets_writer(tmp_path, tracks=2, keyframes=15)
+    ring = tmp_path / "ring.bin"
+    try:
+        with pytest.raises(sprigcore.NativeError, match="nothing buffered"):
+            writer.clip_snapshot()
+        writer.keep(1.0, ring)
+        writer.hand_out(False)
+        for n in range(120):
+            assert writer.video(nv12(16 + (3 * n) % 200), n) == sprigcore.SC_OK
+            for t in range(2):
+                writer.audio(np.zeros((1600, 2), np.float32), t)
+        _until(lambda: writer.stats().frames_written >= 119)
+        assert writer.take_packet() is None and writer.stats().state_name == "running"
+        seconds, packets = writer.kept()
+        assert 1.0 <= seconds <= 1.5 + 1 / 30 and packets < 250 and ring.exists()
+        clip = writer.clip_snapshot()
+        for n in range(120, 150):  # the clip was taken: what comes after isn't in it
+            writer.video(nv12(16), n)
+        clip.write(tmp_path / "clip.mkv", "matroska", tracks=(1,))
+        clip.write(tmp_path / "again.mp4", "mp4")
+        with pytest.raises(sprigcore.NativeError, match="opening the file"):
+            clip.write(tmp_path / "no-such-folder" / "clip.mkv", "matroska")
+        clip.close()
+        writer.keep(0)
+        writer.video(nv12(16), 150)
+        _until(lambda: writer.kept() == (0.0, 0))
+    finally:
+        writer.close()
+    assert not ring.exists()  # removed with the writer
+    lumas = _lumas(tmp_path / "clip.mkv")
+    assert 30 <= len(lumas) <= 46 and abs(len(_lumas(tmp_path / "again.mp4")) - len(lumas)) <= 1
+    first = 119 - len(lumas)  # the newest picture may still have been inside the encoder
+    assert any(abs(lumas[0] - (16 + (3 * n) % 200)) <= 4 for n in (first, first + 1))
+    with av.open(str(tmp_path / "clip.mkv")) as f:
+        assert len(f.streams.audio) == 1 and next(p.pts for p in f.demux(video=0)) == 0
+
+
+def test_clips_stay_in_memory_when_the_ring_cant_be_made(player_lib, tmp_path):  # noqa: F811
+    writer = _packets_writer(tmp_path, keyframes=15)
+    try:
+        writer.keep(1.0, tmp_path / "no-such-folder" / "ring.bin")
+        _fed_tracks(writer, 60, 0, 1)
+        _until(lambda: writer.kept()[0] >= 1.0)
+        writer.clip_snapshot().write(tmp_path / "clip.mkv", "matroska")
+    finally:
+        writer.close()
+    assert len(_lumas(tmp_path / "clip.mkv")) >= 30

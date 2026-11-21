@@ -67,6 +67,9 @@ class _TrackEncoder(SharedStreamEncoder):
     Other destinations wanting the same picture (YouTube, Kick... at this quality's canvas, size and frame rate)
     send these same packets as links (StreamSession.start): no extra encoder for them."""
 
+    def _python_wants_packets(self) -> bool:
+        return True  # each packet goes to the Enhanced Broadcasting connection from here (_on_packet)
+
     def __init__(self, owner: EnhancedStreamer, track: _Track, start_time: float):
         from sprigcast.core.scene import EncoderSettings
 

@@ -195,6 +195,40 @@ def test_recordings_written_by_the_engine_split_pause_and_keep_chapters(native, 
     assert len(said()) >= 6
 
 
+def test_the_engine_keeps_clips_and_python_takes_no_packets(native, tmp_path, monkeypatch):
+    """Clips' seconds are kept by the writer (sc_writer_keep) and a clip is written by the engine; with the
+    recording written there too, no packet comes back to Python at all."""
+    from sprigcast.output.shared import CanvasEncoder
+
+    taken = []
+    real = CanvasEncoder._take
+    monkeypatch.setattr(CanvasEncoder, "_take", lambda self, p: (taken.append(p.kind), real(self, p))[1])
+    kept = []
+    real_snapshot = CanvasEncoder.clip_snapshot
+
+    def snapshot(self, *a, **k):
+        kept.append((self._engine_keeps, len(self._packets), self._engine_hands_out, self.buffered_seconds))
+        return real_snapshot(self, *a, **k)
+
+    monkeypatch.setattr(CanvasEncoder, "clip_snapshot", snapshot)
+    shared_tests.test_a_clip_is_saved_without_waiting_for_its_file(tmp_path)
+    assert kept and all(k[0] and k[1] == 0 and not k[2] and k[3] > 0 for k in kept)
+    assert len(taken) < 20  # only what came before the writer was told nobody takes them
+
+
+def test_clips_kept_by_the_engine_can_be_turned_off(native, tmp_path, monkeypatch):
+    from sprigcast.output.shared import CanvasEncoder
+
+    monkeypatch.setenv("SPRIGCAST_NO_NATIVE_CLIPS", "1")
+    kept = []
+    real_snapshot = CanvasEncoder.clip_snapshot
+    monkeypatch.setattr(CanvasEncoder, "clip_snapshot",
+                        lambda self, *a, **k: (kept.append((self._engine_keeps, len(self._packets))),
+                                               real_snapshot(self, *a, **k))[1])
+    shared_tests.test_a_clip_is_saved_without_waiting_for_its_file(tmp_path)
+    assert kept and all(not k[0] and k[1] > 0 for k in kept)
+
+
 def test_a_lone_stream_gets_a_shared_encoder_on_the_writer(native):
     engine = stream_tests._Engine()
     target = stream_mod.StreamTarget("Alone", stream_tests._Canvas(), "rtmp://127.0.0.1:1/app", "secretkey", 800,

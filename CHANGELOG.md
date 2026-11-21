@@ -6,6 +6,11 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- Instant replay and clips are kept and saved by the C++ engine: the last seconds wait inside the engine and a
+  clip is written there, so saving one never slows the window or the stream. With streams, recordings and clips
+  all handled by the engine, no encoded video passes through Python any more while live.
+  `SPRIGCAST_NO_NATIVE_CLIPS=1` turns it off. Not tried on a PC yet.
+
 - Recordings are written by the C++ engine: the file is packed and written on a thread of the engine's own, so
   the window being busy can't hold it up, and a slow disk can't hold up anything else. Pause, split into parts,
   chapter marks and "Same as stream" recordings work as before. `SPRIGCAST_NO_NATIVE_FILE=1` turns it off. Not

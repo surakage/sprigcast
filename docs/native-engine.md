@@ -317,6 +317,15 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   alone; one whose writer ends is still finished properly. Python's encoder thread only reads its numbers and
   parts (`_engine_file_turn`). `SPRIGCAST_NO_NATIVE_FILE=1` writes from Python (`PacketFile`) as before. Tests:
   `tests/test_native_writer.py` (the file alone), `tests/test_packet_writer.py` (through `FileTap`).
+- **Clips kept by the engine (interface 41, `sc_writer_keep`, `sc_clip_*`).** The shared encoders' clip
+  seconds (`ReplayBuffer` in `CanvasEncoder` and the streams' encoders) are kept by the writer itself, with the
+  same rules: the last seconds from a video keyframe, the bytes in a ring file (in memory when it can't be
+  written), sound never piling up before a first keyframe. A clip is taken at once (`sc_clip_snapshot`: a list,
+  no bytes) and written by the engine on the saving thread (`sc_clip_write`), with the clips' sound track. With
+  the streams sent (`sc_link`) and the recording written (`sc_file`) there too, nothing in Python takes the
+  packets any more, so the writer stops queueing them (`sc_writer_hand_out`, decided each turn by
+  `_python_wants_packets`): the encoder thread in Python only passes sound along and reads numbers. Enhanced
+  Broadcasting's tracks still take theirs. `SPRIGCAST_NO_NATIVE_CLIPS=1` keeps clips in Python as before.
 - Phase 4 is code-complete; next is the PC test of phases 1-4 on a build.
 
 ## Phase 5: sound (`native/core/src/mixer.cpp`, `capture.cpp`)

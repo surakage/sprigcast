@@ -230,6 +230,9 @@ class SharedStreamEncoder(FileTap, ReplayBuffer):
             return min(ranked[0][0], FAR_BEHIND_S), ranked[0][1]  # a small step, never a big one, for one link
         return ranked[1]
 
+    def _python_wants_packets(self) -> bool:
+        return super()._python_wants_packets() or any(not link._engine_may_send() for link in self.links)
+
     def _writer_before(self, writer) -> None:
         """The engine's writer encodes (packets mode): the bitrate steered here goes to it before the next picture."""
         self._steer()

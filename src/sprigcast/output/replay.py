@@ -147,6 +147,12 @@ class ReplayBuffer(Recorder):
         self._streams_path: str | None = None  # packets mode: the writer's streams' file, read for the templates
         self._streams = None  # packets mode: the container the templates come from (kept open with them)
         self._requests: queue.Queue = queue.Queue()
+        # The engine's writer keeps the clips' seconds itself (sc_writer_keep, interface 41): no packet is kept,
+        # moved to a ring or written into a clip under Python's lock. Set as the writer opens.
+        self._engine_keeps = False
+        self._engine_kept: float | None = None  # the seconds the writer was last told to keep
+        self._engine_hands_out = True
+        self._ring_path: str | None = None
 
     # Called from other threads ------------------------------------------------------
 
@@ -167,6 +173,14 @@ class ReplayBuffer(Recorder):
         """Write a clip_snapshot() to `path`, as `container` (else this encoder's: a stream's is FLV, its clips
         aren't). The packets' bytes are still in the buffer (it is overwritten only after as many seconds again);
         if it has been by now, or the buffer was closed, this raises."""
+        if snapshot[0] == "engine":  # the engine writes it from the packets it kept (this thread, no lock held)
+            _, clip, tracks = snapshot
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                clip.write(path, CONTAINERS[container or self.container_kind], tracks=tracks)
+            finally:
+                clip.close()
+            return path
         packets, templates, kinds, zero = snapshot
         out = PacketFile(path, container or self.container_kind, templates, zero, kinds)
         try:
@@ -194,6 +208,12 @@ class ReplayBuffer(Recorder):
 
     @property
     def buffered_seconds(self) -> float:
+        writer = self.writer if self._engine_keeps else None
+        if writer is not None:
+            try:
+                return writer.kept()[0]
+            except Exception:  # noqa: BLE001 - it closed meanwhile
+                return 0.0
         packets = [p for p in list(self._packets) if p.kind == "video"]
         return packets[-1].seconds - packets[0].seconds if len(packets) > 1 else 0.0
 
@@ -228,10 +248,11 @@ class ReplayBuffer(Recorder):
 
     def _take(self, p: _Packet) -> None:
         """One encoded packet: kept for clips, handed on (a file, the streams), its bytes moved to the ring."""
-        self._keep(p)
+        if not self._engine_keeps:
+            self._keep(p)
         began = time.perf_counter()
         self._on_packet(p)  # a recording file gets the bytes straight away
-        if self.seconds > 0 and not self._spool_failed:
+        if self.seconds > 0 and not self._spool_failed and not self._engine_keeps:
             self._to_spool(p)
         waited = time.perf_counter() - began
         self.mux_seconds += waited
@@ -253,7 +274,47 @@ class ReplayBuffer(Recorder):
         stats = super()._writer_opened(writer)
         if getattr(writer, "packets", False) and stats.state_name == "running":
             self._templates = self._read_streams()  # before any packet: a stream link connects at once
+            self._engine_keeps = (self.engine_clips and hasattr(writer, "keep")
+                                  and not os.environ.get("SPRIGCAST_NO_NATIVE_CLIPS"))
+            self._engine_kept, self._engine_hands_out = None, True
         return stats
+
+    engine_clips = False  # encoders whose clips the engine may keep (the shared ones: CanvasEncoder, streams)
+
+    def _python_wants_packets(self) -> bool:
+        """Whether anything in Python still takes this encoder's packets (a file or stream the engine doesn't
+        write or send itself). False: the writer stops queueing them (sc_writer_hand_out)."""
+        return True
+
+    def _writer_before(self, writer) -> None:
+        super()._writer_before(writer)
+        if not self._engine_keeps:
+            return
+        if self.seconds != self._engine_kept:
+            try:
+                if self.seconds > 0 and self._ring_path is None and not self._spool_failed:
+                    self._ring_path = self._ring_file()
+                writer.keep(self.seconds, self._ring_path)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("%s: the engine couldn't keep clips (%s)", self.canvas_id, exc)
+            self._engine_kept = self.seconds
+        wanted = self._python_wants_packets()
+        if wanted != self._engine_hands_out:
+            writer.hand_out(wanted)
+            self._engine_hands_out = wanted
+
+    def _ring_file(self) -> str | None:
+        """A name for the writer's ring file of clip bytes (it makes and removes the file itself)."""
+        import tempfile
+
+        try:
+            fd, path = tempfile.mkstemp(prefix="sprigcast-replay-", suffix=".ring")
+            os.close(fd)
+            return path
+        except OSError as exc:
+            log.warning("%s: replay spool unavailable (%s), keeping packets in memory", self.canvas_id, exc)
+            self._spool_failed = True
+            return None
 
     def _writer_after(self, writer) -> None:
         """Take the packets the writer has encoded so far; then run what other threads asked for (_ask)."""
@@ -300,6 +361,14 @@ class ReplayBuffer(Recorder):
 
     def _writer_closed(self) -> None:
         self._remove_streams_file()  # never opened: the writer failed before its first packets
+        self._engine_keeps = False
+        path, self._ring_path = self._ring_path, None
+        if path:
+            for name in (path, *(f"{path}.{n}" for n in range(1, 9))):  # the writer removed its own already
+                try:
+                    os.remove(name)
+                except OSError:
+                    pass
         self._before_close(None)  # a file of FileTap's is finished after the last packets went in
 
     def _to_spool(self, p: _Packet) -> None:
@@ -381,6 +450,16 @@ class ReplayBuffer(Recorder):
             finished.set()
 
     def _clip_packets(self):
+        writer = self.writer if self._engine_keeps else None
+        if writer is not None:
+            from sprigcast import sprigcore
+
+            kinds = self.audio_kinds("clips") or ("audio",)
+            try:
+                clip = writer.clip_snapshot()
+            except sprigcore.NativeError as exc:
+                raise RuntimeError("nothing buffered yet") from exc
+            return ("engine", clip, tuple(0 if kind == "audio" else int(kind[5:]) for kind in kinds))
         packets = list(self._packets)
         start = next((p for p in packets if p.kind == "video" and p.keyframe), None)
         if start is None or self._templates is None:

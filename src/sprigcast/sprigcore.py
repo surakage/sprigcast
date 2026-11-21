@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 40  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 41  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 PUSH_OFF, PUSH_TALK, PUSH_MUTE = 0, 1, 2  # sc_mixer_push_set modes
 DLL_NAME = "sprigcore.dll"
 
@@ -1471,6 +1471,12 @@ def _media_sigs() -> dict:
         "sc_file_part_chapter": (c_int, [vp, c_int, c_int, ctypes.POINTER(ctypes.c_int64),
                                          ctypes.POINTER(ctypes.c_int64), ctypes.c_char_p, c_int]),
         "sc_file_stop": (c_int, [vp]),
+        "sc_writer_keep": (c_int, [vp, ctypes.c_double, ctypes.c_char_p]),
+        "sc_writer_kept": (c_int, [vp, ctypes.POINTER(ctypes.c_double), ctypes.POINTER(c_int)]),
+        "sc_writer_hand_out": (c_int, [vp, c_int]),
+        "sc_clip_snapshot": (c_int, [vp, ctypes.POINTER(vp)]),
+        "sc_clip_write": (c_int, [vp, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]),
+        "sc_clip_destroy": (None, [vp]),
         "sc_file_destroy": (None, [vp]),
         "sc_mixer_create": (c_int, [c_int, ctypes.POINTER(vp)]),
         "sc_mixer_destroy": (None, [vp]),
@@ -1929,6 +1935,29 @@ class Writer:
         _check(self._call(self._lib.sc_file_open, ctypes.byref(config), ctypes.byref(handle)))
         return PacketFileWriter(self._lib, handle)
 
+    def keep(self, seconds: float, spool_path=None) -> None:
+        """Keep the last ``seconds`` of packets for clips in the engine (0 = none; sc_writer_keep). spool_path: a
+        file of the writer's own for their bytes (removed when it closes); without one they stay in memory."""
+        _check(self._call(self._lib.sc_writer_keep, float(seconds),
+                          str(spool_path).encode("utf-8") if spool_path else None))
+
+    def kept(self) -> tuple[float, int]:
+        """(seconds of video kept for clips, packets kept)."""
+        seconds, packets = ctypes.c_double(), ctypes.c_int()
+        _check(self._call(self._lib.sc_writer_kept, ctypes.byref(seconds), ctypes.byref(packets)))
+        return seconds.value, packets.value
+
+    def hand_out(self, on: bool) -> None:
+        """False: packets are no longer queued for take_packet (the engine sends, writes and keeps them)."""
+        _check(self._call(self._lib.sc_writer_hand_out, 1 if on else 0))
+
+    def clip_snapshot(self) -> "ClipSnapshot":
+        """What a clip saved now would hold (no bytes read or copied); write() makes the file, on any thread.
+        Raises NativeError when nothing is kept yet."""
+        handle = ctypes.c_void_p()
+        _check(self._call(self._lib.sc_clip_snapshot, ctypes.byref(handle)))
+        return ClipSnapshot(self._lib, handle)
+
     def close(self) -> None:
         """Give up whatever is still unwritten and free the writer (finish() and wait() first to keep it)."""
         with self._lock:
@@ -1973,6 +2002,41 @@ class StreamLinkSender:
         if handle:
             self._lib.sc_link_destroy(handle)
             drain_log()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 (interpreter shutting down)
+            pass
+
+
+class ClipSnapshot:
+    """A clip taken from a writer's kept packets (include/sprigcore.h sc_clip), to be written once."""
+
+    def __init__(self, lib, handle: ctypes.c_void_p):
+        self._lib, self._handle = lib, handle
+        self._lock = __import__("threading").Lock()
+
+    def write(self, path, container: str | None = None, container_options: dict[str, str] | None = None,
+              tracks: tuple[int, ...] = (0,)) -> None:
+        """Writes the clip on this thread (Python's lock is free meanwhile). Raises NativeError if it couldn't
+        be written, or its start has been recorded over since."""
+        muxing = "\n".join(f"{k}={v}" for k, v in (container_options or {}).items())
+        mask = 0
+        for t in tracks:
+            mask |= 1 << int(t)
+        with self._lock:
+            if not self._handle:
+                raise NativeError(-1, "the clip is closed")
+            _check(self._lib.sc_clip_write(self._handle, str(path).encode("utf-8"),
+                                           container.encode() if container else None,
+                                           muxing.encode() if muxing else None, mask))
+
+    def close(self) -> None:
+        with self._lock:
+            handle, self._handle = self._handle, None
+        if handle:
+            self._lib.sc_clip_destroy(handle)
 
     def __del__(self):
         try:
