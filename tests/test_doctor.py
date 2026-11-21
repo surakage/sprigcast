@@ -196,3 +196,30 @@ def test_a_place_set_lower_than_the_one_it_shares_an_encoder_with_is_pointed_out
     assert len(found) == 1 and "YouTube (4500 kbps)" in found[0].text and "6000 kbps" in found[0].text
     col.outputs[0].bitrate_kbps = 4500
     assert not [f for f in examine(_checkup(collection=col)) if "share" in f.text]
+
+
+def test_a_capture_card_sending_a_much_bigger_picture_than_its_source_uses_gets_a_hint():
+    """PC 2026-11-21: the HD60 X sent 2560x1440 for a 1280x720 source, taken in whole and shrunk every frame."""
+    findings = examine(_checkup(camera_sizes={"cam": ((2560, 1440), (1280, 720))}))
+    hint = next(f for f in findings if "sends" in f.text)
+    assert hint.level == "info" and hint.area == "Sources"
+    assert hint.text == ("Webcam sends 2560 x 1440 for a 1280 x 720 source: "
+                         "set the device or console to output 1080p or 720p.")
+    assert headline(findings) == "Ready to go live"  # a hint, not a thing to fix
+    four_k = examine(_checkup(camera_sizes={"cam": ((3840, 2160), (1920, 1080))}))
+    assert any(f.text.endswith("to output 1080p.") for f in four_k)
+    for given, used in (((1920, 1080), (1280, 720)), ((1280, 720), (1280, 720)), ((0, 0), (1280, 720))):
+        assert not any("sends" in f.text for f in examine(_checkup(camera_sizes={"cam": (given, used)})))
+
+
+def test_a_scan_or_a_heavy_program_is_said_plainly():
+    """PC 2026-11-21, live: a Defender scan held the CPU at 100% and the voice went choppy."""
+    findings = examine(_checkup(busy_apps=[("Windows Defender", 38.0), ("Chrome", 31.0), ("Discord", 4.0)]))
+    scan = next(f for f in findings if f.area == "PC" and f.level == "warning")
+    assert scan.text == "Windows Defender is using 38% of the CPU: schedule its scans outside stream hours."
+    other = next(f for f in findings if f.area == "PC" and f.level == "info")
+    assert other.text == "Chrome is using 31% of the CPU: close it if the stream doesn't need it."
+    assert not any("Discord" in f.text for f in findings)
+    assert headline(findings) == "1 thing to check"
+    quiet = examine(_checkup(busy_apps=[("Windows Defender", 3.0), ("Chrome", 9.0)]))
+    assert not any(f.area == "PC" for f in quiet) and not any(f.area == "PC" for f in examine(_checkup()))
