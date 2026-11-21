@@ -42,7 +42,9 @@ class ZoomControl(QFrame):
         self.inn.setToolTip("Zoom in (Ctrl+=)")
         self.label.setToolTip("Scaling: fit, lock, real size")
         self.fit.setToolTip("Fit the canvas (Ctrl+0)")
-        for button in (self.out, self.label, self.inn, self.fit, self.lock):
+        for button, name in ((self.out, "Zoom out"), (self.label, "Scaling"), (self.inn, "Zoom in"),
+                             (self.fit, "Fit"), (self.lock, "Lock zoom")):
+            button.setAccessibleName(name)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             row.addWidget(button)
         self.out.clicked.connect(lambda: self._zoom(0.8))

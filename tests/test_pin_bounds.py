@@ -168,3 +168,36 @@ def test_the_wheel_zooms_only_with_ctrl_and_the_lock_stops_it(monkeypatch):
     control.inn.click()
     assert preview.zoom > 1.0
     QSettings().clear()
+
+
+def test_ctrl_held_now_counts_even_if_the_wheel_event_lacks_it(monkeypatch):
+    """PC check of #787: Ctrl+wheel stayed at 45% when the wheel event came without Ctrl in its modifiers."""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
+
+    import sprigcast.app.preview as preview_module
+    from sprigcast.app.preview import Preview
+    from sprigcast.app.zoom_control import ZoomControl
+
+    app = QApplication.instance() or QApplication([])
+    preview = Preview("horizontal", "Build", (1920, 1080))
+    preview.editable = True
+    preview.resize(1000, 600)
+
+    class Held:
+        @staticmethod
+        def queryKeyboardModifiers():  # noqa: N802
+            return Qt.KeyboardModifier.ControlModifier
+
+    monkeypatch.setattr(preview_module, "QGuiApplication", Held)
+    event = QWheelEvent(QPointF(500, 300), QPointF(500, 300), QPoint(0, 0), QPoint(0, 120), Qt.MouseButton.NoButton,
+                        Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
+    app.sendEvent(preview, event)
+    assert preview.zoom > 1.0
+    control = ZoomControl(lambda: preview)
+    names = [b.accessibleName() for b in (control.out, control.label, control.inn, control.fit, control.lock)]
+    assert names == ["Zoom out", "Scaling", "Zoom in", "Fit", "Lock zoom"]

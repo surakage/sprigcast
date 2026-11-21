@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QImage, QPainter, QPen, QPixmap, QPolygonF, QRegion
+from PySide6.QtGui import QBrush, QColor, QFont, QFontMetrics, QGuiApplication, QImage, QPainter, QPen, QPixmap, QPolygonF, QRegion
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from sprigcast.app import safe_zones, theme
@@ -838,8 +838,14 @@ class Preview(QWidget):
         if self.twin or not self.editable:
             super().wheelEvent(event)
             return
-        steps = event.angleDelta().y() / 120 or event.angleDelta().x() / 120
-        mods = event.modifiers()
+        delta = event.angleDelta()
+        steps = delta.y() / 120 or delta.x() / 120
+        if not steps:  # a touchpad may send only pixels
+            pixels = event.pixelDelta()
+            steps = (pixels.y() or pixels.x()) / 40
+        # The event's own keys, plus the keys held right now: on the PC a Ctrl held while a wheel turn came in
+        # did not always show in the event (PC check of #787), so Ctrl+wheel stayed at the same zoom.
+        mods = event.modifiers() | QGuiApplication.queryKeyboardModifiers()
         if self.zoom_locked or not mods & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
             event.ignore()
             return
