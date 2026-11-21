@@ -44,6 +44,7 @@ class Autopilot:
     _spike: bool = False  # this slowdown emptied within SPIKE_CLEARS_S: back to _before in one go
     _up_wait: float = UP_AFTER_DROP_S
     _readings: deque = field(default_factory=lambda: deque(maxlen=FAR_READINGS))
+    down_at: list = field(default_factory=list)  # (when, kbps) of the first steps down: the end-of-stream line says when
 
     def __post_init__(self) -> None:
         self.current_kbps = self.current_kbps or self.target_kbps
@@ -75,7 +76,10 @@ class Autopilot:
                 self._up_wait = UP_AFTER_DROP_S
             self._last_down = now
             self.steps_down += 1
-            return self._set(max(self.floor_kbps, int(self.current_kbps * (BIG_DOWN_STEP if far else DOWN_STEP))))
+            kbps = self._set(max(self.floor_kbps, int(self.current_kbps * (BIG_DOWN_STEP if far else DOWN_STEP))))
+            if len(self.down_at) < 20:
+                self.down_at.append((now, self.current_kbps))
+            return kbps
         if level > CLEAR_S or not self.lowered:
             self._clear_since = None
             return None

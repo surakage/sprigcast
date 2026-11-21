@@ -18,6 +18,7 @@ import logging
 import queue
 import threading
 import time
+from pathlib import Path
 
 from sprigcast.core import privacy
 from sprigcast.output.autopilot import Autopilot
@@ -101,6 +102,9 @@ class SharedStreamEncoder(FileTap, ReplayBuffer):
         # The stream's encoder, not a replay: it keeps no clips unless they borrow it (light-PC test 2026-11-19
         # read "sprigcast-replay-stream-horizontal" as a replay buffer running with clips off).
         self._thread.name = f"sprigcast-encoder-{canvas.id}"
+        # Named for what it is in the log ("stream-horizontal: written by the engine"): the replay class's own name
+        # ("replay-stream-horizontal") read as a replay buffer running that the user never turned on (2026-11-21).
+        self.path = Path(f"stream-{canvas.id}.flv")
         self.source_id = canvas.id  # the canvas it encodes
         self.links: list[StreamLink] = []
         self.holders: set[str] = {"stream"}

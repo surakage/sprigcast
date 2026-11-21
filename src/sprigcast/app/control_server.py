@@ -454,6 +454,25 @@ class WindowHost:
         return getattr(self.w, "_last_hotkey_note", None)
 
 
+def _client_label(socket) -> str:
+    """Who an app says it is, from its connection request: its User-Agent and the page origin it came from (an
+    origin has no path, so nothing personal), cut short."""
+    parts = []
+    try:
+        agent = bytes(socket.request().rawHeader(b"User-Agent")).decode("utf-8", "replace").strip()
+    except Exception:  # noqa: BLE001 - a socket Qt already let go
+        agent = ""
+    try:
+        origin = str(socket.origin() or "").strip()
+    except Exception:  # noqa: BLE001
+        origin = ""
+    if agent:
+        parts.append(f"says it is {agent[:60]!r}")
+    if origin and origin != "null":
+        parts.append(f"from the page {origin[:60]}")
+    return ", ".join(parts) or "an app that doesn't say its name"
+
+
 class ControlServer(QObject):
     """Owns the listening socket and one session per connected app.
 
@@ -476,6 +495,7 @@ class ControlServer(QObject):
         self.tcp: QTcpServer | None = None
         self.web_door = False  # plain web links (/api/<action>); Settings → Connections
         self.sessions: dict[QWebSocket, Session | NativeSession] = {}
+        self._labels: dict[QWebSocket, tuple[str, float]] = {}  # who each app says it is, and since when (the log)
         self.password = ""
         self.obs_door = True  # also accept apps made for OBS (Settings → Connections)
         self.frame_seconds = 1 / 60
@@ -740,9 +760,10 @@ class ControlServer(QObject):
                 QWebSocketProtocol.CloseCode(4002), "Only JSON text messages are understood."))
             socket.disconnected.connect(lambda s=socket: self._gone(s))
             socket.sendTextMessage(session.hello())
+            self._labels[socket] = (_client_label(socket), time.monotonic())
             if _CONNECT_LOG.allow("connect"):  # Streamer.bot and friends reconnect often: 129 lines in a day
-                log.info("control: %s app connected from %s%s", "a SprigCast API" if native else "an OBS-style",
-                         socket.peerAddress().toString(), _CONNECT_LOG.skipped("connect"))
+                log.info("control: %s app connected from %s (%s)%s", "a SprigCast API" if native else "an OBS-style",
+                         socket.peerAddress().toString(), self._labels[socket][0], _CONNECT_LOG.skipped("connect"))
             if first:  # start comparing from now
                 (self.native if native else self.api).changes()
             self.watch.start()
@@ -769,9 +790,16 @@ class ControlServer(QObject):
         gone = self.sessions.get(socket)
         if gone is not None:
             self._mark_seen(gone, leaving=True)
+        label, since = self._labels.pop(socket, ("an unnamed app", time.monotonic()))
         if self.sessions.pop(socket, None) is not None:
             if _CONNECT_LOG.allow("gone"):
-                log.info("control: an app disconnected%s", _CONNECT_LOG.skipped("gone"))
+                # Which app and after how long: one came and went every ~20 s all night, unnamed (PC 2026-11-21)
+                try:
+                    code = int(socket.closeCode())
+                except (RuntimeError, TypeError, ValueError):
+                    code = 0
+                log.info("control: %s disconnected after %.0f s (close code %d)%s", label, time.monotonic() - since,
+                         code, _CONNECT_LOG.skipped("gone"))
         try:
             socket.deleteLater()
             if not self.sessions:

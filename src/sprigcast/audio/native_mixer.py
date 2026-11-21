@@ -756,10 +756,11 @@ class NativeMixer:
     def _levels(self, sounds) -> None:
         meters = {}
         followed = self.followed
-        short = {}
+        short, loud = {}, {}
         for source, sound in sounds:
             peak, rms, level, underruns = self._engine.levels(sound.id)
-            short[getattr(source, "name", None) or getattr(source, "id", "?")] = underruns
+            name = getattr(source, "name", None) or getattr(source, "id", "?")
+            short[name], loud[name] = underruns, peak
             sid = getattr(source, "id", None)
             if sid is None:
                 continue
@@ -772,7 +773,7 @@ class NativeMixer:
         meters["duck"] = (duck_db, duck_db)
         self._meters = meters
         self._level_log.feed(meters)
-        self._note_short(short)
+        self._note_short(short, loud=loud)
         try:
             self.report(meters)
         except Exception as exc:  # noqa: BLE001
@@ -780,14 +781,18 @@ class NativeMixer:
 
     SHORT_EVERY_S = 30.0  # how often sounds that ran dry are summed up in the log
     SHORT_AT_LEAST = 3  # a sound ran dry at least this often in that time (one now and then is a pause)
+    SHORT_SILENT_DB = -60.0  # a sound never louder than this in that time: a gap in silence isn't heard
 
-    def _note_short(self, totals: dict, now: float | None = None) -> str | None:
+    def _note_short(self, totals: dict, now: float | None = None, loud: dict | None = None) -> str | None:
         """Sounds that ran dry (the mixer needed their next block and it hadn't come: a gap you hear) are logged
         every SHORT_EVERY_S with how often. Live on the PC (2026-11-21) viewers heard choppy voice and the log
         had nothing about sound."""
         now = time.monotonic() if now is None else now
         seen = self.__dict__.setdefault("_short_seen", {})
         window = self.__dict__.setdefault("_short_window", {})
+        loudest = self.__dict__.setdefault("_short_loudest", {})
+        for name, peak in (loud or {}).items():
+            loudest[name] = max(loudest.get(name, -200.0), peak)
         for name, count in totals.items():
             before = seen.get(name, count)
             if count > before:
@@ -797,8 +802,12 @@ class NativeMixer:
         if now - since < self.SHORT_EVERY_S:
             return None
         self._short_since = now
-        worst = sorted(((n, c) for n, c in window.items() if c >= self.SHORT_AT_LEAST), key=lambda nc: -nc[1])
+        # A capture card with no signal (the HD60 X with the console off, PC 2026-11-21) delivers nothing now and then:
+        # silent all along, its gaps aren't heard, so they aren't said.
+        worst = sorted(((n, c) for n, c in window.items() if c >= self.SHORT_AT_LEAST
+                        and (loud is None or loudest.get(n, 0.0) > self.SHORT_SILENT_DB)), key=lambda nc: -nc[1])
         window.clear()
+        loudest.clear()
         if not worst:
             return None
         line = (f"sound ran dry (gaps you hear) in the last {self.SHORT_EVERY_S:.0f} s: "

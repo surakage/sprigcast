@@ -115,3 +115,18 @@ def test_the_encoder_follows_the_new_bitrate(tmp_path):
                 elif 5 <= t < 8:
                     halves[1] += packet.size
     assert halves[1] < 0.4 * halves[0]  # 600 vs 3000 kbps
+
+
+def test_the_end_of_stream_line_names_the_place_and_when():
+    from types import SimpleNamespace
+
+    from sprigcast.app.optimize import network_trouble
+
+    ap = Autopilot(5400)
+    ap.update(100.0, 0.9)
+    ap.update(101.0, 3.0)
+    yt = SimpleNamespace(name="YouTube", frames=1000, dropped=5, reconnects=0, autopilot=None,
+                         shared=SimpleNamespace(autopilot=ap))
+    tw = SimpleNamespace(name="Twitch", frames=1000, dropped=0, reconnects=0, autopilot=None, shared=None)
+    assert network_trouble([yt, tw], started=40.0) == [
+        "YouTube: 5 frames dropped; auto-pilot lowered (its shared encoder) 1 time, first at 0:01:01 (to 4320 kbps)"]

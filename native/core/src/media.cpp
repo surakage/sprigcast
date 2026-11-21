@@ -476,10 +476,14 @@ void Core::start(bool ensure) {
     ++alive;
     wake.notify_all();  // an old thread still waiting sees it isn't the one any more
     auto self = shared_from_this();
+    // Named for what it reads: every player was "SprigCast media player", so a camera's decoding (16% of a core
+    // on the PC, 2026-11-21) read as a clip playing when none was.
+    const wchar_t *name = live ? L"SprigCast camera reader" : has_video ? L"SprigCast video player"
+                                                                         : L"SprigCast sound file player";
     hold.unlock();
     try {
-        std::thread([self, serial] {
-            sc::name_thread(L"SprigCast media player");
+        std::thread([self, serial, name] {
+            sc::name_thread(name);
             self->run(serial);
         }).detach();
     } catch (...) {

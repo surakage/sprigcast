@@ -250,3 +250,31 @@ def test_a_video_that_cant_play_is_told_through_the_pipe(tmp_path, qt):
     finally:
         set_host(None)
         host.shutdown()
+
+
+def test_web_pages_share_one_graphics_device(monkeypatch):
+    """PC 2026-11-21: 61 pages, each with its own device on the card (162 graphics driver threads)."""
+    from types import SimpleNamespace
+
+    from sprigcast.app.browser_helper import SharedPageDevice
+
+    made = []
+    one = SharedPageDevice((1, 2), lambda card, w, h, name: made.append((w, h)) or SimpleNamespace(device=0xD3D))
+    assert one() == one() == 0xD3D and made == [(2, 2)]  # made once, kept by a target never shown
+    monkeypatch.setenv("SPRIGCAST_PAGE_DEVICE_EACH", "1")
+    assert one() is None  # back to one each
+
+    def broken(*_a):
+        raise OSError("no card")
+
+    monkeypatch.delenv("SPRIGCAST_PAGE_DEVICE_EACH")
+    assert SharedPageDevice((1, 2), broken)() is None  # can't be made: each page makes its own, as before
+
+
+def test_sampling_where_threads_run_is_windows_only():
+    import sys
+
+    from sprigcast.tools.cpuwhere import sample_modules
+
+    if sys.platform != "win32":
+        assert sample_modules([1, 2]) == []

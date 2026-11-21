@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import gc
 import logging
+import os
 import sys
 import threading
 import time
@@ -195,8 +196,37 @@ def at_frame_end(wait_s: float = FRAME_WAIT_S) -> None:
     done.wait(wait_s)
 
 
+SWITCH_QUIET_S = 3.0  # after a bloom switch, no collection and no housekeeping this long
+_quiet_until = 0.0
+_gc_held = False
+
+
+def bloom_switched() -> None:
+    """A bloom switch is starting: Python's automatic collection and the housekeeping wait SWITCH_QUIET_S, so they
+    don't land in the frames that switch (PC live 2026-11-21: gen 2 16 ms + tidy 23 ms right after a switch)."""
+    global _quiet_until, _gc_held
+    _quiet_until = time.monotonic() + SWITCH_QUIET_S
+    if not _gc_held and gc.isenabled():
+        gc.disable()
+        _gc_held = True
+        threading.Timer(SWITCH_QUIET_S, _let_gc_go).start()
+
+
+def _let_gc_go() -> None:
+    global _gc_held
+    if time.monotonic() < _quiet_until - 0.05:  # switched again meanwhile: wait for that one too
+        threading.Timer(_quiet_until - time.monotonic(), _let_gc_go).start()
+        return
+    _gc_held = False
+    gc.enable()
+
+
 def housekeeping(name: str, work) -> None:
-    """Run one piece of the minute's housekeeping at a frame's end; log it when it held things up."""
+    """Run one piece of the minute's housekeeping at a frame's end; log it when it held things up. Right after a
+    bloom switch it waits for that to settle first (bloom_switched)."""
+    wait = _quiet_until - time.monotonic()
+    if wait > 0:
+        return  # skipped, never waited for on the window: the next round comes in seconds
     at_frame_end()
     began = time.perf_counter()
     work()
@@ -346,6 +376,7 @@ def native_threads(top: int = 10) -> str:
 
 
 CPU_EVERY_S = 300.0  # a CPU-by-thread line this often (watch_cpu)
+POOL_LOOK_AT = 10.0  # Windows' thread pool this busy (% of a core): the line after says which libraries it ran in
 _cpu_watch = None
 
 
@@ -366,6 +397,24 @@ def watch_cpu(now: float | None = None) -> str | None:
     top = ", ".join(f"{name} {share:.1f}" for name, share in threads[:12] if share >= 0.1)
     line = f"CPU by thread: {whole:.1f}% of the whole CPU; in % of one core: {top or 'idle'}"
     log.info(line)
+    from sprigcast.tools.cpuwhere import POOL_LABEL
+
+    pool = sum(share for name, share in threads if name.startswith(POOL_LABEL))
+    tids = list(getattr(_cpu_watch, "pool_busiest", []))
+    if pool >= POOL_LOOK_AT and tids and not os.environ.get("SPRIGCAST_NO_POOL_SAMPLES"):
+        def look():
+            from sprigcast.tools.cpuwhere import sample_modules
+
+            try:
+                where = sample_modules(tids)
+            except Exception as exc:  # noqa: BLE001 (a diagnostic: never in the way)
+                log.debug("thread pool look: %s", exc)
+                return
+            if where:
+                log.info("Windows' thread pool (%.0f%% of a core) was running in: %s", pool,
+                         ", ".join(f"{name} {share:.0f}%" for name, share in where[:6]))
+
+        threading.Thread(target=look, name="sprigcast-pool-look", daemon=True).start()
     return line
 
 

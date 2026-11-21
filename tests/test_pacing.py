@@ -273,3 +273,25 @@ def test_nothing_takes_another_threads_frame():
     users = [str(p) for p in Path(sprigcast.__file__).parent.rglob("*.py")
              if "sys._current_frames()" in p.read_text(encoding="utf-8")]
     assert users == []
+
+
+def test_a_bloom_switch_holds_collection_and_housekeeping_a_moment(monkeypatch):
+    """PC live 2026-11-21: Python's collection (16 ms) and the tidy (23 ms) landed right after a switch."""
+    import gc
+
+    from sprigcast.core import pacing
+
+    monkeypatch.setattr(pacing, "SWITCH_QUIET_S", 0.2)
+    ran = []
+    try:
+        pacing.bloom_switched()
+        assert not gc.isenabled()
+        pacing.housekeeping("tidy", lambda: ran.append(1))
+        assert ran == []  # skipped: the next round comes later
+        import time
+
+        time.sleep(0.5)
+        assert gc.isenabled()
+    finally:
+        gc.enable()
+        pacing._quiet_until, pacing._gc_held = 0.0, False

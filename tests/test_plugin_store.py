@@ -240,6 +240,7 @@ def test_the_window_says_so_and_puts_held_updates_in_once_off_air(tmp_path, app,
                           collection=SimpleNamespace(snapshot=lambda: None),
                           _saved_note=lambda title, **k: said.append((title, k["detail"])), _open_settings=None)
     win._plugin_updates = lambda: MainWindow._plugin_updates(win)
+    win._send_whole = lambda: MainWindow._send_whole(win)
     plugin_store.updated_at_start[:] = ["death_count"]
     plugin_store.waiting["barrel_roll"] = snap
     try:

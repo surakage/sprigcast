@@ -195,6 +195,7 @@ def _upload(c: Checkup) -> list[Finding]:
             found.append(Finding("bad", "Encoder", f"Last stream to {_label(o)} dropped {last.loss_pct:.0f}% because "
                                                    "encoding was too slow: lower its resolution or frame rate."))
     found += _all_places(c)
+    found += _shared_higher(c)
     if not c.last_streams and any(o.enabled and o.type == "stream" for o in c.collection.outputs):
         found.append(Finding("info", "Upload", "No stream measured yet: a short test stream lets the doctor "
                                                "check your upload (Twitch has a bandwidth test mode in its ⚙)."))
@@ -223,6 +224,33 @@ def usable_upload(settings) -> int | None:
         measured = 0
     best = max(int(measured * UPLOAD_SHARE), load_proven(settings))
     return best or None
+
+
+def _shared_higher(c: Checkup) -> list[Finding]:
+    """A place that shares an encoder goes out at that encoder's bitrate, the highest of the group's: set at 4500 next
+    to one at 6000, it sent 6000 (PC live 2026-11-21: four places at 5400-6000 with 4500 wanted)."""
+    from types import SimpleNamespace
+
+    from sprigcast.output.shared_stream import bitrate_groups
+
+    by_canvas: dict[tuple, list] = {}
+    for o in c.collection.outputs:
+        if o.type != "stream" or not o.enabled or o.enhanced:
+            continue
+        service = SERVICES.get(o.service or "custom", SERVICES["custom"])
+        kbps = o.bitrate_kbps if o.ignore_recommendations else min(o.bitrate_kbps, service.max_kbps)
+        by_canvas.setdefault((o.canvas, o.size, o.fps), []).append(
+            SimpleNamespace(bitrate_kbps=kbps, max_kbps=service.max_kbps, auto_bitrate=o.auto_bitrate, output=o))
+    found = []
+    for targets in by_canvas.values():
+        for kbps, _auto, members in bitrate_groups(targets):
+            lower = [m for m in members if m.bitrate_kbps < kbps]
+            if lower and len(members) > 1:
+                names = ", ".join(f"{_label(m.output)} ({m.bitrate_kbps} kbps)" for m in lower)
+                found.append(Finding("warning", "Upload", f"{names} share{'s' if len(lower) == 1 else ''} one encoder "
+                                     f"with a place set higher, so {'it goes' if len(lower) == 1 else 'they go'} out at "
+                                     f"{kbps} kbps: set the same bitrate on these places to send what you chose."))
+    return found
 
 
 def _all_places(c: Checkup) -> list[Finding]:

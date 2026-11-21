@@ -32,6 +32,7 @@ STUCK_S = 1.0  # the engine took no picture for this long: a new texture
 MEMORY_S = 2.0  # how long one ask for pictures in memory lasts (SprigCast asks again while it reads them)
 RELOAD_KEYS = ("url", "file", "css", "audio_to_mixer")
 INJECT = {"DocumentCreation": 2, "DocumentReady": 1}  # QWebEngineScript.InjectionPoint
+_texture_form: list[str] = []  # the pointer form this PySide took for a page texture: tried first, said once
 
 QML = b"""
 import QtQuick
@@ -275,12 +276,14 @@ class QuickPage:
         """The page texture as Qt Quick's render target, in whichever form this PySide takes the pointer (on the PC
         an int over 2^31 was refused here too: "Found signature (texture: int, pixelSize, sampleCount)")."""
         why = []
-        for label, (pointer,) in self._pointer_forms_of(texture):
+        forms = sorted(self._pointer_forms_of(texture), key=lambda form: form[0] not in _texture_form)
+        for label, (pointer,) in forms:
             try:
                 made = render_target.fromD3D11Texture(pointer, size)
-                if label != "ints" and not getattr(self, "_said_texture_form", False):
-                    self._said_texture_form = True
-                    log.info("browser source %s: the page texture went to Qt Quick as a %s", self.id, label)
+                if not _texture_form:
+                    _texture_form.append(label)
+                    # Once for all pages (167 lines on the PC, 2026-11-21, a burst at each bloom switch)
+                    log.info("web pages: their textures go to Qt Quick as %s", label)
                 return made
             except Exception as exc:  # noqa: BLE001 - PySide's binding refuses this form: try the next
                 why.append(f"{label}: {exc}")

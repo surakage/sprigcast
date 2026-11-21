@@ -603,3 +603,39 @@ def test_a_stinger_rule_shows_its_whole_file_name_and_its_vertical_clip(monkeypa
         assert right <= dialog.table.width()
     finally:
         dialog.close()
+
+
+def test_a_switch_sends_only_the_blooms_on_air(compositor):
+    """PC live 2026-11-21: a whole collection for a switch had the engine compare every source in the switch frame
+    ("commands 31.4 ms"). A switch alone is SwitchBlooms: the engine's own copy takes the blooms on air."""
+    from types import SimpleNamespace
+
+    from sprigcast.app.main_window import MainWindow
+    from sprigcast.core.events import ReplaceCollection, SwitchBlooms
+
+    t = Transition(kind="fade", duration_ms=300)
+    engine = Engine(collection("a", t))
+    engine._sync_sources(compositor)
+    sources = dict(engine._sources)
+    engine.commands.put(SwitchBlooms({"h": "b"}))
+    assert engine._drain_commands(compositor)
+    assert engine._collection.active_scenes["h"] == "b" and "h" in engine._transitions
+    assert engine._sources == sources  # nothing opened or compared again
+
+    sent = []
+    ui = SimpleNamespace(collection=collection("a", t), engine=SimpleNamespace(send=sent.append))
+    MainWindow._send_to_engine(ui)
+    ui.collection.set_active("b")
+    MainWindow._send_to_engine(ui)
+    ui.collection.sources[0].settings["color"] = "#ffffff"
+    ui.collection.set_active("a")
+    MainWindow._send_to_engine(ui)
+    assert [type(m) for m in sent] == [ReplaceCollection, SwitchBlooms, ReplaceCollection]
+    assert sent[1].active_scenes["h"] == "b"
+
+
+def test_a_bloom_pointed_at_wakes_its_sources_without_drawing_them():
+    engine = Engine(collection("a"))
+    assert "green" not in engine._shown_sources()
+    engine.peek = frozenset({"b"})
+    assert "green" in engine._shown_sources() and "green" not in engine._visible_sources()
