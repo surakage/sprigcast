@@ -6640,10 +6640,7 @@ class MainWindow(QMainWindow):
                 self._live_destinations()  # the switch goes back: this is the whole stream
                 self._on_live_clicked()  # End stream, with its "are you sure" if that's on
                 return
-            elif self._lends_its_picture(output_id):
-                problem = (f"Other places are sending {service}'s picture. Switch off Enhanced Broadcasting, "
-                           "or end the stream.")
-            else:
+            else:  # Twitch Enhanced whose qualities others send: they keep them (StreamSession.drop)
                 problem = self.stop_place(output_id)
         else:
             problem = self.start_place(output_id)
@@ -6660,14 +6657,6 @@ class MainWindow(QMainWindow):
         self._stream_status_at = 0.0
         if self.streaming is not None:
             self._refresh_stream_status()
-
-    def _lends_its_picture(self, output_id: str) -> bool:
-        """Twitch Enhanced Broadcasting whose qualities other places are sending (they have no encoder of
-        their own: ending it would leave them with nothing)."""
-        session = self.streaming
-        st = session.find(output_id) if session is not None else None
-        lent = [id(enc) for enc in getattr(session, "borrowed", [])]
-        return any(id(getattr(track, "encoder", None)) in lent for track in getattr(st, "tracks", ()))
 
     def _on_stream_toggled(self, output_id: str, on: bool) -> None:
         if self.streaming is not None:
@@ -6924,6 +6913,7 @@ class MainWindow(QMainWindow):
             if answer != QMessageBox.StandardButton.Yes:
                 return None
         log.info("Enhanced Broadcasting: %s", config.describe())
+        log.info("Enhanced Broadcasting: Twitch asked for %s", enhanced.answer_summary(answer))
         vertical = any(t.canvas_index > 0 for t in config.tracks)
         if output.enhanced_vertical and not vertical:
             # Twitch decides per channel and PC: a channel not yet allowed Dual Format, or a PC Twitch thinks can't

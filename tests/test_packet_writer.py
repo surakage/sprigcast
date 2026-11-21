@@ -216,3 +216,70 @@ def test_youtube_at_a_twitch_quality_sends_its_packets_without_an_encoder_of_its
         sent = [bytes(p) for p in f.demux(video=0) if p.size]
     assert sent and not any(e.BPM_ERM_UUID in b for b in sent)  # Twitch's metrics stay Twitch's
 
+
+
+def test_twitch_switched_off_while_live_leaves_its_quality_to_the_places_sending_it(native, tmp_path, monkeypatch):
+    """Switching Twitch (Enhanced Broadcasting) off while live: Twitch stops, and the quality YouTube sends keeps
+    encoding for YouTube until the stream ends. Settings used to refuse it, leaving no way to drop a failing
+    Twitch but ending the whole stream (PC, 2026-11-21)."""
+    import time
+
+    import numpy as np
+    from test_enhanced import ANSWER
+
+    from sprigcast.core.scene import Canvas
+    from sprigcast.output import enhanced as e
+    from sprigcast.output.enhanced_stream import EnhancedStreamer
+    from sprigcast.render.engine import Frame
+
+    cfg = e.parse_config(ANSWER, "live_user", "libx264")
+    h = Canvas(id="horizontal", width=640, height=360, fps=30)
+    v = Canvas(id="vertical", width=360, height=640, fps=30)
+    twitch = stream_mod.StreamTarget("Twitch", h, "rtmp://x/app", "live_user", 6000, output_id="tw")
+    twitch.enhanced, twitch.canvases = cfg, [h, v]
+    youtube = stream_mod.StreamTarget("YouTube", h, "rtmp://y/app", "yt", 8000, output_id="yt")
+    paths = {"tw": tmp_path / "tw.flv", "yt": tmp_path / "yt.flv"}
+    monkeypatch.setattr("sprigcast.output.shared_stream.StreamLink._default_open",
+                        lambda self, url: av.open(str(paths["yt"]), "w", format="flv"))
+    engine = stream_tests._Engine()
+    real_init = EnhancedStreamer.__init__
+
+    def init(self, *a, **k):
+        real_init(self, *a, **k)
+        self._url = str(paths["tw"])
+    monkeypatch.setattr(EnhancedStreamer, "__init__", init)
+    session = stream_mod.StreamSession.start(engine, [twitch, youtube], "libx264")
+    start = time.perf_counter()
+
+    def feed(frames, first):
+        for i in range(first, first + frames):
+            when = start + 0.01 + i / 30
+            while time.perf_counter() < when:
+                time.sleep(0.002)
+            for c in (h, v):
+                data = np.full((c.height, c.width, 4), i * 3 % 255, np.uint8).tobytes()
+                for canvas_id, callback in list(engine.frame_taps):
+                    if canvas_id == c.id:
+                        callback(Frame(c.id, c.width, c.height, data, when))
+            for tap in list(engine.mixer.taps):
+                tap(np.zeros((1600, 2), np.float32))
+
+    try:
+        feed(45, 0)
+        tw = session.find("tw")
+        lent = session.borrowed[0]
+        assert session.drop("tw")
+        assert session.find("tw") is None and session.find("yt") is not None
+        assert len(engine.frame_taps) == 1  # only the quality YouTube sends is still fed
+        yt = session.find("yt")
+        sent = yt.frames
+        feed(45, 45)
+        deadline = time.monotonic() + 10
+        while tw.running and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert not tw.running and lent.running and lent.error is None
+        assert yt.frames > sent + 20  # YouTube carried on after Twitch stopped
+    finally:
+        session.stop()
+    assert engine.frame_taps == [] and engine.mixer.taps == []
+    assert not lent.running

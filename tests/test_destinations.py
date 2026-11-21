@@ -1086,7 +1086,8 @@ def test_a_place_is_ended_and_started_again_while_the_rest_stay_live(app, tmp_pa
         assert w._sending_ids() == {"tt"}
         side.place_rows["tt"][3].click()
         assert ended == [True] and session.dropped == ["tw", "tw"] and side.place_rows["tt"][3].isChecked()
-        # Twitch Enhanced lending its picture to others can't be ended alone.
+        # Twitch Enhanced lending its picture to others ends alone too: they keep that quality (StreamSession.drop).
+        # It used to be refused, leaving no way to drop a failing Twitch but ending the stream (PC, 2026-11-21).
         shared = object()
         lender = St("tw", tracks=(type("T", (), {"encoder": shared})(),))
         session.streamers.append(("horizontal", lender))
@@ -1094,8 +1095,8 @@ def test_a_place_is_ended_and_started_again_while_the_rest_stay_live(app, tmp_pa
         w._live_destinations()
         side.place_rows["tw"][3].click()
         QApplication.processEvents()
-        assert "Enhanced Broadcasting" in warned[-1] and side.place_rows["tw"][3].isChecked()
-        assert session.dropped == ["tw", "tw"]
+        assert not any("Enhanced Broadcasting" in m for m in warned) and not side.place_rows["tw"][3].isChecked()
+        assert session.dropped == ["tw", "tw", "tw"]
     finally:
         w.streaming = None
         w.close()

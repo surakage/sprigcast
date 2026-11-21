@@ -158,9 +158,15 @@ class EnhancedStreamer(Streamer):
             if self.native:
                 self._stop_encoders()  # also when it ended between connections
 
+    def hand_over(self, encoders) -> None:
+        """This stream is stopping while other places send some of its qualities: those encoders carry on for
+        them (StreamSession.drop), and this stream no longer stops them."""
+        self._handed = [*getattr(self, "_handed", []), *encoders]
+
     def _stop_encoders(self, timeout: float = 15.0) -> None:
+        handed = getattr(self, "_handed", [])
         for track in self.tracks:
-            if track.encoder.running:
+            if track.encoder.running and not any(track.encoder is h for h in handed):
                 track.encoder.stop(timeout)
 
     def push_frame(self, frame) -> None:  # single-canvas callers (and tests)
@@ -198,6 +204,13 @@ class EnhancedStreamer(Streamer):
         self.dropped = self.tracks[0].dropped
 
     # Stats ---------------------------------------------------------------------------------
+
+    def _open_container(self):
+        """Twitch wants the main quality in Enhanced RTMP's own form too (output/eflv.py)."""
+        from sprigcast.output.eflv import EnhancedIngest
+        from sprigcast.output.stream import CONNECT_TIMEOUT, SEND_TIMEOUT
+
+        return EnhancedIngest(self._url, timeout=(CONNECT_TIMEOUT, SEND_TIMEOUT))
 
     def redact(self, text: str) -> str:
         return privacy.mask(text, self._secrets)

@@ -762,10 +762,25 @@ class StreamSession:
         self.streamers = [(c, s) for c, s in self.streamers if s is not st]
         owned = self.__dict__.setdefault("owned", {})
         gone = list(owned.pop(id(st), []))
+        # Twitch Enhanced Broadcasting whose qualities other places send: Twitch goes, those qualities' encoders
+        # stay for the places sending them (each ends with its last place, or with the stream).
+        lent = [tr.encoder for tr in getattr(st, "tracks", ())
+                if getattr(tr, "encoder", None) is not None and getattr(tr.encoder, "links", None)
+                and any(tr.encoder is b for b in getattr(self, "borrowed", []))]
+        if lent:
+            st.hand_over(lent)
+            for enc in lent:
+                owned[id(enc)] = [tap for tap in gone if tap[1] == enc.push_frame]
+            gone = [tap for tap in gone if not any(tap[1] == enc.push_frame for enc in lent)]
+            log.info("%s stopped; %s keep sending its qualities", st.name,
+                     ", ".join(link.name for enc in lent for link in enc.links))
         enc = getattr(st, "shared", None)
         if enc is not None and hasattr(enc, "links"):
             enc.links[:] = [link for link in enc.links if link is not st]
-            if not enc.links:  # the last place on this encoder: the encoder goes too
+            owner = getattr(enc, "owner", None)  # one of Twitch's qualities: it carries on while Twitch is live
+            if not enc.links and owner is not None and any(s is owner for _, s in self.streamers):
+                enc = None
+            elif not enc.links:  # the last place on this encoder: the encoder goes too
                 self.shared = [e for e in getattr(self, "shared", []) if e is not enc]
                 enc_taps = owned.pop(id(enc), [])
                 if self._keep_for_recording(enc, enc_taps):
@@ -820,6 +835,9 @@ class StreamSession:
                 enc.links[:] = []  # the recording carries on alone
             for enc in shared:  # after the links: nothing is waiting on its packets any more
                 enc.stop(timeout=5)
+            for enc in getattr(self, "borrowed", []):  # Twitch's qualities it left running for other places
+                if getattr(enc, "running", False):
+                    enc.stop(timeout=5)
 
         if wait:
             finish()
