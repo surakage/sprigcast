@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 39  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 40  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 PUSH_OFF, PUSH_TALK, PUSH_MUTE = 0, 1, 2  # sc_mixer_push_set modes
 DLL_NAME = "sprigcore.dll"
 
@@ -1335,6 +1335,32 @@ class LinkStats(ctypes.Structure):
 
 
 LINK_STATES = ("connecting", "ready", "live", "finished", "failed")
+
+
+class FileConfig(ctypes.Structure):
+    """include/sprigcore.h sc_file_config."""
+
+    _fields_ = [("path", ctypes.c_char_p), ("format", ctypes.c_char_p), ("format_options", ctypes.c_char_p),
+                ("tracks", ctypes.c_uint), ("split_seconds", ctypes.c_double), ("split_bytes", ctypes.c_uint64)]
+
+
+class FileStats(ctypes.Structure):
+    """include/sprigcore.h sc_file_stats."""
+
+    _fields_ = [("state", ctypes.c_int), ("parts", ctypes.c_int), ("bytes", ctypes.c_uint64),
+                ("queued_bytes", ctypes.c_uint64), ("seconds", ctypes.c_double), ("write_seconds", ctypes.c_double),
+                ("longest_write", ctypes.c_double), ("error", ctypes.c_char * 256)]
+
+    @property
+    def state_name(self) -> str:
+        return FILE_STATES[self.state] if 0 <= self.state < len(FILE_STATES) else "failed"
+
+    @property
+    def error_text(self) -> str:
+        return self.error.decode("utf-8", "replace")
+
+
+FILE_STATES = ("waiting", "writing", "paused", "finished", "failed")
 WRITER_DROPPED, WRITER_REFUSED, WRITER_LATE = 1, 2, 3
 
 
@@ -1434,6 +1460,18 @@ def _media_sigs() -> dict:
         "sc_link_stats_get": (c_int, [vp, ctypes.POINTER(LinkStats)]),
         "sc_link_finish": (c_int, [vp]),
         "sc_link_destroy": (None, [vp]),
+        "sc_file_open": (c_int, [vp, ctypes.POINTER(FileConfig), ctypes.POINTER(vp)]),
+        "sc_file_pause": (c_int, [vp]),
+        "sc_file_resume": (c_int, [vp]),
+        "sc_file_chapter": (c_int, [vp, ctypes.c_char_p, ctypes.POINTER(ctypes.c_double)]),
+        "sc_file_finish": (c_int, [vp]),
+        "sc_file_stats_get": (c_int, [vp, ctypes.POINTER(FileStats)]),
+        "sc_file_part": (c_int, [vp, c_int, ctypes.c_char_p, c_int, ctypes.POINTER(ctypes.c_double),
+                                 ctypes.POINTER(c_int)]),
+        "sc_file_part_chapter": (c_int, [vp, c_int, c_int, ctypes.POINTER(ctypes.c_int64),
+                                         ctypes.POINTER(ctypes.c_int64), ctypes.c_char_p, c_int]),
+        "sc_file_stop": (c_int, [vp]),
+        "sc_file_destroy": (None, [vp]),
         "sc_mixer_create": (c_int, [c_int, ctypes.POINTER(vp)]),
         "sc_mixer_destroy": (None, [vp]),
         "sc_mixer_source_add": (c_int, [vp, ctypes.POINTER(MixerSourceSettings), ctypes.POINTER(c_int)]),
@@ -1877,6 +1915,20 @@ class Writer:
         _check(self._call(self._lib.sc_link_open, ctypes.byref(config), ctypes.byref(handle)))
         return StreamLinkSender(self._lib, handle)
 
+    def file(self, path, container: str | None = None, container_options: dict[str, str] | None = None,
+             tracks: tuple[int, ...] = (0,), split_seconds: float = 0.0, split_bytes: int = 0) -> "PacketFileWriter":
+        """A recording the engine writes itself from this writer's packets (packets mode; sc_file_open), from
+        the next keyframe. ``tracks``: the sound tracks kept (0 = the first)."""
+        muxing = "\n".join(f"{k}={v}" for k, v in (container_options or {}).items())
+        mask = 0
+        for t in tracks:
+            mask |= 1 << int(t)
+        config = FileConfig(str(path).encode("utf-8"), container.encode() if container else None,
+                            muxing.encode() if muxing else None, mask, float(split_seconds), int(split_bytes))
+        handle = ctypes.c_void_p()
+        _check(self._call(self._lib.sc_file_open, ctypes.byref(config), ctypes.byref(handle)))
+        return PacketFileWriter(self._lib, handle)
+
     def close(self) -> None:
         """Give up whatever is still unwritten and free the writer (finish() and wait() first to keep it)."""
         with self._lock:
@@ -1920,6 +1972,100 @@ class StreamLinkSender:
             handle, self._handle = self._handle, None
         if handle:
             self._lib.sc_link_destroy(handle)
+            drain_log()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 (interpreter shutting down)
+            pass
+
+
+class PacketFileWriter:
+    """A recording written by a thread of the engine's own from a packets-mode writer's packets
+    (include/sprigcore.h sc_file). It outlives its writer safely. Every method is safe from any thread."""
+
+    def __init__(self, lib, handle: ctypes.c_void_p):
+        self._lib, self._handle = lib, handle
+        self._lock = __import__("threading").Lock()
+        self._last = FileStats()
+        self._last.state = FILE_STATES.index("finished")
+        self._parts: list[tuple[str, float, list[dict]]] = []
+
+    def _do(self, fn, *args) -> int:
+        with self._lock:
+            if not self._handle:
+                return 0
+            code = fn(self._handle, *args)
+        if code < 0:
+            _check(code)
+        return code
+
+    def pause(self) -> bool:
+        return self._do(self._lib.sc_file_pause) == 1
+
+    def resume(self) -> bool:
+        return self._do(self._lib.sc_file_resume) == 1
+
+    def chapter(self, name: str) -> float | None:
+        """Marks a chapter at the newest picture written; its seconds into the part, or None when nothing is
+        being written."""
+        at = ctypes.c_double()
+        done = self._do(self._lib.sc_file_chapter, str(name).encode("utf-8"), ctypes.byref(at))
+        return at.value if done == 1 else None
+
+    def finish(self) -> None:
+        """End the file just before the next keyframe (asked for now); stats().state_name turns "finished"."""
+        self._do(self._lib.sc_file_finish)
+
+    def stats(self) -> FileStats:
+        with self._lock:
+            if self._handle:
+                out = FileStats()
+                _check(self._lib.sc_file_stats_get(self._handle, ctypes.byref(out)))
+                self._last = out
+            return self._last
+
+    def parts(self) -> list[tuple[str, float, list[dict]]]:
+        """Every file started so far: (path, seconds, chapters as output/replay.py chapter_list gives them). A
+        part's seconds and chapters are filled once it's finished."""
+        from fractions import Fraction
+
+        with self._lock:
+            if not self._handle:
+                return list(self._parts)
+            out = []
+            path, title = ctypes.create_string_buffer(4096), ctypes.create_string_buffer(1024)
+            seconds, count = ctypes.c_double(), ctypes.c_int()
+            start, end = ctypes.c_int64(), ctypes.c_int64()
+            index = 0
+            while self._lib.sc_file_part(self._handle, index, path, len(path), ctypes.byref(seconds),
+                                         ctypes.byref(count)) == SC_OK:
+                chapters = []
+                for c in range(count.value):
+                    if self._lib.sc_file_part_chapter(self._handle, index, c, ctypes.byref(start), ctypes.byref(end),
+                                                      title, len(title)) != SC_OK:
+                        break
+                    chapters.append({"id": c + 1, "start": start.value, "end": end.value,
+                                     "time_base": Fraction(1, 1000),
+                                     "metadata": {"title": title.value.decode("utf-8", "replace")}})
+                out.append((path.value.decode("utf-8", "replace"), seconds.value, chapters))
+                index += 1
+            self._parts = out
+            return list(out)
+
+    def close(self) -> None:
+        """Close what there is at once (finish() first, and wait for "finished", to end it at a keyframe)."""
+        with self._lock:
+            handle = self._handle
+        if handle:
+            self._lib.sc_file_stop(handle)  # closed (or given 10 s): its last numbers and parts are kept
+            self.stats()
+            self.parts()
+        with self._lock:
+            handle, self._handle = self._handle, None
+        if handle:
+            self._lib.sc_file_destroy(handle)
             drain_log()
 
     def __del__(self):

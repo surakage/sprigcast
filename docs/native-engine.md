@@ -308,6 +308,15 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   the writer encodes. `SPRIGCAST_NO_NATIVE_LINK=1` sends from Python as before. Twitch Enhanced Broadcasting's
   own connection (`output/enhanced_stream.py`) is still sent by Python. Tests: `tests/test_native_writer.py`
   (the link alone), `tests/test_packet_writer.py` (through `StreamLink`).
+- **Recordings written by the engine (interface 40, `sc_file_*`, `writer.cpp` `File`).** A recording from a
+  shared encoder (`output/shared.py` `FileTap`: the canvas encoder recordings and clips share, and a "Same as
+  stream" recording) is packed and written by a thread of the engine's own from the writer's packets, with
+  `FileTap`'s rules: it starts at a keyframe it asks for, pause and resume leave no hole, it splits into
+  "part 2", "part 3" by time or size at a keyframe, chapter marks go into each part as it closes (and are
+  handed back for MP4s made plain), and it ends just before a keyframe. A file that can't be written fails
+  alone; one whose writer ends is still finished properly. Python's encoder thread only reads its numbers and
+  parts (`_engine_file_turn`). `SPRIGCAST_NO_NATIVE_FILE=1` writes from Python (`PacketFile`) as before. Tests:
+  `tests/test_native_writer.py` (the file alone), `tests/test_packet_writer.py` (through `FileTap`).
 - Phase 4 is code-complete; next is the PC test of phases 1-4 on a build.
 
 ## Phase 5: sound (`native/core/src/mixer.cpp`, `capture.cpp`)

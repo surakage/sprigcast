@@ -6,6 +6,11 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- Recordings are written by the C++ engine: the file is packed and written on a thread of the engine's own, so
+  the window being busy can't hold it up, and a slow disk can't hold up anything else. Pause, split into parts,
+  chapter marks and "Same as stream" recordings work as before. `SPRIGCAST_NO_NATIVE_FILE=1` turns it off. Not
+  tried on a PC yet.
+
 - Streams are sent by the C++ engine: each place's connection is made, packed and sent on a thread of the
   engine's own, so a busy moment in the window can no longer hold up what goes out to Twitch, YouTube, Kick and
   the others. Reconnecting, stream delay, skipping when the upload can't keep up, auto bitrate and the numbers
