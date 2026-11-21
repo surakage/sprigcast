@@ -1143,7 +1143,9 @@ class SettingsWindow(QDialog):
         self.reject()
 
     def _stream_page(self, encoder: str) -> QWidget:
-        self.stream_page = StreamPage(self.collection)
+        self.stream_page = StreamPage(self.collection, later=True)  # the list now, the form a part a tick
+        for _part in range(StreamPage.PARTS):
+            self._slice(self.stream_page.take_part)
         gardens = getattr(self.parent(), "gardens", None)
         if gardens is not None:
             self.stream_page.other_paths_ids = gardens.taken_output_ids()
