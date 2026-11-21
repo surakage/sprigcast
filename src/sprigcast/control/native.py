@@ -72,6 +72,7 @@ FEATURES = (
     "events.item_moved",   # item.moved when something is moved, sized, cropped or turned
     "filters.share",       # a placed sprig's filters follow on its other canvases; filters.share, filters.list same_on_both_canvases
     "layout.get",          # layout.get: every item's place, crop, bounds, source size and canvas box; flat, overlaps
+    "places.size",         # places.list size [w, h], fps, and enhanced where the service has it
     "places.ready",        # places.list name, ready, problem ("Needs a stream key"): why a place can't go live yet
     "app_audio.pids",      # app_audio settings pids: [process id, ...] catches those processes' trees instead of apps
 )
@@ -1462,6 +1463,12 @@ class NativeApi:
             why = getattr(self.host, "place_problem", lambda _id: None)(o.id)
             place = {"id": o.id, "service": o.service, "shape": o.canvas, "on": o.enabled, "bitrateKbps": o.bitrate_kbps,
                      "name": service.label, "ready": why is None, "problem": why}
+            canvas = next((c for c in self.col.canvases if c.id == o.canvas), None)
+            size = o.size or ((canvas.width, canvas.height) if canvas is not None else None)
+            place["size"] = list(size) if size else None  # what is sent: the place's own, else its shape's
+            place["fps"] = o.fps or (canvas.fps if canvas is not None else None)
+            if o.service == "twitch":
+                place["enhanced"] = o.enhanced  # only where the service has it (Twitch)
             if SERVICES.get(o.service or "custom", SERVICES["custom"]).bandwidth_test:
                 place["bandwidth_test"] = o.bandwidth_test  # only where the service has a test mode (Twitch)
             out.append(place)
