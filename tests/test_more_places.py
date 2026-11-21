@@ -37,7 +37,7 @@ def test_the_list_is_a_to_z_with_custom_last_and_nothing_closed_or_for_adults():
     assert keys[-1] == "custom" and labels[:-1] == sorted(labels[:-1], key=str.lower)
     assert set(keys) == set(stream.SERVICES) and len(set(labels)) == len(labels)
     assert stream.TOP_SERVICES == ("twitch", "youtube", "kick", "tiktok", "facebook")
-    assert {"facebook", "x", "chzzk", "soop", "restream"} <= set(keys)
+    assert {"facebook", "x", "chzzk", "soop", "restream", "beam", "shareplay"} <= set(keys)
     left_out = ("trovo", "kakao", "nimo", "cam4", "chaturbate", "stripchat", "myfreecams", "onlyfans", "xlovecam",
                 "bongacams", "camsoda", "picarto", "piczel")
     assert not [name for name in labels if any(word in name.lower().replace(" ", "") for word in left_out)]
@@ -101,3 +101,14 @@ def test_every_place_has_a_tile_and_get_started_offers_the_top_five():
     assert getting_started.PLACES == stream.TOP_SERVICES
     assert set(getting_started.PLACES) <= set(getting_started.PLACE_COLORS)
     assert [k for k, _ in live_stage.SERVICE_CHOICES] == [*stream.TOP_SERVICES, "custom"]
+
+
+def test_settings_drop_downs_carry_the_drawn_chevron():
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    from sprigcast.app import stream_dialog, theme
+    from sprigcast.app.settings_window import window_style
+
+    rule = theme.combo_arrow_rule("#settingsWindow QComboBox")
+    assert "::down-arrow" in rule and "chevron" in rule
+    assert "#settingsWindow QComboBox::down-arrow { image: url(" in window_style()
+    assert "#streamCard QComboBox::down-arrow { image: url(" in stream_dialog.PAGE_STYLE
