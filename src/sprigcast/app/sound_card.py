@@ -77,7 +77,7 @@ def type_of(group: str | None) -> str:
     if group in GROUP_COLOURS:
         return group
     return "Other" if "Other" in GROUP_COLOURS else GROUPS[-1]
-HEARD_DB = -50.0  # RMS above this counts as playing
+HEARD_DB = -42.0  # a peak above this counts as playing (hiss and room noise stay below it)
 LINGER_S = 4.0  # a sound stays listed this long after it goes quiet
 CHIP_STYLE = theme.button_style(11, "3px 11px", extra="min-height: 16px; font-size: 11px;")
 MUTED_CHIP_STYLE = CHIP_STYLE + f"QPushButton {{ background: {theme.LIVE}; color: #ffffff; border-color: {theme.LIVE_EDGE}; }}"
@@ -182,7 +182,7 @@ class VolumeMeter(ThinMeter):
         p.drawRoundedRect(bar, 2, 2)
         if self.level > 0 and not self.muted:
             colour = self.colour or theme.ACCENT
-            if self.level >= 0.85:
+            if self.level >= theme.CLIP_LEVEL:
                 colour = theme.LIVE
             p.setBrush(QColor(colour))
             p.drawRoundedRect(QRectF(0, bar.top(), max(4.0, bar.width() * self.level), 4), 2, 2)
@@ -364,17 +364,19 @@ class SoundCard(QWidget):
         for source_id, meter in self.meters.items():
             if source_id not in levels:
                 continue
-            rms = levels[source_id][1]
-            meter.set_db(rms)
-            if rms > HEARD_DB:
+            # The bars follow the loudest moment since the last update, not one short slice of it: speech and
+            # a short alert sound move them right away (2026-11-21: the mic and alerts read "quiet").
+            peak = levels[source_id][0]
+            meter.set_db(peak)
+            if peak > HEARD_DB:
                 self.heard[source_id] = now
             sound = self.sounds.get(source_id)
-            if sound is not None and not sound.muted and rms > loudest.get(sound.group, (-61.0, ""))[0]:
-                loudest[sound.group] = (rms, sound.name)
+            if sound is not None and not sound.muted and peak > loudest.get(sound.group, (-61.0, ""))[0]:
+                loudest[sound.group] = (peak, sound.name)
         for group, meter in self.group_meters.items():
             meter.set_db(loudest.get(group, (-60.0, ""))[0])
         if self.tuning in levels:
-            self.tune.meter.set_db(levels[self.tuning][1])
+            self.tune.meter.set_db(levels[self.tuning][0])
         self._apply_visibility(now, {g: name for g, (_, name) in loudest.items()})
 
     # Building -----------------------------------------------------------------------------

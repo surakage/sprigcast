@@ -83,6 +83,10 @@ def test_groups_show_only_what_is_playing(app):
     assert theme.MUTED in card.parts["Voice"]["name"].styleSheet()
     card.set_levels({"al": (-60, -60)}, now=106.0)  # quiet again for longer than LINGER_S
     assert sub("SFX") == "2 quiet"
+    # Speech between words: the last slice is quiet, but the loudest moment since the last update counts.
+    card.set_levels({"mic": (-14, -58)}, now=107.0)
+    assert sub("Voice") == "Mic" and card.meters["mic"].level > 0.7
+    card.set_levels({"mic": (-60, -60)}, now=112.0)
     card.toggle_group("SFX")
     assert shown() == {"al", "tts"}
     card.toggle_group("SFX")

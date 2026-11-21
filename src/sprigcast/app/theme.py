@@ -57,6 +57,9 @@ FIELD_EDGE = "#62776c"
 LABEL = "#c3cfc8"
 SECTION_TITLE_PX = 15
 WARN = "#e6c55a"
+# Level bars (0..1 of -60..0 dBFS, following the peak): yellow above -18 dB, pink above -3 dB (about to clip).
+LOUD_LEVEL = 0.7
+CLIP_LEVEL = 0.95
 BAD = "#f2665e"
 INFO = "#7fb8ff"
 
