@@ -6,6 +6,7 @@ import worker from "../worker.js";
 const env = (over = {}) => ({
   YOUTUBE_CLIENT_ID: "yt-id", YOUTUBE_CLIENT_SECRET: "yt-secret",
   KICK_CLIENT_ID: "k-id", KICK_CLIENT_SECRET: "k-secret",
+  TIKTOK_CLIENT_KEY: "tt-key", TIKTOK_CLIENT_SECRET: "tt-secret",
   LIMITER: { limit: async () => ({ success: true }) }, ...over,
 });
 
@@ -118,4 +119,41 @@ test("pages answer HEAD without a body and refuse POST", async () => {
 test("anything else is still not found", async () => {
   const response = await worker.fetch(new Request("https://signin.example/nope"), env());
   assert.equal(response.status, 404);
+});
+
+test("tiktok sends client_key with its secret, only on 127.0.0.1, and keeps the refresh token when asked", async () => {
+  const calls = fakeProvider({ access_token: "tt", refresh_token: "trt", expires_in: 86400, open_id: "o" });
+  const redirect = "http://127.0.0.1:61234/callback";
+  const ok = await worker.fetch(post({ ...good, service: "tiktok", redirect_uri: redirect, keep: "1" }), env());
+  assert.equal(ok.status, 200);
+  const body = await ok.json();
+  assert.equal(body.access_token, "tt");
+  assert.equal(body.refresh_token, "trt");
+  assert.equal(body.open_id, undefined);
+  assert.equal(calls[0].url, "https://open.tiktokapis.com/v2/oauth/token/");
+  assert.deepEqual(calls[0].body, { grant_type: "authorization_code", client_key: "tt-key", client_secret: "tt-secret",
+                                    code: "c", code_verifier: "v", redirect_uri: redirect });
+  const elsewhere = await worker.fetch(post({ ...good, service: "tiktok", redirect_uri: "http://localhost:5/callback" }), env());
+  assert.equal(elsewhere.status, 400);
+  assert.equal(calls.length, 1);
+});
+
+test("tiktok's error answered with 200 is still an error", async () => {
+  fakeProvider({ error: "invalid_grant", error_description: "Authorization code is expired.", log_id: "x" });
+  const response = await worker.fetch(post({ ...good, service: "tiktok" }), env());
+  assert.equal(response.status, 400);
+  const body = await response.json();
+  assert.equal(body.error, "invalid_grant");
+  assert.equal(body.access_token, undefined);
+});
+
+test("revokes a tiktok sign-in with the secret; other services can't revoke here", async () => {
+  const calls = fakeProvider({});
+  const response = await worker.fetch(post({ service: "tiktok", grant_type: "revoke", token: "rt" }), env());
+  assert.equal(response.status, 200);
+  assert.equal(calls[0].url, "https://open.tiktokapis.com/v2/oauth/revoke/");
+  assert.deepEqual(calls[0].body, { client_key: "tt-key", client_secret: "tt-secret", token: "rt" });
+  const kick = await worker.fetch(post({ service: "kick", grant_type: "revoke", token: "rt" }), env());
+  assert.equal(kick.status, 400);
+  assert.equal(calls.length, 1);
 });

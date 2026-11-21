@@ -38,7 +38,7 @@ log = logging.getLogger(__name__)
 
 TIMEOUT = 10
 SERVICES = ("twitch", "youtube", "kick")
-LABELS = {"twitch": "Twitch", "youtube": "YouTube", "kick": "Kick"}
+LABELS = {"twitch": "Twitch", "youtube": "YouTube", "kick": "Kick", "tiktok": "TikTok"}
 TITLE_MAX = {"twitch": 140, "youtube": 100, "kick": 100}
 DESCRIPTION_MAX = 5000
 PRIVACY = ("public", "unlisted", "private")
@@ -56,7 +56,7 @@ YOUTUBE_API = "https://www.googleapis.com/youtube/v3"
 YOUTUBE_UPLOAD = "https://www.googleapis.com/upload/youtube/v3"
 KICK_API = "https://api.kick.com/public/v1"
 KICK_API_V2 = "https://api.kick.com/public/v2"
-TOKEN_REF = {"youtube": "youtube/oauth", "kick": "kick/oauth"}
+TOKEN_REF = {"youtube": "youtube/oauth", "kick": "kick/oauth", "tiktok": "tiktok/oauth"}  # TikTok: account only
 ACCOUNT_SETTING = "{}/details_account"  # QSettings: who's signed in for Stream details ("" = nobody). Not secret.
 
 _refresh_lock = threading.Lock()  # Kick hands out a new refresh token each time: one refresh at a time
@@ -188,12 +188,18 @@ def sign_out(service: str) -> None:
         token = json.loads(raw).get("refresh_token", "")
     except ValueError:
         return
-    url = ("https://oauth2.googleapis.com/revoke" if service == "youtube"
-           else f"https://id.kick.com/oauth/revoke?{urllib.parse.urlencode({'token': token})}")
     try:
         from sprigcast.output.oauth_loopback import post_form
 
-        post_form(url, {"token": token} if service == "youtube" else {}, LABELS[service])
+        if service == "tiktok":  # TikTok's revoke takes the client secret, so it goes through the helper
+            from sprigcast.output import service_signin
+
+            post_form(service_signin.helper_url(), {"service": "tiktok", "grant_type": "revoke", "token": token},
+                      "SprigCast's sign-in helper")
+        else:
+            url = ("https://oauth2.googleapis.com/revoke" if service == "youtube"
+                   else f"https://id.kick.com/oauth/revoke?{urllib.parse.urlencode({'token': token})}")
+            post_form(url, {"token": token} if service == "youtube" else {}, LABELS[service])
     except Exception:  # noqa: BLE001
         pass
     log.info("stream details: %s signed out", service)

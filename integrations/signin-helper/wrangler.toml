@@ -10,9 +10,11 @@ routes = [{ pattern = "signin.slothbloom.com", custom_domain = true }]
 # Client IDs are public (they're in the app too). The secrets are NOT here: set them with
 #   npx wrangler secret put YOUTUBE_CLIENT_SECRET
 #   npx wrangler secret put KICK_CLIENT_SECRET
+#   npx wrangler secret put TIKTOK_CLIENT_SECRET
 [vars]
 YOUTUBE_CLIENT_ID = "497399863565-mmjhhrvqkdqvhvucg38orn04sa0cnobp.apps.googleusercontent.com"
 KICK_CLIENT_ID = "01M7JQPKVG11WQPN9YZDNZV8KW"
+TIKTOK_CLIENT_KEY = "sbawt54wjm8n6ozbud"  # sandbox; the production key once TikTok approves the app
 
 # At most 10 sign-ins a minute from one address.
 [[ratelimits]]

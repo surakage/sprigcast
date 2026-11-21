@@ -45,6 +45,8 @@ WAIT_SECONDS = 300
 DEFAULTS = {
     "youtube/client_id": "497399863565-mmjhhrvqkdqvhvucg38orn04sa0cnobp.apps.googleusercontent.com",
     "kick/client_id": "01M7JQPKVG11WQPN9YZDNZV8KW",
+    # TikTok's sandbox client key, for the Login Kit demo; swap for the production one once TikTok approves it.
+    "tiktok/client_id": "sbawt54wjm8n6ozbud",
 }
 HELPER_URL = "https://signin.slothbloom.com/v1/token"  # SPRIGCAST_SIGNIN_URL overrides it for testing
 
@@ -77,6 +79,24 @@ def _powers_refused(service: str) -> None:
     if service == "kick" and QSettings().value(KICK_POWERS, False, type=bool):
         QSettings().setValue(KICK_POWERS, False)
         log.info("sign-in: kick didn't finish with chat and moderation asked for; next sign-in asks without them")
+
+# TikTok Login Kit for Desktop: only shows which account is connected. TikTok has no public stream key or LIVE
+# chat API (both are partner-only), so a TikTok sign-in reads no key: the key is still pasted from LIVE Producer.
+TIKTOK_AUTH = "https://www.tiktok.com/v2/auth/authorize/"
+TIKTOK_API = "https://open.tiktokapis.com/v2"
+TIKTOK_SCOPES = "user.info.basic,user.info.profile"
+TIKTOK_FIELDS = "open_id,display_name,username"
+
+WHO = {"youtube": "Google", "kick": "Kick", "tiktok": "TikTok"}
+LABEL = {"youtube": "YouTube", "kick": "Kick", "tiktok": "TikTok"}
+GIVES_KEY = ("youtube", "kick")  # TikTok's sign-in names the account only
+
+
+def tiktok_challenge(verifier: str) -> str:
+    """TikTok's desktop sign-in wants the SHA-256 of the verifier as hex, not base64url like Google and Kick."""
+    import hashlib
+
+    return hashlib.sha256(verifier.encode()).hexdigest()
 CHAT_NAMES = "chat/names"  # QSettings, as app/chat_panel.NAMES: the channels the Chat panel reads
 KICK_PORT = 51587  # Kick matches the redirect URL exactly, so it's always this one
 KICK_REDIRECT = f"http://localhost:{KICK_PORT}/callback"
@@ -105,7 +125,7 @@ def setting(name: str) -> str:
 
 def available(service: str) -> bool:
     """Is sign-in offered for this service (SprigCast registered with it)?"""
-    return service in ("youtube", "kick") and bool(setting(f"{service}/client_id"))
+    return service in ("youtube", "kick", "tiktok") and bool(setting(f"{service}/client_id"))
 
 
 def helper_url() -> str:
@@ -140,10 +160,12 @@ class Flow:
 
     def finish(self, cancelled: threading.Event | None = None) -> Fetched:
         """Wait for the browser, then read the account and key. Raises SignInError / Cancelled."""
-        who = {"youtube": "Google", "kick": "Kick"}[self.service]
+        who = WHO[self.service]
         try:
             code = self.waiter.wait(WAIT_SECONDS, cancelled, who)
-            if self.keep:
+            if self.service == "tiktok":
+                fetched = _tiktok_rest(self, code)
+            elif self.keep:
                 fetched = _keep_rest(self, code)
             else:
                 fetched = (_youtube_rest if self.service == "youtube" else _kick_rest)(self, code)
@@ -168,7 +190,7 @@ def begin(service: str, keep: bool = False, vertical: bool = False) -> Flow:
     Every sign-in stays signed in for Stream details and names your channel for chat; keep: Stream details
     only (no stream key is read)."""
     cid = setting(f"{service}/client_id")
-    label = {"youtube": "YouTube", "kick": "Kick"}[service]
+    label = LABEL[service]
     if not cid:
         raise SignInError(f"{label} sign-in isn't set up in this copy of SprigCast. Paste the key instead.")
     verifier, challenge = pkce_pair()
@@ -180,6 +202,12 @@ def begin(service: str, keep: bool = False, vertical: bool = False) -> Flow:
                   # offline sign-in, and only with consent shown.
                   "access_type": "offline", "prompt": "consent select_account"}
         auth = YOUTUBE_AUTH
+    elif service == "tiktok":
+        waiter = Waiter(free_port(), label="TikTok")  # registered as http://127.0.0.1:*/callback
+        params = {"client_key": cid, "scope": TIKTOK_SCOPES, "response_type": "code", "redirect_uri": waiter.url,
+                  "state": waiter.state, "code_challenge": tiktok_challenge(verifier),
+                  "code_challenge_method": "S256"}
+        auth = TIKTOK_AUTH
     else:
         waiter = Waiter(KICK_PORT, host="localhost", label="Kick")
         params = {"response_type": "code", "client_id": cid, "redirect_uri": waiter.url,
@@ -211,7 +239,7 @@ def _keep_rest(flow: Flow, code: str) -> Fetched:
     """Stream details: keep the sign-in (in the credential store) and name the account. No key is read."""
     from sprigcast.output import stream_details
 
-    who = {"youtube": "Google", "kick": "Kick"}[flow.service]
+    who = WHO[flow.service]
     reply = _swap(flow.service, code, flow.verifier, flow.waiter.url, who, keep=True)
     token = reply["access_token"]
     if flow.service == "youtube":
@@ -446,7 +474,51 @@ def _kick_rest(flow: Flow, code: str) -> Fetched:
     return Fetched(account=slug or "Kick", key=stream["key"], server=str(stream.get("url") or ""))
 
 
-SIGN_IN = {"youtube": youtube, "kick": kick}
+def tiktok_account(user: dict) -> str:
+    """How a TikTok account is shown: "Name (@username)", or whichever of the two TikTok sent."""
+    name = str(user.get("display_name") or "").strip()
+    handle = str(user.get("username") or "").strip().lstrip("@")
+    if name and handle:
+        return f"{name} (@{handle})"
+    return name or (f"@{handle}" if handle else "TikTok")
+
+
+def tiktok_user(token: str) -> dict:
+    """The signed-in TikTok account (user.info.basic: display name; user.info.profile: username)."""
+    reply = get_json(f"{TIKTOK_API}/user/info/?fields={TIKTOK_FIELDS}", token, "TikTok")
+    error = reply.get("error") or {}
+    if error.get("code") not in (None, "", "ok"):
+        raise SignInError(f"TikTok said: {error.get('message') or error.get('code')}.")
+    user = (reply.get("data") or {}).get("user") or {}
+    if not user:
+        raise SignInError("TikTok didn't return your account.")
+    return user
+
+
+def _tiktok_rest(flow: Flow, code: str) -> Fetched:
+    """TikTok: stay signed in and show the account. No key: TikTok doesn't share one with apps."""
+    from sprigcast.output import stream_details
+
+    reply = _swap("tiktok", code, flow.verifier, flow.waiter.url, "TikTok", keep=True)
+    log.info("sign-in: tiktok token received")
+    user = tiktok_user(reply["access_token"])
+    account = tiktok_account(user)
+    from sprigcast.core import privacy
+
+    privacy.remember_name(account)  # never in the log
+    try:
+        stream_details.save_tokens("tiktok", reply, account)
+    except stream_details.DetailsError as exc:
+        raise SignInError(str(exc)) from exc
+    return Fetched(account=account, key="")
+
+
+def tiktok(cancelled: threading.Event | None = None, open_url: Callable[[str], object] = webbrowser.open) -> Fetched:
+    """Sign in with TikTok: which account is connected (no stream key)."""
+    return _run("tiktok", cancelled, open_url)
+
+
+SIGN_IN = {"youtube": youtube, "kick": kick, "tiktok": tiktok}
 
 
 def key_from_account(service: str, vertical: bool = False, saved: str | None = None) -> Fetched:

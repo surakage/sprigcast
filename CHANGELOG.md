@@ -6,6 +6,10 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- Sign in with TikTok (Settings → Stream → a TikTok place): shows which TikTok account is connected, as
+  "Name (@username)". It reads no stream key, because TikTok doesn't share one with apps; paste the key from LIVE
+  Producer as before. Sign out deletes the sign-in and asks TikTok to cancel it. Uses TikTok's sandbox for now,
+  so only test accounts can sign in until TikTok approves the app.
 - Test builds for testers: pushing a `test-*` tag (for example `test-2026-11-21`) builds the installer and publishes it
   as a GitHub pre-release with docs/tester-guide.md as its text, so testers get a download link that lasts. The
   in-app updater skips pre-releases.
