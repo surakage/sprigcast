@@ -180,7 +180,7 @@ def test_a_sound_well_ahead_drops_the_extra(mixer):
         mixer.push(s, tone(t / 1000))  # each block says when it was pushed
         mixer.tick(1)
     last = take_all(mixer, tap, 1)[-1][1]
-    late = 200 - round(float(last[0, 0]) * 1000)
+    late = 200 - round(float(np.ravel(last)[0]) * 1000)
     assert mixer.levels(s)[3] == 0 and late <= 2  # never ran dry, and no longer six blocks late
 
 
