@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 37
+#define SC_INTERFACE_VERSION 38
 
 enum {
     SC_OK = 0,
@@ -732,6 +732,48 @@ SC_API int sc_writer_set_bitrate(sc_writer *writer, int kbps, int max_kbps, int 
 /* The next picture is a keyframe (a recording starting from these packets, a viewer joining). */
 SC_API int sc_writer_keyframe(sc_writer *writer);
 SC_API void sc_writer_destroy(sc_writer *writer);
+
+/* ---- A stream sent by the engine (interface 38, writer.cpp) ------------------------------------------------
+ * One connection fed by a packets-mode writer: a thread of the engine's own connects to `url` (an RTMP(S) ingest;
+ * anything FFmpeg's `format` muxer can write to, a file in tests), and every packet the writer encodes (its video
+ * and its first sound track) is packed and sent there without passing through the caller. The packets still wait
+ * for sc_writer_packet_take as well (clips, a recording from the same packets).
+ * It starts at the first keyframe after it connected (it asks the writer for one), with times counted from that
+ * keyframe. With more than max_backlog_s of packets waiting to be sent (counted at `kbps`) it skips packets until
+ * fewer than resume_backlog_s wait and a keyframe comes; alone on its writer it asks for that keyframe at once.
+ * delay_s holds every packet that long before it may be sent (a stream delay).
+ * One connection only: when it drops, the state is FAILED and `error` says why (never the url); the caller
+ * destroys it and opens another. A writer that closes ends its links the same way. */
+typedef struct sc_link_config {
+    const char *url;       /* UTF-8 */
+    const char *format;    /* muxer, NULL = "flv" */
+    int kbps;              /* the bitrate set, for counting the backlog in seconds */
+    double delay_s;
+    double max_backlog_s, resume_backlog_s;   /* 0 = 4 and 2 */
+    int connect_timeout_ms, send_timeout_ms;  /* 0 = 10000 and 20000 */
+    double behind_s;       /* a backlog of this much counts as waiting on the network (0 = 0.25) */
+} sc_link_config;
+enum { SC_LINK_CONNECTING = 0, SC_LINK_READY = 1, SC_LINK_LIVE = 2, SC_LINK_FINISHED = 3, SC_LINK_FAILED = 4 };
+typedef struct sc_link_stats {
+    int state;                 /* READY: connected, waiting for its keyframe; LIVE: its first packet went out */
+    int congested;             /* skipping packets until it has caught up */
+    uint64_t frames, dropped, bytes;          /* video packets sent and skipped, bytes sent */
+    uint64_t backlog_bytes;                   /* waiting to be sent (delayed ones not counted) */
+    int delayed;                              /* packets held by the delay */
+    double send_seconds, longest_send;        /* time inside the muxer and the network */
+    double behind_seconds;                    /* time sending with behind_s or more waiting */
+    double first_seconds;                     /* the writer's time of the keyframe it started at */
+    char error[256];
+} sc_link_stats;
+typedef struct sc_link sc_link;
+SC_API int sc_link_open(sc_writer *writer, const sc_link_config *cfg, sc_link **out);
+SC_API int sc_link_stats_get(sc_link *link, sc_link_stats *out);
+/* Takes nothing new; what waits (a stream delay's packets too, each at its time) is still sent, then the
+ * connection is closed properly and the state is FINISHED. */
+SC_API int sc_link_finish(sc_link *link);
+/* Closes the connection at once (what waits is given up) and frees it. Waits up to 5 s for its thread; one still
+ * stuck in the network after that is left to end by itself. */
+SC_API void sc_link_destroy(sc_link *link);
 
 /* A player with no file. `playing` = 0 makes it wait for play (a sound file), 1 plays as soon as it has one. */
 SC_API int sc_media_create(int playing, sc_media **out);

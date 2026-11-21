@@ -295,6 +295,19 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   key at the same instants (Twitch needs that). Python tags each keyframe with the broadcast metrics, puts the
   packets on the connection's clock (a reconnect starts from the next keyframe), lets them go while the network
   can't keep up and sends them; the sound is encoded as before. `SPRIGCAST_NO_PACKET_WRITER=1` keeps the old way.
+- **Streams sent by the engine (interface 38, `sc_link_*`, `writer.cpp` `Link`).** A place that shares a
+  packets-mode writer (every ordinary stream: `output/shared_stream.py` `StreamLink`) is connected, packed (FLV)
+  and sent by a thread of the engine's own, straight from the writer's packets: no packet is queued, packed or
+  sent under Python's lock, so a busy window can't hold up what goes out. The engine keeps `StreamLink`'s rules:
+  a connection starts at a keyframe it asks for, with times from that keyframe; more than 4 s waiting skips
+  pictures until under 2 s and a keyframe (alone on its writer it asks for one); a stream delay holds packets
+  in the engine and `sc_link_finish` still sends them at the end. Python's link thread only reads the numbers
+  ten times a second (status, health, auto bitrate) and decides when to try again; the reason a connect failed
+  is still FFmpeg's own words. The packets are still handed to Python as well, for clips and a recording from
+  the same encoder. Needs no graphics card, so it works with the old drawing engine's fallback too whenever
+  the writer encodes. `SPRIGCAST_NO_NATIVE_LINK=1` sends from Python as before. Twitch Enhanced Broadcasting's
+  own connection (`output/enhanced_stream.py`) is still sent by Python. Tests: `tests/test_native_writer.py`
+  (the link alone), `tests/test_packet_writer.py` (through `StreamLink`).
 - Phase 4 is code-complete; next is the PC test of phases 1-4 on a build.
 
 ## Phase 5: sound (`native/core/src/mixer.cpp`, `capture.cpp`)

@@ -41,6 +41,12 @@ void sound_thread_priority() {
 #endif
 }
 
+void sender_thread_priority() {
+#ifdef _WIN32
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+#endif
+}
+
 void log_line(int level, const std::string &message) {
     std::lock_guard<std::mutex> lock(g_log_mutex);
     g_log.push_back(std::to_string(level) + " " + message);

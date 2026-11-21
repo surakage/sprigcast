@@ -6,6 +6,12 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- Streams are sent by the C++ engine: each place's connection is made, packed and sent on a thread of the
+  engine's own, so a busy moment in the window can no longer hold up what goes out to Twitch, YouTube, Kick and
+  the others. Reconnecting, stream delay, skipping when the upload can't keep up, auto bitrate and the numbers
+  in Stats work as before. Twitch Enhanced Broadcasting's own connection is still sent the old way for now.
+  `SPRIGCAST_NO_NATIVE_LINK=1` turns it off. Not tried on a PC yet.
+
 - Nothing personal in the logs: every line of the day log, each stream report, crash.log and the console now
   goes through one scrubber that hides stream keys, sign-in tokens, the API password and device keys (the values
   this run has read and anything shaped like one), everything after the server in a stream or web address, the
