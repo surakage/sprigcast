@@ -386,6 +386,24 @@ class WindowHost:
         source = self.w.media_source(source_id)
         return source.info() if source is not None else None
 
+    def source_now(self, source_id: str) -> dict[str, Any] | None:
+        """What a loaded source is doing: its state as the Sources list words it ("capturing 1920x1080", "camera
+        not found, retrying"), the size of its picture, and whether it rests. None: not loaded yet."""
+        source = self.w.engine._sources.get(source_id)
+        if source is None:
+            return None
+        out: dict[str, Any] = {"state": str(getattr(source, "status", "") or ""), "asleep": bool(source.asleep)}
+        size = getattr(source, "_size", None)  # (never `size`: a text would be drawn on the window's thread for it)
+        if isinstance(size, tuple) and len(size) == 2 and min(size) > 0:
+            out["size"] = [int(size[0]), int(size[1])]
+        feed = getattr(source, "_feed", None)
+        picture = getattr(feed, "picture", None)
+        if picture:
+            out["cameraSize"] = [int(picture[0]), int(picture[1])]  # what the device gives, before it is fitted
+        if feed is not None and getattr(feed, "status", ""):
+            out["state"] = str(feed.status)
+        return out
+
     def media_control(self, source_id: str, what: str, seconds: float | None = None) -> dict[str, Any] | None:
         return self.w.media_control(source_id, what, seconds)
 
@@ -454,6 +472,9 @@ class WindowHost:
         return getattr(self.w, "_last_hotkey_note", None)
 
 
+NAMELESS = "an app that doesn't say its name"
+
+
 def _client_label(socket) -> str:
     """Who an app says it is, from its connection request: its User-Agent and the page origin it came from (an
     origin has no path, so nothing personal), cut short."""
@@ -470,7 +491,7 @@ def _client_label(socket) -> str:
         parts.append(f"says it is {agent[:60]!r}")
     if origin and origin != "null":
         parts.append(f"from the page {origin[:60]}")
-    return ", ".join(parts) or "an app that doesn't say its name"
+    return ", ".join(parts) or NAMELESS
 
 
 class ControlServer(QObject):
@@ -791,6 +812,14 @@ class ControlServer(QObject):
         if gone is not None:
             self._mark_seen(gone, leaving=True)
         label, since = self._labels.pop(socket, ("an unnamed app", time.monotonic()))
+        if gone is not None and getattr(gone, "key", ""):
+            # Signed in with a key: its paired name says more than what it sent as it connected (Streamer.bot
+            # sends no name: it was "an app that doesn't say its name" all through the PC's log, 2026-11-21).
+            try:
+                who = self._who(socket)
+                label = who if label == NAMELESS else f"{who}, {label}"
+            except Exception:  # noqa: BLE001 - only for the log
+                pass
         if self.sessions.pop(socket, None) is not None:
             if _CONNECT_LOG.allow("gone"):
                 # Which app and after how long: one came and went every ~20 s all night, unnamed (PC 2026-11-21)

@@ -72,6 +72,7 @@ FEATURES = (
     "events.item_moved",   # item.moved when something is moved, sized, cropped or turned
     "filters.share",       # a placed sprig's filters follow on its other canvases; filters.share, filters.list same_on_both_canvases
     "layout.get",          # layout.get: every item's place, crop, bounds, source size and canvas box; flat, overlaps
+    "source.state",        # source.get loaded, state ("capturing 1920x1080"), size, cameraSize, asleep
     "places.size",         # places.list size [w, h], fps, and enhanced where the service has it
     "places.ready",        # places.list name, ready, problem ("Needs a stream key"): why a place can't go live yet
     "app_audio.pids",      # app_audio settings pids: [process id, ...] catches those processes' trees instead of apps
@@ -1159,7 +1160,12 @@ class NativeApi:
     @action("source.get", "A source's settings.", source="name or id")
     def source_get(self, data):
         source = self._source(data, "source")
-        return {"id": source.id, "name": source.name, "kind": source.kind, "settings": dict(source.settings)}
+        out = {"id": source.id, "name": source.name, "kind": source.kind, "settings": dict(source.settings)}
+        now = getattr(self.host, "source_now", lambda _id: None)(source.id)
+        out["loaded"] = now is not None  # its bloom has been on screen
+        if now:
+            out.update({k: now[k] for k in ("state", "size", "cameraSize", "asleep") if k in now})
+        return out
 
     @action("source.set", "Change some of a source's settings: text, a browser page's url, an image file, a color...",
             source="name or id", settings="{key: value}")

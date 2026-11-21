@@ -50,6 +50,9 @@ def _cv2():
     return cv2
 
 
+_lister = None  # cv2_enumerate_cameras' native lister, once loaded (_dshow_backend)
+
+
 def _dshow_backend():
     """cv2_enumerate_cameras' native DirectShow lister, loaded on its own straight from its file, or None.
 
@@ -59,10 +62,10 @@ def _dshow_backend():
     """
     if sys.platform != "win32":
         return None
+    global _lister
+    if _lister is not None:
+        return _lister
     name = "cv2_enumerate_cameras._windows_backend"
-    module = sys.modules.get(name)
-    if module is not None:
-        return module
     import glob
     import importlib.machinery
     import importlib.util
@@ -84,7 +87,11 @@ def _dshow_backend():
     loader = importlib.machinery.ExtensionFileLoader(name, files[0])
     module = importlib.util.module_from_spec(importlib.util.spec_from_file_location(name, files[0], loader=loader))
     loader.exec_module(module)
-    sys.modules[name] = module
+    # Kept here, never in sys.modules: PySide imports again every compiled module it finds there the first time
+    # a new Qt class is used, and importing this one by name loads its package, which loads OpenCV: 83 MB and a
+    # 318-407 ms stall on the window's thread when the first Control API app connected (PC, 2026-11-21).
+    sys.modules.pop(name, None)
+    _lister = module
     return module
 
 
