@@ -75,9 +75,7 @@ class _SoundPill(QPushButton):
         self.setAccessibleName(name)  # screen readers and UI Automation read the whole name
         self.setAccessibleDescription(f"Now in {kind}")
         self.setIcon(_dot(GROUP_COLOURS.get(kind, theme.MUTED)))
-        self.setStyleSheet(theme.button_style(14, "0px 12px", extra="font-size: 12px; min-height: 28px; text-align: left;")
-                           + f"QPushButton:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT};"
-                             f" border: 1px solid {theme.ACCENT}; }}")
+        self.setObjectName("soundPill")  # styled once on the dialog (pill_style), not a style sheet per pill
         self.setFixedHeight(30)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)  # the column sets the width  # (the min-height above too: the app style sheet sets a smaller one on show)
 
@@ -89,6 +87,15 @@ class _SoundPill(QPushButton):
         shown = QFontMetrics(self.font()).elidedText(self.full_name, Qt.TextElideMode.ElideRight, room)
         if self.text() != literal(shown):
             self.setText(literal(shown))
+
+
+# The sound pills' look (theme colors as they are now), set once on their holder: a style sheet on each of 60 pills cost a polish each when the
+# window opened (PC 2026-11-21: Edit type took 600 ms to open with UI Automation listening).
+def pill_style() -> str:
+    return (theme.button_style(14, "0px 12px", "QPushButton#soundPill",
+                               extra="font-size: 12px; min-height: 28px; text-align: left;")
+            + f"QPushButton#soundPill:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT};"
+              f" border: 1px solid {theme.ACCENT}; }}")
 
 
 def _dot(colour: str) -> QIcon:
@@ -165,7 +172,7 @@ class SoundTypeDialog(CardDialog):
         box.addLayout(top)
         holder = QWidget()
         holder.setObjectName("pillHolder")
-        holder.setStyleSheet("#pillHolder { background: transparent; }")
+        holder.setStyleSheet("#pillHolder { background: transparent; }" + pill_style())
         # Two even columns (user 2026-11-20): every pill as wide as the other, rows lined up.
         stack = QVBoxLayout(holder)  # the rows at the top, the room under them empty when Find shows a few
         stack.setContentsMargins(0, 0, 0, 0)
@@ -228,7 +235,8 @@ class SoundTypeDialog(CardDialog):
         shown = 0
         for pill in self._order:
             keep = not text or text in pill.full_name.casefold()
-            pill.setVisible(keep)
+            if pill.isHidden() == keep:  # only a real change: each one is an event Windows' UI Automation hears
+                pill.setVisible(keep)
             if keep:
                 self.grid.addWidget(pill, shown // 2, shown % 2)
                 shown += 1
