@@ -482,7 +482,23 @@ def watch_memory(now: float | None = None) -> str | None:
 helper_processes: dict[str, Callable[[], int | None]] = {}
 
 
-def helper_memory_line(name: str, pid: int, process=None) -> str | None:
+_helper_was: dict[str, float] = {}  # helper name -> its committed MB at its last line
+
+
+def helper_change(name: str, committed_mb: float, reason: str = "") -> str:
+    """What goes after a helper's memory line: its own change since its last line, and why the line was written
+    when that isn't SprigCast's own growth. The line used to repeat SprigCast's "(grew 834 MB in 60 s)", which read
+    as the helper's growth (PC test 2026-11-21: the helper had grown 328 MB of it)."""
+    was = _helper_was.get(name)
+    _helper_was[name] = committed_mb
+    parts = [] if was is None or round(committed_mb - was) == 0 else \
+        [f"{committed_mb - was:+,.0f} MB since its last line"]
+    if reason and not reason.startswith("grew "):
+        parts.append(reason)
+    return f" ({', '.join(parts)})" if parts else ""
+
+
+def helper_memory_line(name: str, pid: int, process=None, total: list | None = None) -> str | None:
     """"page helper memory: committed 1,486 MB in 9 processes (biggest 610, 240, 180 MB), Task Manager 1,091 MB":
     the helper and every process it started (a browser helper's page, graphics and network processes)."""
     try:
@@ -502,6 +518,8 @@ def helper_memory_line(name: str, pid: int, process=None) -> str | None:
     if not committed:
         return None
     committed.sort(reverse=True)
+    if total is not None:
+        total.append(sum(committed))
     biggest = ", ".join(f"{mb:,.0f}" for mb in committed[:4])
     return (f"{name} memory: committed {sum(committed):,.0f} MB in {len(committed)} process"
             f"{'es' if len(committed) != 1 else ''} (biggest {biggest} MB), in use {shown:,.0f} MB")
@@ -518,9 +536,10 @@ def log_helper_memory(reason: str = "") -> None:
 
     def look() -> None:
         for name, pid in running:
-            line = helper_memory_line(name, pid)
+            total: list = []
+            line = helper_memory_line(name, pid, total=total)
             if line:
-                log.info("%s%s", line, f" ({reason})" if reason else "")
+                log.info("%s%s", line, helper_change(name, total[0], reason) if total else "")
 
     threading.Thread(target=look, name="sprigcast-helper-memory", daemon=True).start()
 
