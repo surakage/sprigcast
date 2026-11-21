@@ -686,3 +686,63 @@ def test_a_camera_listing_up_to_59_9999_gets_60_when_asked():
     r = Fraction(first["framerate"])
     assert r.denominator * 10_000_000 // r.numerator == 166667 and r.numerator <= 1_001_000
     assert choose_modes(modes, 1280, 720, 30)[0]["framerate"] == "30"
+
+
+def test_a_capture_card_is_asked_for_the_size_wanted_before_its_bigger_listed_one():
+    """PC 2026-11-21: the HD60 X, fed 1440p, listed 2560x1440 alone and was opened at that for a 720p source, though
+    Elgato says it sends 1080p and 720p for that input. The size wanted is asked first, always with a rate; a
+    device that gives another size isn't asked again."""
+    from fractions import Fraction
+
+    from sprigcast.sources import camera as cam_mod
+    from sprigcast.sources.camera import asked_first, not_given
+
+    cam_mod._not_given.clear()
+    card = [("pixel_format", "nv12", 2560, 1440, 59.9999, 59.9999), ("pixel_format", "yuyv422", 2560, 1440, 30.0, 30.0)]
+    first = asked_first(card, 1280, 720, 60, "card")
+    assert [o["video_size"] for o in first] == ["1280x720"] * 4 and all("framerate" in o for o in first)
+    assert [o["pixel_format"] for o in first] == ["nv12", "yuyv422", "nv12", "yuyv422"]
+    assert first[0]["framerate"] == "60"
+    exact = Fraction(first[2]["framerate"])  # the card's own 59.9999, as the interval dshow matches
+    assert exact.denominator * 10_000_000 // exact.numerator == 166667
+    # A size the list has, a list with nothing bigger, or no list: nothing to ask first.
+    assert asked_first(card, 2560, 1440, 60, "card") == []
+    assert asked_first(card, 3840, 2160, 60, "card") == [] and asked_first([], 1280, 720, 60, "card") == []
+    webcam = [("vcodec", "mjpeg", 1280, 720, 30.0, 60.0), ("pixel_format", "nv12", 1920, 1080, 30.0, 30.0)]
+    assert asked_first(webcam, 1280, 720, 60, "webcam") == []
+    # It opened at its listed size after all: said once, and not asked again this run.
+    assert not not_given("card", (1280, 720), (1280, 720)) and asked_first(card, 1280, 720, 60, "card")
+    assert not_given("card", (1280, 720), (2560, 1440)) and not not_given("card", (1280, 720), (2560, 1440))
+    assert asked_first(card, 1280, 720, 60, "card") == [] and asked_first(card, 1920, 1080, 60, "card")
+    cam_mod._not_given.clear()
+
+
+def test_the_engine_tries_the_size_wanted_first(monkeypatch):
+    from types import SimpleNamespace
+
+    from sprigcast.sources import camera as cam_mod
+
+    cam_mod._not_given.clear()
+    card = [("pixel_format", "nv12", 2560, 1440, 60.0, 60.0)]
+    monkeypatch.setattr(cam_mod, "listed_modes", lambda name: card)
+    feed = cam_mod._Feed("camera-1", {"name": "Card", "path": "", "width": 1280, "height": 720, "fps": 60})
+    _fmt, choices = cam_mod._engine_choices(feed, SimpleNamespace(name="Card", path=""))
+    sizes = [mode.get("video_size") for _name, mode in choices]
+    assert sizes[:3] == ["1280x720", "1280x720", "2560x1440"] and feed.asked_first == [m for _n, m in choices[:2]]
+    cam_mod._not_given.add(("Card", (1280, 720)))
+    _fmt, choices = cam_mod._engine_choices(feed, SimpleNamespace(name="Card", path=""))
+    assert choices[0][1]["video_size"] == "2560x1440" and feed.asked_first == []
+    cam_mod._not_given.clear()
+
+
+def test_the_whole_list_is_kept_for_the_log_as_it_came():
+    from sprigcast.sources.camera import parse_dshow_modes, raw_modes_line
+
+    lines = ['DirectShow video device options (from video devices)', ' Pin "Video" (alternative pin name "0")',
+             "  pixel_format=nv12  min s=2560x1440 fps=59.9999 max s=2560x1440 fps=59.9999",
+             "  pixel_format=nv12  min s=2560x1440 fps=59.9999 max s=2560x1440 fps=59.9999 (tv, bt709/bt709/unknown)",
+             "  unknown compression type 0x30313050  min s=1920x1080 fps=60 max s=1920x1080 fps=60",
+             "  pixel_format=yuyv422  min s=640x360 fps=30 max s=1920x1080 fps=60"]
+    assert [m[2:4] for m in parse_dshow_modes(lines)] == [(2560, 1440), (2560, 1440)]  # what SprigCast reads
+    assert raw_modes_line(lines) == "nv12 2560x1440 60; 0x30313050 1920x1080 60; yuyv422 640x360-1920x1080 60"
+    assert raw_modes_line([]) == "nothing"

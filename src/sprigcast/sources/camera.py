@@ -213,6 +213,26 @@ def parse_dshow_modes(lines) -> list[tuple[str, str, int, int, float, float]]:
     return modes
 
 
+_ANY_MODE = re.compile(r"(?:(?:vcodec|pixel_format)=(\S+)|unknown compression type (0x[0-9A-Fa-f]+))?\s*"
+                       r"min s=(\d+)x(\d+) fps=[\d.]+\s+max s=(\d+)x(\d+) fps=([\d.]+)")
+
+
+def raw_modes_line(lines, limit: int = 24) -> str:
+    """Everything a device's list holds, as it came, for the log: also what parse_dshow_modes leaves out (a format
+    FFmpeg has no name for, a range of sizes). "nv12 2560x1440 60; 0x30313050 1920x1080 60; yuyv422 640x360-1920x1080
+    60". No device name."""
+    seen: list[str] = []
+    for m in _ANY_MODE.finditer(" ".join(str(line).strip() for line in lines)):
+        size = f"{m.group(3)}x{m.group(4)}"
+        if m.group(3, 4) != m.group(5, 6):
+            size += f"-{m.group(5)}x{m.group(6)}"
+        entry = f"{m.group(1) or m.group(2) or 'unnamed'} {size} {float(m.group(7)):.4g}"
+        if entry not in seen:
+            seen.append(entry)
+    more = f"; and {len(seen) - limit} more" if len(seen) > limit else ""
+    return "; ".join(seen[:limit]) + more if seen else "nothing"
+
+
 listing_errors: list[str] = []  # the last listing's error and captured lines, for memcheck
 listing_lines: list[str] = []
 
@@ -241,13 +261,18 @@ def dshow_modes(name: str) -> list[tuple[str, str, int, int, float, float]]:
         finally:
             avlog.set_level(old)
         listing_lines[:] = [str(entry[-1]) if isinstance(entry, tuple) else str(entry) for entry in logs]
-        return parse_dshow_modes(listing_lines)
+        modes = parse_dshow_modes(listing_lines)
+        if modes:
+            _raw_listed[name] = raw_modes_line(listing_lines)
+        return modes
 
 
 _listing_lock = threading.Lock()
 
 
 _listed: dict[str, list] = {}  # device name -> the modes it last listed (kept for when it lists none)
+_raw_listed: dict[str, str] = {}  # device name -> its whole list as it came (raw_modes_line), for the log
+_not_given: set[tuple[str, tuple[int, int]]] = set()  # (device, size): asked for though unlisted, and not given
 
 
 def listed_modes(name: str) -> list:
@@ -337,6 +362,36 @@ def choose_modes(modes, w: int, h: int, fps: int) -> list[dict[str, str]]:
         if plain not in out:
             out.append(plain)
     return out
+
+
+def asked_first(modes, w: int, h: int, fps: int, device: str = "") -> list[dict[str, str]]:
+    """dshow options that ask for the size wanted itself, to try before choose_modes' when the list's nearest size
+    is bigger: a capture card can give sizes its list doesn't show us. The PC's HD60 X, fed 1440p, listed
+    2560x1440 alone (2026-11-21) and every picture was taken in at 1440p and shrunk for a 720p source, though
+    Elgato says the card sends 1080p and 720p for that input. FFmpeg matches the size against everything the
+    device offers, also formats it has no name for and ranges of sizes, which parse_dshow_modes leaves out. A
+    device that refuses, or opens at another size, isn't asked again this run (_not_given)."""
+    usable = [m for m in modes if m[0] == "pixel_format" or m[1] == "mjpeg"]
+    sizes = sorted({(m[2], m[3]) for m in usable}, key=lambda s: s[0] * s[1])
+    nearest = next((s for s in sizes if s[0] >= w and s[1] >= h), None)
+    if (w, h) in sizes or nearest is None or (device, (w, h)) in _not_given:
+        return []
+    # Always with a rate (never the device's own for that size, which may be slower than asked): the rate asked,
+    # then the listed size's own nearest (59.9999 as its exact interval).
+    near = [m for m in usable if (m[2], m[3]) == nearest and m[4] - 0.01 <= fps <= m[5] + 0.01]
+    rates = [str(fps)]
+    rates += [r for r in dict.fromkeys(_rate(min(max(fps, m[4]), m[5])) for m in near) if r not in rates]
+    return [{"video_size": f"{w}x{h}", "framerate": rate, "pixel_format": fmt}
+            for rate in rates for fmt in ("nv12", "yuyv422")]
+
+
+def not_given(device: str, asked: tuple[int, int], got: tuple[int, int] | None) -> bool:
+    """Remember that a device asked for an unlisted size (asked_first) gave another one, so it isn't asked again
+    this run. True the first time, for one log line."""
+    if not got or tuple(got) == tuple(asked) or (device, tuple(asked)) in _not_given:
+        return False
+    _not_given.add((device, tuple(asked)))
+    return True
 
 
 OTHER_SIZES = 3  # sizes tried after the best one is refused, before the camera's own mode
@@ -603,6 +658,15 @@ class _Feed:
                     self.picture = (info.width, info.height)
                     given = (getattr(info, "given_width", 0), getattr(info, "given_height", 0))
                     self.given = given if min(given) > 0 else self.picture
+                    if getattr(self, "asked_first", None):
+                        if not_given(device.name, (w, h), self.given):
+                            log.info("%s: asked the camera for %dx%d though its list doesn't show it: it sends %dx%d. "
+                                     "Its whole list: %s", self.id, w, h, *self.given,
+                                     getattr(self, "raw_listed", "not kept"))
+                        elif tuple(self.given) == (w, h) and not getattr(self, "_said_given", False):
+                            self._said_given = True
+                            log.info("%s: the camera sends %dx%d when asked, though its list doesn't show that "
+                                     "size. Its whole list: %s", self.id, w, h, getattr(self, "raw_listed", "not kept"))
                     for source in list(self.subscribers):
                         source._size = source.fit(self.picture)
                     if lost is not None:
@@ -641,7 +705,8 @@ class _Feed:
             listed = choose_modes(self.modes_seen, w, h, fps)
             if self.modes_seen:
                 break
-        modes = [*listed,  # then guesses, from strict to loose
+        early = asked_first(self.modes_seen, w, h, fps, device.name)
+        modes = [*early, *listed,  # then guesses, from strict to loose
                  {"video_size": f"{w}x{h}", "framerate": str(fps), "vcodec": "mjpeg"},
                  {"video_size": f"{w}x{h}", "framerate": str(fps)},
                  {"video_size": f"{w}x{h}"},  # e.g. a camera whose 60 is really 59.94: its own rate, paced below
@@ -659,6 +724,10 @@ class _Feed:
                 if not mode and self.open_errors:  # say why its own modes didn't open
                     log.info("%s: modes offered %s; tried first: %s", self.id, self.modes_seen[:4], self.open_errors[:2])
                 self.opened_with = mode
+                if early and mode not in early and not_given(device.name, (w, h), (0, 0)):
+                    log.info("%s: asked the camera for %dx%d though its list doesn't show it: refused. Its whole "
+                             "list: %s", self.id, w, h,
+                             next((_raw_listed[n] for n in names if n in _raw_listed), "not kept"))
                 return container
         log.info("%s: FFmpeg couldn't open %r, trying OpenCV", self.id, device.name)
         return None
@@ -762,7 +831,9 @@ def _engine_choices(feed: _Feed, device: CameraDevice) -> tuple[str, list[tuple[
         listed = choose_modes(feed.modes_seen, w, h, fps)
         if feed.modes_seen:
             break
-    modes = [*listed,
+    feed.asked_first = asked_first(feed.modes_seen, w, h, fps, device.name)
+    feed.raw_listed = next((_raw_listed[name] for name in names if name in _raw_listed), "not kept")
+    modes = [*feed.asked_first, *listed,
              {"video_size": f"{w}x{h}", "framerate": str(fps), "vcodec": "mjpeg"},
              {"video_size": f"{w}x{h}", "framerate": str(fps)},
              {"video_size": f"{w}x{h}"},
