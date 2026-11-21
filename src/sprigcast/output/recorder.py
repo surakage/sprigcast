@@ -585,6 +585,12 @@ def video_options(codec: str, enc, bitrate_kbps: int, hrd: bool = True) -> dict[
     return opts
 
 
+def _stir_render() -> None:
+    from sprigcast.render import engine
+
+    engine.stir()
+
+
 class Recorder:
     """Encodes frames handed to push_frame() and audio handed to push_audio() into one file."""
 
@@ -723,6 +729,7 @@ class Recorder:
             self._sound_pause(True)
 
     def _sound_pause(self, paused: bool) -> None:
+        _stir_render()  # frames linked by the engine: unlinked or linked again on the render thread's next tick
         fed = self._sound_tap
         if fed is not None:
             try:
@@ -1254,6 +1261,7 @@ class Recorder:
         from now on they come from memory, and the writer copies them up to its encoder's card."""
         if not self._card_lost:
             self._card_lost = True
+            _stir_render()
             log.warning("%s: frames on the card stopped (%s); they come from memory now", self.path.stem, why)
 
     def unlinked(self, last_pts: int) -> None:

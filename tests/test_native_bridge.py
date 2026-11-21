@@ -209,6 +209,12 @@ class FakeNative:
         pass
 
 
+@pytest.fixture(autouse=True)
+def every_tick_works(monkeypatch):
+    """These checks count ticks: none of them rests (the checks of resting ask for it themselves)."""
+    monkeypatch.setenv("SPRIGCAST_NO_REST", "1")
+
+
 def _engine():
     col = SceneCollection(
         canvases=[Canvas(id="h", width=64, height=36), Canvas(id="v", width=36, height=64)],
@@ -1451,3 +1457,95 @@ def test_a_frame_stuck_for_good_hands_drawing_back_to_python(monkeypatch):
     assert not bridge.failed
     bridge.check(19.0)
     assert bridge.failed
+
+
+# ---- resting ticks -------------------------------------------------------------------------------------------
+
+class Linking(FakeNative):
+    """A stand-in whose outputs are all linked: the engine hands their frames to the writers itself."""
+
+    def link_taps(self, canvas_id, taps):
+        return {id(getattr(callback, "__self__", None)) for callback, _key in taps}
+
+
+class _Output:
+    def __init__(self):
+        self.got = []
+
+    def push(self, frame):
+        self.got.append(frame)
+
+
+def _resting(monkeypatch, native=Linking):
+    monkeypatch.delenv("SPRIGCAST_NO_REST")
+    engine = _engine()
+    engine._native = native()
+    engine._interval = 1 / 60
+    return engine
+
+
+def test_ticks_rest_between_previews_while_the_engine_hands_every_frame_on(monkeypatch):
+    engine, fake = _resting(monkeypatch), FakeCompositor()
+    engine.previews = frozenset({"h"})
+    out = _Output()
+    engine.add_frame_tap("h", out.push, nv12_size=(64, 36))
+    _run(engine, fake, seconds=0.5)
+    assert engine.rested_ticks == 0 and engine._native.synced == 30  # calm is counted from the first tick
+    shown = 0
+    for i in range(60):  # a second more: one tick in two works, when a preview is due (30 a second)
+        engine._tick(fake, 10.5 + i / 60)
+        shown += engine.frames["h"].take() is not None
+    assert 28 <= engine.rested_ticks <= 31 and 28 <= shown <= 31, (engine.rested_ticks, shown)
+    assert out.got == [] and fake.rendered == []  # linked: no frame came through Python at all
+    engine.previews = frozenset()  # the window is hidden: a working tick only every 70 ms
+    before = engine._native.synced
+    for i in range(60):
+        engine._tick(fake, 11.5 + i / 60)
+    assert 12 <= engine._native.synced - before <= 16
+
+
+def test_anything_asked_or_made_in_python_ends_the_rest_at_once(monkeypatch):
+    from sprigcast.core.events import SwitchBlooms
+    from sprigcast.render import engine as engine_module
+
+    engine, fake = _resting(monkeypatch), FakeCompositor()
+    engine.previews = frozenset()
+    _run(engine, fake, seconds=0.6)
+    now = 10.6
+
+    def works(stir) -> bool:
+        nonlocal now
+        engine._tick(fake, now)  # a working tick, so the next one would rest
+        engine._stirred = False
+        engine._worked_at = now
+        now += 1 / 60
+        stir()
+        before = engine._native.synced
+        engine._tick(fake, now)
+        now += 1 / 60
+        return engine._native.synced > before
+
+    assert not works(lambda: None)  # nothing asked: it rests
+    engine.send(SwitchBlooms({"h": "a", "v": "b"}))
+    assert works(lambda: engine._drain_commands(fake))  # a command
+    assert works(engine_module.stir)  # a recording paused or went on
+    assert works(lambda: engine.add_frame_tap("v", _Output().push, nv12_size=(36, 64)))
+    assert works(lambda: engine.hold(["cam"], 1.0))
+    assert works(lambda: engine.grab_source(None, lambda picture: None))
+
+
+def test_frames_that_pass_through_python_keep_every_tick_working(monkeypatch):
+    engine, fake = _resting(monkeypatch, FakeNative), FakeCompositor()  # no links: Python hands the frames on
+    engine.previews = frozenset({"h"})
+    out = _Output()
+    engine.add_frame_tap("h", out.push, nv12_size=(64, 36))
+    _run(engine, fake, seconds=2.0)
+    assert engine.rested_ticks == 0 and len(out.got) == 120
+
+
+def test_the_off_switch_keeps_every_tick_working(monkeypatch):
+    engine, fake = _resting(monkeypatch), FakeCompositor()
+    monkeypatch.setenv("SPRIGCAST_NO_REST", "1")
+    engine.previews = frozenset()
+    _run(engine, fake, seconds=2.0)
+    assert engine.rested_ticks == 0 and engine._native.synced == 120

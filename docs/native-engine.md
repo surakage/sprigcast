@@ -137,6 +137,15 @@ under the clip's id, so the frame thread takes each picture straight from it and
 fitted to the canvas and swapping blooms at the cut point. A track matte clip shows its picture half and swaps
 through its matte half, as Python's compositor does. `SPRIGCAST_NO_NATIVE_STINGER=1` leaves them to Python.
 
+Resting ticks (`Engine._rests`): once the engine draws every canvas, takes its sources' pictures itself and hands
+every frame to the writers itself (all outputs linked), the render thread's tick has nothing to do each frame.
+After half a second like that (`REST_CALM_S`) a tick works only when a preview copy is due (30 a second, 15 with
+Preview while live: Light), or every 70 ms (`REST_MAX_S`) with no preview shown; the ticks between return at
+once. Anything asked ends the rest on the next tick: a command (a bloom switch, new settings), a new or removed
+output, a hold, a screenshot, a recording pausing or going on (`engine.stir()`). A picture made in Python (text
+that changed, a plugin's drawing), a frame that passes through Python, a transition, a fade, a waking bloom or
+anything Python's compositor draws keeps every tick working. `SPRIGCAST_NO_REST=1`: every tick works, as before.
+
 Python's compositor still draws Build's edited bloom, the Part editor, screenshots,
 source record, full-size RGBA taps (a projector showing a view) and a canvas's outputs while it draws one of those (a frame older than one already handed on is never sent). If the native engine stops
 (faulted), Python's compositor draws the previews and outputs again by itself.
