@@ -223,6 +223,10 @@ class Engine:
         # Replaced whole by the UI (see set_view); drawn only while something taps them.
         self.views: dict[str, tuple[str, str, Any]] = {}
         self._view_at: dict[str, float] = {}  # view name -> when a screen-only view was last drawn
+        # Views a screenshot reads straight from the native engine (shoot_view): drawn there even with nothing
+        # tapping them, so a bloom off air is pictured with the engine's own filters (Backdrop is drawn only by
+        # the engine: Python's compositor left it out of off-air screenshots, PC 2026-11-21).
+        self.engine_shots: frozenset[str] = frozenset()
         # With the native engine: views it draws in a canvas slot of their own (name -> (canvas, scene)), views
         # of a bloom on air that ride on that canvas's outputs (canvas id -> names), and the views it served
         # this tick (Python's compositor leaves those alone).
@@ -364,6 +368,26 @@ class Engine:
             views[name] = (canvas_id, kind, ref)
         self.views = views
 
+    def shoot_view(self, name: str, on: bool) -> None:
+        """A screenshot wants view `name` (set_view) drawn by the native engine and read from it (on), or is done
+        with it. Without the native engine this does nothing: Python's compositor draws the view for its tap."""
+        shots = set(self.engine_shots)
+        if on:
+            shots.add(name)
+        else:
+            shots.discard(name)
+        self.engine_shots = frozenset(shots)
+
+    def native_view_ready(self, name: str) -> bool | None:
+        """Whether the native engine has drawn view `name` for a screenshot yet; None without the engine (or once
+        it has stopped), when Python's compositor draws views."""
+        native = self._native
+        if native is None or native.failed:
+            return None
+        from sprigcast.render.native_bridge import view_key
+
+        return name in self._engine_views and native.draws(view_key(name))
+
     def _view_scene(self, name: str, sizes: dict | None = None):
         """The scene a view draws, or None when what it names is gone."""
         from sprigcast.core.scene import Scene, SceneItem
@@ -401,7 +425,13 @@ class Engine:
         active = self._collection.active_scenes
         enabled = {c.id for c in self._collection.canvases if c.enabled}
         current = self.views  # one look: set_view (any thread) swaps in a new dict
+        shots = self.engine_shots
         for name in sorted(current):
+            if name in shots:  # a screenshot reads it from the engine (shoot_view), whatever taps it
+                canvas, scene = self._view_scene(name, sizes)
+                if canvas is not None and scene is not None:
+                    views[name] = (canvas, scene)
+                continue
             outputs = taps.get(f"view:{name}", ())
             if not outputs or any(size is None for _cb, size in outputs):
                 continue

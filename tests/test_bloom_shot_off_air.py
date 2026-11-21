@@ -257,3 +257,55 @@ def test_a_bloom_named_by_its_own_canvas_is_pictured_on_that_canvas():
         assert [s["shape"] for s in api.run("screenshot.take", {**asked, **ask})["shots"]] == ["horizontal", "vertical"]
     assert [s["shape"] for s in api.run("screenshot.take", {"bloom": "chat-v", "shape": "horizontal", **ask})["shots"]] \
         == ["horizontal"]
+
+
+def test_a_bloom_off_air_is_read_from_the_native_engine_with_its_own_filters(monkeypatch):
+    """With the native engine, the view is the engine's (shoot_view) and the shot waits until the engine drew it:
+    Python's compositor leaves out what only the engine draws (Backdrop), so an off-air shot showed the webcam
+    untouched (PC, 2026-11-21)."""
+    pytest.importorskip("PySide6.QtGui")
+    from PySide6.QtGui import QImage
+
+    from sprigcast.app import screenshot
+
+    col = _collection()
+    brb = col.scene("brb-h")
+    calls, checks = [], []
+
+    class Engine:
+        _collection, _sources, views = col, {}, {}
+        engine_shots = frozenset()
+
+        def set_view(self, name, canvas_id=None, kind="bloom", ref=None):
+            calls.append(("view", name, canvas_id))
+
+        def shoot_view(self, name, on):
+            calls.append(("shoot", name, on))
+
+        def native_view_ready(self, name):
+            checks.append(name)
+            return len(checks) >= 3  # drawn on the third look
+
+    def grab(eng, ids):
+        assert len(checks) == 3  # read only once the engine drew it
+        return {ids[0]: QImage(8, 4, QImage.Format.Format_RGBA8888_Premultiplied)}
+
+    monkeypatch.setattr(screenshot.time, "sleep", lambda s: None)
+    monkeypatch.setattr(screenshot, "grab", grab)
+    assert screenshot.take_scene(Engine(), brb, "BRB", None, as_data=True)
+    assert calls == [("shoot", "apishot", True), ("view", "apishot", "horizontal"), ("view", "apishot", None),
+                     ("shoot", "apishot", False)]
+
+
+def test_a_screenshot_view_is_the_native_engines_even_with_no_taps():
+    from sprigcast.render.engine import Engine
+
+    col = _collection()
+    engine = Engine(col)
+    engine.set_view("apishot", "horizontal", "bloom", "brb-h")
+    assert engine._native_views({}, {})[0] == {}  # nothing taps it, nothing asks: not drawn
+    engine.shoot_view("apishot", True)
+    views, _riders = engine._native_views({}, {})
+    assert list(views) == ["apishot"] and views["apishot"][1].id == "brb-h"
+    engine.shoot_view("apishot", False)
+    assert engine.engine_shots == frozenset() and engine.native_view_ready("apishot") is None  # no engine here

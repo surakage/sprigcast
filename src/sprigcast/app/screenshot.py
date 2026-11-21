@@ -152,8 +152,11 @@ def grab_scenes(engine, scenes, view: str = "apishot") -> list[QImage | None]:
     side by side, so they wake together and one wait covers them all, not one wait each."""
     names = [view if i == 0 else f"{view}-{i + 1}" for i in range(len(scenes))]
     asleep = any(scene is not None and _still_asleep(engine, scene) for scene in scenes)
+    shoot = getattr(engine, "shoot_view", None)
     for name, scene in zip(names, scenes):
         if scene is not None:
+            if shoot is not None:  # the native engine draws it with its own filters (Backdrop), read straight back
+                shoot(name, True)
             engine.set_view(name, scene.canvas, "bloom", scene.id)
     try:
         if asleep:  # sources to wake first; nothing asleep (all on air anyway): straight to the picture
@@ -163,6 +166,7 @@ def grab_scenes(engine, scenes, view: str = "apishot") -> list[QImage | None]:
                     and time.monotonic() < until:
                 time.sleep(0.05)
             time.sleep(SCENE_SETTLE_S)
+        _wait_for_engine_views(engine, [name for name, scene in zip(names, scenes) if scene is not None])
         ids = [f"view:{name}" for name, scene in zip(names, scenes) if scene is not None]
         got = grab(engine, ids) if ids else {}
         return [got.get(f"view:{name}") if scene is not None else None for name, scene in zip(names, scenes)]
@@ -170,6 +174,25 @@ def grab_scenes(engine, scenes, view: str = "apishot") -> list[QImage | None]:
         for name, scene in zip(names, scenes):
             if scene is not None:
                 engine.set_view(name, None)
+                if shoot is not None:
+                    shoot(name, False)
+
+
+ENGINE_VIEW_WAIT_S = 1.0  # a view handed to the native engine is drawn within a tick or two
+
+
+def _wait_for_engine_views(engine, names: list[str]) -> None:
+    """With the native engine: wait (briefly) until it has drawn each view, so grab reads the engine's picture
+    and Python's compositor, which leaves out what only the engine draws (Backdrop), never stands in for it."""
+    ready = getattr(engine, "native_view_ready", None)
+    if ready is None or not names:
+        return
+    until = time.monotonic() + ENGINE_VIEW_WAIT_S
+    while time.monotonic() < until:
+        states = [ready(name) for name in names]
+        if any(state is None for state in states) or all(states):
+            return  # no engine (Python draws views), or every view is the engine's now
+        time.sleep(0.02)
 
 
 def _scene_shot(image: QImage | None, name: str, folder: Path | None, width: int | None, as_data: bool) -> dict | None:
