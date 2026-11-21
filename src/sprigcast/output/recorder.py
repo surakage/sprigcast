@@ -1125,11 +1125,26 @@ class Recorder:
         """For SprigCast's own NVENC through the writer: the native engine's device (a c_void_p with a reference
         of the caller's) for the writer's encoder, which then takes the engine's frames there. None: no NVENC of
         SprigCast's own here, or no device to share (the engine can't share frames, or is rebuilding)."""
-        if not self.uses_direct():
-            return None
         from sprigcast.render import gpu_share
 
+        if not self.uses_direct():
+            # NVENC with B-frames or look-ahead (Twitch Enhanced Broadcasting's qualities): FFmpeg's NVENC opened
+            # with no device makes a CUDA context of its own, about 250 MB each (the PC, 2026-11-21: +490 MB as
+            # Twitch's two encoders started). On the engine's device it needs none. Its frames still come from
+            # memory and the writer copies them up: look-ahead holds more frames than the engine's pool of
+            # textures has. SPRIGCAST_NO_CARD_UPLOAD=1: as before.
+            if not self.codec.endswith("_nvenc") or self.gpu_size is None or self._no_card_upload or \
+                    os.environ.get("SPRIGCAST_NO_CARD_UPLOAD"):
+                return None
+            device = gpu_share.native_device()
+            if device is not None:
+                self.card_upload = True
+                self._card_lost = True  # never the engine's textures: memory frames, copied up by the writer
+            return device
         return gpu_share.native_device()
+
+    card_upload = False  # the writer's encoder is on the engine's device and takes frames from memory (_card_device)
+    _no_card_upload = False  # that encoder couldn't start there: opened with no device, as before
 
     def _writer_session(self) -> bool:
         """The whole recording through the engine's writer. False when the writer couldn't start (before any
@@ -1150,23 +1165,32 @@ class Recorder:
         if self.uses_direct() and device is None:
             return False  # recorded through PyAV with SprigCast's own NVENC, as before
         self._opening = True
-        writer = None
-        try:
-            writer = sprigcore.Writer(
-                target, self.codec, self.out_width, self.out_height, fps=self.fps,
-                video_kbps=self.bitrate_kbps, keyframe_frames=self.fps * (self.encoder.keyint_sec or 2),
-                video_options=self._video_options(), audio_tracks=len(self.tracks),
-                audio_kbps=self.encoder.audio_kbps, container=CONTAINERS[self.container_kind],
-                queue_frames=WRITER_QUEUE, container_options=muxing, track_titles=titles,
-                b_frames=max(0, min(4, self.encoder.b_frames)), device=device.value if device else None,
-                packets=packets)
-            stats = self._writer_opened(writer)
-            why = stats.error_text if stats.state_name == "failed" else ""
-        except Exception as exc:  # noqa: BLE001 - PyAV records it instead
-            why = str(exc) or type(exc).__name__
-        finally:
-            if device:
-                sprigcore.com_release(device.value)  # the writer holds a reference of its own
+        while True:
+            writer = None
+            try:
+                writer = sprigcore.Writer(
+                    target, self.codec, self.out_width, self.out_height, fps=self.fps,
+                    video_kbps=self.bitrate_kbps, keyframe_frames=self.fps * (self.encoder.keyint_sec or 2),
+                    video_options=self._video_options(), audio_tracks=len(self.tracks),
+                    audio_kbps=self.encoder.audio_kbps, container=CONTAINERS[self.container_kind],
+                    queue_frames=WRITER_QUEUE, container_options=muxing, track_titles=titles,
+                    b_frames=max(0, min(4, self.encoder.b_frames)), device=device.value if device else None,
+                    packets=packets)
+                stats = self._writer_opened(writer)
+                why = stats.error_text if stats.state_name == "failed" else ""
+            except Exception as exc:  # noqa: BLE001 - PyAV records it instead
+                why = str(exc) or type(exc).__name__
+            finally:
+                if device:
+                    sprigcore.com_release(device.value)  # the writer holds a reference of its own
+            if not (why and self.card_upload):
+                break
+            # Its encoder wouldn't start on the engine's device: once more with a device of its own, as before.
+            log.warning("%s: the encoder couldn't start on the engine's graphics device (%s); it starts on its own",
+                        self.path.stem, why)
+            self.card_upload, self._no_card_upload, self._card_lost, device = False, True, False, None
+            if writer is not None:
+                writer.close()
         if why:
             log.warning("%s: the engine's writer couldn't start (%s); recording through PyAV", self.path.stem, why)
             self.writer = None
@@ -1174,7 +1198,8 @@ class Recorder:
                 writer.close()
             return False
         log.info("%s: written by the engine (%s, %dx%d at %d fps%s)", self.path.stem, self.codec, self.out_width,
-                 self.out_height, self.fps, ", frames on the graphics card" if writer.on_card else "")
+                 self.out_height, self.fps, ", encoder on the engine's graphics device" if self.card_upload
+                 else ", frames on the graphics card" if writer.on_card else "")
         self._opening = False
         self._opened.set()
         # Packets come back while it runs: taken often, so a stream sends them without a wait of its own.

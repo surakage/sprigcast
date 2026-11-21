@@ -6,6 +6,10 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- Twitch Enhanced Broadcasting uses less memory. Its two NVIDIA encoders (and any NVENC stream or recording
+  with B-frames or look-ahead) now open on the graphics device SprigCast already draws with, instead of each
+  making a CUDA context of its own (about 490 MB together when going live on the test PC). If an encoder
+  can't start that way it starts as before. `SPRIGCAST_NO_CARD_UPLOAD=1` turns it off. Not tried on a PC yet.
 - Sign in with TikTok (Settings → Stream → a TikTok place): shows which TikTok account is connected, as
   "Name (@username)". It reads no stream key, because TikTok doesn't share one with apps; paste the key from LIVE
   Producer as before. Sign out deletes the sign-in and asks TikTok to cancel it. Uses TikTok's sandbox for now,

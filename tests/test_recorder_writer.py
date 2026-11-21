@@ -481,3 +481,79 @@ def test_sound_reaches_the_writer_from_the_engines_mixer_without_python(native, 
             assert len(f.streams.audio) == 2
             seconds.append(sum(fr.samples for fr in f.decode(audio=i)) / 48000)
     assert abs(seconds[0] - blocks * 1024 / 48000) < 0.07 and seconds[0] == seconds[1], seconds
+
+
+def test_nvenc_with_b_frames_opens_on_the_engines_device_and_takes_memory_frames(tmp_path, monkeypatch):
+    """PC 2026-11-21: SprigCast's own memory grew about 490 MB in the 10 s after Twitch Enhanced Broadcasting's two
+    encoders started. Twitch asks for B-frames and look-ahead, so they were FFmpeg's NVENC opened with no device,
+    which makes a CUDA context each. On the engine's device there is none; frames still come from memory."""
+    from ctypes import c_void_p
+
+    from sprigcast.core.scene import EncoderSettings
+    from sprigcast.render import gpu_share
+
+    monkeypatch.delenv("SPRIGCAST_NO_CARD_UPLOAD", raising=False)
+    monkeypatch.delenv("SPRIGCAST_CPU_CONVERT", raising=False)
+    monkeypatch.setattr(gpu_share, "native_device", lambda: c_void_p(1234))
+    twitch = EncoderSettings(keyint_sec=2, b_frames=2)
+    rec = Recorder(tmp_path / "t.mkv", W, H, FPS, 800, "h264_nvenc", 0.0, "mkv", encoder=twitch)
+    assert not rec.uses_direct()
+    assert rec._card_device().value == 1234 and rec.card_upload
+    rec.writer, rec._opening = _CardWriter(), False
+    assert not rec.wants_gpu_frames()  # the engine's textures never go to it: look-ahead holds more than its pool
+    # Not for another encoder, with the off switch, or after it couldn't start there.
+    x264 = Recorder(tmp_path / "x.mkv", W, H, FPS, 800, "libx264", 0.0, "mkv", encoder=twitch)
+    assert x264._card_device() is None and not x264.card_upload
+    monkeypatch.setenv("SPRIGCAST_NO_CARD_UPLOAD", "1")
+    off = Recorder(tmp_path / "o.mkv", W, H, FPS, 800, "h264_nvenc", 0.0, "mkv", encoder=twitch)
+    assert off._card_device() is None and not off.card_upload
+    monkeypatch.delenv("SPRIGCAST_NO_CARD_UPLOAD")
+    refused = Recorder(tmp_path / "r.mkv", W, H, FPS, 800, "h264_nvenc", 0.0, "mkv", encoder=twitch)
+    refused._no_card_upload = True
+    assert refused._card_device() is None
+    monkeypatch.setattr(gpu_share, "native_device", lambda: None)  # the engine can't share its device
+    none = Recorder(tmp_path / "n.mkv", W, H, FPS, 800, "h264_nvenc", 0.0, "mkv", encoder=twitch)
+    assert none._card_device() is None and not none.card_upload and not none._card_lost
+
+
+def test_an_encoder_that_wont_start_on_the_engines_device_starts_on_its_own(native, tmp_path, monkeypatch, caplog):
+    from ctypes import c_void_p
+
+    from sprigcast.core.scene import EncoderSettings
+    from sprigcast.render import gpu_share
+
+    monkeypatch.delenv("SPRIGCAST_NO_CARD_UPLOAD", raising=False)
+    monkeypatch.setattr(gpu_share, "native_device", lambda: c_void_p(1234))
+    monkeypatch.setattr(sprigcore, "com_release", lambda pointer: None)
+    opened = []
+
+    class _Stats:
+        def __init__(self, failed):
+            self.state_name = "failed" if failed else "running"
+            self.error_text = "the video encoder h264_nvenc (frames on the card): Invalid argument" if failed else ""
+
+    class _Writer:
+        on_card = False
+
+        def __init__(self, *args, device=None, **kwargs):
+            self.device = device
+            opened.append(device)
+
+        def stats(self):
+            return _Stats(self.device is not None)
+
+        def close(self):
+            pass
+
+    class _Stop(Exception):
+        pass
+
+    monkeypatch.setattr(sprigcore, "Writer", _Writer)
+    rec = Recorder(tmp_path / "t.mkv", W, H, FPS, 800, "h264_nvenc", 0.0, "mkv",
+                   encoder=EncoderSettings(keyint_sec=2, b_frames=2))
+    monkeypatch.setattr(Recorder, "_opened", property(lambda self: (_ for _ in ()).throw(_Stop())), raising=False)
+    with caplog.at_level(logging.WARNING), pytest.raises(_Stop):
+        rec._writer_session()
+    assert opened == [1234, None]  # once on the engine's device, then on a device of its own
+    assert not rec.card_upload and not rec._card_lost and rec._no_card_upload
+    assert "couldn't start on the engine's graphics device" in caplog.text
