@@ -513,7 +513,7 @@ class MainWindow(QMainWindow):
         from sprigcast.app.sound_strips import SoundStrips
 
         self.sound_strips = SoundStrips(self._on_sound_changed, self._open_build_sound, self._sound_strip_menu,
-                                        self._edit_sound_type)
+                                        self._edit_sound_type, self._set_sound_name)
         self.build_stage.below_card.addWidget(self.sound_strips)
         self.modes = QStackedWidget()
         self.modes.addWidget(self.build_stage)
@@ -1560,7 +1560,14 @@ class MainWindow(QMainWindow):
     def _rename_sound(self, source_id: str) -> None:
         config = self.collection.source(source_id)
         name, ok = popups.ask_text(self, "Rename sound", "Name", config.name, "Rename")
-        if ok and name.strip() and name.strip() != config.name:
+        if ok:
+            self._set_sound_name(source_id, name)
+
+    def _set_sound_name(self, source_id: str, name: str) -> None:
+        """A sound's new name (Rename… or double-clicking its strip's name). Only the sound changes: its id stays,
+        so apps that use it through the Control API by id keep working."""
+        config = self.collection.source(source_id)
+        if config is not None and name.strip() and name.strip() != config.name:
             config.name = name.strip()
             self._changed()
             self._refresh_scenes()
@@ -4900,7 +4907,11 @@ class MainWindow(QMainWindow):
         if len(self.collection.scenes_for(scene.canvas)) == 1:
             msgbox.information(self, "SprigCast", "Each canvas needs at least one scene.")
             return
-        if msgbox.question(self, "Remove scene", f"Remove {scene.name!r}?") != QMessageBox.StandardButton.Yes:
+        question = f"Remove {scene.name!r}?"
+        going = self.collection.would_remove([scene])
+        if going:
+            question += f"\n\nThese go with it (nothing else uses them): {', '.join(going)}."
+        if msgbox.question(self, "Remove scene", question) != QMessageBox.StandardButton.Yes:
             return
         self.collection.scenes = [s for s in self.collection.scenes if s.id != scene.id]
         for other in self.collection.scenes:
@@ -4920,17 +4931,12 @@ class MainWindow(QMainWindow):
         if uses:
             names = ", ".join(s.name for s in uses)
             question += f"\n\nIt's used in {len(uses)} scene{'s' if len(uses) != 1 else ''} ({names}) and will disappear from them."
+        going = self.collection.would_remove(self.collection.shapes(part))
+        if going:
+            question += f"\n\nThese go with it (nothing else uses them): {', '.join(going)}."
         if msgbox.question(self, f"Remove {PART}", question) != QMessageBox.StandardButton.Yes:
             return
-        placed = {s.id for s in self.collection.sources if self.collection.part_of(s) is part}
-        for scene in self.collection.scenes:
-            scene.items = [i for i in scene.items if i.source not in placed]
-        self.collection.sources = [s for s in self.collection.sources if s.id not in placed]
-        shapes = self.collection.shapes(part)
-        self.collection.scenes = [s for s in self.collection.scenes if s not in shapes]
-        for shape in shapes:
-            for item in shape.items:
-                self.collection.remove_source_if_unused(item.source)
+        self.collection.remove_sprig(part)
         self.selected_scene_id = self.collection.active_scenes.get(self.collection.canvases[0].id)
         self._changed()
         self._refresh_all()
