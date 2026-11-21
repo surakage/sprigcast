@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 40
+#define SC_INTERFACE_VERSION 41
 
 enum {
     SC_OK = 0,
@@ -844,6 +844,29 @@ SC_API int sc_file_part_chapter(sc_file *file, int index, int chapter, int64_t *
 SC_API int sc_file_stop(sc_file *file);
 /* sc_file_stop, then frees it. */
 SC_API void sc_file_destroy(sc_file *file);
+
+/* ---- Clips kept by the engine (interface 41, writer.cpp) ----------------------------------------------------
+ * A packets-mode writer keeps its last `seconds` of encoded packets itself (0 = none), starting at a video
+ * keyframe so a clip plays from its first picture: up to one keyframe interval more than asked, never less
+ * (unless less was encoded). The bytes wait in a ring file at `spool_path` (UTF-8; made, and removed when the
+ * writer closes; a longer time asked later makes a bigger one beside it) and in memory when that can't be
+ * written or spool_path is NULL. */
+SC_API int sc_writer_keep(sc_writer *writer, double seconds, const char *spool_path);
+/* Seconds of video kept now, and how many packets. */
+SC_API int sc_writer_kept(sc_writer *writer, double *seconds, int *packets);
+/* 0: packets are no longer queued for sc_writer_packet_take (nobody takes them: the engine sends, writes and
+ * keeps them itself) and those waiting are dropped; 1 (as a writer starts): queued again from the next one. */
+SC_API int sc_writer_hand_out(sc_writer *writer, int on);
+/* What a clip saved now would hold: taken at once (no bytes are read or copied), written later by sc_clip_write
+ * on the caller's thread: the video and the sound tracks in `tracks` (bit 0 = the first), with times from the
+ * clip's first keyframe. The bytes are read from the ring as it writes; if the ring has gone over them by then
+ * (as many seconds again have passed), or the writer closed, it fails. SC_ERR_ARGUMENT from the snapshot: nothing
+ * kept yet. */
+typedef struct sc_clip sc_clip;
+SC_API int sc_clip_snapshot(sc_writer *writer, sc_clip **out);
+SC_API int sc_clip_write(sc_clip *clip, const char *path, const char *format, const char *format_options,
+                         unsigned tracks);
+SC_API void sc_clip_destroy(sc_clip *clip);
 
 /* A player with no file. `playing` = 0 makes it wait for play (a sound file), 1 plays as soon as it has one. */
 SC_API int sc_media_create(int playing, sc_media **out);

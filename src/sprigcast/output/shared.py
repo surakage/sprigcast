@@ -188,6 +188,11 @@ class FileTap:
         super()._writer_after(writer)
         self._engine_file_turn()
 
+    engine_clips = True
+
+    def _python_wants_packets(self) -> bool:
+        return self.file_path is not None and self._engine_file is None  # a file written from here
+
     def _engine_file_turn(self) -> None:
         """Encoder thread, each turn of the writer loop: the engine's file's numbers, and its end."""
         out = self._engine_file

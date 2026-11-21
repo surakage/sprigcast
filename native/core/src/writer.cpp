@@ -28,6 +28,9 @@ extern "C" {
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <fstream>
+#include <limits>
 #include <functional>
 #include <memory>
 #include <thread>
@@ -84,6 +87,61 @@ struct Track {
 
 struct Link;
 struct File;
+
+// Clips: a fixed-size ring of packet bytes in a file (output/replay.py Spool). Positions only ever grow; the byte
+// in the file is at position % capacity. A packet never wraps around the end, so it may skip ahead to the next
+// lap. Packets more than one lap behind the write position have been overwritten.
+struct Ring {
+    std::mutex lock;
+    std::fstream file;
+    std::filesystem::path path;
+    uint64_t capacity = 0, pos = 0;
+    static std::shared_ptr<Ring> make(const std::string &utf8, uint64_t capacity) {
+        auto r = std::make_shared<Ring>();
+        r->path = std::filesystem::path(std::u8string(utf8.begin(), utf8.end()));
+        r->capacity = capacity;
+        r->file.open(r->path, std::ios::in | std::ios::out | std::ios::binary | std::ios::trunc);
+        return r->file ? r : nullptr;
+    }
+    ~Ring() {
+        file.close();
+        std::error_code ignored;
+        std::filesystem::remove(path, ignored);
+    }
+    uint64_t place(size_t size) {  // `lock` held
+        if (pos % capacity + size > capacity) pos += capacity - pos % capacity;
+        const uint64_t at = pos;
+        pos += size;
+        return at;
+    }
+    bool write(uint64_t at, const uint8_t *data, size_t size) {  // `lock` held
+        file.clear();
+        file.seekp(static_cast<std::streamoff>(at % capacity));
+        file.write(reinterpret_cast<const char *>(data), static_cast<std::streamsize>(size));
+        return static_cast<bool>(file);
+    }
+    bool read(uint64_t at, uint8_t *data, size_t size) {
+        std::lock_guard<std::mutex> hold(lock);
+        if (pos > capacity && at < pos - capacity) return false;  // written over since
+        file.clear();
+        file.flush();
+        file.seekg(static_cast<std::streamoff>(at % capacity));
+        file.read(reinterpret_cast<char *>(data), static_cast<std::streamsize>(size));
+        return static_cast<bool>(file);
+    }
+};
+// One packet kept for clips: its bytes in memory, or in a ring once moved there.
+struct Kept {
+    int track = 0;
+    bool key = false;
+    int64_t pts = 0, dts = 0;
+    AVRational tb{1, 1};
+    size_t size = 0;
+    double seconds = 0;
+    std::shared_ptr<const std::vector<uint8_t>> mem;
+    std::shared_ptr<Ring> ring;
+    uint64_t at = 0, seq = 0;
+};
 // One encoded packet on its way to the engine's own senders and files (sc_link, sc_file), shared between them.
 struct Encoded {
     int track = 0;  // 0 the video, 1.. the sound tracks
@@ -159,6 +217,22 @@ struct Core {
         std::vector<uint8_t> data;
     };
     std::deque<Out> outs;
+    std::atomic<bool> hand_out{true};  // sc_writer_hand_out: 0 = nobody takes them, none are queued
+    // Clips (sc_writer_keep): the last keep_seconds of packets, from a video keyframe (ReplayBuffer._keep, _trim).
+    std::mutex keep_lock;
+    double keep_seconds = 0, newest = -std::numeric_limits<double>::infinity();
+    std::string ring_path;
+    int rings_made = 0;
+    bool ring_failed = false;
+    std::shared_ptr<Ring> ring;
+    std::deque<Kept> kept;
+    std::deque<std::pair<uint64_t, double>> keys;  // the video keyframes among `kept` (seq, seconds), oldest first
+    uint64_t kept_seq = 0;
+    void keep_packet(const Out &o);
+    void pop_oldest() {  // keep_lock held
+        if (!keys.empty() && keys.front().first == kept.front().seq) keys.pop_front();
+        kept.pop_front();
+    }
     // Streams the engine sends itself (sc_link): each is offered every packet as it is encoded (writer thread).
     std::mutex links_lock;
     std::vector<std::shared_ptr<Link>> links;
@@ -362,10 +436,12 @@ void Core::write_packets(AVCodecContext *enc, AVStream *stream, AVPacket *use) {
             o.tb = enc->time_base;
             o.data.assign(p->data, p->data + p->size);
             ff.av_packet_unref(p);
+            keep_packet(o);
             offer_links(o);
             std::lock_guard<std::mutex> hold(lock);
-            if (outs.size() >= 4096) throw WriteError("the encoded packets weren't taken for a minute");
             bytes += o.data.size();
+            if (!hand_out.load()) continue;
+            if (outs.size() >= 4096) throw WriteError("the encoded packets weren't taken for a minute");
             outs.push_back(std::move(o));
             continue;
         }
@@ -572,6 +648,82 @@ void Core::encode_sound(Track &t, bool flush) {
     }
 }
 
+
+
+// ---- Clips kept by the engine (sc_writer_keep) -----------------------------------------------------------------
+constexpr double KEY_SLACK_S = 10.0;  // sound kept past the seconds while waiting for a keyframe
+
+void Core::keep_packet(const Out &o) {
+    std::lock_guard<std::mutex> hold(keep_lock);
+    if (keep_seconds <= 0) {
+        if (!kept.empty()) {
+            kept.clear();
+            keys.clear();
+            newest = -std::numeric_limits<double>::infinity();
+        }
+        ring.reset();  // packets a clip being written still needs keep their ring alive
+        return;
+    }
+    Kept k;
+    k.track = o.track;
+    k.key = o.key;
+    k.pts = o.pts;
+    k.dts = o.dts;
+    k.tb = o.tb;
+    k.size = o.data.size();
+    k.seconds = static_cast<double>(o.pts) * o.tb.num / std::max(1, o.tb.den);
+    k.seq = kept_seq++;
+    bool spooled = false;
+    if (!ring_failed && !ring_path.empty() && k.size > 0) {
+        // Room for the seconds plus a keyframe interval, twice over for peaks and sound; at least 16 MB.
+        const uint64_t wanted =
+            std::max<uint64_t>(16ull << 20, static_cast<uint64_t>(video_kbps * 125.0 * (keep_seconds + 10) * 2));
+        if (!ring || ring->capacity < wanted) {  // a longer time asked for: a new ring (older packets keep theirs)
+            auto made = Ring::make(ring_path + (rings_made ? "." + std::to_string(rings_made) : std::string()), wanted);
+            ++rings_made;
+            if (made) {
+                ring = made;
+            } else {
+                ring_failed = true;
+                sc::log_line(SC_LOG_WARNING, "writer: the clips' ring file can't be made; clips are kept in memory");
+            }
+        }
+        if (!ring_failed && k.size <= ring->capacity) {
+            std::lock_guard<std::mutex> ring_hold(ring->lock);
+            const uint64_t at = ring->place(k.size);
+            const int64_t limit = static_cast<int64_t>(at + k.size) - static_cast<int64_t>(ring->capacity);
+            while (!kept.empty() && kept.front().ring == ring && static_cast<int64_t>(kept.front().at) < limit)
+                pop_oldest();  // a burst bigger than the ring: the oldest moments are given up
+            if (ring->write(at, o.data.data(), k.size)) {
+                k.ring = ring;
+                k.at = at;
+                spooled = true;
+            } else {
+                ring_failed = true;
+                sc::log_line(SC_LOG_WARNING, "writer: the clips' ring file can't be written; clips are kept in memory");
+            }
+        }
+    }
+    if (!spooled) {
+        auto bytes_kept = std::make_shared<std::vector<uint8_t>>(o.data.size() + AV_INPUT_BUFFER_PADDING_SIZE);
+        if (!o.data.empty()) std::memcpy(bytes_kept->data(), o.data.data(), o.data.size());
+        k.mem = std::move(bytes_kept);
+    }
+    if (k.track == 0) {
+        newest = std::max(newest, k.seconds);
+        if (k.key) keys.emplace_back(k.seq, k.seconds);
+    }
+    const double last = k.seconds;
+    kept.push_back(std::move(k));
+    if (keys.empty()) {
+        // No picture keyframe yet: a clip can't start anywhere, so the sound mustn't pile up behind it.
+        while (!kept.empty() && kept.front().seconds < last - std::max(keep_seconds, 1.0) - KEY_SLACK_S) pop_oldest();
+        return;
+    }
+    const double cutoff = newest - keep_seconds;
+    while (keys.size() > 1 && keys[1].second <= cutoff) keys.pop_front();
+    while (!kept.empty() && kept.front().seq != keys.front().first) kept.pop_front();
+}
 
 // ---- A stream sent by the engine (sc_link) -------------------------------------------------------------------
 // One connection of a packets-mode writer: output/shared_stream.py's StreamLink (offer, _send, _session and the
@@ -2090,6 +2242,147 @@ SC_API void sc_file_destroy(sc_file *h) {
     } catch (...) {
     }
     delete h;
+}
+
+}  // extern "C"
+
+struct sc_clip {
+    std::vector<Kept> packets;
+    double zero = 0;
+    AVFormatContext *streams = nullptr;  // the writer's streams (codec headers) as the clip was taken
+};
+
+extern "C" {
+
+SC_API int sc_writer_keep(sc_writer *w, double seconds, const char *spool_path) {
+    return sc::guarded("sc_writer_keep", [&]() -> int {
+        if (!w) return sc::fail(SC_ERR_ARGUMENT, "sc_writer_keep: no writer");
+        Core &c = *w->core;
+        if (!c.packets) return sc::fail(SC_ERR_ARGUMENT, "sc_writer_keep: the writer doesn't hand out packets");
+        std::lock_guard<std::mutex> hold(c.keep_lock);
+        c.keep_seconds = std::clamp(seconds, 0.0, 3600.0);
+        if (spool_path && *spool_path && c.ring_path.empty()) c.ring_path = spool_path;
+        return SC_OK;
+    });
+}
+
+SC_API int sc_writer_kept(sc_writer *w, double *seconds, int *packets) {
+    return sc::guarded("sc_writer_kept", [&]() -> int {
+        if (!w) return sc::fail(SC_ERR_ARGUMENT, "sc_writer_kept: no writer");
+        Core &c = *w->core;
+        std::lock_guard<std::mutex> hold(c.keep_lock);
+        double first = 0;
+        bool found = false;
+        for (const Kept &k : c.kept) {
+            if (k.track == 0) {
+                first = k.seconds;
+                found = true;
+                break;
+            }
+        }
+        if (seconds) *seconds = found ? std::max(0.0, c.newest - first) : 0.0;
+        if (packets) *packets = static_cast<int>(c.kept.size());
+        return SC_OK;
+    });
+}
+
+SC_API int sc_writer_hand_out(sc_writer *w, int on) {
+    return sc::guarded("sc_writer_hand_out", [&]() -> int {
+        if (!w) return sc::fail(SC_ERR_ARGUMENT, "sc_writer_hand_out: no writer");
+        Core &c = *w->core;
+        std::lock_guard<std::mutex> hold(c.lock);
+        c.hand_out = on != 0;
+        if (!on) c.outs.clear();
+        return SC_OK;
+    });
+}
+
+SC_API int sc_clip_snapshot(sc_writer *w, sc_clip **out) {
+    return sc::guarded("sc_clip_snapshot", [&]() -> int {
+        if (!w || !out) return sc::fail(SC_ERR_ARGUMENT, "sc_clip_snapshot: nothing given");
+        *out = nullptr;
+        Core &c = *w->core;
+        auto clip = std::make_unique<sc_clip>();
+        {
+            std::lock_guard<std::mutex> hold(c.keep_lock);
+            auto start = std::find_if(c.kept.begin(), c.kept.end(),
+                                      [](const Kept &k) { return k.track == 0 && k.key; });
+            if (start == c.kept.end()) return sc::fail(SC_ERR_ARGUMENT, "nothing buffered yet");
+            clip->zero = start->seconds;
+            clip->packets.assign(start, c.kept.end());
+        }
+        std::lock_guard<std::mutex> hold(c.links_lock);
+        if (!c.streams_ready || !c.out) return sc::fail(SC_ERR_ARGUMENT, "nothing buffered yet");
+        must(ff.avformat_alloc_output_context2(&clip->streams, nullptr, "nut", nullptr), "the clip's streams");
+        for (unsigned i = 0; i < c.out->nb_streams; ++i) {
+            AVStream *st = ff.avformat_new_stream(clip->streams, nullptr);
+            if (!st || ff.avcodec_parameters_copy(st->codecpar, c.out->streams[i]->codecpar) < 0) {
+                ff.avformat_free_context(clip->streams);
+                return sc::fail(SC_ERR_DEVICE, "sc_clip_snapshot: the streams' headers couldn't be copied");
+            }
+        }
+        *out = clip.release();
+        return SC_OK;
+    });
+}
+
+SC_API int sc_clip_write(sc_clip *clip, const char *path, const char *format, const char *format_options,
+                         unsigned tracks) {
+    return sc::guarded("sc_clip_write", [&]() -> int {
+        if (!clip || !path || !*path) return sc::fail(SC_ERR_ARGUMENT, "sc_clip_write: no clip or path");
+        File f;  // the recording file's own writing, on this thread
+        f.path = path;
+        f.format = format ? format : "";
+        f.options = format_options ? format_options : "";
+        for (int t = 0; t < MAX_TRACKS; ++t)
+            if (tracks & (1u << t)) f.kept.push_back(t);
+        if (f.kept.empty()) f.kept.push_back(0);
+        f.streams = clip->streams;
+        std::string why;
+        try {
+            f.pkt = ff.av_packet_alloc();
+            if (!f.pkt) throw std::bad_alloc();
+            f.open_part(clip->zero);
+            Encoded e;
+            for (const Kept &k : clip->packets) {
+                e.track = k.track;
+                e.key = k.key;
+                e.pts = k.pts;
+                e.dts = k.dts;
+                e.tb = k.tb;
+                e.size = k.size;
+                e.seconds = k.seconds;
+                if (k.mem) {
+                    e.data = *k.mem;
+                } else {
+                    e.data.assign(k.size + AV_INPUT_BUFFER_PADDING_SIZE, 0);
+                    if (!k.ring || !k.ring->read(k.at, e.data.data(), k.size))
+                        throw Error("the clip's start has been recorded over");
+                }
+                f.write(e);
+            }
+            f.finish_part();
+        } catch (const std::exception &e) {
+            why = e.what();
+        }
+        if (f.out) {
+            if (!(f.out->oformat->flags & AVFMT_NOFILE) && f.out->pb) ff.avio_closep(&f.out->pb);
+            ff.avformat_free_context(f.out);
+            f.out = nullptr;
+        }
+        if (f.pkt) ff.av_packet_free(&f.pkt);
+        f.streams = nullptr;  // the clip's
+        return why.empty() ? SC_OK : sc::fail(SC_ERR_DEVICE, why);
+    });
+}
+
+SC_API void sc_clip_destroy(sc_clip *clip) {
+    if (!clip) return;
+    try {
+        if (clip->streams) ff.avformat_free_context(clip->streams);
+    } catch (...) {
+    }
+    delete clip;
 }
 
 }  // extern "C"
