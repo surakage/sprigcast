@@ -34,7 +34,8 @@ def test_notice_says_when_a_place_reconnects_or_its_bitrate_is_lowered():
 
     assert notice([("horizontal", _streamer("Twitch"))]) == ("", "")
     pilot = Autopilot(6000)
-    pilot.update(0.0, 2.0)  # far behind: a big step down
+    pilot.update(0.0, 2.0)
+    pilot.update(1.0, 2.0)  # behind two readings in a row: a step down
     lowered = _streamer("YouTube", autopilot=pilot)
     assert notice([("horizontal", lowered)]) == ("warning", f"YouTube: bitrate lowered to {pilot.current_kbps} kbps")
     dropped = _streamer("Twitch", connected=False, reconnects=2, status="reconnecting (try 2)")
@@ -49,6 +50,7 @@ def test_session_health_counts_drops_reconnects_memory_and_hitches(app):
 
     pilot = Autopilot(6000)
     pilot.update(0.0, 2.0)
+    pilot.update(1.0, 2.0)
     st = _streamer("Twitch", frames=3600, dropped=12, reconnects=1, autopilot=pilot)
     session = types.SimpleNamespace(streamers=[("horizontal", st)])
     t = [100.0]

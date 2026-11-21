@@ -231,6 +231,10 @@ def engine_filters(chain, engine_ids: dict) -> tuple | None:
             follow = engine_ids.get(str(s["sound_id"]), 0) if s["sound_id"] else 0
             out.append((sprigcore.FILTER_DUCKING, follow, tuple(_number(s, k) for k in (
                 "amount_db", "threshold_db", "attack_ms", "hold_ms", "release_ms"))))
+        elif isinstance(proc, f.FFmpegAudioFilter) and sprigcore.sound_filters_ready():
+            # FFmpeg's filters (equalizer, RNNoise, low cut, ...) in the engine too: a mic with one of these was
+            # pulled through Python a block at a time, and ran dry on a busy PC (2026-11-21).
+            out.append((sprigcore.FILTER_GRAPH, 0, proc.engine_text()))
         else:
             return None
     return tuple(out)
@@ -242,7 +246,9 @@ def _python_only(source) -> list[str]:
 
     native = (f.GainFilter, f.NoiseGate, f.Compressor, f.Limiter, f.InvertPolarity, f.Ducking)
     chain = getattr(source, "audio_chain", None)
-    names = [type(p).__name__ for p in getattr(chain, "processors", ()) if type(p) not in native]
+    graphs = sprigcore.sound_filters_ready()
+    names = [type(p).__name__ for p in getattr(chain, "processors", ())
+             if type(p) not in native and not (graphs and isinstance(p, f.FFmpegAudioFilter))]
     return names or ["unknown"]
 
 

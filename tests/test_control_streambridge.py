@@ -513,6 +513,11 @@ def test_place_set_switches_twitch_test_mode():
     assert _ok(api, "places.list")["places"][0]["bandwidth_test"] is True
     assert _fails(api, "place.set", place=other.id, bandwidth_test=True) == "bad_request"  # YouTube has none
     assert _fails(api, "place.set", place=out.id) == "bad_request"  # nothing to change
+    _ok(api, "place.set", place=out.id, bitrateKbps=4500)
+    assert out.bitrate_kbps == 4500
+    assert next(p for p in _ok(api, "places.list")["places"] if p["id"] == out.id)["bitrateKbps"] == 4500
+    assert _fails(api, "place.set", place=out.id, bitrateKbps=100) == "bad_request"
+    assert _fails(api, "place.set", place=out.id, bitrateKbps="4500") == "bad_request"
     assert _fails(api, "place.set", place=out.id, bandwidth_test="yes") == "bad_request"
     host.start_stream()
     assert _fails(api, "place.set", place=out.id, bandwidth_test=False) == "busy"

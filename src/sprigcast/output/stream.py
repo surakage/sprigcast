@@ -369,7 +369,9 @@ class Streamer(Recorder):
         return self.autopilot.current_kbps if self.autopilot else self.bitrate_kbps
 
     def backlog_seconds(self) -> float:
-        return self._backlog_bytes * 8 / (self.current_kbps * 1000)
+        # Against the bitrate set, not the lowered one: the same bytes waiting read as more seconds after each step
+        # down, and that alone asked for the next (PC live 2026-11-21).
+        return self._backlog_bytes * 8 / (max(1, self.bitrate_kbps) * 1000)
 
     def _video_options(self) -> dict[str, str]:
         return video_options(self.codec, self.encoder, self.bitrate_kbps, hrd=self.autopilot is None)

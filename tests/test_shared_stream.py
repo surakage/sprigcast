@@ -379,11 +379,12 @@ def test_one_slow_destination_costs_the_others_one_small_step_at_most():
     links = [(lk.behind, lk) for lk in (yt, kick, tw)]
     behind, who = enc.steering_backlog(links)
     assert who is kick and behind <= 1.5  # one small step for Kick alone, never a big one
-    assert pilot.update(100.0, behind) == 4800
+    assert pilot.update(99.0, behind) is None and pilot.update(100.0, behind) == 4800  # two readings in a row
     behind, who = enc.steering_backlog(links)
     assert who is tw and pilot.update(110.0, behind) is None  # no further: Kick skips frames on its own
     yt.behind = 0.9  # YouTube behind too: the PC's own upload, so everyone comes down, by YouTube's 0.9 s, not
     behind, who = enc.steering_backlog([(lk.behind, lk) for lk in (yt, kick, tw)])  # Kick's 3 s (PC live 2026-11-21)
+    pilot.update(119.0, behind)
     assert who is yt and behind == 0.9 and pilot.update(120.0, behind) < 4800
     lone = SharedStreamEncoder(_Canvas(), 30, 6000, "libx264", time.perf_counter(), auto_bitrate=True)
     assert lone.steering_backlog([(3.0, kick)]) == (3.0, kick)  # on its own a link steers its encoder fully

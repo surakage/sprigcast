@@ -341,6 +341,13 @@ def test_a_cut_to_a_closed_page_waits_for_its_first_paint():
         page.sleep()
         page.asleep = True
         assert not page.slow_wake  # a page kept running is back at once
+        page._paused_at -= browser.RELEASE_AFTER_S  # ...until it has let go of its graphics device
+        assert page.slow_wake
+        page.first_picture = True
+        page.wake()
+        assert not page.first_picture  # its first picture back is waited for
+        page.sleep()
+        page.asleep = True
         page.update({"url": "https://a.com"})
         page.sleep()
         assert page.slow_wake

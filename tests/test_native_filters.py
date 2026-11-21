@@ -31,7 +31,8 @@ class Swell(Fake):
         return block * np.float32((1.0, 0.002, 0.002, 0.002, 0.8, 0.0, 0.0, 0.0, 0.0, 1.0)[(self.n - 1) % 10])
 
 
-def test_only_built_in_filters_go_to_the_engine():
+def test_only_built_in_filters_go_to_the_engine(monkeypatch):
+    monkeypatch.setattr(sprigcore, "sound_filters_ready", lambda: False)  # without FFmpeg's filters in the engine
     got = engine_filters(chain(("gain", {"db": 6}), ("limiter", {}), ("compressor", {}), ("invert_polarity", {}),
                                ("ducking", {"sound_id": "music"}), ("noise_gate", {})), {"music": 7})
     assert [k for k, _, _ in got] == [sprigcore.FILTER_GAIN, sprigcore.FILTER_LIMITER, sprigcore.FILTER_COMPRESSOR,
@@ -109,3 +110,77 @@ def test_a_fully_open_gate_stays_open_without_fluttering():
     gate.process(loud)
     out = gate.process(loud)
     assert gate.level == 1.0 and np.all(out == loud)  # it used to dip by a release step every other chunk
+
+
+@pytest.mark.usefixtures("player_lib")
+@pytest.mark.usefixtures("player_lib")
+def test_ffmpeg_filters_run_in_the_engine_and_match_python(monkeypatch):
+    """Equalizer, low cut, RNNoise...: FFmpeg filter chains run in the engine's mixer too (PC 2026-11-21: a mic with
+    one of these was pulled through Python every block and ran dry on a busy PC). The same sound out as Python's."""
+    sprigcore.sound_filters_ready.cache_clear()
+    if not sprigcore.sound_filters_ready():
+        pytest.skip("PyAV's libavfilter isn't here")
+    got = engine_filters(chain(("gain", {"db": 2}), ("eq3", {"low_db": 6, "high_db": -4}), ("low_cut", {})), {})
+    assert [k for k, _, _ in got] == [sprigcore.FILTER_GAIN, sprigcore.FILTER_GRAPH, sprigcore.FILTER_GRAPH]
+    assert got[1][2].startswith("bass\tg=6.00:f=250\nequalizer\t") and got[2][2] == "highpass\tf=100:p=2"
+
+    def sounds():
+        mic = Swell("mic", 0.3, kind="audio_input", name="Mic")
+        mic.audio_chain = chain(("eq3", {"low_db": 6, "mid_db": -3, "high_db": 4}), ("low_cut", {"hz": 120}),
+                                ("gain", {"db": -2}), ("de_esser", {}))
+        return [mic]
+
+    SOUND_LEVELS.clear()
+    (py, _, _), (nat, _, _) = both(sounds, ("stream",), 30)
+    SOUND_LEVELS.clear()
+    assert len(py) == len(nat) == 30
+    for a, b in zip(py, nat):
+        same(a[0], b[0], tol=1e-5)
+    assert np.max(np.abs(np.asarray(py))) > 0.01
+
+
+@pytest.mark.usefixtures("player_lib")
+def test_an_expander_runs_in_the_engine_and_matches_python():
+    """The user's mic was the only sound Python captured, for its Expander alone (2026-11-21)."""
+    sprigcore.sound_filters_ready.cache_clear()
+    if not sprigcore.sound_filters_ready():
+        pytest.skip("PyAV's libavfilter isn't here")
+    from sprigcast.audio.native_mixer import _python_only
+
+    settings = {"ratio": 3.0, "threshold_db": -30.0, "attack_ms": 10, "release_ms": 80}
+    got = engine_filters(chain(("expander", settings)), {})
+    assert [k for k, _, _ in got] == [sprigcore.FILTER_GRAPH] and got[0][2].startswith("agate\tmode=downward")
+
+    def sounds():
+        mic = Swell("mic", 0.3, kind="audio_input", name="Mic")
+        mic.audio_chain = chain(("expander", settings))
+        return [mic]
+
+    assert _python_only(sounds()[0]) == ["unknown"]  # nothing left that only Python runs
+    SOUND_LEVELS.clear()
+    (py, _, _), (nat, _, _) = both(sounds, ("stream",), 30)
+    SOUND_LEVELS.clear()
+    for a, b in zip(py, nat):
+        same(a[0], b[0], tol=1e-5)
+    assert np.max(np.abs(np.asarray(py))) > 0.01
+
+
+@pytest.mark.usefixtures("player_lib")
+def test_rnnoise_runs_in_the_engine():
+    from sprigcast.core.filters import rnnoise_model
+
+    sprigcore.sound_filters_ready.cache_clear()
+    if not sprigcore.sound_filters_ready() or not rnnoise_model():
+        pytest.skip("no RNNoise here")
+    mixer = NativeMixer(lambda levels: None, clocked=False)
+    try:
+        mic = Fake("mic", 0.3, kind="audio_input", name="Mic")
+        mic.audio_chain = chain(("noise_suppression", {"method": "rnnoise", "mix": 100}))
+        mic.audio_chain.process = lambda block: pytest.fail("Python ran RNNoise")
+        mixer.set_sources([mic])
+        for _ in range(5):
+            mixer.tick()
+        sound = next(iter(mixer._known.values()))
+        assert sound.filters[0][0] == sprigcore.FILTER_GRAPH and "arnndn\tm='" in sound.filters[0][2]
+    finally:
+        mixer._engine.close()

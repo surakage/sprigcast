@@ -7,6 +7,7 @@
 // bloom, volume; ducking of everything else while a voice talks; named tracks (stream, recording, VOD-safe, voice,
 // clips, track 4, track 5, and Source record's clean track); and the monitor mix for your speakers.
 #include "base.h"
+#include "ffmpeg.h"
 
 #include <algorithm>
 #include <atomic>
@@ -18,6 +19,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -28,6 +30,9 @@ constexpr int RATE = 48000;
 constexpr float FLOOR_DB = -60.0f;
 constexpr double BLOOM_FADE_S = 0.25;
 constexpr int MAX_DELAY_MS = 2000;
+// libavfilter's major version the declarations in ffmpeg.h follow (FFmpeg 7 and 8: 10 and 11; the calls used have
+// stayed the same): the one PyAV's libavcodec goes with.
+constexpr unsigned FILTERS_MAJOR = LIBAVCODEC_VERSION_MAJOR - 51;
 constexpr size_t MAX_QUEUED = RATE / 5;                 // a pushed sound keeps at most 200 ms queued
 constexpr size_t LEAD = BLOCK;                            // ... and plays once it has a block ahead
 constexpr size_t TAP_QUEUE = 64;                          // blocks an output keeps until taken (about 1.4 s)
@@ -80,8 +85,131 @@ void ramp(float *b, int from, int count, double start, double end) {  // numpy l
     }
 }
 
+// One of FFmpeg's audio filter chains (core/filters.py FFmpegAudioFilter: equalizer, RNNoise, low cut, ...), run
+// here on the mixer's thread instead of in Python a block at a time: a mic with one of these was pulled through
+// Python every 21 ms, and on a busy PC its sound ran dry (PC 2026-11-21). The same chain as Python's: abuffer, the
+// filters, aformat back to 48 kHz stereo float, abuffersink; a filter that holds sound back is padded with silence
+// at the start, so each block comes out the size it went in.
+struct Graph {
+    AVFilterGraph *graph = nullptr;
+    AVFilterContext *src = nullptr, *sink = nullptr;
+    AVFrame *in = nullptr, *out = nullptr;
+    int64_t pts = 0;
+    std::deque<float> pending;  // filtered, interleaved, not handed out yet
+
+    Graph() = default;
+    Graph(const Graph &) = delete;
+    Graph &operator=(const Graph &) = delete;
+    ~Graph() {
+        if (graph) sc::ffm::fg.avfilter_graph_free(&graph);
+        if (in) sc::ffm::ff.av_frame_free(&in);
+        if (out) sc::ffm::ff.av_frame_free(&out);
+    }
+
+    // spec: a filter a line, "name\targs". Empty `why` when it was made.
+    void build(const std::string &spec, std::string &why) {
+        using sc::ffm::fg;
+        using sc::ffm::ff;
+        if (!sc::ffm::fg_ready.load() || !sc::ffm::ff_ready.load()) {
+            why = "FFmpeg's filters aren't loaded";
+            return;
+        }
+        graph = fg.avfilter_graph_alloc();
+        in = ff.av_frame_alloc();
+        out = ff.av_frame_alloc();
+        if (!graph || !in || !out) {
+            why = "out of memory";
+            return;
+        }
+        // One thread: left to choose, FFmpeg starts a pool per graph (as filters.py found: 15 on the user's PC).
+        fg.av_opt_set_int(graph, "threads", 1, 0);
+        auto add = [&](const char *name, const std::string &args, AVFilterContext **made) -> bool {
+            const AVFilter *filter = fg.avfilter_get_by_name(name);
+            if (!filter) {
+                why = std::string("FFmpeg has no ") + name + " filter";
+                return false;
+            }
+            const int e = fg.avfilter_graph_create_filter(made, filter, nullptr, args.empty() ? nullptr : args.c_str(),
+                                                          nullptr, graph);
+            if (e < 0) {
+                why = std::string(name) + ": " + sc::ffm::av_text(e);
+                return false;
+            }
+            return true;
+        };
+        if (!add("abuffer", "time_base=1/48000:sample_rate=48000:sample_fmt=fltp:channel_layout=stereo", &src)) return;
+        AVFilterContext *last = src;
+        size_t at = 0;
+        while (at < spec.size()) {
+            size_t end = spec.find('\n', at);
+            if (end == std::string::npos) end = spec.size();
+            const std::string line = spec.substr(at, end - at);
+            at = end + 1;
+            if (line.empty()) continue;
+            const size_t tab = line.find('\t');
+            const std::string name = line.substr(0, tab);
+            AVFilterContext *made = nullptr;
+            if (!add(name.c_str(), tab == std::string::npos ? std::string() : line.substr(tab + 1), &made)) return;
+            if (fg.avfilter_link(last, 0, made, 0) < 0) {
+                why = "couldn't link " + name;
+                return;
+            }
+            last = made;
+        }
+        AVFilterContext *shape = nullptr;
+        if (!add("aformat", "sample_fmts=fltp:channel_layouts=stereo:sample_rates=48000", &shape)) return;
+        if (!add("abuffersink", "", &sink)) return;
+        if (fg.avfilter_link(last, 0, shape, 0) < 0 || fg.avfilter_link(shape, 0, sink, 0) < 0) {
+            why = "couldn't link the chain";
+            return;
+        }
+        const int e = fg.avfilter_graph_config(graph, nullptr);
+        if (e < 0) why = "the chain couldn't be set up: " + sc::ffm::av_text(e);
+    }
+
+    // One block through the chain, in place. False if FFmpeg failed (the block is left as it came).
+    bool process(float *b) {
+        using sc::ffm::fg;
+        using sc::ffm::ff;
+        in->format = AV_SAMPLE_FMT_FLTP;
+        in->sample_rate = RATE;
+        in->nb_samples = BLOCK;
+        ff.av_channel_layout_default(&in->ch_layout, 2);
+        if (ff.av_frame_get_buffer(in, 0) < 0) return false;
+        auto *l = reinterpret_cast<float *>(in->data[0]);
+        auto *r = reinterpret_cast<float *>(in->data[1]);
+        for (int i = 0; i < BLOCK; ++i) {
+            l[i] = b[2 * i];
+            r[i] = b[2 * i + 1];
+        }
+        in->pts = pts;
+        pts += BLOCK;
+        if (fg.av_buffersrc_add_frame_flags(src, in, 0) < 0) {  // takes the frame's buffers either way
+            ff.av_frame_unref(in);
+            return false;
+        }
+        while (fg.av_buffersink_get_frame(sink, out) >= 0) {
+            const auto *ol = reinterpret_cast<const float *>(out->data[0]);
+            const auto *orr = reinterpret_cast<const float *>(out->ch_layout.nb_channels > 1 ? out->data[1]
+                                                                                              : out->data[0]);
+            for (int i = 0; i < out->nb_samples; ++i) {
+                pending.push_back(ol[i]);
+                pending.push_back(orr[i]);
+            }
+            ff.av_frame_unref(out);
+        }
+        const size_t want = static_cast<size_t>(BLOCK) * 2;
+        if (pending.size() < want) pending.insert(pending.begin(), want - pending.size(), 0.0f);  // held back
+        std::copy(pending.begin(), pending.begin() + static_cast<std::ptrdiff_t>(want), b);
+        pending.erase(pending.begin(), pending.begin() + static_cast<std::ptrdiff_t>(want));
+        return true;
+    }
+};
+
 struct Filter {
     sc_mixer_filter settings{};
+    std::string text;              // SC_FILTER_GRAPH: its chain (Graph::build)
+    std::shared_ptr<Graph> graph;  // SC_FILTER_GRAPH: the chain, made by sc_mixer_source_filters_text
     bool open = false;
     double held = 0.0, level = 0.0, env = 0.0, gain = 1.0;
 
@@ -144,6 +272,9 @@ struct Filter {
         }
         case SC_FILTER_INVERT:
             for (int i = 0; i < BLOCK * 2; ++i) b[i] = -b[i];
+            break;
+        case SC_FILTER_GRAPH:
+            if (graph) graph->process(b);
             break;
         case SC_FILTER_DUCKING: {  // follow: the sound; p: amount_db, threshold_db, attack_ms, hold_ms, release_ms
             const double block_s = static_cast<double>(BLOCK) / RATE;
@@ -538,9 +669,43 @@ SC_API int sc_mixer_source_media(sc_mixer *mixer, int id, sc_media *media, int a
 }
 
 SC_API int sc_mixer_source_filters(sc_mixer *mixer, int id, const sc_mixer_filter *filters, int count) {
+    return sc_mixer_source_filters_text(mixer, id, filters, nullptr, count);
+}
+
+SC_API int sc_mixer_source_filters_text(sc_mixer *mixer, int id, const sc_mixer_filter *filters,
+                                        const char *const *texts, int count) {
     return sc::guarded("sc_mixer_source_filters", [&]() -> int {
         if (!mixer || count < 0 || (count && !filters) || count > 32)
             return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_source_filters: nothing given");
+        std::vector<std::string> wanted(static_cast<size_t>(count));
+        for (int i = 0; i < count; ++i) {
+            if (filters[i].kind != SC_FILTER_GRAPH) continue;
+            if (!texts || !texts[i] || !*texts[i])
+                return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_source_filters: an FFmpeg filter chain without its text");
+            wanted[static_cast<size_t>(i)] = texts[i];
+        }
+        // The chains already running with the same text are kept (their sound held back with them); new ones are
+        // made here, outside the mixer's lock, so the mix never waits for FFmpeg to set one up.
+        std::vector<std::shared_ptr<Graph>> graphs(static_cast<size_t>(count));
+        {
+            std::lock_guard<std::mutex> hold(mixer->lock);
+            auto found = mixer->sources.find(id);
+            if (found == mixer->sources.end())
+                return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_source_filters: no such sound");
+            const std::vector<Filter> &have = found->second.filters;
+            for (size_t i = 0; i < graphs.size() && i < have.size(); ++i)
+                if (filters[i].kind == SC_FILTER_GRAPH && have[i].settings.kind == SC_FILTER_GRAPH &&
+                    have[i].text == wanted[i])
+                    graphs[i] = have[i].graph;
+        }
+        for (size_t i = 0; i < graphs.size(); ++i) {
+            if (filters[i].kind != SC_FILTER_GRAPH || graphs[i]) continue;
+            auto made = std::make_shared<Graph>();
+            std::string why;
+            made->build(wanted[i], why);
+            if (!why.empty()) return sc::fail(SC_ERR_ARGUMENT, "sound filter: " + why);
+            graphs[i] = std::move(made);
+        }
         std::lock_guard<std::mutex> hold(mixer->lock);
         auto found = mixer->sources.find(id);
         if (found == mixer->sources.end()) return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_source_filters: no such sound");
@@ -550,10 +715,54 @@ SC_API int sc_mixer_source_filters(sc_mixer *mixer, int id, const sc_mixer_filte
         if (!same) {  // other filters: they start fresh
             have.assign(static_cast<size_t>(count), Filter{});
         }
-        for (int i = 0; i < count; ++i) have[static_cast<size_t>(i)].settings = filters[i];  // state kept
+        for (int i = 0; i < count; ++i) {
+            Filter &f = have[static_cast<size_t>(i)];
+            f.settings = filters[i];  // state kept
+            f.text = wanted[static_cast<size_t>(i)];
+            f.graph = graphs[static_cast<size_t>(i)];
+        }
         return SC_OK;
     });
 }
+
+SC_API int sc_mixer_ffmpeg_load_filters(const char *avfilter, const char *avutil) {
+    return sc::guarded("sc_mixer_ffmpeg_load_filters", [&]() -> int {
+        using namespace sc::ffm;
+        std::lock_guard<std::mutex> hold(ff_lock);
+        if (!ff_ready.load()) return sc::fail(SC_ERR_ARGUMENT, "sound filters: FFmpeg isn't loaded yet");
+        if (fg_ready.load()) return SC_OK;
+        if (!avfilter || !*avfilter || !avutil || !*avutil)
+            return sc::fail(SC_ERR_ARGUMENT, "sound filters: no libavfilter or libavutil path");
+        void *library = open_library(avfilter), *util = open_library(avutil);
+        if (!library || !util) return sc::fail(SC_ERR_DEVICE, std::string("sound filters: couldn't load ") + avfilter);
+        FilterGraphApi api;
+#define SC_FG(lib, name)                                                                                           \
+    api.name = reinterpret_cast<decltype(api.name)>(find_symbol(lib, #name));                                       \
+    if (!api.name) return sc::fail(SC_ERR_DEVICE, "sound filters: FFmpeg has no " #name);
+        SC_FG(library, avfilter_version)
+        SC_FG(library, avfilter_graph_alloc)
+        SC_FG(library, avfilter_graph_free)
+        SC_FG(library, avfilter_get_by_name)
+        SC_FG(library, avfilter_graph_create_filter)
+        SC_FG(library, avfilter_link)
+        SC_FG(library, avfilter_graph_config)
+        SC_FG(library, av_buffersrc_add_frame_flags)
+        SC_FG(library, av_buffersink_get_frame)
+        SC_FG(util, av_opt_set_int)
+#undef SC_FG
+        if (api.avfilter_version() >> 16 != FILTERS_MAJOR)
+            return sc::fail(SC_ERR_DEVICE, "sound filters: libavfilter is version " +
+                                               std::to_string(api.avfilter_version() >> 16) + ", the engine was "
+                                               "built for " + std::to_string(FILTERS_MAJOR));
+        fg = api;
+        fg_ready.store(true);
+        sc::log_line(SC_LOG_INFO, "sound filters: FFmpeg's filters loaded (libavfilter " +
+                                      std::to_string(api.avfilter_version() >> 16) + ")");
+        return SC_OK;
+    });
+}
+
+SC_API int sc_mixer_ffmpeg_filters_ready(void) { return sc::ffm::fg_ready.load() ? 1 : 0; }
 
 SC_API int sc_mixer_set_ducking(sc_mixer *mixer, const sc_mixer_ducking *ducking) {
     return sc::guarded("sc_mixer_set_ducking", [&]() -> int {

@@ -13,6 +13,7 @@ reload_on_air (reload the page each time a bloom showing it goes on air).
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Protocol
 
 import numpy as np
@@ -24,6 +25,7 @@ log = logging.getLogger(__name__)
 # Same idea as OBS's default, so overlays made for OBS look the same here.
 DEFAULT_CSS = "body { background-color: rgba(0, 0, 0, 0); margin: 0px auto; overflow: hidden; }"
 
+RELEASE_AFTER_S = 120  # a page kept running but hidden this long lets go of its graphics device (app/browser_quick.py)
 STANDARD_FPS = 30  # smooth enough for alerts and widgets, and light
 
 DEFAULTS: dict[str, Any] = {
@@ -152,7 +154,15 @@ class BrowserSource(Source):
     def slow_wake(self) -> bool:
         """Asleep, its page is closed: a bloom switch to it waits (at most 2 s) for the page's first paint, so
         an alert box never appears late. A page kept running is back at once."""
-        return _host is not None and bool(page_url(self.settings)) and not (self._keep_running() and self._open)
+        if _host is None or not page_url(self.settings):
+            return False
+        return not (self._keep_running() and self._open) or self._device_let_go()
+
+    def _device_let_go(self) -> bool:
+        """Kept running but hidden RELEASE_AFTER_S or longer: the page let go of its graphics device
+        (app/browser_quick.py), so its first picture back takes a moment and a switch waits for it too."""
+        paused = getattr(self, "_paused_at", None)
+        return paused is not None and time.monotonic() - paused >= RELEASE_AFTER_S
 
     def start(self) -> None:
         self._start_page()
@@ -197,12 +207,16 @@ class BrowserSource(Source):
             return
         if self._keep_running():
             _host.pause(self.id, True)
+            self._paused_at = time.monotonic()
         else:
             self.stop()
 
     def wake(self) -> None:
         self._blank = True
         if self._open and _host is not None:
+            if self._device_let_go():
+                self.first_picture = False  # back on a graphics device: a switch waits for its first picture
+            self._paused_at = None
             _host.pause(self.id, False)
         else:
             self._start_page()

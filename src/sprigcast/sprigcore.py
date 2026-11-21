@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 35  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 36  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 PUSH_OFF, PUSH_TALK, PUSH_MUTE = 0, 1, 2  # sc_mixer_push_set modes
 DLL_NAME = "sprigcore.dll"
 
@@ -1297,7 +1297,7 @@ class MixerLevel(ctypes.Structure):
                 ("underruns", ctypes.c_uint64)]
 
 
-FILTER_GAIN, FILTER_NOISE_GATE, FILTER_COMPRESSOR, FILTER_LIMITER, FILTER_INVERT, FILTER_DUCKING = range(1, 7)
+FILTER_GAIN, FILTER_NOISE_GATE, FILTER_COMPRESSOR, FILTER_LIMITER, FILTER_INVERT, FILTER_DUCKING, FILTER_GRAPH = range(1, 8)
 
 
 class MixerFilter(ctypes.Structure):
@@ -1384,6 +1384,9 @@ def _media_sigs() -> dict:
         "sc_mixer_wait": (c_int, [vp, ctypes.c_int64, c_int, ctypes.POINTER(ctypes.c_int64)]),
         "sc_mixer_levels": (c_int, [vp, c_int, ctypes.POINTER(MixerLevel)]),
         "sc_mixer_source_filters": (c_int, [vp, c_int, ctypes.POINTER(MixerFilter), c_int]),
+        "sc_mixer_source_filters_text": (c_int, [vp, c_int, ctypes.POINTER(MixerFilter), ctypes.POINTER(text), c_int]),
+        "sc_mixer_ffmpeg_load_filters": (c_int, [text, text]),
+        "sc_mixer_ffmpeg_filters_ready": (c_int, []),
         "sc_capture_open": (c_int, [vp, c_int, ctypes.c_wchar_p, c_int, ctypes.POINTER(vp)]),
         "sc_audio_windows_ducking": (c_int, [c_int]),
         "sc_capture_stats_get": (c_int, [vp, ctypes.POINTER(CaptureStats)]),
@@ -1445,6 +1448,29 @@ def _ffmpeg_file(av, name: str) -> str | None:
         if hits:
             return hits[0]
     return None
+
+
+@functools.cache
+def sound_filters_ready() -> bool:
+    """True once the engine's mixer can run FFmpeg's audio filters itself (equalizer, RNNoise, low cut...: PyAV's
+    libavfilter loaded). SPRIGCAST_NO_NATIVE_FILTERS=1 leaves every filter chain to Python, as before."""
+    if os.environ.get("SPRIGCAST_NO_NATIVE_FILTERS") or not media_ready():
+        return False
+    try:
+        import av
+    except Exception:  # noqa: BLE001
+        return False
+    paths = [_ffmpeg_file(av, "avfilter"), _ffmpeg_file(av, "avutil")]
+    if None in paths:
+        log.warning("sound filters: PyAV's libavfilter wasn't found; filters like the equalizer run in Python")
+        return False
+    lib = _media_lib()
+    code = lib.sc_mixer_ffmpeg_load_filters(*(p.encode("utf-8") for p in paths))
+    if code != SC_OK:
+        log.warning("sound filters: %s; filters like the equalizer run in Python",
+                    lib.sc_last_error().decode("utf-8", "replace") or ERRORS.get(code, code))
+    drain_log()
+    return code == SC_OK
 
 
 @functools.cache
@@ -2000,14 +2026,19 @@ class SoundMixer:
         data = np.ascontiguousarray(block, dtype=np.float32)
         _check(self._call(self._lib.sc_mixer_source_push, int(source), data.ctypes.data, int(data.shape[0])))
 
-    def set_filters(self, source: int, filters: list[tuple[int, int, tuple[float, ...]]]) -> None:
-        """A sound's built-in filters in order: (FILTER_*, the sound it follows or 0, its numbers)."""
+    def set_filters(self, source: int, filters: list[tuple[int, int, tuple[float, ...] | str]]) -> None:
+        """A sound's built-in filters in order: (FILTER_*, the sound it follows or 0, its numbers), or for
+        FILTER_GRAPH (FILTER_GRAPH, 0, its FFmpeg chain as text: a filter a line, "name<TAB>args")."""
         array = (MixerFilter * max(1, len(filters)))()
+        texts = (ctypes.c_char_p * max(1, len(filters)))()
         for i, (kind, follow, numbers) in enumerate(filters):
             array[i].kind, array[i].follow = int(kind), int(follow)
+            if isinstance(numbers, str):
+                texts[i] = numbers.encode("utf-8")
+                continue
             for k, value in enumerate(list(numbers)[:6]):
                 array[i].p[k] = float(value)
-        _check(self._call(self._lib.sc_mixer_source_filters, int(source), array, len(filters)))
+        _check(self._call(self._lib.sc_mixer_source_filters_text, int(source), array, texts, len(filters)))
 
     def link_media(self, source: int, player: MediaPlayer | None, asleep: bool = False) -> None:
         """The sound reads straight from an engine player (None: pushed again)."""
