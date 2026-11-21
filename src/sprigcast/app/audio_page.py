@@ -138,23 +138,24 @@ def page_style() -> str:
     )
 
 
-def _pick_style() -> str:
+def _pick_style(name: str = "audioPick") -> str:
     """Drop-downs on this page (Hear it, Music drops when) as the same rounded pill as the Type button beside
-    Find, with the soft chevron: the plain boxes looked like an older app (user 2026-11-20)."""
+    Find, with the soft chevron: the plain boxes looked like an older app (user 2026-11-20). name: the combo
+    boxes' object name (the Filters window uses the same look)."""
     t = theme
     try:
-        arrow = (f"QComboBox#audioPick::down-arrow {{ image: url({t.nature_pictures()['chevron']});"
+        arrow = (f"QComboBox#{name}::down-arrow {{ image: url({t.nature_pictures()['chevron']});"
                  " width: 10px; height: 10px; }")
     except OSError:
         arrow = ""
     return (
-        f"QComboBox#audioPick {{ background: {t.BUTTON}; color: {t.TEXT}; border: 1px solid {t.BUTTON_EDGE};"
+        f"QComboBox#{name} {{ background: {t.BUTTON}; color: {t.TEXT}; border: 1px solid {t.BUTTON_EDGE};"
         f" border-top-color: {t.BUTTON_TOP}; border-radius: 14px; padding: 3px 12px; min-height: 22px;"
         " font-weight: 600; }"
-        f"QComboBox#audioPick:hover, QComboBox#audioPick:focus {{ background: {t.BUTTON_HOVER};"
+        f"QComboBox#{name}:hover, QComboBox#{name}:focus {{ background: {t.BUTTON_HOVER};"
         f" border-color: {t.ACCENT}; }}"
-        f"QComboBox#audioPick:disabled {{ color: {t.MUTED}; background: transparent; border-color: {t.EDGE}; }}"
-        "QComboBox#audioPick::drop-down { border: none; background: transparent; width: 24px; }" + arrow
+        f"QComboBox#{name}:disabled {{ color: {t.MUTED}; background: transparent; border-color: {t.EDGE}; }}"
+        f"QComboBox#{name}::drop-down {{ border: none; background: transparent; width: 24px; }}" + arrow
     )
 
 

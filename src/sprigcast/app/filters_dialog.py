@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
-    QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -87,6 +87,10 @@ class FilterForm(QWidget):
         self.rows: dict[str, QWidget] = {}
         self.form = form = QFormLayout(self)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        form.setFormAlignment(Qt.AlignmentFlag.AlignTop)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(14)
         for f in fields:
             self.rows[f.key] = self._widget(f, values.get(f.key, f.default))
             form.addRow(f.label, self.rows[f.key])
@@ -111,6 +115,7 @@ class FilterForm(QWidget):
             return box
         if kind in ("choice", "sound"):
             combo = QComboBox()
+            combo.setObjectName("filterPick")
             choices = f.choices if kind == "choice" else [("", "Pick a sound"), *self.sounds]
             for data, label in choices:
                 combo.addItem(label, data)
@@ -272,8 +277,10 @@ class FiltersDialog(CardWindow):
         self.media = media or media_of(source)  # a browser page has both: the Sound card asks for "audio"
         self.form: FilterForm | None = None
 
-        # Calm and roomy: the filters as a list of rounded rows on the left (tick to switch one off),
-        # its settings on a soft card on the right, and pill buttons with words instead of symbols.
+        # On brand like the sound page (user 2026-11-21): two titled section cards, the filters on the left (drag
+        # one to reorder it, tick to switch it off) and the picked filter's settings on the right. No helper text.
+        from sprigcast.app.audio_page import _pick_style
+
         self.list = QListWidget()
         self.list.setMinimumWidth(240)
         self.list.setSpacing(3)
@@ -283,6 +290,10 @@ class FiltersDialog(CardWindow):
             f" padding: 9px 10px; }}"
             f"QListWidget::item:hover {{ background: {theme.RAISED_HOVER}; }}"
             f"QListWidget::item:selected {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}")
+        if self.media == "audio":  # sound filters run top to bottom; effects run in a fixed order on the GPU
+            self.list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+            self.list.setDefaultDropAction(Qt.DropAction.MoveAction)
+            self.list.model().rowsMoved.connect(self._dragged)
         self.list.currentRowChanged.connect(self._show_selected)
         self.list.itemChanged.connect(self._toggled)
         self.add_menu = QMenu(self)
@@ -292,7 +303,7 @@ class FiltersDialog(CardWindow):
         add.setMenu(self.add_menu)
         add.setCursor(Qt.CursorShape.PointingHandCursor)
         bar = QHBoxLayout()
-        bar.setSpacing(6)
+        bar.setSpacing(8)
         bar.addWidget(add, 1)
         for text, tip, target in (
             ("↑", "Move up", lambda: self._move(-1)),
@@ -301,20 +312,19 @@ class FiltersDialog(CardWindow):
         ):
             b = QPushButton(text)
             b.setToolTip(tip)
+            b.setAccessibleName(tip)
             b.setStyleSheet(RAISED_PILL)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(target)
             bar.addWidget(b)
-        left = QVBoxLayout()
+        filters_box = QGroupBox("Sound filters" if self.media == "audio" else "Effects")
+        left = QVBoxLayout(filters_box)
+        left.setContentsMargins(6, 10, 6, 6)
         left.setSpacing(12)
-        title = QLabel("Sound filters" if self.media == "audio" else "Effects")
-        title.setStyleSheet("font-weight: 600; font-size: 15px;")
-        left.addWidget(title)
-        self.empty = QLabel("No filters yet. Add one: a noise gate or compressor is a good start for a mic."
-                            if self.media == "audio" else "No effects yet.")
-        self.empty.setWordWrap(True)
-        self.empty.setStyleSheet(f"color: {theme.MUTED}")
-        left.addWidget(self.empty)
+        self.empty = QLabel("No filters yet" if self.media == "audio" else "No effects yet")
+        self.empty.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+        self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        left.addWidget(self.empty, 1)
         left.addWidget(self.list, 1)
         left.addLayout(bar)
         self.same = QCheckBox("Same on both canvases")
@@ -324,55 +334,51 @@ class FiltersDialog(CardWindow):
         self.same.toggled.connect(self._same_toggled)
         left.addWidget(self.same)
 
-        self.title = QLabel("")
+        self.title = QLabel("")  # the picked filter's name; also the settings card's title
+        self.title.hide()
         # A plugin filter that reports how it's doing ("Downloading 40%"): its note beside the name, kept fresh.
         self._status_timer = QTimer(self)
         self._status_timer.setInterval(500)
         self._status_timer.timeout.connect(self._show_status)
-        self.title.setStyleSheet("font-weight: 600; font-size: 15px;")
         self.form_area = QScrollArea()
         self.form_area.setWidgetResizable(True)
         self.form_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.form_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.form_area.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
         self.reset_button = QPushButton("Defaults")
         self.reset_button.setStyleSheet(RAISED_PILL)
         self.reset_button.setToolTip("Put this filter's settings back to their defaults")
+        self.reset_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.reset_button.clicked.connect(self._reset)
-        hint = QLabel(
-            "They run top to bottom. Untick one to switch it off without removing it." if self.media == "audio"
-            else "Effects run on the GPU in a fixed order: scroll, sharpen, key, color, look, then shape."
-        )
-        hint.setWordWrap(True)
-        hint.setStyleSheet(f"color: {theme.MUTED}")
-        card = QFrame()
-        card.setObjectName("filterCard")
-        card.setStyleSheet(f"#filterCard {{ background: {theme.CARD}; border-radius: 20px; }}" + NUMBER_STYLE)
+        self.settings_box = card = QGroupBox("Settings")
+        card.setObjectName("filterSettings")
+        card.setStyleSheet(NUMBER_STYLE + _pick_style("filterPick"))
         right = QVBoxLayout(card)
-        right.setContentsMargins(18, 16, 18, 16)
-        right.setSpacing(12)
+        right.setContentsMargins(10, 12, 10, 10)
+        right.setSpacing(14)
         self.save_look_button = QPushButton("Save as look…")
         self.save_look_button.setStyleSheet(RAISED_PILL)
         self.save_look_button.setToolTip("Save these color settings as a .cube LUT you can use anywhere")
         self.save_look_button.clicked.connect(self._save_look)
         self.save_look_button.hide()
+        right.addWidget(self.form_area, 1)
         top = QHBoxLayout()
-        top.addWidget(self.title, 1)
+        top.addStretch(1)
         top.addWidget(self.save_look_button)
         top.addWidget(self.reset_button)
         right.addLayout(top)
-        right.addWidget(self.form_area, 1)
-        right.addWidget(hint)
 
         body = QHBoxLayout()
         body.setSpacing(20)
-        body.addLayout(left)
+        body.addWidget(filters_box, 0)
         body.addWidget(card, 1)
         done = QPushButton("Done")
         done.setStyleSheet(theme.PRIMARY_STYLE)
+        done.setCursor(Qt.CursorShape.PointingHandCursor)
         done.clicked.connect(self.reject)
         root = QVBoxLayout(self.card)
-        root.setContentsMargins(22, 22, 22, 22)
-        root.setSpacing(18)
+        root.setContentsMargins(24, 24, 24, 24)
+        root.setSpacing(20)
         root.addLayout(body, 1)
         root.addWidget(done, 0, Qt.AlignmentFlag.AlignRight)
         self._refresh(0)
@@ -395,9 +401,11 @@ class FiltersDialog(CardWindow):
         shown = self._shown()
         for flt in shown:
             item = QListWidgetItem(flt.name)
+            item.setData(Qt.ItemDataRole.UserRole, flt.id)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Checked if flt.enabled else Qt.CheckState.Unchecked)
-            item.setToolTip("Untick to switch the filter off without removing it")
+            item.setToolTip("Drag to reorder. Untick to switch it off." if self.media == "audio"
+                            else "Untick to switch it off")
             self.list.addItem(item)
         self.list.blockSignals(False)
         self.empty.setVisible(not shown)
@@ -452,6 +460,25 @@ class FiltersDialog(CardWindow):
         self._refresh(new)
         self.on_change(save=False)
 
+    def _set_title(self, text: str) -> None:
+        """The picked filter's name (and a plugin's note), as the settings card's title."""
+        self.title.setText(text)
+        self.settings_box.setTitle(text or "Settings")
+
+    def _dragged(self, *_args) -> None:
+        """A filter was dragged to a new place: the list's order is the new order (the other kind keeps its
+        places among them)."""
+        by_id = {f.id: f for f in self._shown()}
+        order = [by_id[i] for i in (self.list.item(r).data(Qt.ItemDataRole.UserRole)
+                                    for r in range(self.list.count())) if i in by_id]
+        filters = self.source.filters
+        slots = [n for n, f in enumerate(filters) if f.id in by_id]
+        if len(order) != len(slots) or [filters[n] for n in slots] == order:
+            return
+        for slot, flt in zip(slots, order, strict=True):
+            filters[slot] = flt
+        self.on_change(save=False)
+
     def _same_toggled(self, on: bool) -> None:
         if self.collection is not None:
             self.collection.set_shares_filters(self.source, on)
@@ -467,22 +494,22 @@ class FiltersDialog(CardWindow):
 
     def _show_selected(self, row: int) -> None:
         flt = self._current()
-        self.reset_button.setEnabled(flt is not None)
+        self.reset_button.setVisible(flt is not None)
         if flt is None:
             self.save_look_button.hide()
-            self.title.setText("")
+            self._set_title("")
             if self._shown():
                 empty = QLabel("")
             else:
                 from sprigcast.app.empty import EmptyState
 
-                empty = EmptyState("No filters yet. Click + to add one.")
+                empty = EmptyState("Add a filter to start")
             self.form_area.setWidget(empty)
             self.form = None
             return
         info = filter_kind(flt.kind)
         self.save_look_button.setVisible(flt.kind == "color_correction")
-        self.title.setText(info.label if info else flt.kind)
+        self._set_title(info.label if info else flt.kind)
         self._show_status()
         if info is None:
             self.form_area.setWidget(QLabel(f"The {flt.kind!r} filter comes from a plugin that isn't loaded."))
@@ -502,7 +529,7 @@ class FiltersDialog(CardWindow):
             note = info.status(self.source.id)
         except Exception:  # a plugin's note: never break the window for it
             note = ""
-        self.title.setText(f"{info.label}  ·  {note}" if note else info.label)
+        self._set_title(f"{info.label}  ·  {note}" if note else info.label)
         if not self._status_timer.isActive():
             self._status_timer.start()
 
@@ -530,7 +557,7 @@ class FiltersDialog(CardWindow):
             path += ".cube"
         table = looks.bake_color_correction(settings_for(flt.kind, flt.settings))
         saved = looks.write_cube(path, table, title=Path(path).stem)
-        self.title.setText(f"Color Correction  ·  saved {saved.name}")
+        self._set_title(f"Color Correction  ·  saved {saved.name}")
         return saved
 
     def _reset(self) -> None:

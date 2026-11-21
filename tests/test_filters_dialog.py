@@ -143,3 +143,41 @@ def test_vst_filters_are_gone_and_old_ones_are_skipped(app):
     block = np.full((1024, 2), 0.25, dtype=np.float32)
     chain = AudioChain([Filter(id="f1", kind="vst", name="VST", settings={"plugin_file": "Old.vst3"})])
     assert not chain.processors and np.array_equal(chain.process(block), block)  # a saved one just passes sound
+
+
+def test_sound_filters_drag_to_reorder(app):
+    """User 2026-11-21: "allow drag and drop for the filters"."""
+    from PySide6.QtCore import QModelIndex
+
+    from sprigcast.app.filters_dialog import FiltersDialog
+
+    source = SourceConfig(id="mic", kind="audio_input", name="Mic")
+    calls = []
+    d = FiltersDialog(source, lambda save=True: calls.append(save))
+    for kind in ("compressor", "limiter", "noise_suppression"):
+        d.add(kind)
+    assert d.list.dragDropMode() == d.list.DragDropMode.InternalMove
+    calls.clear()
+    d.list.model().moveRow(QModelIndex(), 2, QModelIndex(), 0)  # what a drop does: Noise Suppression to the top
+    assert [f.kind for f in source.filters] == ["noise_suppression", "compressor", "limiter"]
+    assert calls == [False]
+    assert d.settings_box.title() == d.title.text()  # the picked filter names its settings card
+
+
+def test_noise_suppression_methods(monkeypatch):
+    import numpy as np
+
+    from sprigcast.core import filters
+    from sprigcast.core.filters import NoiseSuppression, filter_kind, settings_for
+
+    fields = {f.key: f for f in filter_kind("noise_suppression").fields}
+    assert [v for v, _ in fields["method"].choices] == ["standard", "rnnoise"]
+    assert fields["amount_db"].show_when == ("method", ("standard",))
+    assert settings_for("noise_suppression", {"amount_db": 20})["method"] == "standard"  # older filters: as before
+    rnn = NoiseSuppression(settings_for("noise_suppression", {"method": "rnnoise", "mix": 50}))
+    if filters.rnnoise_model():
+        noise = (0.05 * np.random.default_rng(1).standard_normal((48000, 2))).astype(np.float32)
+        out = np.concatenate([rnn.process(noise[i:i + 960]) for i in range(0, len(noise), 960)])
+        assert rnn._built_for[0][0] == "arnndn" and len(out) == len(noise)
+    monkeypatch.setattr(filters, "rnnoise_model", lambda: "")  # an FFmpeg without RNNoise: Standard runs instead
+    assert rnn.graph_spec()[0][0] == "afftdn"
