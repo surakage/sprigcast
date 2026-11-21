@@ -275,9 +275,13 @@ def test_main_window_adds_and_controls_media(tmp_path, monkeypatch):
     col = load_collection(tmp_path / "scenes.json")
     w = mw.MainWindow(col, tmp_path / "scenes.json")
     try:
-        for path in (clip, ding):
-            monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(lambda *a, p=path, **k: (p, "")))
-            w._add_media()
+        asked = []  # + Add lists Video file and Sound file apart (user, 2026-11-20); each picker shows its kind
+        for path, kind in ((clip, "video"), (ding, "sound")):
+            monkeypatch.setattr(QFileDialog, "getOpenFileName",
+                                staticmethod(lambda *a, p=path, **k: (asked.append(a[3]), (p, ""))[1]))
+            w._add_media(**{kind: True})
+        assert asked[0].startswith("Video (") and "*.wav" not in asked[0]
+        assert asked[1].startswith("Sound (") and "*.mp4" not in asked[1]
         video, sound = [s for s in col.sources if s.kind == "media"]
         assert video.name == "intro clip" and sound.name == "ding"
         assert any(i.source == video.id for i in w._scene().items)  # the video is placed in the bloom

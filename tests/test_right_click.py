@@ -153,3 +153,4 @@ def test_right_click_on_a_leaf_in_an_open_sprig(app, tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+

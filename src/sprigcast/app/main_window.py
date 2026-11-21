@@ -937,11 +937,14 @@ class MainWindow(QMainWindow):
             ("Screen", screens),
             ("Text", self._add_text),
             ("Video capture", cameras),
-            ("Video or sound file…", self._add_media),
+            ("Sound file…", lambda: self._add_media(sound=True)),
+            ("Video file…", lambda: self._add_media(video=True)),
             ("Web page…", self._add_browser),
             ("Window", windows),
         ]
         tips = {
+            "Sound file…": "Music or a sound clip, on its own: it goes in Sound and plays when you press play",
+            "Video file…": "A video, with its own sound",
             "App sound": "One kind of sound on its own row: games, music, voice chat…",
             "Desktop sound": "Everything a speaker or headset plays",
             "Game capture": "A game: the full-screen one in front, or a game's window. Its sound comes with it",
@@ -5013,16 +5016,21 @@ class MainWindow(QMainWindow):
                          settings={"path": path})
         )
 
-    def _add_media(self, sound: bool = False) -> None:
-        """A video goes into the selected bloom like a picture; a sound file goes into Sound (every bloom)."""
-        title = "Choose a sound file" if sound else "Choose a video or sound file"
-        path, _ = QFileDialog.getOpenFileName(self, title, "", media_file_filter())
+    def _add_media(self, sound: bool = False, video: bool = False) -> None:
+        """A video goes into the selected bloom like a picture; a sound file goes into Sound (every bloom).
+        + Add lists them apart (user, 2026-11-20): Video file picks videos (played with their sound), Sound file
+        picks sound files. With neither, either kind of file (older callers)."""
+        only = "sound" if sound else "video" if video else None
+        title = {"sound": "Choose a sound file", "video": "Choose a video"}.get(only, "Choose a video or sound file")
+        path, _ = QFileDialog.getOpenFileName(self, title, "", media_file_filter(only))
         if not path:
             return
         stem = Path(path).stem
+        settings = {"path": path, "volume_db": 0.0, "muted": False, "loop": False}
+        fallback = {"sound": "Sound", "video": "Video"}.get(only, "Media")
         config = SourceConfig(id=self.collection.new_id("media"), kind="media",
-                              name=ask_name(self, short_name(stem.replace("_", " "), "Media"), stem),
-                              settings={"path": path, "volume_db": 0.0, "muted": False, "loop": False})
+                              name=ask_name(self, short_name(stem.replace("_", " "), fallback), stem),
+                              settings=settings)
         if is_sound_file(path):
             self.collection.sources.append(config)
             self._changed()

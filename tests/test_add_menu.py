@@ -48,6 +48,8 @@ def test_add_menu_is_a_to_z_with_the_new_entries(tmp_path, monkeypatch):
                      "App sound"):
             assert name in middle
         assert "Camera" not in middle and not any(t.startswith("Sound (") for t in middle)
+        # User, 2026-11-20: a video and a sound file are added from entries of their own
+        assert "Video or sound file…" not in middle and {"Video file…", "Sound file…"} <= set(middle)
     finally:
         w.close()
 
