@@ -44,6 +44,7 @@ Item {
     signal loaded(bool ok)
     signal crashed(int status, int code)
     signal mediaNote(string message)
+    signal measured(string text)
     property var scripts: []
     // Set from Python through these: Python can't hold the WebEngineView itself (PySide6 has no
     // converter for QQuickWebEngineView*: the PC log said so and every page fell back to memory, 2026-11-18).
@@ -51,9 +52,15 @@ Item {
     property alias url: view.url
     property alias audioMuted: view.audioMuted
     property alias pageVisible: view.visible
+    property bool resting: view.lifecycleState === WebEngineView.LifecycleState.Frozen
+    property alias audible: view.recentlyAudible
 
     function run(code) { view.runJavaScript(code) }
     function reloadPage() { view.reloadAndBypassCache() }
+    function rest(on) {
+        view.lifecycleState = on ? WebEngineView.LifecycleState.Frozen : WebEngineView.LifecycleState.Active
+    }
+    function measure(code) { view.runJavaScript(code, function(result) { root.measured(String(result)) }) }
     function register(name, object) { channel.registerObject(name, object) }
     function focusPage() { view.forceActiveFocus() }
 
@@ -168,6 +175,8 @@ class QuickPage:
         self.root.crashed.connect(self._crashed)
         self._media_noted: set[str] = set()
         self.root.mediaNote.connect(self._media_note)
+        self._measure_got = None
+        self.root.measured.connect(lambda text: self._measure_got and self._measure_got(str(text or "")))
         self.control.sceneChanged.connect(self._changed)
         self.control.renderRequested.connect(self._changed)
         self.timer = QTimer()
@@ -182,6 +191,10 @@ class QuickPage:
 
     def apply(self, settings: dict[str, Any]) -> None:
         old, self.settings = self.settings, dict(settings)
+        if getattr(self, "resting", False):
+            from sprigcast.app import browser_host
+
+            browser_host.stir(self)
         w, h = max(1, int(settings.get("width", 800))), max(1, int(settings.get("height", 600)))
         if (w, h) != (self.window.width(), self.window.height()) or self.target is None:
             self._resize(w, h)
@@ -386,6 +399,7 @@ class QuickPage:
         from sprigcast.app import browser_host
 
         browser_host.forget_notes(self)
+        browser_host.stir(self)
         self._call("reloadPage")
 
     def want_memory(self) -> None:
@@ -394,10 +408,47 @@ class QuickPage:
         self.memory_until = time.monotonic() + MEMORY_S
         self.dirty = True
 
+    # Rest (app/page_rest.py) -------------------------------------------------------
+
+    resting = False
+
+    def _lifecycle(self, state: int) -> None:
+        from sprigcast.app import page_rest
+
+        self._call("rest", state == page_rest.FROZEN)
+        if bool(self.root.property("resting")) != (state == page_rest.FROZEN):
+            raise RuntimeError("the page didn't take the state")
+
+    def _audible(self) -> bool:
+        return bool(self.root.property("audible"))
+
+    def measure(self, got) -> None:
+        from sprigcast.app import page_rest
+
+        if not self.resting:
+            self._measure_got = got
+            self._call("measure", page_rest.MEASURE_JS)
+
+    def _rest_if_still_hidden(self) -> None:
+        from sprigcast.app import browser_host
+
+        browser_host.rest_if_still_hidden(self)
+
+    def unrest(self) -> None:
+        from sprigcast.app import browser_host
+
+        browser_host.unrest(self)
+
     def set_paused(self, paused: bool) -> None:
         if paused == self.paused:
             return
         self.paused = paused
+        from sprigcast.app import browser_host
+
+        if paused:
+            browser_host.arm_rest(self)
+        else:
+            self.unrest()
         self._call("run", f"window.__sprigcastVisible && window.__sprigcastVisible({'false' if paused else 'true'})")
         self.root.setProperty("pageVisible", not paused)  # hidden like a background tab: Chromium stops painting
         self.timer.start(HIDDEN_TICK_MS if paused else max(4, round(1000 / browser.page_fps(self.settings))))

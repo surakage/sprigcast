@@ -7,7 +7,8 @@ Chromium process ends) unless "Keep running when hidden" is on, which keeps an a
 Settings: url, file (a local .html instead of a URL), width, height, fps (used when custom_fps is on,
 else STANDARD_FPS), css, mute, audio_to_mixer (the page's sound goes to its own strip in SprigCast
 instead of the desktop, app/browser_audio.py), keep_running (off: the page sleeps while not on screen),
-reload_on_air (reload the page each time a bloom showing it goes on air).
+reload_on_air (reload the page each time a bloom showing it goes on air), never_rest (a page kept running is
+not put to rest after ten minutes off screen: for one that must go on working unseen).
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ log = logging.getLogger(__name__)
 DEFAULT_CSS = "body { background-color: rgba(0, 0, 0, 0); margin: 0px auto; overflow: hidden; }"
 
 RELEASE_AFTER_S = 120  # a page kept running but hidden this long lets go of its graphics device (app/browser_quick.py)
+REST_AFTER_S = 600  # a page kept running but hidden this long is put to rest until shown again (app/page_rest.py)
 STANDARD_FPS = 30  # smooth enough for alerts and widgets, and light
 
 DEFAULTS: dict[str, Any] = {
