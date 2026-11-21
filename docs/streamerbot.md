@@ -96,6 +96,10 @@ Add **Death count** in Tools → Plugin store, then + → Plugins → Death coun
 
 To put words a viewer typed on screen, give a Text source a name and set it: `source.set` with `{"text": "…"}` (POST it as JSON, below).
 
+### A text file that updates live
+
+A Text leaf can show the words in a .txt file and follow it: open the Text leaf, Words → Live file, turn on **Read from a file** and choose the file. When anything writes to the file (Streamer.bot's File Write sub-action, a script, a counter tool), the canvas shows the new words within about half a second. **Show** picks the whole file, its first line or its last line (handy for a log). If the file goes missing the last words stay up. Through the API, `source.set` with `{"file": "C:/counters/deaths.txt", "read_file": true}` points a Text leaf at a file (OBS-style apps send `read_from_file`, which means the same).
+
 ### Sending JSON instead
 
 For fields that are objects (like `settings`), send a POST with a JSON body from an Execute C# Code sub-action, or any tool that can POST:
