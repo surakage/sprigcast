@@ -361,6 +361,31 @@ def fetch_config(request: dict, url: str = TWITCH_CONFIG_URL) -> dict:
         raise EnhancedError(f"Couldn't get the Enhanced Broadcasting settings from Twitch: {exc}") from exc
 
 
+def answer_summary(data: dict) -> str:
+    """Twitch's answer for the log: every setting it asked for, the servers it offered (no key, no address
+    past the host), so a stream Twitch drops can be checked against what it wanted."""
+    parts = [f"config {(data.get('meta') or {}).get('config_id', '?')}"]
+    status = data.get("status") or {}
+    if status:
+        parts.append(f"status {status.get('result', '?')}" + (f" ({_plain(status.get('html_en_us', ''))})"
+                                                               if status.get("html_en_us") else ""))
+    for i, entry in enumerate(data.get("encoder_configurations") or []):
+        s = entry.get("settings") or {}
+        keep = {k: s[k] for k in ("bitrate", "keyint_sec", "bf", "profile", "preset2", "tune", "rate_control",
+                                  "multipass", "lookahead", "psycho_aq") if k in s}
+        parts.append(f"track {i}: {entry.get('type', '?')} canvas {entry.get('canvas_index', 0)} "
+                     f"{entry.get('width')}x{entry.get('height')}@{_fps(entry.get('framerate')) or '?'} {keep}")
+    hosts = []
+    for e in data.get("ingest_endpoints") or []:
+        split = urllib.parse.urlsplit(str(e.get("url_template", "")))
+        hosts.append(f"{e.get('protocol', '?')} {split.hostname or '?'}")
+    parts.append("servers " + (", ".join(hosts) or "none"))
+    audio = data.get("audio_configurations") or {}
+    if audio:
+        parts.append(f"audio {json.dumps(audio, sort_keys=True)[:200]}")
+    return "; ".join(parts)
+
+
 # Broadcast performance metrics (SEI messages) ----------------------------------------------
 
 BPM_TS_UUID = bytes([0x0A, 0xEC, 0xFF, 0xE7, 0x52, 0x72, 0x4E, 0x2F, 0xA6, 0x2F, 0xD1, 0x9C, 0xD6, 0x1A, 0x93, 0xB5])
