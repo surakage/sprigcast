@@ -540,3 +540,23 @@ def test_a_reopened_camera_uses_the_modes_it_listed_before(monkeypatch):
     monkeypatch.setattr(camera, "dshow_modes", lambda name: answers.pop(0))
     first = camera.listed_modes("video=Cam")
     assert camera.listed_modes("video=Cam") == first and first
+
+
+def test_the_camera_lister_is_loaded_ahead(monkeypatch):
+    """PC 2026-11-21: opening a camera's properties held the window 318 ms loading what lists cameras. The warm-up
+    loads it at start, off the window's thread, and says which lister there is."""
+    import sys
+
+    from sprigcast.sources import camera
+
+    assert camera.warm_lister() == "" or sys.platform == "win32"
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(camera, "_dshow_backend", lambda: object())
+    assert camera.warm_lister() == "light"
+    loaded = []
+    monkeypatch.setattr(camera, "_dshow_backend", lambda: None)
+    monkeypatch.setattr(camera, "_cv2", lambda: loaded.append("cv2"))
+    monkeypatch.setitem(sys.modules, "cv2_enumerate_cameras", object())
+    assert camera.warm_lister() == "opencv" and loaded == ["cv2"]
+    monkeypatch.setattr(camera, "_cv2", lambda: (_ for _ in ()).throw(RuntimeError("no OpenCV")))
+    assert camera.warm_lister() == ""

@@ -50,18 +50,19 @@ def _cv2():
     return cv2
 
 
-def _dshow_list():
-    """DirectShow's camera list as (name, device path) pairs, without importing OpenCV, or None.
+def _dshow_backend():
+    """cv2_enumerate_cameras' native DirectShow lister, loaded on its own straight from its file, or None.
 
-    cv2_enumerate_cameras' package imports OpenCV just for a few constants, so its native DirectShow
-    lister is loaded on its own, straight from its file.
+    The package itself imports OpenCV just for a few constants. Loaded at start by the warm-up (core/warm.py):
+    its first load, or OpenCV's when this one isn't there, held the window 318 ms when a camera's properties
+    opened (PC, 2026-11-21).
     """
     if sys.platform != "win32":
         return None
     name = "cv2_enumerate_cameras._windows_backend"
     module = sys.modules.get(name)
     if module is not None:
-        return module.DSHOW_enumerate_cameras() or []
+        return module
     import glob
     import importlib.machinery
     import importlib.util
@@ -84,7 +85,30 @@ def _dshow_list():
     module = importlib.util.module_from_spec(importlib.util.spec_from_file_location(name, files[0], loader=loader))
     loader.exec_module(module)
     sys.modules[name] = module
-    return module.DSHOW_enumerate_cameras() or []
+    return module
+
+
+def _dshow_list():
+    """DirectShow's camera list as (name, device path) pairs, without importing OpenCV, or None."""
+    module = _dshow_backend()
+    return None if module is None else module.DSHOW_enumerate_cameras() or []
+
+
+def warm_lister() -> str:
+    """Load what lists cameras, off the window's thread (core/warm.py). Says which: "light", "opencv" or ""."""
+    if sys.platform != "win32":
+        return ""
+    try:
+        if _dshow_backend() is not None:
+            return "light"
+    except Exception as exc:  # noqa: BLE001
+        log.info("camera list: the light lister didn't load (%s); OpenCV lists cameras", type(exc).__name__)
+    try:
+        _cv2()
+        import cv2_enumerate_cameras  # noqa: F401
+    except Exception:  # noqa: BLE001 (no cameras are listed then, as before)
+        return ""
+    return "opencv"
 
 
 OWN_CAMERA = "SprigCast Camera"  # our own virtual camera: showing it in SprigCast would loop the picture

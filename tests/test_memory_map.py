@@ -31,7 +31,7 @@ def test_the_memory_line_also_logs_the_map(monkeypatch):
     from sprigcast.core import pacing
 
     asked = []
-    monkeypatch.setattr(mm, "log_memory_map", lambda: asked.append(1))
+    monkeypatch.setattr(mm, "log_memory_map", lambda *a: asked.append(1))
     monkeypatch.setattr(pacing, "_memory_logged", None)
     assert pacing.watch_memory(now=1000.0).startswith("memory now:")
     assert asked == [1]
