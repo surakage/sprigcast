@@ -423,7 +423,7 @@ def test_a_camera_at_59_9999_fps_opens_in_its_own_mode():
     both reach dshow as 166666, which it refused, so the camera fell back to its default YUYV mode."""
     from fractions import Fraction
 
-    from sprigcast.sources.camera import _rate, choose_modes, parse_dshow_modes
+    from sprigcast.sources.camera import RATE_LIMIT, _rate, choose_modes, parse_dshow_modes
 
     lines = ["DirectShow video device options (from video devices)",
              ' Pin "Video" (alternative pin name "Video")',
@@ -432,24 +432,28 @@ def test_a_camera_at_59_9999_fps_opens_in_its_own_mode():
     modes = parse_dshow_modes(lines)
     for want_fps in (30, 60):
         first = choose_modes(modes, 1280, 720, want_fps)[0]
-        assert first == {"video_size": "1920x1080", "framerate": "10000000/166667", "pixel_format": "nv12"}
-    # what dshow does with the rate we pass: interval = den * 10^7 / num, truncated
-    for rate, interval in ((59.9999, 166667), (60.0002, 166666), (30.0, 333333), (120.0, 83333), (29.97, 333667)):
+        assert first == {"video_size": "1920x1080", "framerate": "125039/2084", "pixel_format": "nv12"}
+    # What dshow does with the rate we pass: interval = den * 10^7 / num, truncated. FFmpeg keeps the two numbers
+    # as given only up to 1,001,000: "10000000/166667" became 1000018/16667, an interval of 166666, and every
+    # camera refused it (PC 2026-11-21; checked against av_parse_video_rate itself).
+    for rate, interval in ((59.9999, 166667), (60.0002, 166666), (30.0, 333333), (120.0, 83333), (29.97, 333667),
+                           (59.94, 166834), (23.976, 417084), (119.88, 83417), (25.0001, 399998), (7.5, 1333333)):
         r = Fraction(_rate(rate))
+        assert max(r.numerator, r.denominator) <= RATE_LIMIT, rate
         assert r.denominator * 10_000_000 // r.numerator == interval, rate
     assert _rate(30.0) == "30" and _rate(120.0) == "120"
 
 
 def test_a_camera_that_refuses_every_rate_still_gets_nv12():
     """The Elgato Virtual Camera lists 1080p at 59.9999 fps in YUYV and NV12 but fails to open with any
-    framerate asked (even 10000000/166667); with size and format alone NV12 opens. Without a rate-less
+    framerate asked; with size and format alone NV12 opens. Without a rate-less
     try it fell back to its default YUYV: 74 MB for the camera instead of 30 on the user's PC."""
     from sprigcast.sources.camera import choose_modes, mode_cost, plain_mode
 
     modes = [("pixel_format", "yuyv422", 1920, 1080, 59.9999, 59.9999),
              ("pixel_format", "nv12", 1920, 1080, 59.9999, 59.9999)]
     options = choose_modes(modes, 1280, 720, 30)
-    assert [o.get("framerate") for o in options] == ["10000000/166667", "10000000/166667", None, None]
+    assert [o.get("framerate") for o in options] == ["125039/2084", "125039/2084", None, None]
     assert options[2] == {"video_size": "1920x1080", "pixel_format": "nv12"}  # before the default YUYV
     assert plain_mode(options[2]) == "1920 x 1080 at its own rate (NV12)"
     assert mode_cost(options[2], 30) < mode_cost(options[3], 30)
@@ -668,3 +672,17 @@ def test_two_cameras_list_their_modes_one_at_a_time(monkeypatch):
     for t in threads:
         t.join(5)
     assert most[0] == 1
+
+
+def test_a_camera_listing_up_to_59_9999_gets_60_when_asked():
+    """PC 2026-11-21: the Streamfog camera lists 30 to 59.9999 fps. Asked for 60 it was sent a rate FFmpeg turned
+    into the wrong interval, refused it, and came up at its own 30."""
+    from fractions import Fraction
+
+    from sprigcast.sources.camera import choose_modes
+
+    modes = [("pixel_format", "nv12", 1280, 720, 30.0, 59.9999)]
+    first = choose_modes(modes, 1280, 720, 60)[0]
+    r = Fraction(first["framerate"])
+    assert r.denominator * 10_000_000 // r.numerator == 166667 and r.numerator <= 1_001_000
+    assert choose_modes(modes, 1280, 720, 30)[0]["framerate"] == "30"

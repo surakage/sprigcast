@@ -277,17 +277,29 @@ def modes_line(modes) -> str:
                      for (w, h), (formats, fastest) in sorted(by_size.items(), key=lambda kv: kv[0][0] * kv[0][1]))
 
 
+RATE_LIMIT = 1_001_000  # FFmpeg keeps a rate's two numbers only up to this (av_parse_video_rate)
+
+
 def _rate(value: float) -> str:
     """A frame rate for FFmpeg's dshow, which matches a mode by its frame interval (100 ns units).
 
     A camera listed at fps=59.9999 (the Elgato Virtual Camera) has an interval of 166667; "60" and
     "59.9999" both reach dshow as 166666, which it refused, so the camera fell back to its default
     mode (YUYV, a third more data than its NV12). Whole rates stay as they are; others are written
-    as the interval itself.
+    as the smallest fraction whose interval, den * 10^7 / num cut to a whole number, is the camera's.
+
+    The interval written out, "10000000/166667", doesn't do it: FFmpeg first fits the rate into numbers
+    no larger than RATE_LIMIT, 1000018/16667, which is 166666 again. Every camera refused it, and one
+    listing 30 to 59.9999 fps came up at its own 30 when 60 was asked (PC 2026-11-21, the Streamfog camera).
     """
     if value == round(value):
         return str(round(value))
-    return f"10000000/{max(1, round(10_000_000 / value))}"
+    interval = max(1, round(10_000_000 / value))
+    for den in range(1, 20_001):
+        num = den * 10_000_000 // interval
+        if 0 < num <= RATE_LIMIT and den * 10_000_000 // num == interval:
+            return f"{num}/{den}"
+    return f"10000000/{interval}"
 
 
 _FORMAT_ORDER = {"mjpeg": 0, "nv12": 1, "yuyv422": 2}  # least data per frame first

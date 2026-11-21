@@ -11,7 +11,7 @@ FACECAM = [("vcodec", "mjpeg", 1280, 720, 30, 60), ("pixel_format", "nv12", 1280
 
 
 def test_plain_mode_and_cost():
-    nv12 = {"video_size": "1920x1080", "framerate": "10000000/166667", "pixel_format": "nv12"}
+    nv12 = {"video_size": "1920x1080", "framerate": "125039/2084", "pixel_format": "nv12"}
     assert plain_mode(nv12) == "1920 x 1080 at 60 fps (NV12)"
     yuyv = {**{k: v for k, v in nv12.items() if k != "pixel_format"}, "pixel_format": "yuyv422"}
     assert mode_cost(yuyv, 30) > mode_cost(nv12, 30)
