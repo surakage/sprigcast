@@ -10,6 +10,7 @@ import re
 import time
 import sys
 import threading
+import types
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QSettings, QSize, QStandardPaths, Qt, QTimer, Signal
@@ -167,6 +168,7 @@ from sprigcast.sources.camera import is_capture_card, list_cameras
 from sprigcast.sources.media import file_filter as media_file_filter, is_sound_file
 from sprigcast.sources.win32_enum import list_monitors, list_windows
 
+REACH_EVERY_MS = 300_000  # offline on Live: how often each place's server is tried (output/preflight.py)
 LEARNED_AFTER = 5  # sessions before Build's hints stop showing
 CARD_ENCODER_FULL, CARD_ENCODER_FULL_S = 85.0, 15.0  # graphics-card encoder this busy this long: warn once
 BLOOM_FLAGS = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsDragEnabled
@@ -2194,6 +2196,20 @@ class MainWindow(QMainWindow):
         self._show_last_stream()
         self.live_side.on_screenshot = lambda: self._screenshot(background=True)
         self.live_side.on_view = self._set_live_view
+        self.live_side.on_unreachable = self._open_doctor
+        # Offline on Live: each place's server is tried now and then (output/preflight.py; no key is used), so a
+        # place that won't connect is named beside Go live before it's pressed. Never while live or hidden.
+        self._unreachable: dict[str, str] = {}  # output id -> why its server wouldn't connect
+        self._unreachable_lines: list[str] = []
+        self._reach_job = None
+        self._reach_key: tuple = ()
+        self._reach_timer = QTimer(self)
+        self._reach_timer.setInterval(REACH_EVERY_MS)
+        self._reach_timer.timeout.connect(self._check_reach)
+        self._reach_timer.start()
+        self._reach_poll = QTimer(self)
+        self._reach_poll.setInterval(100)
+        self._reach_poll.timeout.connect(self._reach_done)
         self._apply_features()  # Settings → General → Features: hide what's switched off
         self.live_side.garden.clicked.connect(lambda: self._open_garden_check())
         self.live_stage = LiveStage(self.live_side)
@@ -2392,9 +2408,13 @@ class MainWindow(QMainWindow):
         places = []
         streams = [o for o in self.collection.outputs if o.type == "stream"]
         sending = self._sending_ids() if self.streaming is not None else None
+        levels = dict(levels or {})
         for output in streams:
             service = SERVICES.get(output.service or "custom", SERVICES["custom"])
             issue = problem(output, self.collection, probably_has_key) if output.enabled else None
+            if not issue and output.enabled and sending is None and output.id in getattr(self, "_unreachable", {}):
+                issue = "Won't connect"
+                levels.setdefault(output.id, "warning")
             note = (notes or {}).get(output.id) or issue or ("Ready" if output.enabled else "Off")
             name = service.label
             if sum(1 for o in streams if o.service == output.service) > 1:  # two Twitch rows: say which shape
@@ -2403,7 +2423,11 @@ class MainWindow(QMainWindow):
             places.append(Destination(output.id, name, on, note, output.canvas,
                                       output.bandwidth_test if service.bandwidth_test else None,
                                       output.service or "custom"))
-        self.live_side.show_destinations(places, levels or {})
+        self.live_side.show_destinations(places, levels)
+        key = tuple((o.id, o.enabled, o.service, o.server, o.canvas) for o in streams)
+        if key != getattr(self, "_reach_key", key) and self.streaming is None:  # a place added, switched or moved: try it soon
+            self._reach_key = key
+            QTimer.singleShot(1500, self, self._check_reach)
         if self.streaming is None and hasattr(self, "mode_clock"):
             ready = sum(1 for p in places if p.on and p.note == "Ready")
             self._set_header_clock(f"Offline  ·  {ready} ready to go live" if ready else "Offline", False)
@@ -2664,6 +2688,8 @@ class MainWindow(QMainWindow):
             self.mode_actions[mode].setChecked(True)
             return
         self.mode = mode
+        if mode == "live":
+            QTimer.singleShot(1500, self, self._check_reach)
         self.mode_actions[mode].setChecked(True)
         self.panels.set_mode(mode)
         editable = mode == "build"
@@ -7052,6 +7078,65 @@ class MainWindow(QMainWindow):
                 log.warning("could not save the fetched Twitch key: %s", exc)
         return key
 
+    def _reach_targets(self) -> list:
+        """The switched-on places as preflight targets: their name as Destinations shows it, and their server."""
+        streams = [o for o in self.collection.outputs if o.type == "stream"]
+        targets = []
+        for output in streams:
+            service = SERVICES.get(output.service or "custom", SERVICES["custom"])
+            server = service.server or output.server
+            if not output.enabled or not server:
+                continue
+            name = service.label
+            if sum(1 for o in streams if o.service == output.service) > 1:
+                name += f" · {output.canvas.capitalize()}"
+            targets.append(types.SimpleNamespace(name=name, server=server, output_id=output.id))
+        return targets
+
+    def _check_reach(self) -> None:
+        """Try each switched-on place's server in the background (2 s at most). Only offline, on Live, shown."""
+        if (self.streaming is not None or getattr(self, "mode", "") != "live" or not self.isVisible()
+                or self.isMinimized() or (self._reach_job is not None and not self._reach_job.done())):
+            return
+        from sprigcast.core import workers
+        from sprigcast.output import preflight
+
+        targets = self._reach_targets()
+        if not targets:
+            self._show_reach({}, [])
+            return
+        self._reach_job = workers.run(lambda: (preflight.failing(targets), preflight.tried(targets)),
+                                      name="place check")
+        self._reach_poll.start()
+
+    def _reach_done(self) -> None:
+        job = self._reach_job
+        if job is None or not job.done():
+            return
+        self._reach_poll.stop()
+        if job.exception() is not None or self.streaming is not None:
+            return
+        from sprigcast.output import preflight
+
+        failed, tried = job.result()
+        unreachable = {t.output_id: why for sent, why in failed.values() for t in sent}
+        if preflight.offline(failed, tried):
+            lines = ["This PC can't reach the internet right now, so no place would connect."]
+        else:
+            lines = [f"{' and '.join(t.name for t in sent)} would not connect: {where[0]} {why}."
+                     for where, (sent, why) in failed.items()]
+        if unreachable != self._unreachable:
+            log.info("places that won't connect: %s", "; ".join(lines) or "none")
+        self._show_reach(unreachable, lines, offline=preflight.offline(failed, tried))
+
+    def _show_reach(self, unreachable: dict[str, str], lines: list[str], offline: bool = False) -> None:
+        changed = unreachable != self._unreachable
+        self._unreachable, self._unreachable_lines = unreachable, lines
+        names = [t.name for t in self._reach_targets() if t.output_id in unreachable]
+        self.live_side.set_unreachable(names, "\n".join(lines), "No internet" if offline else None)
+        if changed:
+            self._live_destinations()
+
     def _places_unreachable(self, targets) -> list[str]:
         """Going live: a line for each place whose server can't be reached right now (output/preflight.py; a
         connection is opened and closed, the key is never used). At most 2 s, with the window still answering.
@@ -7120,6 +7205,7 @@ class MainWindow(QMainWindow):
 
         transitions_panel.set_quiet(False)
         self.live_side.set_live(False)
+        QTimer.singleShot(1500, self, self._check_reach)  # offline again: are the places still reachable?
         self._side_status("live", None)
         for preview in self.previews.values():
             preview.ring = None
@@ -8573,6 +8659,7 @@ class MainWindow(QMainWindow):
             free_gb=doctor.free_space_gb(self._recordings_folder()),
             recording_planned=bool(self.collection.recording.canvases),
             upload_kbps=doctor.usable_upload(QSettings()),
+            unreachable=[] if self.streaming is not None else list(getattr(self, "_unreachable_lines", [])),
         )
 
     def _doctor_warnings(self) -> list[str]:

@@ -100,6 +100,7 @@ class Checkup:
     free_gb: float | None = None  # in the recordings folder
     recording_planned: bool = False
     upload_kbps: int | None = None  # what the upload carries (Optimize's test, or what a clean stream carried)
+    unreachable: list[str] = field(default_factory=list)  # places whose server wouldn't connect (output/preflight.py)
 
 
 class PeakWatch:
@@ -132,6 +133,7 @@ def examine(c: Checkup) -> list[Finding]:
     found += _encoder(c)
     found += _audio(c)
     found += _sources(c)
+    found += [Finding("warning", "Places", line) for line in c.unreachable]
     if c.recording_planned and c.free_gb is not None and c.free_gb < LOW_DISK_GB:
         found.append(Finding("warning", "Disk", f"Only {c.free_gb:.1f} GB free for recordings: "
                                                 "clear some space or pick another folder in Settings → Recording."))
@@ -439,7 +441,7 @@ def load_last_streams(settings) -> dict[str, LastStream]:
 
 
 AREA_ICONS = {"Keys": "key", "Upload": "upload", "Encoder": "gear", "GPU": "monitor", "Audio": "mic", "Sources": "camera",
-              "Disk": "disk", "All": "leaf"}  # drawn by app/icons.py
+              "Disk": "disk", "Places": "broadcast", "All": "leaf"}  # drawn by app/icons.py
 BADGES = {"bad": "✕", "warning": "!", "good": "✓", "checking": "…"}
 SUBTITLES = {
     "bad": "Fix the red ones before you go live.",

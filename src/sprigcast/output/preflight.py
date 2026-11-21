@@ -50,15 +50,15 @@ def reach(host: str, port: int, timeout: float = EACH_S) -> str:
     return ""
 
 
-def check_places(targets, each_s: float = EACH_S, all_s: float = ALL_S, try_one=reach) -> list[str]:
-    """One line for each place whose server can't be reached, by the place's name and the server's (never the
-    key or the address's path). Every server is tried at once; [] when all answer or there is nothing to try."""
-    places: dict[tuple[str, int], list[str]] = {}
+def failing(targets, each_s: float = EACH_S, all_s: float = ALL_S, try_one=reach) -> dict[tuple[str, int], tuple[list, str]]:
+    """The servers that can't be reached: (host, port) -> (the targets sending there, why not). Every server is
+    tried at once, each once; {} when all answer or there is nothing to try."""
+    places: dict[tuple[str, int], list] = {}
     for t in targets:
         url = getattr(getattr(t, "enhanced", None), "url", None) or getattr(t, "server", None) or ""
         where = address(url)
         if where is not None:
-            places.setdefault(where, []).append(t.name)
+            places.setdefault(where, []).append(t)
     found: dict[tuple[str, int], str] = {}
 
     def one(where: tuple[str, int]) -> None:
@@ -70,13 +70,33 @@ def check_places(targets, each_s: float = EACH_S, all_s: float = ALL_S, try_one=
         thread.start()
     for thread in threads:
         thread.join(max(0.0, began + all_s - time.monotonic()))
-    failed = {where: found.get(where, "didn't answer") for where in places if found.get(where, "late") != ""}
+    return {where: (places[where], found.get(where, "didn't answer"))
+            for where in places if found.get(where, "late") != ""}
+
+
+def offline(failed: dict, tried: int) -> bool:
+    """Every server failed and none could even be found by name: the PC itself has no internet."""
+    return bool(failed) and len(failed) == tried and all("found by name" in why for _, why in failed.values())
+
+
+def tried(targets) -> int:
+    """How many different servers check_places / failing would try for these targets."""
+    return len({where for t in targets
+                if (where := address(getattr(getattr(t, "enhanced", None), "url", None) or getattr(t, "server", None)
+                                     or "")) is not None})
+
+
+def check_places(targets, each_s: float = EACH_S, all_s: float = ALL_S, try_one=reach) -> list[str]:
+    """One line for each place whose server can't be reached, by the place's name and the server's (never the
+    key or the address's path). Every server is tried at once; [] when all answer or there is nothing to try."""
+    targets = list(targets)
+    failed = failing(targets, each_s, all_s, try_one)
     if not failed:
         return []
-    if len(failed) == len(places) and all("found by name" in why for why in failed.values()):
+    if offline(failed, tried(targets)):
         return ["This PC can't reach the internet right now, so no place would connect."]
-    return [f"{_and(names)} would not connect: {where[0]} {failed[where]}."
-            for where, names in places.items() if where in failed]
+    return [f"{_and([t.name for t in sent])} would not connect: {where[0]} {why}."
+            for where, (sent, why) in failed.items()]
 
 
 def _and(names: list[str]) -> str:
