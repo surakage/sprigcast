@@ -12,6 +12,7 @@ Sound bitrate sits with the rest of each encoder (Stream → Quality and Recordi
 
 from __future__ import annotations
 
+import logging
 import time
 
 from PySide6.QtCore import QRectF, Qt, QTimer
@@ -37,11 +38,14 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app import theme
 from sprigcast.app.live_stage import Switch
+from sprigcast.app.names import sound_name_is_ours
 from sprigcast.app.segmented import Segmented
 from sprigcast.audio.mixer import is_monitor_only, is_music, planned_tracks, source_tracks
 from sprigcast.core.scene import AUDIO_DEVICE_KINDS, AUDIO_TRACKS, TRACK_NAMES, SceneCollection, SourceConfig
 from sprigcast.sources.audio import device_label as nice_device_name
 from sprigcast.sources.audio import is_mixer_app_device
+
+log = logging.getLogger(__name__)
 
 TRACK_TIPS = (
     "Everything on the stream. Players play this one.",
@@ -92,10 +96,6 @@ def put_on_track(source: SourceConfig, number: int, on: bool) -> None:
 
 
 AUDIO_KBPS = (96, 128, 160, 192, 256, 320)
-
-
-def device_label(kind: str) -> str:
-    return "Desktop audio" if kind == "audio_output" else "Mic"
 
 
 PUSH_RELEASE_MS = (0, 100, 250, 500)
@@ -1071,9 +1071,12 @@ class AudioPage(QWidget):
             combo = self.device_combos.get(source.id)
             if combo is not None and combo.currentData() != source.settings.get("device", "default"):
                 device = combo.currentData()
+                old = str(source.settings.get("device", "default") or "default")
                 source.settings = {**source.settings, "device": device}
-                base = device_label(source.kind)
-                source.name = base if device == "default" else f"{base} ({device})"
+                if sound_name_is_ours(source.name, source.kind, old):  # a name you chose stays (#805)
+                    base = "Desktop audio" if source.kind == "audio_output" else "Mic"
+                    source.name = base if device == "default" else f"{base} ({device})"
+                    log.info("sound %s: renamed %s for its new device", source.id, source.name)
                 label = getattr(self, "name_labels", {}).get(source.id)
                 if label is not None:  # the Sounds row says the new name now, not after the page is made again
                     label.setText(source.name)

@@ -186,7 +186,8 @@ def _dot(colour: str, size: int = 12) -> QIcon:
     p.end()
     return QIcon(pix)
 from sprigcast.app.sound_card import GROUP_COLOURS, GROUPS, Sound, auto_group, type_of, use_types
-from sprigcast.app.names import ask_name, plain_problem, short_name, short_status, status_summary, window_name
+from sprigcast.app.names import (ask_name, plain_problem, short_name, short_status, sound_name, sound_name_is_ours,
+                                 status_summary, window_name)
 
 log = logging.getLogger(__name__)
 
@@ -324,6 +325,18 @@ BLANK_TIPS = {
     "Video File": "A video, with its own sound",
     "Window Capture": "One app's window",
 }
+
+
+def close_reason(user: bool, app=None) -> str:
+    """Why the window is closing, for the log: a restart, an installer or Windows signing out, or the window's
+    own close (×, Alt+F4, the tray's Quit). StreamBridge 2026-11-20 couldn't tell a deliberate close from a crash."""
+    if app is not None and app.property("sprigcast_restart"):
+        return "SprigCast restarts (Settings' Restart now)"
+    if app is not None and app.property("sprigcast_session_end"):
+        return "Windows asked it to close (an installer or update, or signing out / shutting down)"
+    if user:
+        return "the window was closed (×, Alt+F4 or Quit)"
+    return "SprigCast closed itself (Quit, Clear all my data, or an app's request)"
 
 
 class MainWindow(QMainWindow):
@@ -3437,6 +3450,7 @@ class MainWindow(QMainWindow):
         if user and not self._may_close():
             event.ignore()
             return
+        log.info("closing: %s", close_reason(user, QApplication.instance()))  # who ended this run, in the log
         if tray is not None:
             tray.remove()
         self.hide()  # gone at once; what follows only tidies up
@@ -4004,9 +4018,8 @@ class MainWindow(QMainWindow):
             device = self._pick_audio_device(config.kind, old, config.name, "Save")
             if device is None or device == old:
                 return
-            base = "Desktop audio" if config.kind == "audio_output" else "Mic"
-            if config.name in (base, f"{base} ({old})", short_name(old, base)):  # a name you chose stays
-                config.name = base if device == "default" else short_name(device, base)
+            if sound_name_is_ours(config.name, config.kind, old):  # a name you chose stays
+                config.name = sound_name(config.kind, device)
             config.settings = {**config.settings, "device": device}
         elif config.kind == "media":
             from sprigcast.app.media_dialog import MediaDialog
@@ -5833,9 +5846,8 @@ class MainWindow(QMainWindow):
             device = self._pick_audio_device(config.kind, old, config.name, "Save")
             if device is None or device == old:
                 return False
-            base = "Desktop audio" if config.kind == "audio_output" else "Mic"
-            if config.name in (base, f"{base} ({old})", short_name(old, base)):  # a name you chose stays
-                config.name = base if device == "default" else short_name(device, base)
+            if sound_name_is_ours(config.name, config.kind, old):  # a name you chose stays
+                config.name = sound_name(config.kind, device)
             config.settings = {**config.settings, "device": device}
             self._refresh_audio()
         elif config.kind == "window_capture":

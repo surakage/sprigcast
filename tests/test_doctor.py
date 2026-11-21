@@ -121,6 +121,21 @@ def test_an_empty_browser_page_is_a_note_not_a_reason_to_stop():
     assert [f.level for f in findings] == ["info"]
 
 
+def test_an_empty_media_source_is_idle_and_never_stops_go_live():
+    """StreamBridge's raid clip source stays empty (clear on end) until a clip plays."""
+    from types import SimpleNamespace as NS
+
+    from sprigcast.app import doctor
+
+    check = NS(collection=NS(sources=[NS(id="media-3", name="StreamBridge Raid Clip Video"),
+                                      NS(id="media-4", name="Broken clip")]),
+               statuses={"media-3": "no file", "media-4": "can't play: file not found"})
+    found = doctor._sources(check)
+    idle = [f for f in found if "Raid Clip" in f.text]
+    assert [f.level for f in idle] == ["info"] and "isn't working" not in idle[0].text
+    assert [f.level for f in found if "Broken clip" in f.text] == ["bad"]  # a file that can't play still stops it
+
+
 class _SourcesCheck:
     def __init__(self):
         from types import SimpleNamespace as NS

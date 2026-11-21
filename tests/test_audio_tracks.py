@@ -491,6 +491,33 @@ def test_sounds_row_name_follows_a_device_change():
     assert "Realtek" not in col.source("desktop").name
 
 
+def test_a_sound_name_you_chose_stays_when_its_device_changes():
+    """StreamBridge 2026-11-20: "[AIC] Microphone" (Streamer.bot steps use it) became "Mic (Microphone (Voicemod))"
+    when Settings → Audio switched its device."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.audio_page import AudioPage
+    from sprigcast.core.scene import SceneCollection
+
+    QApplication.instance() or QApplication([])
+    col = _collection()
+    mic = col.source("mic")
+    mic.name, mic.settings["device"] = "[AIC] Microphone", "UG-08S"
+    page = AudioPage(col, {"audio_input": ["UG-08S", "Microphone (Voicemod)"]})
+    page.finish()
+    while page._rows_waiting:
+        page._more_rows()
+    combo = page.device_combos["mic"]
+    combo.setCurrentIndex(combo.findData("Microphone (Voicemod)"))
+    page.apply_to(col)
+    assert col.source("mic").settings["device"] == "Microphone (Voicemod)"
+    assert col.source("mic").name == "[AIC] Microphone"
+    again = SceneCollection.from_json(col.to_text())  # and after a restart
+    assert again.source("mic").name == "[AIC] Microphone"
+
+
 def test_just_me_and_back_keeps_where_a_sound_goes():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6.QtWidgets")

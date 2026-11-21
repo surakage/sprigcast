@@ -291,6 +291,8 @@ def run() -> None:
     server = single_instance.listen(lambda: shown and single_instance.bring_forward(shown[0]), app)
     crashed = crash_report.check(config_dir(), logbook.crash_log())  # did the last run close cleanly?
     app.aboutToQuit.connect(lambda: crash_report.closed_cleanly(config_dir()))
+    # Windows' Restart Manager (the installer) and signing out ask through the session: the close log line says so
+    app.commitDataRequest.connect(lambda _manager: app.setProperty("sprigcast_session_end", True))
     from sprigcast.app import autostart, safe_mode
 
     safe = safe_mode.choose(sys.argv, crashed, autostart.start_minimized(sys.argv), safe_mode.ask)

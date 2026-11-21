@@ -19,6 +19,7 @@ Nothing here knows about Qt: ControlApi talks to the app through a Host (see app
 
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Callable
 from typing import Any, Protocol
@@ -27,6 +28,8 @@ from sprigcast import __version__
 from sprigcast.control.protocol import OBS_WEBSOCKET_VERSION, RPC_VERSION, RequestError, Status, Sub
 from sprigcast.control.who import sound_changed
 from sprigcast.core.scene import PART_KIND, TRANSITION_KINDS, Scene, SceneCollection, SceneItem, SourceConfig
+
+log = logging.getLogger("sprigcast.control")
 
 VENDOR = "sprigcast"
 OBS_VERSION = "31.0.0"  # what we tell apps that check OBS's version; sprigcastVersion says what we are
@@ -1140,6 +1143,8 @@ class ControlApi:
             raise RequestError(Status.REQUEST_FIELD_EMPTY, "newInputName is empty.")
         if any(s.name == name and s is not source for s in self._inputs()):
             raise RequestError(Status.RESOURCE_ALREADY_EXISTS, f"A source called {name!r} already exists.")
+        if name != source.name:
+            log.info("control: an OBS-style app renamed %s %r -> %r", source.id, source.name, name)
         source.name = name
         self.host.commit("sources")
 
