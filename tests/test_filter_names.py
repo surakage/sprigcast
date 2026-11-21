@@ -141,7 +141,7 @@ def test_before_and_after_asks_for_both_pictures():
 
     asked = []
 
-    def grab(source_id, back, raw, limit):
+    def grab(source_id, back, raw, limit, filters=None):
         asked.append((source_id, raw, limit))
         back(np.full((90, 160, 4), 200 if raw else 50, np.uint8))
 
@@ -178,7 +178,7 @@ def test_after_comes_from_the_native_engine_for_native_only_filters():
         def __init__(self):
             self.views, self.taps, self.grabs = {}, {}, []
 
-        def grab_source(self, sid, back, raw, limit):
+        def grab_source(self, sid, back, raw, limit, filters=None):
             self.grabs.append((sid, raw))
             back(None)
 
@@ -217,3 +217,52 @@ def test_after_comes_from_the_native_engine_for_native_only_filters():
         assert not engine.taps and not engine.views
     finally:
         filters.NATIVE_DRAWN.discard("native_test")
+
+
+def test_preview_first_then_apply_or_cancel():  # noqa: PLR0915
+    """User 2026-11-21: changes show only in the mini screen until Apply; Cancel drops them."""
+    app = _app()
+    from PySide6.QtCore import Qt
+
+    from sprigcast.app.filters_dialog import FiltersDialog
+    from sprigcast.core.scene import SourceConfig
+
+    drafts = []
+
+    def grab(source_id, back, raw, limit, filters=None):
+        if not raw:
+            drafts.append([(f.kind, f.enabled, dict(f.settings)) for f in filters])
+        back(None)
+
+    calls = []
+    source = SourceConfig(id="cam", kind="camera", name="Cam", filters=[Filter(id="g", kind="glow", name="Glow")])
+    d = FiltersDialog(source, lambda save=True: calls.append(save), grab=grab)
+    d.show()
+    app.processEvents()
+    assert not d.apply_button.isEnabled()
+    d.add("blur")
+    d.form.set_values({"size": 12})
+    d.list.item(0).setCheckState(Qt.CheckState.Unchecked)
+    assert [f.kind for f in source.filters] == ["glow"] and source.filters[0].enabled  # the stream is untouched
+    assert calls == []
+    assert drafts[-1][0] == ("glow", False, drafts[-1][0][2]) and drafts[-1][1][0] == "blur"  # the After shows it
+    assert d.apply_button.isEnabled()
+    d.reject()
+    assert [f.kind for f in source.filters] == ["glow"] and source.filters[0].enabled  # Cancel dropped it all
+    d = FiltersDialog(source, lambda save=True: calls.append(save), grab=grab)
+    d.add("blur")
+    d.apply()
+    assert [f.kind for f in source.filters] == ["glow", "blur"] and calls[-1] is True
+    assert source.filters[1] is not d.source.filters[1]  # the source got its own copies
+
+
+def test_sound_filters_still_change_as_you_go():
+    _app()
+    from sprigcast.app.filters_dialog import FiltersDialog
+    from sprigcast.core.scene import SourceConfig
+
+    source = SourceConfig(id="mic", kind="audio_input", name="Mic")
+    d = FiltersDialog(source, lambda save=True: None, grab=lambda *a, **k: None)
+    assert not d.preview_first
+    d.add("gain")
+    assert [f.kind for f in source.filters] == ["gain"]

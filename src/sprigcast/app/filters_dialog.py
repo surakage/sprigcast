@@ -538,14 +538,16 @@ class EngineGrab:
         self.latest = None  # (bytes, w, h) of the native view, from the render thread
         self._tapped: str | None = None  # the source the native view shows
 
-    def __call__(self, source_id: str, back: Callable, raw: bool, limit: int) -> None:
+    def __call__(self, source_id: str, back: Callable, raw: bool, limit: int, filters: list | None = None) -> None:
+        """filters: the window's unapplied copies, drawn instead of the source's own (After only)."""
         from sprigcast.core.filters import NATIVE_DRAWN
 
         source = self.collection.source(source_id)
-        native = not raw and source is not None and any(f.enabled and f.kind in NATIVE_DRAWN for f in source.filters)
+        shown = filters if filters is not None else (source.filters if source is not None else [])
+        native = not raw and any(f.enabled and f.kind in NATIVE_DRAWN for f in shown)
         if not native:
             self.stop()
-            self.engine.grab_source(source_id, back, raw, limit)
+            self.engine.grab_source(source_id, back, raw, limit, filters=None if raw else filters)
             return
         if self._tapped != source_id:
             self._tap(source_id, limit)
@@ -591,9 +593,11 @@ class BeforeAfter(QWidget):
 
     LIMIT = 480
 
-    def __init__(self, source_id: str, grab: Callable, parent: QWidget | None = None):
+    def __init__(self, source_id: str, grab: Callable, parent: QWidget | None = None,
+                 draft: Callable[[], list] | None = None):
         super().__init__(parent)
         self.source_id, self.fetch = source_id, grab
+        self.draft = draft  # the window's unapplied filters (copies) for the After side
         self.before: QImage | None = None
         self.after: QImage | None = None
         self.split = 0.5
@@ -633,7 +637,10 @@ class BeforeAfter(QWidget):
 
             self._waiting += 1
             try:
-                self.fetch(self.source_id, back, raw, self.LIMIT)
+                if self.draft is not None and not raw:
+                    self.fetch(self.source_id, back, raw, self.LIMIT, filters=self.draft())
+                else:
+                    self.fetch(self.source_id, back, raw, self.LIMIT)
             except Exception:
                 self._waiting = 0
                 return
@@ -747,15 +754,25 @@ class FiltersDialog(CardWindow):
         edge.setAlpha(80)  # a soft green edge, so the window stands off whatever is behind it
         self.card.setStyleSheet(f"#windowCard {{ background: {theme.PANEL}; border: 1px solid {edge.name(QColor.NameFormat.HexArgb)};"
                                 " border-radius: 22px; }")
-        self.source = source
+        # Preview first (user 2026-11-21): with a picture, the window edits a copy. Changes show only in the
+        # After side until Apply puts them on the source (and the stream); Cancel or × drops them. Sound filters
+        # (no picture: you listen to them) still change as you go.
+        self.real = source
+        self.preview_first = picture
+        self.source = source.model_copy(deep=True) if picture else source
+        self.applied = False
         self.sounds = [(sid, name) for sid, name in (sounds or []) if sid != source.id]
         # A placed sprig has a placement on each canvas: its filters follow there, unless it keeps its own.
         self.collection = collection if collection is not None and collection.filter_twins(source) else None
+        self._on_change = on_change
 
         def changed(save: bool = False) -> None:
-            if self.collection is not None:
-                self.collection.share_filters(source)
-            on_change(save=save)
+            if self.preview_first:
+                self.apply_button.setEnabled(True)  # something to apply
+            else:
+                if self.collection is not None:
+                    self.collection.share_filters(source)
+                on_change(save=save)
             if self.preview is not None:
                 self.preview.ask()  # show the change now, not on the next tick
 
@@ -857,7 +874,8 @@ class FiltersDialog(CardWindow):
         right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(14)
         if picture:
-            self.preview = BeforeAfter(source.id, grab)
+            self.preview = BeforeAfter(source.id, grab,
+                                       draft=lambda: [f.model_copy(deep=True) for f in self.source.filters])
             right.addWidget(self.preview)
         title_row = QHBoxLayout()
         title_row.addWidget(self.title, 1)
@@ -876,7 +894,30 @@ class FiltersDialog(CardWindow):
         root.setSpacing(16)
         root.addLayout(header)
         root.addLayout(body, 1)
+        self.apply_button = QPushButton("Apply")
+        self.apply_button.setStyleSheet(theme.PRIMARY_STYLE)
+        self.apply_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.apply_button.setEnabled(False)
+        self.apply_button.clicked.connect(self.apply)
+        if self.preview_first:
+            cancel = QPushButton("Cancel")
+            cancel.setStyleSheet(RAISED_PILL)
+            cancel.setCursor(Qt.CursorShape.PointingHandCursor)
+            cancel.clicked.connect(self.reject)
+            footer = QHBoxLayout()
+            footer.addStretch(1)
+            footer.addWidget(cancel)
+            footer.addWidget(self.apply_button)
+            root.addLayout(footer)
         self._refresh(0)
+
+    def apply(self) -> None:
+        """Put the previewed filters on the source (and so on the stream), save, and close."""
+        self.real.filters = [f.model_copy(deep=True) for f in self.source.filters]
+        if self.collection is not None:
+            self.collection.share_filters(self.real)
+        self.applied = True
+        self.accept()
 
     # List ---------------------------------------------------------------------
 
@@ -973,8 +1014,11 @@ class FiltersDialog(CardWindow):
 
     def _same_toggled(self, on: bool) -> None:
         if self.collection is not None:
-            self.collection.set_shares_filters(self.source, on)
-            self.on_change(save=False)
+            self.collection.set_shares_filters(self.real, on)
+            if self.preview_first:
+                self._on_change(save=False)  # a choice about the source, not a filter change: no Apply needed
+            else:
+                self.on_change(save=False)
 
     def _toggled(self, item: QListWidgetItem) -> None:
         row, shown = self.list.row(item), self._shown()
@@ -1068,5 +1112,8 @@ class FiltersDialog(CardWindow):
             stop = getattr(self.preview.fetch, "stop", None)
             if stop is not None:
                 stop()  # let go of the native view a Backdrop's After came from
-        self.on_change(save=True)
+        if self.preview_first:
+            self._on_change(save=True)  # applied filters, or nothing changed (Cancel): either way the garden is saved
+        else:
+            self.on_change(save=True)
         super().done(result)
