@@ -323,6 +323,7 @@ struct Source {
     bool measured = false;
     uint64_t underruns = 0;
     size_t cushion = 0;                  // frames kept ahead beyond the block being played (grows when it runs dry)
+    size_t floor_cushion = 0;            // ... never less than this (sc_mixer_source_cushion)
     size_t lowest = SIZE_MAX;            // the fewest frames left after a read in this window
     int window = 0, calm = 0;
     Block block = Block(BLOCK * 2);  // this tick's, after shaping, the fade and ducking (volume not applied)
@@ -403,7 +404,7 @@ struct sc_mixer {
         s.lowest = SIZE_MAX;
         if (++s.calm >= CALM_WINDOWS) {
             s.calm = 0;
-            s.cushion -= std::min(s.cushion, CUSHION_STEP / 2);
+            s.cushion = std::max(s.floor_cushion, s.cushion - std::min(s.cushion, CUSHION_STEP / 2));
         }
     }
 
@@ -731,6 +732,19 @@ SC_API int sc_mixer_source_push(sc_mixer *mixer, int id, const float *stereo, in
             s.queued.erase(s.queued.begin(),
                            s.queued.begin() + static_cast<std::ptrdiff_t>(s.queued.size() - MAX_QUEUED * 2));
         }
+        return SC_OK;
+    });
+}
+
+SC_API int sc_mixer_source_cushion(sc_mixer *mixer, int id, int frames) {
+    return sc::guarded("sc_mixer_source_cushion", [&]() -> int {
+        if (!mixer || frames < 0) return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_source_cushion: nothing given");
+        std::lock_guard<std::mutex> hold(mixer->lock);
+        auto found = mixer->sources.find(id);
+        if (found == mixer->sources.end()) return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_source_cushion: no such sound");
+        Source &s = found->second;
+        s.floor_cushion = std::min(MAX_CUSHION, static_cast<size_t>(frames));
+        s.cushion = std::max(s.cushion, s.floor_cushion);
         return SC_OK;
     });
 }

@@ -1515,6 +1515,7 @@ def _media_sigs() -> dict:
         "sc_mixer_source_set": (c_int, [vp, c_int, ctypes.POINTER(MixerSourceSettings)]),
         "sc_mixer_source_remove": (c_int, [vp, c_int]),
         "sc_mixer_source_push": (c_int, [vp, c_int, vp, c_int]),
+        "sc_mixer_source_cushion": (c_int, [vp, c_int, c_int]),
         "sc_mixer_source_media": (c_int, [vp, c_int, vp, c_int]),
         "sc_mixer_set_ducking": (c_int, [vp, ctypes.POINTER(MixerDucking)]),
         "sc_mixer_push_set": (c_int, [vp, c_int, c_int, c_int]),
@@ -2450,6 +2451,11 @@ class SoundMixer:
 
     def remove_source(self, source: int) -> None:
         _check(self._call(self._lib.sc_mixer_source_remove, int(source)))
+
+    def cushion(self, source: int, frames: int) -> None:
+        """Keep at least `frames` of a pushed sound queued ahead (up to 4 blocks): Python's sounds ride out a held
+        lock instead of running dry."""
+        _check(self._call(self._lib.sc_mixer_source_cushion, int(source), int(frames)))
 
     def push(self, source: int, block) -> None:
         """Samples a sound made: float32 (n, 2) at 48 kHz."""

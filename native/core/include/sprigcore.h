@@ -980,6 +980,9 @@ SC_API int sc_mixer_source_set(sc_mixer *mixer, int id, const sc_mixer_source_se
 SC_API int sc_mixer_source_remove(sc_mixer *mixer, int id);
 /* Samples (interleaved stereo floats) a sound made: queued (at most 200 ms), played from once a block is ahead. */
 SC_API int sc_mixer_source_push(sc_mixer *mixer, int id, const float *stereo, int frames);
+/* A pushed sound keeps at least `frames` (up to 4 blocks) queued beyond the block it plays, so a late push isn't a gap
+ * (a sound Python makes, which waits for Python's lock). It keeps more for a while after it runs dry anyway. */
+SC_API int sc_mixer_source_cushion(sc_mixer *mixer, int id, int frames);
 /* The sound reads straight from an engine player (NULL: pushed again). Once this returns the mixer no longer
  * reads the old player: unlink before sc_media_destroy. asleep: as sc_media_read_audio. */
 SC_API int sc_mixer_source_media(sc_mixer *mixer, int id, sc_media *media, int asleep);
