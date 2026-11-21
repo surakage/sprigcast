@@ -321,3 +321,20 @@ def test_volume_and_sound_is_left_out_while_that_sound_is_open(window):
     w._select_sound("game")
     assert w.build_stage.right_stack.currentIndex() == 1
     assert "Volume and sound…" not in texts()
+
+
+def test_a_sound_leaving_a_type_goes_back_to_its_own():
+    """PC 2026-11-21: a "Mic" type held the mic; removing it should put the mic in Voice, not Other."""
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.sound_type_dialog import SoundTypeDialog
+
+    QApplication.instance() or QApplication([])
+    types = [dict(t) for t in SOUND_TYPES] + [{"name": "Mic", "color": "brown"}]
+    sounds = [("mic", "Mic", "Mic"), ("pal", "Pal", "Mic")]
+    d = SoundTypeDialog(types, sounds, "Mic", homes={"mic": "Voice", "pal": "Friends"})
+    d._remove()
+    assert d.result_types()[1] == {"mic": "Voice", "pal": "Other"}  # Friends isn't a type: Other
+    d = SoundTypeDialog(types, sounds, "Mic", homes={"mic": "Voice"})
+    d.ticks["mic"].setChecked(False)
+    assert d.result_types()[1] == {"mic": "Voice"}

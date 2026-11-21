@@ -452,6 +452,10 @@ def test_the_asking_app_is_named_never_by_its_key():
     server = control_server.ControlServer.__new__(control_server.ControlServer)
     server.pairing = SimpleNamespace(devices=[SimpleNamespace(name="StreamBridge", key="sc_secret")])
     paired, other = object(), object()
-    server.sessions = {paired: NativeSession(api=None, key="sc_secret"), other: NativeSession(api=None)}
+    local = object()
+    server.local_key = "sc_local"
+    server.sessions = {paired: NativeSession(api=None, key="sc_secret"), other: NativeSession(api=None),
+                       local: NativeSession(api=None, key="sc_local")}
     assert server._who(paired) == "StreamBridge (a SprigCast API app)"
+    assert server._who(local) == "a SprigCast API app with this PC's key"
     assert server._who(other) == "a SprigCast API app"

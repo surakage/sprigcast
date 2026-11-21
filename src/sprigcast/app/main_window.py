@@ -1409,7 +1409,10 @@ class MainWindow(QMainWindow):
         if config is None:
             return
         menu.setToolTipsVisible(True)
-        menu.addAction("Rename…").triggered.connect(lambda _=False: self._rename_sound(source_id))
+        # Windows open once the menu has closed: one opened inside the menu's own loop showed Windows' UI Automation
+        # an empty pane (PC 2026-11-21: the Filters window had no parts, and + Add filter listed nothing).
+        later = lambda f: QTimer.singleShot(0, self, f)  # noqa: E731
+        menu.addAction("Rename…").triggered.connect(lambda _=False: later(lambda: self._rename_sound(source_id)))
         muted = bool(config.settings.get("muted", False))
         menu.addAction("Unmute" if muted else "Mute").triggered.connect(
             lambda _=False: self._build_tune_changed(source_id, {"muted": not muted}))
@@ -1420,8 +1423,10 @@ class MainWindow(QMainWindow):
         # then, it seemed to do nothing).
         if not (self.selected_sound_id == source_id and self.build_stage.right_stack.currentIndex() == 1):
             menu.addAction("Volume and sound…").triggered.connect(lambda _=False: self._select_sound(source_id))
-        menu.addAction("Filters…").triggered.connect(lambda _=False: self._open_filters(source_id, "audio"))
-        menu.addAction("Tracks and sync…").triggered.connect(lambda _=False: self._open_settings("Audio/Sounds"))
+        menu.addAction("Filters…").triggered.connect(
+            lambda _=False: later(lambda: self._open_filters(source_id, "audio")))
+        menu.addAction("Tracks and sync…").triggered.connect(
+            lambda _=False: later(lambda: self._open_settings("Audio/Sounds")))
         if config.kind == "media":
             self._fill_media_menu(menu.addMenu("Playback"), source_id)
         menu.addSeparator()
@@ -1455,7 +1460,9 @@ class MainWindow(QMainWindow):
         use_types(audio.sound_types)
         sounds = sorted((s for s in self.collection.sources if self._has_sound(s)), key=lambda s: s.name.lower())
         now = {s.id: self._sound_item(s).group for s in sounds}
-        dialog = SoundTypeDialog(audio.sound_types, [(s.id, s.name, now[s.id]) for s in sounds], name, self)
+        homes = {s.id: "Browser" if s.kind == "browser" else auto_group(s.name, s.kind) for s in sounds}
+        dialog = SoundTypeDialog(audio.sound_types, [(s.id, s.name, now[s.id]) for s in sounds], name, self,
+                                 homes=homes)
         if ticked in dialog.ticks:
             dialog.ticks[ticked].setChecked(True)
         if not modal(dialog):
@@ -5346,7 +5353,10 @@ class MainWindow(QMainWindow):
             action.setShortcut(QKeySequence(shortcut))
             action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             action.setShortcutVisibleInContextMenu(True)
-            action.triggered.connect(lambda _=False, f=slot: f())
+            if key in ("settings", "filters", "rename"):  # windows: opened once a right-click menu has closed
+                action.triggered.connect(lambda _=False, f=slot: QTimer.singleShot(0, self, f))
+            else:
+                action.triggered.connect(lambda _=False, f=slot: f())
             self.build_stage.addAction(action)
             self.item_actions[key] = action
 

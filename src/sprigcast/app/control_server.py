@@ -828,7 +828,11 @@ class ControlServer(QObject):
         key = getattr(session, "key", "") or ""
         pairing = getattr(self, "pairing", None)  # only for the log: never in a request's way
         device = next((d for d in (pairing.devices if pairing else ()) if key and d.key == key), None)
-        return f"{device.name} ({what})" if device is not None else what
+        if device is not None:
+            return f"{device.name} ({what})"
+        if key and key == getattr(self, "local_key", ""):
+            return f"{what} with this PC's key"  # api.json: Streamer.bot and other local tools read it
+        return what
 
     def _pump(self, socket: QWebSocket, steps: Iterator[Step]) -> None:
         with asking(self._who(socket)):
