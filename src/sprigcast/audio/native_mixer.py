@@ -51,6 +51,7 @@ from sprigcast.core.filters import SOUND_LEVELS
 log = logging.getLogger(__name__)
 
 CAPTURE_GIVE_UP_S = 4.0  # a capture that never found its device by then goes back to Python's
+PY_CUSHION = BLOCK * 2  # a sound Python pushes keeps about 43 ms queued ahead in the engine
 CATCH_UP = 4  # blocks pushed at most in one go after the feeder was held up (more would only add delay)
 WAIT_MS = 200
 
@@ -274,8 +275,8 @@ def _python_chain(source, sound) -> object | None:
 class _Sound:
     """One sound as the engine knows it."""
 
-    __slots__ = ("asleep", "capture", "capture_key", "capture_since", "capture_said", "filters", "id", "media", "obj",
-                 "refused", "settings")
+    __slots__ = ("asleep", "capture", "capture_key", "capture_since", "capture_said", "cushion", "filters", "id",
+                 "media", "obj", "refused", "settings")
 
     def __init__(self, obj, native_id: int):
         self.obj = obj
@@ -289,6 +290,7 @@ class _Sound:
         self.refused: tuple | None = None  # a (device, loopback) the engine couldn't find: Python captures it
         self.capture_said = ""  # why Python or the engine captures it, as last logged
         self.filters: tuple | None = None  # the built-in filters the engine runs on it (None: Python runs its chain)
+        self.cushion = 0  # frames the engine keeps queued ahead of it at least (PY_CUSHION for Python's sounds)
 
 
 class NativeMixer:
@@ -500,6 +502,20 @@ class NativeMixer:
         self._fed += 1
         self._drain()
 
+    def _cushion(self, source, sound: _Sound) -> None:
+        """A sound Python pushes (a web page's, a Python-captured desktop or app sound) keeps PY_CUSHION queued ahead
+        in the engine, so a held Python lock isn't a gap: a page's clip starting while blooms switch ran dry about 20
+        times in 30 s (PC 2026-11-21). Not a voice (lips stay in sync) or a sound the engine reads itself."""
+        wanted = PY_CUSHION if (self._clocked and sound.capture is None and sound.media is None
+                                and not is_voice(source)) else 0  # unclocked (checks): pushed and mixed in step
+        if wanted != sound.cushion:
+            try:
+                self._engine.cushion(sound.id, wanted)
+                sound.cushion = wanted
+            except Exception as exc:  # noqa: BLE001 (an older engine: it grows its own when it runs dry)
+                sound.cushion = wanted
+                self._problem("keeping a sound ahead", exc)
+
     def _reconcile(self, sources: list, heard: dict) -> list:
         """Every sound known to the engine with its settings now; gone ones let go of."""
         out = []
@@ -518,6 +534,7 @@ class NativeMixer:
             self._filters(source, sound, heard)
             self._link(source, sound, heard)
             self._capture(source, sound, heard)
+            self._cushion(source, sound)
             out.append((source, sound))
         for key in [k for k in self._known if k not in alive]:
             sound = self._known.pop(key)
