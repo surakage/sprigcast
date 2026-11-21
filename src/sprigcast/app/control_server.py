@@ -480,6 +480,7 @@ class WindowHost:
 
 
 NAMELESS = "an app that doesn't say its name"
+SLOW_ACCEPT_MS = 50.0  # taking a connection (hello sent, lists read) is a few ms: longer is said in the log
 
 
 def _client_label(socket) -> str:
@@ -634,6 +635,18 @@ class ControlServer(QObject):
         self.server = QWebSocketServer("SprigCast", QWebSocketServer.SslMode.NonSecureMode, self)
         self.server.newConnection.connect(self._accept)
         self.tcp.newConnection.connect(self._incoming)
+        # "localhost" is ::1 first on Windows: with only 127.0.0.1 open, an app that connects by that name waited
+        # about 2 s for the refusal before it tried 127.0.0.1 (PC, 2026-11-21: 2,028 / 2,025 / 2,016 ms against
+        # 4 / 15 / 0). So this PC's other own address is open too. A PC without it just goes without.
+        self.tcp6 = None
+        if not lan:
+            tcp6 = QTcpServer(self)
+            if tcp6.listen(QHostAddress(QHostAddress.SpecialAddress.LocalHostIPv6), self.tcp.serverPort()):
+                tcp6.newConnection.connect(self._incoming)
+                self.tcp6 = tcp6
+            else:
+                log.info("control: not listening on ::1 (%s): apps should connect to 127.0.0.1", tcp6.errorString())
+                tcp6.deleteLater()
         log.info("control: listening on %s:%d%s", "all addresses" if lan else "localhost", port,
                  " with a password" if password else " without a password")
         self._write_info(self.local_key)
@@ -689,10 +702,12 @@ class ControlServer(QObject):
         self.server.close()
         self.server.deleteLater()
         self.server = None
-        if self.tcp is not None:
-            self.tcp.close()
-            self.tcp.deleteLater()
-            self.tcp = None
+        for name in ("tcp", "tcp6"):
+            tcp = getattr(self, name, None)
+            if tcp is not None:
+                tcp.close()
+                tcp.deleteLater()
+                setattr(self, name, None)
         self.watch.stop()
         self.on_clients_changed(0)
 
@@ -707,13 +722,24 @@ class ControlServer(QObject):
     # Connections -----------------------------------------------------------------------
 
     def _incoming(self) -> None:
-        while self.tcp is not None and self.tcp.hasPendingConnections():
-            sock = self.tcp.nextPendingConnection()
-            # Bound slots, not lambdas: a lambda makes PySide watch the socket's destroyed signal, and Qt's WebSocket
-            # code then warns "wildcard call disconnects from destroyed signal" when it lets the socket go.
-            sock.readyRead.connect(self._ready_read)
-            sock.disconnected.connect(sock.deleteLater)
-            QTimer.singleShot(WEB_TIMEOUT_MS, lambda s=sock: self._too_slow(s))
+        for tcp in (self.tcp, getattr(self, "tcp6", None)):  # 127.0.0.1 and ::1 (what "localhost" tries first)
+            while tcp is not None and tcp.hasPendingConnections():
+                sock = tcp.nextPendingConnection()
+                # Bound slots, not lambdas: a lambda makes PySide watch the socket's destroyed signal, and Qt's
+                # WebSocket code then warns "wildcard call disconnects from destroyed signal" when it lets it go.
+                sock.readyRead.connect(self._ready_read)
+                sock.disconnected.connect(sock.deleteLater)
+                self._note_arrival(sock.peerPort(), "tcp")
+                QTimer.singleShot(WEB_TIMEOUT_MS, lambda s=sock: self._too_slow(s))
+
+    def _note_arrival(self, port: int, step: str) -> None:
+        """When a connection got this far (by the asker's port), for the slow-connection line in _accept."""
+        arrivals = self.__dict__.setdefault("_arrivals", {})
+        if step == "tcp":
+            if len(arrivals) > 64:  # ones that never became a WebSocket (web links, port checks)
+                arrivals.clear()
+            arrivals[port] = {}
+        arrivals.setdefault(port, {})[step] = time.perf_counter()
 
     @Slot()
     def _ready_read(self) -> None:
@@ -737,6 +763,7 @@ class ControlServer(QObject):
             return  # wait for the rest of the headers
         if web.header_end(raw) >= 0 and web.is_websocket(raw):
             sock.setProperty("sprigcast_door", "ws")
+            self._note_arrival(sock.peerPort(), "request")
             sock.readyRead.disconnect(self._ready_read)
             if self.server is not None:
                 self.server.handleConnection(sock)
@@ -768,6 +795,12 @@ class ControlServer(QObject):
     def _accept(self) -> None:
         while self.server is not None and self.server.hasPendingConnections():
             socket = self.server.nextPendingConnection()
+            came = self.__dict__.get("_arrivals", {}).pop(socket.peerPort(), {})
+            now = time.perf_counter()
+            # Where this connection's time goes, said when it's slow: waiting for the asker's request after it
+            # connected, the WebSocket handshake, then each step here.
+            marks = [("start", came.get("tcp", now)), ("its request", came.get("request", came.get("tcp", now))),
+                     ("handshake", now)]
             native = socket.requestUrl().path().rstrip("/").lower() == NATIVE_PATH
             if not native and not self.obs_door:
                 socket.close(QWebSocketProtocol.CloseCode(4000),
@@ -782,20 +815,31 @@ class ControlServer(QObject):
                 session = Session(handler=self.api.handle, password=self.password, keys=self.keys(),
                                   frame_seconds=self.frame_seconds)
                 first = not self._obs()
+            marks.append(("keys", time.perf_counter()))
             self.sessions[socket] = session
             socket.textMessageReceived.connect(lambda text, s=socket: self._arrived(s, text))
             socket.binaryMessageReceived.connect(lambda _data, s=socket: s.close(
                 QWebSocketProtocol.CloseCode(4002), "Only JSON text messages are understood."))
             socket.disconnected.connect(lambda s=socket: self._gone(s))
             socket.sendTextMessage(session.hello())
+            marks.append(("hello", time.perf_counter()))
             self._labels[socket] = (_client_label(socket), time.monotonic())
             if _CONNECT_LOG.allow("connect"):  # Streamer.bot and friends reconnect often: 129 lines in a day
                 log.info("control: %s app connected from %s (%s)%s", "a SprigCast API" if native else "an OBS-style",
                          socket.peerAddress().toString(), self._labels[socket][0], _CONNECT_LOG.skipped("connect"))
+            marks.append(("log", time.perf_counter()))
             if first:  # start comparing from now
                 (self.native if native else self.api).changes()
+            marks.append(("first look", time.perf_counter()))
             self.watch.start()
             self.on_clients_changed(len(self.sessions))
+            marks.append(("window", time.perf_counter()))
+            took = 1000 * (marks[-1][1] - marks[0][1])
+            if took >= SLOW_ACCEPT_MS:
+                # A new connection waited 4.4 s for its hello on the PC (2026-11-21) and 7 to 35 ms here: this says
+                # whether the wait is in here (and in which step) or before the connection ever reaches SprigCast.
+                log.info("control: taking a new connection took %.0f ms (%s)", took, ", ".join(
+                    f"{name} {1000 * (at - marks[i][1]):.0f}" for i, (name, at) in enumerate(marks[1:])))
 
     def _mark_seen(self, session, leaving: bool = False) -> None:
         """A paired device's key signed in (once per connection) or its connection closed: its last_seen is now."""

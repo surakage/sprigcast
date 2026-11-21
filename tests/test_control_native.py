@@ -118,8 +118,10 @@ def test_outputs_and_transitions():
     _ok(api, "stream.stop")
     _ok(api, "record.start")
     assert _ok(api, "record.stop") == {"file": "C:/rec.mkv"}
-    assert _ok(api, "clip.save") == {"saved": [], "started": True}
-    assert _ok(api, "clip.save") == {"saved": ["clip.mkv"], "started": False}
+    first = _ok(api, "clip.save")
+    assert (first["saved"], first["started"], first["clip"]) == ([], True, False)
+    assert "No clip was saved" in first["note"] and "clips.changed" in first["note"]
+    assert _ok(api, "clip.save") == {"saved": ["clip.mkv"], "started": False, "clip": True}
     assert _ok(api, "transition.set", kind="leaf", ms=500) == {"kind": "leaf", "ms": 500, "easing": "smooth",
                                                               "unmatched": "fade"}
     assert _ok(api, "transition.set", kind="move", easing="spring", unmatched="slide")["easing"] == "spring"
@@ -289,8 +291,13 @@ def test_screenshots_per_shape():
     shots = _ok(api, "screenshot.take")["shots"]
     assert [s["shape"] for s in shots] == ["horizontal", "vertical"] and all("path" in s for s in shots)
     small = _ok(api, "screenshot.take", shape="vertical", width=320, save=False, data=True)["shots"]
-    assert small == [{"shape": "vertical", "width": 320, "height": 1080, "png": "iVBOR"}]
+    assert small == [{"shape": "vertical", "width": 320, "height": 1080, "png": "iVBOR",
+                      "bloom": "Chatting", "bloomId": "chat-v"}]  # which bloom the picture shows
     assert host.shots[-1] == (["vertical"], 320, False, True)
+    api.col.active_scenes.pop("vertical")  # nothing on air there: null, never the text "None"
+    empty = _ok(api, "screenshot.take", shape="vertical", save=False, data=True)["shots"][0]
+    assert empty["bloom"] is None and empty["bloomId"] is None
+    api.col.active_scenes["vertical"] = "chat-v"
     assert _fails(api, "screenshot.take", save=False) == "bad_request"
     assert _fails(api, "screenshot.take", width=4) == "bad_request"
     assert _fails(api, "screenshot.take", shape="square") == "bad_request"

@@ -6457,15 +6457,18 @@ class MainWindow(QMainWindow):
             return []
         self._clips_used_at = time.monotonic()
         self.statusBar().showMessage("Saving clip…", 4000)
+        log.info("clips: saving a clip (%s)", ", ".join(Path(p).name for p in paths) or "no files")
         return paths
 
     def _clip_saved(self, paths: list, problems: list) -> None:
         """A clip's files are written (or couldn't be)."""
         if problems:
             self.statusBar().showMessage("Couldn't save the replay: " + "; ".join(problems), 6000)
+            log.warning("clips: a clip couldn't be saved (%s)", "; ".join(str(p) for p in problems))
         if not paths:
             return
         names = ", ".join(p.name for p in paths)
+        log.info("clips: clip saved (%s)", names)
         self.statusBar().showMessage(f"Saved clip: {names}", 8000)
         self._saved_note("Clip saved", paths[0].parent if paths else None)
         self._tidy_saves()

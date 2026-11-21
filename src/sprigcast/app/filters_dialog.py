@@ -63,7 +63,7 @@ from sprigcast.core.filters import (
     shown_name,
     switch,
 )
-from sprigcast.core.scene import Filter, SourceConfig
+from sprigcast.core.scene import Filter, SourceConfig, new_filter_id
 
 
 def _unshown(flt: Filter) -> dict:
@@ -1311,7 +1311,7 @@ class FiltersDialog(CardWindow):
         name, n = info.label, 2
         while name in names:
             name, n = f"{info.label} {n}", n + 1
-        flt = Filter(id=uuid.uuid4().hex[:8], kind=kind, name=name, settings=dict(info.defaults))
+        flt = Filter(id=new_filter_id(), kind=kind, name=name, settings=dict(info.defaults))
         self.source.filters.append(flt)
         self._refresh(len(self._shown()) - 1)
         self.on_change(save=False)

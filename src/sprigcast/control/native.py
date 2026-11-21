@@ -37,7 +37,7 @@ from typing import Any
 from sprigcast import __version__
 from sprigcast.control.protocol import Close, Sleep, auth_string
 from sprigcast.control.who import sound_changed
-from sprigcast.core.scene import MOVE_EASINGS, MOVE_UNMATCHED, PART_KIND, TRANSITION_KINDS, Filter, Scene, SceneItem, SourceConfig
+from sprigcast.core.scene import MOVE_EASINGS, MOVE_UNMATCHED, PART_KIND, TRANSITION_KINDS, Filter, Scene, SceneItem, SourceConfig, new_filter_id
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +74,8 @@ FEATURES = (
     "layout.get",          # layout.get: every item's place, crop, bounds, source size and canvas box; flat, overlaps
     "source.state",        # source.get loaded, state ("capturing 1920x1080"), size, cameraSize, asleep
     "places.size",         # places.list size [w, h], fps, and enhanced where the service has it
+    "clip.save_note",  # clip.save answers clip, and a note when no clip was saved
+    "screenshot.bloom_id",  # screenshot.take: every canvas or bloom picture says bloom and bloomId (null: nothing on air there)
     "screenshot.skipped",  # screenshot.take {bloom}: every shape it's in, skipped names a shape left out; canvas pictures are on black
     "places.ready",        # places.list name, ready, problem ("Needs a stream key"): why a place can't go live yet
     "app_audio.pids",      # app_audio settings pids: [process id, ...] catches those processes' trees instead of apps
@@ -1135,10 +1137,7 @@ class NativeApi:
             if kind.media == "video" and any(f.kind == kind.kind for f in source.filters):
                 raise ApiError("not_allowed", f"{source.name!r} already has a {kind.label} filter.")
             taken = {f.id for s in self.col.sources for f in s.filters}
-            n = 1
-            while f"filter-{n}" in taken:
-                n += 1
-            new = Filter(id=f"filter-{n}", kind=kind.kind, name=name, settings=dict(settings), enabled=enabled)
+            new = Filter(id=new_filter_id(taken), kind=kind.kind, name=name, settings=dict(settings), enabled=enabled)
             source.filters.append(new)
             return self._filter_info(new)
 
@@ -1609,15 +1608,21 @@ class NativeApi:
         return {"on": on}
 
     @action("clip.save", "Save the last seconds as a clip (gets clips ready first if they're off). Answers with "
-                         "the file names at once; the clip.saved event says when they are written.")
+                         "the file names at once; the clip.saved event says when they are written. clip is true "
+                         "when a clip is being saved; when it is false, note says why and when one can be.")
     def clip_save(self, data):
         if not self.host.clips_ready():
             problem = self.host.set_clips(True)
             if problem:
                 raise ApiError("not_allowed", problem)
-            return {"saved": [], "started": True}
+            return {"saved": [], "started": True, "clip": False,
+                    "note": "No clip was saved: clips were off and are starting now. Ask again once clips.changed "
+                            "says they are on; a clip holds only what happened after that."}
         self.last_clip = self.host.save_clip()
-        return {"saved": self.last_clip, "started": False}
+        if not self.last_clip:
+            return {"saved": [], "started": False, "clip": False,
+                    "note": "No clip was saved: SprigCast couldn't save it. Its log says why."}
+        return {"saved": self.last_clip, "started": False, "clip": True}
 
     # Media (video and sound files) ---------------------------------------------------------------
 
@@ -1715,7 +1720,17 @@ class NativeApi:
         if data.get("source") is not None or data.get("bloom") is not None:
             return self._one_shot(data, shape, width, save, as_data)
         shapes = self._shapes() if shape == "both" else [shape]
-        return self._canvas_shots(shapes, width, save, as_data, lambda shots: {"shots": shots})
+        return self._canvas_shots(shapes, width, save, as_data, lambda shots: {"shots": self._on_air_named(shots)})
+
+    def _on_air_named(self, shots: list[dict], name: str | None = None) -> list[dict]:
+        """Each canvas picture with the bloom on air there: `bloom` (its name; `name` when the bloom was asked
+        for by one) and `bloomId`, null when nothing is on air on that canvas."""
+        out = []
+        for shot in shots:
+            scene = self.col.active_scene(shot.get("shape", ""))
+            out.append({**shot, "bloom": name if name is not None else (scene.name if scene is not None else None),
+                        "bloomId": scene.id if scene is not None else None})
+        return out
 
     def _canvas_shots(self, shapes, width, save, as_data, done):
         """Pictures of what's on air in these shapes: done(shots), now or Later."""
@@ -1767,7 +1782,7 @@ class NativeApi:
                             for s in family if s.canvas not in on_air]
             if on_air:  # each shape it's on air in ("both" gave only the first)
                 return self._canvas_shots(on_air if shape == "both" else on_air[:1], width, save, as_data,
-                                          lambda shots: noted({"shots": [{**shot, "bloom": bloom.name} for shot in shots]}))
+                                          lambda shots: noted({"shots": self._on_air_named(shots, bloom.name)}))
             off_air = getattr(self.host, "bloom_screenshot", None)
             if off_air is not None:  # drawn on its own canvas, nothing on air changes; its sources wake for it
                 if self.host.stream_status() is not None or self.host.record_status() is not None:
@@ -1777,7 +1792,7 @@ class NativeApi:
                 later = self._later("bloom_screenshots_later")
                 if later is not None:  # every shape at once, on a worker
                     def collected(got, layouts=layouts, name=bloom.name):
-                        shots = [{"shape": layout.canvas, **shot, "bloom": name, "on_air": False}
+                        shots = [{"shape": layout.canvas, **shot, "bloom": name, "bloomId": layout.id, "on_air": False}
                                  for layout, shot in zip(layouts, got) if shot is not None]
                         if not shots:
                             raise ApiError("not_allowed", "Nothing is drawing right now, so there's nothing to picture.")
@@ -1792,7 +1807,8 @@ class NativeApi:
                     except OSError as exc:
                         raise ApiError("failed", f"Couldn't save the screenshot: {exc}") from exc
                     if shot is not None:
-                        shots.append({"shape": layout.canvas, **shot, "bloom": bloom.name, "on_air": False})
+                        shots.append({"shape": layout.canvas, **shot, "bloom": bloom.name, "bloomId": layout.id,
+                                      "on_air": False})
                 if not shots:
                     raise ApiError("not_allowed", "Nothing is drawing right now, so there's nothing to picture.")
                 return noted({"shots": shots})

@@ -70,7 +70,7 @@ def test_the_api_pictures_a_bloom_off_air_on_the_shape_asked_but_not_while_live(
     out = api.run("screenshot.take", {"bloom": "BRB", "shape": "vertical", "save": False, "data": True})
     assert host.asked == [("brb-v", "BRB", None, False, True)]
     assert out == {"shots": [{"shape": "vertical", "width": 64, "height": 36, "png": "iVBOR", "bloom": "BRB",
-                              "on_air": False}]}
+                              "bloomId": "brb-v", "on_air": False}]}
     both = api.run("screenshot.take", {"bloom": "BRB", "save": False, "data": True})
     assert [s["shape"] for s in both["shots"]] == ["horizontal", "vertical"]
     host.start_stream()
@@ -181,7 +181,8 @@ def test_an_apps_screenshot_is_made_while_the_window_keeps_answering():
         answers = [m for m in got if m.get("id") in ("shot", "after")]
         assert [m["id"] for m in answers] == ["shot", "after"]
         assert answers[0]["ok"] and answers[0]["result"]["shots"] == [
-            {"shape": "horizontal", "width": 64, "height": 36, "png": "x", "bloom": "BRB", "on_air": False}]
+            {"shape": "horizontal", "width": 64, "height": 36, "png": "x", "bloom": "BRB", "bloomId": "brb-h",
+             "on_air": False}]
         assert host.asked == [("brb-h", "brb-v")]  # both shapes in one go
         assert max(gaps) < 0.2  # the window answered all along (the picture alone took 0.4 s)
     finally:

@@ -38,6 +38,18 @@ class Canvas(BaseModel):
         return max(2, round(self.width * k / 2) * 2), max(2, round(self.height * k / 2) * 2)
 
 
+def new_filter_id(taken=()) -> str:
+    """An id for a new filter that no filter has had: random, so one taken off never hands its id to the next
+    (a new Backdrop came out as "filter-2", the id a removed Pixelate on another source had; an app that keeps
+    ids would have taken one for the other. PC, 2026-11-21)."""
+    import uuid
+
+    while True:
+        fid = f"filter-{uuid.uuid4().hex[:8]}"
+        if fid not in taken:
+            return fid
+
+
 class Filter(BaseModel):
     """An effect on a source (color correction, chroma key, noise gate...). See core/filters.py."""
 
@@ -887,10 +899,7 @@ class SceneCollection(BaseModel):
                     old.remove(mine)
                     fid = mine.id
                 else:
-                    n = 1
-                    while f"filter-{n}" in taken:
-                        n += 1
-                    fid = f"filter-{n}"
+                    fid = new_filter_id(taken)
                     taken.add(fid)
                 new.append(flt.model_copy(deep=True, update={"id": fid}))
             if new != twin.filters:
