@@ -279,6 +279,7 @@ _KINDS[BACKGROUND] = FilterKind(BACKGROUND, "Backdrop", "video", [
           show_when=("mode", ("picture",))),
     Field("edge", "Soft Edges", 30, 0, 100, 1, "%"),
 ], status=_background_status)
+NATIVE_DRAWN.add(BACKGROUND)  # its After picture in the Filters window comes from the native engine
 
 
 PLUGIN_VIDEO_KINDS = ("pixelate", "blackout", "barrel_roll", "freeze")  # drawn by the GPU, offered by plugins
