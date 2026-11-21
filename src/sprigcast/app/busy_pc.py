@@ -67,13 +67,33 @@ def spike_watch(clock=time.monotonic) -> BusyWatch:
     return BusyWatch(clock, SPIKE_PCT, SPIKE_FOR_S, SPIKE_EVERY_S)
 
 
-def heavy_apps(limit: int = 3, wait: float = 1.0, with_use: bool = False) -> list:
-    """The other apps using the most CPU right now, by the names people know (takes `wait` seconds).
-    with_use: (name, % of the whole PC) pairs, heaviest first, whatever they are."""
+def cpu_by_app(wait: float = 1.0) -> dict[str, float] | None:
+    """Each other app's CPU over `wait` seconds, in % of one core, by the name people know. Two looks at everything
+    running (core/processes.py), one call each; None where Windows can't be asked that way."""
+    from sprigcast.core import processes
+
     try:
-        import psutil
-    except ImportError:
-        return []
+        before = {p.pid: p for p in processes.snapshot()}
+        began = time.monotonic()
+        time.sleep(wait)
+        after = processes.snapshot()
+        took = max(0.001, time.monotonic() - began)
+    except OSError:
+        return None
+    me = os.getpid()
+    use: dict[str, float] = {}
+    for proc in after:
+        was = before.get(proc.pid)
+        if was is None or was.name != proc.name or proc.pid == me or not proc.name or proc.name.lower() in IGNORE:
+            continue
+        label = friendly(proc.name)
+        use[label] = use.get(label, 0.0) + 100.0 * max(0.0, proc.cpu_s - was.cpu_s) / took
+    return use
+
+
+def _cpu_by_app_psutil(wait: float) -> dict[str, float]:
+    import psutil
+
     me = os.getpid()
     procs = []
     for proc in psutil.process_iter(["name"]):
@@ -94,7 +114,19 @@ def heavy_apps(limit: int = 3, wait: float = 1.0, with_use: bool = False) -> lis
             use[label] = use.get(label, 0.0) + proc.cpu_percent()
         except (psutil.Error, OSError):
             continue
-    cores = psutil.cpu_count() or 1
+    return use
+
+
+def heavy_apps(limit: int = 3, wait: float = 1.0, with_use: bool = False) -> list:
+    """The other apps using the most CPU right now, by the names people know (takes `wait` seconds).
+    with_use: (name, % of the whole PC) pairs, heaviest first, whatever they are."""
+    use = cpu_by_app(wait)
+    if use is None:  # not Windows: one process at a time
+        try:
+            use = _cpu_by_app_psutil(wait)
+        except ImportError:
+            return []
+    cores = os.cpu_count() or 1
     ranked = sorted(use.items(), key=lambda kv: kv[1], reverse=True)
     if with_use:
         return [(name, pct / cores) for name, pct in ranked[:limit]]

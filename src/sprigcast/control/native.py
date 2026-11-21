@@ -1872,9 +1872,15 @@ class NativeApi:
             "camera": bool(getattr(self.host, "camera_on", lambda: False)()),
             "transition": (col.transition.kind, col.transition.duration_ms),
             "states": {p.id: p.state for p in col.parts()},
-            "media": {s.id: (self.host.media_info(s.id) or {}).get("state") for s in col.sources if s.kind == "media"},
+            "media": {s.id: self._media_state(s.id) for s in col.sources if s.kind == "media"},
             "shelf": self._shelf(),
         }
+
+    def _media_state(self, source_id: str) -> str | None:
+        recent = getattr(self.host, "media_state", None)
+        if recent is not None:
+            return recent(source_id)
+        return (self.host.media_info(source_id) or {}).get("state")
 
     @staticmethod
     def _plugin_ids() -> tuple[str, ...]:

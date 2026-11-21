@@ -231,6 +231,9 @@ class RemoteHost:
                 return False
             self.starts += 1
             self._started_card = self.card
+            from sprigcast.core import pacing
+
+            pacing.helper_processes["page helper"] = self._pid  # its memory goes in the log next to SprigCast's
             log.info("browser helper started (pid %s%s)", self.proc.pid,
                      ", pages drawn on the engine's card" if self.card is not None else "")
             self._reader = threading.Thread(target=self._read, args=(self.proc,), name="sprigcast-browser-pipe",
@@ -270,6 +273,10 @@ class RemoteHost:
                     proc.stdin.flush()
                 except (OSError, ValueError, AttributeError):
                     pass  # it stopped: the pipe reader starts it again
+
+    def _pid(self) -> int | None:
+        proc = self.proc
+        return proc.pid if proc is not None and proc.poll() is None else None
 
     def _read(self, proc: subprocess.Popen) -> None:
         stream = proc.stdout

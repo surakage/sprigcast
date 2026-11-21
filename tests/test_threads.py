@@ -374,3 +374,21 @@ def test_fine_window_watch_logs_short_stalls_with_where_they_were(caplog, check_
         assert "the window didn't answer for 70 ms; it was at (too short to catch where)" in caplog.text
     finally:
         pacing._ui.update(beat=None, ident=None, where=None, clock=time.perf_counter, fine=None)
+
+
+def test_a_helper_programs_memory_goes_in_the_log():
+    """PC 2026-11-21: the page helper held 1,486 MB and nothing in the log said so. Its line adds up the helper and
+    every process it started."""
+    from types import SimpleNamespace as NS
+
+    def proc(private_mb, rss_mb, children=()):
+        return NS(memory_info=lambda: NS(private=private_mb * 1e6, rss=rss_mb * 1e6),
+                  children=lambda recursive=False: list(children))
+
+    def gone():
+        raise ProcessLookupError
+
+    tree = proc(300, 200, [proc(900, 700), proc(250, 150), NS(memory_info=gone)])
+    line = pacing.helper_memory_line("page helper", 4242, process=lambda pid: tree)
+    assert line == "page helper memory: committed 1,450 MB in 3 processes (biggest 900, 300, 250 MB), in use 1,050 MB"
+    assert pacing.helper_memory_line("page helper", 4242, process=lambda pid: gone()) is None

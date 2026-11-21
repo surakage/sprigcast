@@ -161,6 +161,14 @@ class LevelLog:
         self.loudest: dict[str, float] = {}
         self.since = time.monotonic() if now is None else now
 
+    @staticmethod
+    def name(sid: str) -> str:
+        """A sound's name in the log: an id that carries a file's path (a stinger's clip) keeps only the file."""
+        kind, colon, rest = sid.partition(":")
+        if colon and ("/" in rest or "\\" in rest):
+            return f"{kind}:{rest.replace(chr(92), '/').rsplit('/', 1)[-1]}"
+        return sid
+
     def feed(self, meters: dict[str, tuple[float, float]], now: float | None = None) -> str | None:
         """The line logged (None when it isn't time yet)."""
         for sid, (peak, _rms) in meters.items():
@@ -169,10 +177,16 @@ class LevelLog:
         now = time.monotonic() if now is None else now
         if now - self.since < self.EVERY_S:
             return None
-        parts = [f"{sid} {'silent' if db <= FLOOR_DB else f'{db:.0f} dB'}" for sid, db in sorted(self.loudest.items())]
+        heard = {sid: db for sid, db in self.loudest.items() if db > FLOOR_DB}
+        silent = len(self.loudest) - len(heard)
         self.loudest, self.since = {}, now
-        if not parts:
+        if not heard and not silent:
             return None
+        # Only the sounds heard are named (~70 silent ones a minute filled the log, PC 2026-11-21), and a stinger
+        # by its file's name, never its folder (privacy).
+        parts = [f"{self.name(sid)} {db:.0f} dB" for sid, db in sorted(heard.items())]
+        if silent:
+            parts.append(f"{silent} silent")
         line = "sound levels, loudest in the last minute: " + ", ".join(parts)
         log.info(line)
         return line

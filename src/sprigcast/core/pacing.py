@@ -472,7 +472,64 @@ def watch_memory(now: float | None = None) -> str | None:
     from sprigcast.core.memory_map import log_memory_map
 
     log_memory_map(reason)  # and what holds the committed memory, from a thread of its own
+    log_helper_memory(reason)
     return line
+
+
+# Programs SprigCast runs beside itself, name -> a call giving the process id (None when it isn't running): their
+# memory isn't in SprigCast's own lines. The page helper held 1,486 MB on the PC (2026-11-21) with nothing in the
+# log to say so, or whether a page that played video gave its memory back.
+helper_processes: dict[str, Callable[[], int | None]] = {}
+
+
+def helper_memory_line(name: str, pid: int, process=None) -> str | None:
+    """"page helper memory: committed 1,486 MB in 9 processes (biggest 610, 240, 180 MB), Task Manager 1,091 MB":
+    the helper and every process it started (a browser helper's page, graphics and network processes)."""
+    try:
+        import psutil
+
+        top = (process or psutil.Process)(pid)
+        committed, shown = [], 0.0
+        for proc in [top, *top.children(recursive=True)]:
+            try:
+                info = proc.memory_info()
+            except Exception:  # noqa: BLE001 - ended meanwhile, or not ours to read
+                continue
+            committed.append(float(getattr(info, "private", None) or info.rss) / 1e6)
+            shown += float(info.rss) / 1e6
+    except Exception:  # noqa: BLE001
+        return None
+    if not committed:
+        return None
+    committed.sort(reverse=True)
+    biggest = ", ".join(f"{mb:,.0f}" for mb in committed[:4])
+    return (f"{name} memory: committed {sum(committed):,.0f} MB in {len(committed)} process"
+            f"{'es' if len(committed) != 1 else ''} (biggest {biggest} MB), in use {shown:,.0f} MB")
+
+
+def log_helper_memory(reason: str = "") -> None:
+    """Each helper program's memory line, from a thread of its own (listing a process's children walks every
+    process on the PC)."""
+    import threading
+
+    running = [(name, pid) for name, find in sorted(helper_processes.items()) if (pid := _helper_pid(find))]
+    if not running:
+        return
+
+    def look() -> None:
+        for name, pid in running:
+            line = helper_memory_line(name, pid)
+            if line:
+                log.info("%s%s", line, f" ({reason})" if reason else "")
+
+    threading.Thread(target=look, name="sprigcast-helper-memory", daemon=True).start()
+
+
+def _helper_pid(find) -> int | None:
+    try:
+        return find()
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def settle() -> float:
