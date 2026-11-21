@@ -15,6 +15,18 @@ SprigCast listens on `127.0.0.1` and on `::1`, so `localhost` connects just as f
 
 The port and password are the ones shown in Settings → Connections. Apps on other devices can connect only when "Let phones and other computers on my network connect" is on (an Expert settings row).
 
+## Places and ids
+
+`place.changed` says when one place you stream to changes while the others carry on. `state` and `was` are `connecting`, `live`, `reconnecting` or `stopped`. `reconnects` counts how often it lost its connection or a new try failed, and `dropped` is true when it had been live. A drop is `was: "live", state: "reconnecting"`; each failed try sends it again with one more in `reconnects`; back again is `was: "reconnecting", state: "live"`.
+
+```json
+{"event": "place.changed", "data": {"place": "out-5", "name": "Kick (horizontal)", "service": "kick", "shape": "horizontal", "state": "reconnecting", "was": "live", "reconnects": 1, "dropped": true}}
+```
+
+Wherever a place is asked for, its id (`out-5`), its name (`Kick (horizontal)`) or its service (`kick`) will do.
+
+A new source's id says what it is: `capture-3` (a camera or capture card), `display-1`, `window-2`, `game-1`, `audio-in-1`, `audio-out-1`, `app-audio-1`. Sources made earlier keep the id they have. Either spelling finds the source: `camera-3` and `capture-3` are the same one, so an id an app saved keeps working.
+
 ## Words
 
 | Word | Meaning |
@@ -132,6 +144,9 @@ These codes are never renamed; new ones may be added. `app.actions` returns ever
 | `clip.save_note` | clip.save answers clip (true: a clip is being saved) and, when it is false, a note saying why and when one can be |
 | `screenshot.skipped` | screenshot.take {bloom}: every shape it's in, skipped names a shape left out; canvas pictures are on black |
 | `places.ready` | places.list name, ready, problem ("Needs a stream key"): why a place can't go live yet |
+| `events.place_changed` | `place.changed`: one place started, dropped, is trying again, came back or stopped |
+| `places.names` | A place answers to its name ("Twitch (horizontal)") as well as its id; places.list `fullName`; stream.status places `state` and `reconnects` |
+| `source.id_aliases` | A source answers to its id with its kind's older or newer prefix too (`camera-3` and `capture-3` are the same source) |
 | `app_audio.pids` | app_audio settings pids: [process id, ...] catches those processes' trees instead of apps |
 | `browser.h264` | Only when Web pages play H.264/AAC themselves (video tags, streaming players); without it MP4 files still play, converted |
 
@@ -181,7 +196,7 @@ Events arrive as `{"event": "<name>", …}`. Apps get the groups they asked for:
 | `sound` | `sound.changed` (id, name, muted, volumeDb, balance) |
 | `filter` | `filter.changed` (source, id, name, kind, on, settings, added), `filter.removed`, `effect.ended` (source, sourceId, effect: hide.pixelate, hide.blackout, roll.spin or freeze.start, reason: ended or replaced) |
 | `source` | `source.changed` (source, sourceId, settings), `sources.changed` (sources: [{id, name, kind}], added, removed, renamed: [{from, to}]) |
-| `output` | `stream.changed`, `record.changed`, `clips.changed`, `camera.changed` (on), `record.paused` (paused), `clip.saved` (files) |
+| `output` | `stream.changed`, `record.changed`, `clips.changed`, `camera.changed` (on), `record.paused` (paused), `clip.saved` (files), `place.changed` (place, name, service, shape, state, was, reconnects, dropped) |
 | `transition` | `transition.changed` (kind, ms) |
 | `media` | `media.changed` (media, id, file, loop, state: playing, paused, stopped or ended, position, duration) |
 | `garden` | `garden.changed` (garden), `gardens.changed` (gardens) |
@@ -506,7 +521,7 @@ Requests made by web pages on other sites are refused, so a page you visit can't
 
 ## The OBS-compatible door
 
-Apps that can only talk to OBS can connect to `ws://127.0.0.1:4455` (no `/sprigcast`), using the obs-websocket 5 protocol. Blooms appear as scenes and sprigs as nested scenes. Gardens are scene collections and paths are profiles (GetSceneCollectionList, SetCurrentSceneCollection, CreateSceneCollection, GetProfileList, SetCurrentProfile, CreateProfile, RemoveProfile, and their events). It also takes the requests TikFinity, Streamer.bot and Stream Deck's OBS actions send most: SetInputSettings (change a text, a browser page's url, an image or video file; OBS setting names like `file` and `local_file` are understood), GetInputDefaultSettings, SetInputName, PressInputPropertiesButton (`refreshnocache` reloads a browser page), GetSourceFilterList, GetSourceFilter, SetSourceFilterEnabled, SetSourceFilterSettings, SetSourceFilterName (with the SourceFilterEnableStateChanged event), GetMediaInputStatus, TriggerMediaInputAction, SetMediaInputCursor, OffsetMediaInputCursor, and GetSourceScreenshot / SaveSourceScreenshot (png, of a bloom that's on air; a picture up to a second old is reused), and the virtual camera (GetVirtualCamStatus, StartVirtualCam, StopVirtualCam, ToggleVirtualCam, VirtualcamStateChanged). Apps that build overlays can make them: CreateScene (a bloom in every shape that's on, with its own sprig), RemoveScene, CreateInput (answers `inputUuid` and a numeric `sceneItemId`), CreateSceneItem and RemoveSceneItem (a plugin starts readable in a free corner, as from the + menu); things added to a bloom go in its sprig and answer to the bloom's name. StartStream and StartRecord never wait on a SprigCast pop-up: when the Stream doctor (or low space) would ask first, they fail with the reasons in the comment, and a `force: true` field goes ahead. A browser source's OBS `shutdown` setting is SprigCast's `keep_running` turned around, both ways. A text's OBS `read_from_file` is SprigCast's `read_file` (a Text leaf follows its `file` live). Each place you stream to is an output called `sprigcast:<id>` with GetOutputStatus, StartOutput and StopOutput while live (`simple_stream` is the whole stream). Beyond these, new features come to the SprigCast API only. It can be switched off with **OBS-style connection (for Streamer.bot)** in Settings → Connections.
+Apps that can only talk to OBS can connect to `ws://127.0.0.1:4455` (no `/sprigcast`), using the obs-websocket 5 protocol. Blooms appear as scenes and sprigs as nested scenes. Gardens are scene collections and paths are profiles (GetSceneCollectionList, SetCurrentSceneCollection, CreateSceneCollection, GetProfileList, SetCurrentProfile, CreateProfile, RemoveProfile, and their events). It also takes the requests TikFinity, Streamer.bot and Stream Deck's OBS actions send most: SetInputSettings (change a text, a browser page's url, an image or video file; OBS setting names like `file` and `local_file` are understood), GetInputDefaultSettings, SetInputName, PressInputPropertiesButton (`refreshnocache` reloads a browser page), GetSourceFilterList, GetSourceFilter, SetSourceFilterEnabled, SetSourceFilterSettings, SetSourceFilterName (with the SourceFilterEnableStateChanged event), GetMediaInputStatus, TriggerMediaInputAction, SetMediaInputCursor, OffsetMediaInputCursor, and GetSourceScreenshot / SaveSourceScreenshot (png, of a bloom that's on air; a picture up to a second old is reused), and the virtual camera (GetVirtualCamStatus, StartVirtualCam, StopVirtualCam, ToggleVirtualCam, VirtualcamStateChanged). Apps that build overlays can make them: CreateScene (a bloom in every shape that's on, with its own sprig), RemoveScene, CreateInput (answers `inputUuid` and a numeric `sceneItemId`), CreateSceneItem and RemoveSceneItem (a plugin starts readable in a free corner, as from the + menu); things added to a bloom go in its sprig and answer to the bloom's name. StartStream and StartRecord never wait on a SprigCast pop-up: when the Stream doctor (or low space) would ask first, they fail with the reasons in the comment, and a `force: true` field goes ahead. A browser source's OBS `shutdown` setting is SprigCast's `keep_running` turned around, both ways. A text's OBS `read_from_file` is SprigCast's `read_file` (a Text leaf follows its `file` live). Each place you stream to is an output called by its name (`Twitch (horizontal)`; GetOutputList also gives `outputId` and `outputAlias`) with GetOutputStatus, StartOutput and StopOutput while live (`simple_stream` is the whole stream); requests take the name, the id, or the older `sprigcast:<id>`. When one place drops, tries again, comes back, starts or stops, a VendorEvent `PlaceStateChanged` (vendorName `sprigcast`) says so with `outputName`, `outputId`, `service`, `canvas`, `state`, `was`, `reconnects` and `dropped`; StreamStateChanged also says `OBS_WEBSOCKET_OUTPUT_RECONNECTING` and `OBS_WEBSOCKET_OUTPUT_RECONNECTED` for the stream as a whole. Beyond these, new features come to the SprigCast API only. It can be switched off with **OBS-style connection (for Streamer.bot)** in Settings → Connections.
 
 ## Adding actions from a plugin
 

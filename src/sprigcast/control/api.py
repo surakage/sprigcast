@@ -26,6 +26,7 @@ from typing import Any, Protocol
 
 from sprigcast import __version__
 from sprigcast.control.protocol import OBS_WEBSOCKET_VERSION, RPC_VERSION, RequestError, Status, Sub
+from sprigcast.control.places import OLD_PREFIX, find_place, place_names, place_state
 from sprigcast.control.who import sound_changed
 from sprigcast.core.scene import PART_KIND, TRANSITION_KINDS, Scene, SceneCollection, SceneItem, SourceConfig
 
@@ -274,6 +275,9 @@ class ControlApi:
             raise RequestError(Status.MISSING_REQUEST_FIELD, "inputName or inputUuid is missing.")
         key, value = ("id", uuid) if uuid is not None else ("name", name)
         source = next((s for s in self._inputs() if getattr(s, key) == value), None)
+        if source is None and uuid is not None and isinstance(uuid, str):
+            alias = self.col.source_by_id(uuid)  # its id as it was spelled before, or is now
+            source = next((s for s in self._inputs() if alias is not None and s.id == alias.id), None)
         if source is None:
             raise RequestError(Status.RESOURCE_NOT_FOUND, f"No source called {value!r}.")
         return source
@@ -740,7 +744,7 @@ class ControlApi:
             raise RequestError(Status.MISSING_REQUEST_FIELD, "sceneName or sceneUuid is missing.")
         self._scene(data)  # the scene exists before anything is made
         defaults = dict(getattr(source_class(kind), "defaults", None) or {})
-        source = SourceConfig(id=self.col.new_id(kind), kind=kind, name=name,
+        source = SourceConfig(id=self.col.new_source_id(kind), kind=kind, name=name,
                               settings={**defaults, **settings_from_obs(kind, settings)})
         self.col.sources.append(source)
         self.host.commit("sources")
@@ -1026,10 +1030,12 @@ class ControlApi:
                    {"outputName": "simple_file_output", "outputKind": "ffmpeg_muxer", "outputActive": self.host.record_status() is not None},
                    {"outputName": "Replay Buffer", "outputKind": "replay_buffer", "outputActive": self.host.clips_ready()}]
         outputs[0]["outputFlags"] = dict(STREAM_FLAGS)
-        places = self._places()
+        places, names = self._places(), place_names(self.col)
         for output in self.col.outputs:
             if output.type == "stream":
-                outputs.append({"outputName": f"sprigcast:{output.id}", "outputKind": "rtmp_output",
+                # Its name, as a person reads it; requests take the name, the id, or the older sprigcast:<id>.
+                outputs.append({"outputName": names[output.id], "outputKind": "rtmp_output",
+                                "outputId": output.id, "outputAlias": OLD_PREFIX + output.id,
                                 "outputActive": output.id in places,
                                 "outputWidth": (output.size or (0, 0))[0], "outputHeight": (output.size or (0, 0))[1],
                                 "outputFlags": dict(STREAM_FLAGS)})
@@ -1044,11 +1050,14 @@ class ControlApi:
         return {} if status is None else {o.id: status for o in self.col.outputs if o.type == "stream" and o.enabled}
 
     def _output(self, data: dict[str, Any]) -> str:
+        """simple_stream, simple_file_output, Replay Buffer, or sprigcast:<id> for a place asked for by its name,
+        its id or sprigcast:<id>."""
         name = _require(data, "outputName", str)
         if name in ("simple_stream", "simple_file_output", "Replay Buffer"):
             return name
-        if name.startswith("sprigcast:") and any(o.type == "stream" and o.id == name[10:] for o in self.col.outputs):
-            return name
+        place = find_place(self.col, name)
+        if place is not None:
+            return OLD_PREFIX + place.id
         raise RequestError(Status.RESOURCE_NOT_FOUND, f"No output called {name!r}.")
 
     def req_GetOutputStatus(self, data):
@@ -1399,6 +1408,9 @@ class ControlApi:
             "items": items,
             "sounds": sounds,
             "stream": self.host.stream_status() is not None,
+            "reconnecting": bool((self.host.stream_status() or {}).get("reconnecting")),
+            "places": {pid: (place_state(now), int(now.get("reconnects", 0))) for pid, now in self._places().items()}
+            if getattr(self.host, "stream_places", None) is not None else None,
             "record": self.host.record_status() is not None,
             "clips": self.host.clips_ready(),
             "camera": self._camera_on(),
@@ -1464,6 +1476,23 @@ class ControlApi:
             if now.get(key) != last.get(key):
                 state = "OBS_WEBSOCKET_OUTPUT_STARTED" if now[key] else "OBS_WEBSOCKET_OUTPUT_STOPPED"
                 events.append((event, Sub.OUTPUTS, {"outputActive": now[key], "outputState": state}))
+
+        if now["stream"] and last.get("stream") and now.get("reconnecting") != last.get("reconnecting", False):
+            # As OBS says it: the stream lost its connection and is trying again, then is back.
+            state = "OBS_WEBSOCKET_OUTPUT_RECONNECTING" if now["reconnecting"] else "OBS_WEBSOCKET_OUTPUT_RECONNECTED"
+            events.append(("StreamStateChanged", Sub.OUTPUTS, {"outputActive": True, "outputState": state}))
+        if now.get("places") is not None and last.get("places") is not None:
+            place_name, outputs = place_names(self.col), {o.id: o for o in self.col.outputs}
+            for pid in [*now["places"], *(p for p in last["places"] if p not in now["places"])]:
+                state, tries = now["places"].get(pid, ("stopped", last["places"].get(pid, ("", 0))[1]))
+                was, was_tries = last["places"].get(pid, ("stopped", 0))
+                if (state, tries) == (was, was_tries):
+                    continue
+                o = outputs.get(pid)
+                events.append(("VendorEvent", Sub.VENDORS, {"vendorName": VENDOR, "eventType": "PlaceStateChanged", "eventData": {
+                    "outputName": place_name.get(pid, pid), "outputId": pid, "service": o.service if o else None,
+                    "canvas": o.canvas if o else None, "state": state, "was": was, "reconnects": tries,
+                    "dropped": tries > was_tries and "live" in (was, state)}}))
 
         if now["transition"][0] != last["transition"][0]:
             kind = now["transition"][0]

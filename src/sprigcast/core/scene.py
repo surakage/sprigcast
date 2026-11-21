@@ -78,6 +78,26 @@ class SourceConfig(BaseModel):
         return value
 
 
+# Each kind's id prefixes: the first is what a new source gets, the rest are spellings ids had before (the kind's
+# own name, or its first word), which still find the source (SceneCollection.source_by_id).
+SOURCE_ID_PREFIXES: dict[str, tuple[str, ...]] = {
+    "camera": ("capture", "camera"),
+    "display_capture": ("display", "display_capture", "display-capture"),
+    "window_capture": ("window", "window_capture", "window-capture"),
+    "game_capture": ("game", "game_capture", "game-capture"),
+    "audio_input": ("audio-in", "audio_input", "audio-input", "audio"),
+    "audio_output": ("audio-out", "audio_output", "audio-output", "audio"),
+    "app_audio": ("app-audio", "app_audio", "app"),
+}
+
+
+def source_id_prefix(kind: str) -> str:
+    """What a new source's id starts with: capture for a camera or capture card, audio-in... (a plugin's kind: its
+    own name, with dashes)."""
+    known = SOURCE_ID_PREFIXES.get(kind)
+    return known[0] if known else kind.replace("_", "-")
+
+
 RETIRED_FILTER_KINDS = ("vst", "background")  # VST3 sound filters, Background remover (removed 2026-11-17)
 
 ALIGNS = ("top_left", "top", "top_right", "left", "center", "right", "bottom_left", "bottom", "bottom_right")
@@ -1527,6 +1547,25 @@ class SceneCollection(BaseModel):
         for other in self.scenes:
             if other.linked_to == scene.id or (scene.linked_to == other.id):
                 self.active_scenes[other.canvas] = other.id
+
+    def new_source_id(self, kind: str) -> str:
+        """A new source's id, named for what it is (capture-3 for a camera or capture card, audio-in-2)."""
+        return self.new_id(source_id_prefix(kind))
+
+    def source_by_id(self, wanted: str) -> SourceConfig | None:
+        """The source with this id; failing that, the one source of a kind whose ids were once (or are now)
+        spelled with this prefix and that has the same number: camera-3 finds capture-3, and the other way, so an
+        app keeps working whichever spelling it saved."""
+        found = next((s for s in self.sources if s.id == wanted), None)
+        if found is not None:
+            return found
+        prefix, _, number = wanted.rpartition("-")
+        if not prefix or not number.isdigit():
+            return None
+        alike = [s for s in self.sources
+                 if prefix in SOURCE_ID_PREFIXES.get(s.kind, ()) and s.id.rpartition("-")[2] == number
+                 and s.id.rpartition("-")[0] in SOURCE_ID_PREFIXES[s.kind]]
+        return alike[0] if len(alike) == 1 else None
 
     def new_id(self, prefix: str) -> str:
         taken = {c.id for c in self.canvases} | {s.id for s in self.sources} | {s.id for s in self.scenes}

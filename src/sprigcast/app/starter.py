@@ -84,7 +84,7 @@ def build_starter(collection: SceneCollection, choice: StarterChoice) -> list[st
         canvases = [main]
     camera_src = None
     if choice.camera is not None:
-        camera_src = SourceConfig(id=collection.new_id("camera"), kind="camera", name="Camera",
+        camera_src = SourceConfig(id=collection.new_source_id("camera"), kind="camera", name="Camera",
                                   settings=dict(choice.camera))
         collection.sources.append(camera_src)
     webcam = None

@@ -5129,7 +5129,7 @@ class MainWindow(QMainWindow):
         else:  # text, browser: their own starting settings
             cls = source_class(kind)
             settings.update(dict(getattr(cls, "defaults", {}) or {}))
-        config = SourceConfig(id=self.collection.new_id(kind.split("_")[0]), kind=kind, name=label, settings=settings)
+        config = SourceConfig(id=self.collection.new_source_id(kind), kind=kind, name=label, settings=settings)
         self._add_item(config)
         if kind == "game_capture":
             from sprigcast.core.capture_sound import APP, set_capture_sound
@@ -5252,7 +5252,7 @@ class MainWindow(QMainWindow):
             return
         settings = dialog.values()
         scene = self._scene()
-        config = SourceConfig(id=self.collection.new_id(kind), kind=kind, name=_name_from(settings, name),
+        config = SourceConfig(id=self.collection.new_source_id(kind), kind=kind, name=_name_from(settings, name),
                               settings=settings)
         size = getattr(cls, "own_sprig", None)  # overlays like Snap: a sprig of their own, filling the canvas
         if size:  # on top of what you're editing: the bloom, or the sprig you have open
@@ -5569,7 +5569,7 @@ class MainWindow(QMainWindow):
             if settings is None:
                 return
             name = ask_name(self, short_name(settings["name"], "Camera"), settings["name"])
-        config = SourceConfig(id=self.collection.new_id("camera"), kind="camera", name=name, settings=settings)
+        config = SourceConfig(id=self.collection.new_source_id("camera"), kind="camera", name=name, settings=settings)
         self._add_item(config)
         self._pair_capture_card_sound(config)
         # Where it goes: 1280 x 720 in the middle once its picture arrives, like every source (_place_new_sources).

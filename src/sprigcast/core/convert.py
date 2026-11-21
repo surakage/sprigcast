@@ -832,8 +832,9 @@ AUDIO_IDS = {"wasapi_input_capture", "wasapi_output_capture", "coreaudio_input_c
 
 
 def _slug_prefix(kind: str) -> str:
-    return {"audio_input": "mic", "audio_output": "desktop", "display_capture": "display",
-            "window_capture": "window", "game_capture": "game"}.get(kind, kind.replace("_", "-"))
+    from sprigcast.core.scene import source_id_prefix
+
+    return {"audio_input": "mic", "audio_output": "desktop"}.get(kind) or source_id_prefix(kind)
 
 
 def _dedupe(notes: list[str]) -> list[str]:
