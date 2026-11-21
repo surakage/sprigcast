@@ -90,9 +90,10 @@ def test_thread_names_group_the_numbered_ones():
 def test_chromium_gets_a_cap_on_page_processes():
     from sprigcast.app.browser_host import chromium_flags
 
-    assert chromium_flags("") == "--renderer-process-limit=2"
-    assert chromium_flags("--enable-gpu") == "--enable-gpu --renderer-process-limit=2"
-    assert chromium_flags("--renderer-process-limit=5") == "--renderer-process-limit=5"  # set by hand: kept
+    auto = "--autoplay-policy=no-user-gesture-required"
+    assert chromium_flags("") == f"{auto} --renderer-process-limit=2"
+    assert chromium_flags("--enable-gpu") == f"--enable-gpu {auto} --renderer-process-limit=2"
+    assert chromium_flags("--renderer-process-limit=5") == f"--renderer-process-limit=5 {auto}"  # set by hand: kept
 
 
 @pytest.fixture

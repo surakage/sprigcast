@@ -79,6 +79,23 @@ def test_older_pc_gets_one_canvas_clips_on_press_and_lighter_browser_sources():
     assert lowend.older_changes(col) == []  # nothing left to do
 
 
+def test_older_pc_sends_twitch_one_quality_and_reads_cameras_at_720p30():
+    col = _collection()
+    col.sources.append(SourceConfig(id="cam", kind="camera", name="Camera",
+                                    settings={"width": 1920, "height": 1080, "fps": 60}))
+    for o in col.outputs:
+        if o.type == "stream":
+            o.enhanced = True
+            break
+    rows = lowend.older_changes(col)
+    assert "Streaming" in [r[0] for r in rows] and any("camera" in r[1] for r in rows)
+    lowend.older_changes(col, apply=True)
+    assert not any(o.enhanced for o in col.outputs)
+    cam = next(s for s in col.sources if s.id == "cam")
+    assert (cam.settings["width"], cam.settings["height"], cam.settings["fps"]) == (1280, 720, 30)
+    assert lowend.older_changes(col) == []
+
+
 def test_a_canvas_with_a_stream_stays_on():
     col = _collection(tiktok=True)
     assert lowend.spare_canvas(col) is None

@@ -198,6 +198,21 @@ class WindowHost:
             w._refresh_sources()
             w._refresh_previews()
 
+    def stream_key(self) -> int:
+        """Which stream this is (0 offline): a stop and a new start between two looks still say stream.changed
+        off, then on (StreamBridge counts on the stream's end, 2026-11-21)."""
+        session = self.w.streaming
+        if session is None:
+            return 0
+        key = getattr(session, "_control_key", None)
+        if key is None:
+            WindowHost._streams = key = getattr(WindowHost, "_streams", 0) + 1
+            try:
+                session._control_key = key
+            except AttributeError:  # a session that takes no attributes: each look counts as the same stream
+                return 1
+        return key
+
     def stream_status(self) -> dict[str, Any] | None:
         session = self.w.streaming
         if session is None:

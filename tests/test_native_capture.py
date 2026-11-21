@@ -131,6 +131,7 @@ def test_which_side_captures_is_logged_with_why(player_lib, monkeypatch, caplog)
     from sprigcast.core.filters import AudioChain
 
     monkeypatch.setattr(native_mixer, "source_tracks", lambda s: ("stream",))
+    monkeypatch.setattr(sprigcore, "sound_filters_ready", lambda: False)  # FFmpeg's filters in Python only, as before
     m = NativeMixer(lambda levels: None, clocked=False)
     try:
         mic = _Mic(sprigcore.CAPTURE_TEST_TONE)

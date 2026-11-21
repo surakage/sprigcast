@@ -255,6 +255,25 @@ def older_changes(collection: SceneCollection, apply: bool = False, hdd: bool = 
         count = f"{len(browsers)} browser source{'s' if len(browsers) != 1 else ''}"
         rows.append(("Video", f"{count} drawn at {OLDER_BROWSER_FPS} fps",
                      f"{max(page_fps(src.settings) for src in browsers)} fps", browsers_light))
+    enhanced = [o for o in collection.outputs if older and o.type == "stream" and o.enhanced]
+    if enhanced:
+        def enhanced_off(outputs=enhanced):
+            for o in outputs:
+                o.enhanced = False
+        rows.append(("Streaming", "Twitch sent one quality, not several (Enhanced Broadcasting off: each quality is "
+                     "another picture made and encoded here)", "Enhanced Broadcasting on", enhanced_off))
+    cameras = [src for src in collection.sources if older and src.kind == "camera" and (
+        min(int(src.settings.get("width", 1280)), int(src.settings.get("height", 720))) > LIGHT_SHORT_SIDE
+        or int(src.settings.get("fps", 30)) > LIGHT_FPS)]
+    if cameras:
+        def cameras_light(sources=cameras):
+            for src in sources:
+                w, h = int(src.settings.get("width", 1280)), int(src.settings.get("height", 720))
+                smaller = light_size(w, h) or (w, h)
+                src.settings = {**src.settings, "width": smaller[0], "height": smaller[1],
+                                "fps": min(LIGHT_FPS, int(src.settings.get("fps", 30)))}
+        count = f"{len(cameras)} camera{'s' if len(cameras) != 1 else ''}"
+        rows.append(("Video", f"{count} read at {LIGHT_SHORT_SIDE}p {LIGHT_FPS} fps", "Bigger or faster", cameras_light))
     if hdd and (r.container != "mkv" or r.source_record):
         def hdd_light():
             r.container = "mkv"

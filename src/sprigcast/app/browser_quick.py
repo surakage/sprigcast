@@ -13,6 +13,7 @@ the card path fails, the page says so once and goes on in memory.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any
 
@@ -26,6 +27,7 @@ from sprigcast.sources import browser
 log = logging.getLogger(__name__)
 
 HIDDEN_TICK_MS = 1000
+RELEASE_AFTER_S = browser.RELEASE_AFTER_S  # hidden this long, a page kept running lets go of its graphics device
 STUCK_S = 1.0  # the engine took no picture for this long: a new texture
 MEMORY_S = 2.0  # how long one ask for pictures in memory lasts (SprigCast asks again while it reads them)
 RELOAD_KEYS = ("url", "file", "css", "audio_to_mixer")
@@ -396,8 +398,42 @@ class QuickPage:
         self._call("run", f"window.__sprigcastVisible && window.__sprigcastVisible({'false' if paused else 'true'})")
         self.root.setProperty("pageVisible", not paused)  # hidden like a background tab: Chromium stops painting
         self.timer.start(HIDDEN_TICK_MS if paused else max(4, round(1000 / browser.page_fps(self.settings))))
-        if not paused:
+        if paused:
+            self._paused_at = time.monotonic()
+            QTimer.singleShot(RELEASE_AFTER_S * 1000, self._release_card_if_still_hidden)
+        else:
             self.dirty = True
+            if not self._initialized and self.on_card and getattr(self, "_released", False):
+                self._released = False
+                w, h = max(1, int(self.settings.get("width", 800))), max(1, int(self.settings.get("height", 600)))
+                try:
+                    self._resize(w, h)  # Qt Quick starts again on a device of its own, with a new texture
+                except Exception as exc:  # noqa: BLE001
+                    self._card_failed(f"it couldn't start on the card again ({exc})")
+
+    def _release_card_if_still_hidden(self) -> None:
+        """A page kept running while hidden (an alert box) lets go of its graphics device after RELEASE_AFTER_S: each
+        page's own device came with ~50 graphics driver threads and its share of the card's memory (PC 2026-11-21:
+        ~60 pages, 2,800 threads, 7.7 GB of the card in use). The page itself, its scripts and connections, go on;
+        shown again, it starts on a device again (a fraction of a second)."""
+        if not self.paused or not self._initialized or self.closed_already() or os.environ.get("SPRIGCAST_KEEP_PAGE_DEVICES"):
+            return
+        if time.monotonic() - getattr(self, "_paused_at", 0.0) < RELEASE_AFTER_S - 1:
+            return  # paused again since: its own timer comes later
+        try:
+            self.control.invalidate()
+        except Exception as exc:  # noqa: BLE001 - kept as it is
+            log.info("browser source %s: its graphics device couldn't be let go (%s)", self.id, exc)
+            return
+        if self.target is not None:
+            self._drop_target(self.target)
+        self._initialized = False
+        self._released = True
+        log.info("browser source %s: hidden %d s, its graphics device let go (the page keeps running)", self.id,
+                 RELEASE_AFTER_S)
+
+    def closed_already(self) -> bool:
+        return bool(getattr(self, "_closed", False))
 
     # Frames ----------------------------------------------------------------------
 
@@ -444,6 +480,7 @@ class QuickPage:
     def close(self) -> None:
         import shiboken6
 
+        self._closed = True
         self.timer.stop()
         self.host.set_sound(self.id, None)
         if self.interacting is not None:

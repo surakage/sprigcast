@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 35
+#define SC_INTERFACE_VERSION 36
 
 enum {
     SC_OK = 0,
@@ -813,13 +813,21 @@ SC_API int sc_mixer_source_media(sc_mixer *mixer, int id, sc_media *media, int a
 /* A sound's built-in filters (core/filters.py), run in order on its samples before mono, balance and delay. The same
  * filters again with new numbers keep their state. */
 enum { SC_FILTER_GAIN = 1, SC_FILTER_NOISE_GATE, SC_FILTER_COMPRESSOR, SC_FILTER_LIMITER, SC_FILTER_INVERT,
-       SC_FILTER_DUCKING };
+       SC_FILTER_DUCKING, SC_FILTER_GRAPH };
 typedef struct sc_mixer_filter {
     int kind;     /* SC_FILTER_* */
     int follow;   /* ducking: the sound it ducks under (0: none) */
     float p[6];   /* its settings in filters.py's field order (see mixer.cpp Filter) */
 } sc_mixer_filter;
 SC_API int sc_mixer_source_filters(sc_mixer *mixer, int id, const sc_mixer_filter *filters, int count);
+/* The same, with the text of each SC_FILTER_GRAPH filter (texts[i], NULL for the others): one of FFmpeg's audio
+ * filter chains, a filter a line as "name<TAB>args" (core/filters.py FFmpegAudioFilter). Fails, changing nothing,
+ * when a chain can't be made: the caller runs that sound's filters itself. Needs sc_mixer_ffmpeg_load_filters. */
+SC_API int sc_mixer_source_filters_text(sc_mixer *mixer, int id, const sc_mixer_filter *filters,
+                                        const char *const *texts, int count);
+/* FFmpeg's libavfilter (PyAV's, beside the libraries sc_media_ffmpeg_load took) and its libavutil, after that. */
+SC_API int sc_mixer_ffmpeg_load_filters(const char *avfilter, const char *avutil);
+SC_API int sc_mixer_ffmpeg_filters_ready(void);
 SC_API int sc_mixer_set_ducking(sc_mixer *mixer, const sc_mixer_ducking *ducking);
 /* Push to talk (audio.push_mode): one sound (your mic) is heard only while the key is held (SC_PUSH_TALK), or is
  * silent while it's held (SC_PUSH_MUTE). Letting go takes effect release_ms later (0 .. 2000), so a word's end isn't

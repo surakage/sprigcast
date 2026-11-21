@@ -1845,6 +1845,7 @@ class NativeApi:
             "layouts": {scene.id: tuple(i.source for i in scene.items) for scene in col.scenes},
             "plugins": self._plugin_ids(),
             "stream": self.host.stream_status() is not None,
+            "streamKey": getattr(self.host, "stream_key", lambda: 0)(),
             "record": self.host.record_status() is not None,
             "recordPaused": bool((self.host.record_status() or {}).get("paused")),
             "clips": self.host.clips_ready(),
@@ -1980,6 +1981,9 @@ class NativeApi:
             out.append(("plugins.changed", {"plugins": list(now["plugins"]),
                                             "added": sorted(set(now["plugins"]) - set(last["plugins"])),
                                             "removed": sorted(set(last["plugins"]) - set(now["plugins"]))}))
+        if now["stream"] and last.get("stream") and now.get("streamKey") != last.get("streamKey"):
+            out.append(("stream.changed", {"on": False}))  # ended and started again between two looks: both said
+            out.append(("stream.changed", {"on": True}))
         for key, name in (("stream", "stream.changed"), ("record", "record.changed"), ("clips", "clips.changed"),
                           ("camera", "camera.changed")):
             if now.get(key) != last.get(key):
