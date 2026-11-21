@@ -277,3 +277,30 @@ def test_sounds_that_ran_dry_are_summed_up_in_the_log(caplog):
     assert mixer._capture_note("Elgato sound") == (" (engine capture, 48000 Hz 2 ch: delivered 48,000 a second"
                                                    " of 48,000, 2 lost by Windows)")
     assert mixer._capture_note("Mic") == ""
+
+
+def test_python_sounds_ask_the_engine_for_a_cushion_and_voices_do_not():
+    from sprigcast.audio import native_mixer as nm
+
+    class Engine:
+        def __init__(self):
+            self.asked = []
+
+        def cushion(self, sid, frames):
+            self.asked.append((sid, frames))
+
+    mixer = nm.NativeMixer.__new__(nm.NativeMixer)
+    mixer._engine = Engine()
+    mixer._clocked = True
+
+    class Page:
+        id, kind, settings = "browser-24", "browser", {}
+
+    class Mic:
+        id, kind, settings = "mic-1", "audio_input", {}
+
+    page, mic = nm._Sound(Page(), 1), nm._Sound(Mic(), 2)
+    mixer._cushion(page.obj, page)
+    mixer._cushion(mic.obj, mic)
+    mixer._cushion(page.obj, page)  # asked once
+    assert mixer._engine.asked == [(1, nm.PY_CUSHION)]

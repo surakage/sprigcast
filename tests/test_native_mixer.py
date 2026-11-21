@@ -184,6 +184,26 @@ def test_a_sound_well_ahead_drops_the_extra(mixer):
     assert mixer.levels(s)[3] == 0 and late <= 2  # never ran dry, and no longer six blocks late
 
 
+def test_a_sound_python_pushes_keeps_a_cushion_and_rides_out_a_held_lock(mixer):
+    """A web page's sound waits for Python's lock: when blooms switch the lock is held for a while and a clip's sound
+    ran dry about 20 times in 30 s (PC 2026-11-21). With a cushion of two blocks it plays once three are queued, and
+    a push two blocks late is no gap."""
+    s = mixer.add_source(tracks=("stream",))
+    mixer.cushion(s, BLOCK * 2)
+    tap = mixer.add_tap([0])
+    for _ in range(3):
+        mixer.push(s, tone(0.5))
+        mixer.tick(1)
+    blocks = take_all(mixer, tap, 1)
+    assert [np.allclose(b[1], 0.5) for b in blocks] == [False, False, True]  # waited for the cushion
+    for t in range(60):
+        if t % 20 not in (5, 6):  # now and then Python is held two blocks...
+            mixer.push(s, tone(0.5, BLOCK * (3 if t % 20 == 7 else 1)))  # ...then catches up
+        mixer.tick(1)
+    assert mixer.levels(s)[3] == 0
+    assert all(np.allclose(b[1], 0.5) for b in take_all(mixer, tap, 1))
+
+
 def test_levels_and_a_full_tap_drops_its_oldest(mixer):
     s = mixer.add_source(gain=0.5, tracks=("stream",))
     tap = mixer.add_tap([0])
