@@ -54,6 +54,21 @@ domain: `slothbloom.com` (verify it in Google Search Console first).
 3. The **Client ID** goes in `DEFAULTS` and `wrangler.toml`. The **Client Secret** goes only into the helper:
    `npx wrangler secret put KICK_CLIENT_SECRET`.
 
+## TikTok
+
+TikTok's sign-in only shows which account is connected. TikTok shares no stream key and no LIVE chat with
+apps (both are partner-only), so the key is still pasted from LIVE Producer. Application notes: project files
+`tiktok/`.
+
+1. developers.tiktok.com → Manage apps → Create app, type **Other**, platform **Desktop**.
+2. Add **Login Kit**. Redirect URIs: `http://127.0.0.1:*/callback` and `http://127.0.0.1:*/callback/`.
+   Scopes: `user.info.basic`, `user.info.profile`.
+3. The Client key goes in `DEFAULTS["tiktok/client_id"]` (src/sprigcast/output/service_signin.py) and
+   `TIKTOK_CLIENT_KEY` (integrations/signin-helper/wrangler.toml). The sandbox key is there now; switch both to
+   the production key once TikTok approves the app.
+4. The Client secret goes only into the helper: `npx wrangler secret put TIKTOK_CLIENT_SECRET`, then deploy.
+5. A sandbox only signs in the accounts added under Target users.
+
 ## X
 
 X has no public way for apps to get the stream server and key, so X stays paste-your-key. The keys are in

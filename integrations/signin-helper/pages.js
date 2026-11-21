@@ -256,8 +256,8 @@ export const HOME = page("SprigCast: free streaming and recording for Windows", 
 
 <section><div class="wrap">
   <div class="head"><h2>Signing in with TikTok</h2>
-  <p>Signing in is optional. If you sign in with TikTok, SprigCast reads your avatar, display name and username to
-  show which TikTok account is connected to your TikTok place. The sign-in stays on your PC, encrypted by Windows,
+  <p>Signing in is optional. If you sign in with TikTok, SprigCast reads your display name and username to show
+  which TikTok account is connected to your TikTok place. The sign-in stays on your PC, encrypted by Windows,
   until you press Sign out.</p>
   <p class="where">In SprigCast: Settings → Stream → TikTok → Sign in</p></div>
   <div class="never">${icon("shield")}<p><strong>What SprigCast never does.</strong> It never posts, reads your
@@ -365,8 +365,8 @@ place and press <strong>Sign in</strong>.</p>
 
 <h2>TikTok user data we access</h2>
 <ul>
-  <li><strong>Your display name, avatar, username, profile link and verified badge</strong>, to show which TikTok
-  account is connected to your TikTok place.</li>
+  <li><strong>Your display name and username</strong>, to show which TikTok account is connected to your TikTok
+  place. SprigCast asks TikTok for these two fields only, not your avatar, bio or profile stats.</li>
   <li><strong>The ID TikTok makes for SprigCast</strong> (open ID), to recognize the same account if you sign in
   again.</li>
   <li><strong>Sign-in tokens</strong> that TikTok gives SprigCast, so it can read the details above.</li>

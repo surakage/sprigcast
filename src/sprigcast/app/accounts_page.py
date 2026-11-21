@@ -18,7 +18,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 log = logging.getLogger(__name__)
 
-PLATFORMS = (("twitch", "Twitch"), ("youtube", "YouTube"), ("kick", "Kick"))
+PLATFORMS = (("twitch", "Twitch"), ("youtube", "YouTube"), ("kick", "Kick"), ("tiktok", "TikTok"))
 
 
 def signed_in_as(service: str) -> str:

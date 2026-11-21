@@ -10,6 +10,13 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
   with B-frames or look-ahead) now open on the graphics device SprigCast already draws with, instead of each
   making a CUDA context of its own (about 490 MB together when going live on the test PC). If an encoder
   can't start that way it starts as before. `SPRIGCAST_NO_CARD_UPLOAD=1` turns it off. Not tried on a PC yet.
+- Sign in with TikTok (Settings → Stream → a TikTok place): shows which TikTok account is connected, as
+  "Name (@username)". It reads no stream key, because TikTok doesn't share one with apps; paste the key from LIVE
+  Producer as before. Sign out deletes the sign-in and asks TikTok to cancel it. Uses TikTok's sandbox for now,
+  so only test accounts can sign in until TikTok approves the app.
+- Test builds for testers: pushing a `test-*` tag (for example `test-2026-11-21`) builds the installer and publishes it
+  as a GitHub pre-release with docs/tester-guide.md as its text, so testers get a download link that lasts. The
+  in-app updater skips pre-releases.
 - Help improve SprigCast: after each stream of a minute or more, SprigCast can send that stream's report and
   today's log to the developer, with stream keys, passwords, names and addresses removed first. Off unless
   you turn it on: asked once after your first stream, and in Settings → General → Logs. Summaries go to the
