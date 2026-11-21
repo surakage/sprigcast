@@ -130,3 +130,32 @@ def test_settings_logs_each_place_added_or_removed(fake_keyring, caplog):
         assert d.apply_to(col)
     lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("places:")]
     assert sorted(lines) == ["places: o1 (twitch) removed in Settings", "places: out-1 (kick) added in Settings"]
+
+
+def test_places_drag_into_a_new_order_in_settings(fake_keyring):
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    from PySide6.QtCore import QModelIndex
+    from PySide6.QtWidgets import QListWidget
+
+    from sprigcast.app.stream_dialog import StreamPage
+
+    col = _collection(*(Output(id=k, type="stream", service=k, canvas="horizontal", key_ref=f"sprigcast/{k}")
+                        for k in ("twitch", "youtube", "kick")))
+    d = StreamPage(col)
+    assert d.list.dragDropMode() == QListWidget.DragDropMode.InternalMove
+    d.list.setCurrentRow(2)
+    # What a drop does: Kick goes from the bottom to the top, and stays the one shown.
+    assert d.list.model().moveRow(QModelIndex(), 2, QModelIndex(), 0)
+    assert [o.id for o in d.outputs] == ["kick", "twitch", "youtube"]
+    assert d.list.currentRow() == 0 and d.service.currentData() == "kick"
+    assert [d.list.item(r).text().split("\n")[0] for r in range(3)] == ["Kick", "Twitch", "YouTube"]
+    # Alt+Down from the keyboard: one spot down; at an end it stays put.
+    d.move_place(1)
+    assert [o.id for o in d.outputs] == ["twitch", "kick", "youtube"] and d.list.currentRow() == 1
+    d.move_place(1)
+    d.move_place(1)
+    assert [o.id for o in d.outputs] == ["twitch", "youtube", "kick"] and d.service.currentData() == "kick"
+    assert d.apply_to(col) and [o.id for o in col.outputs] == ["twitch", "youtube", "kick"]
+    d.list.setCurrentRow(0)
+    d.move_place(1)
+    assert d.apply_to(col) and [o.id for o in col.outputs] == ["youtube", "twitch", "kick"]
