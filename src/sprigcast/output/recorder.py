@@ -691,6 +691,7 @@ class Recorder:
     def pause(self) -> None:
         if self.paused_since is None:
             self.paused_since = time.perf_counter()
+        self._sound_pause(True)
 
     def resume(self) -> None:
         """Carry on in the same file, as if the pause never happened: picture times move up by the pause
@@ -698,6 +699,36 @@ class Recorder:
         if self.paused_since is not None:
             self.start_time += time.perf_counter() - self.paused_since
             self.paused_since = None
+        self._sound_pause(False)
+
+    # Sound straight from the engine's mixer into the engine's writer (docs/native-engine.md "Sound into the
+    # writers"): the mixer's thread asks sound_writer() once its blocks could go there, switches its tap over
+    # and says so with sound_from_engine(); the writer's thread writes what was queued here before, then lets
+    # the tap's blocks through (_writer_audio). From then on no sound of this output passes through Python.
+    _sound_tap = None  # (the engine's mixer, its tap) feeding the writer
+    _sound_held = False  # the tap waits for what is still queued here
+
+    def sound_writer(self):
+        """The engine's writer the mixer may feed itself, or None (not open yet, PyAV records, or switched off)."""
+        writer = self.writer
+        if writer is None or self._opening or self._stop.is_set() or self.error is not None \
+                or type(self).push_audio is not Recorder.push_audio or os.environ.get("SPRIGCAST_NO_NATIVE_SOUND"):
+            return None
+        return writer
+
+    def sound_from_engine(self, mixer, tap: int) -> None:
+        self._sound_tap = (mixer, tap)
+        self._sound_held = True
+        if self.paused_since is not None or self._stop.is_set():
+            self._sound_pause(True)
+
+    def _sound_pause(self, paused: bool) -> None:
+        fed = self._sound_tap
+        if fed is not None:
+            try:
+                fed[0].tap_pause(fed[1], paused)
+            except Exception as exc:  # noqa: BLE001 - the tap or the mixer is gone: nothing more comes from it
+                log.debug("%s: the mixer's tap is gone: %s", self.path.stem, exc)
 
     def push_frame(self, frame) -> None:
         """frame has .data (RGBA bytes, top row first) and .time (perf_counter when rendered).
@@ -880,6 +911,7 @@ class Recorder:
     def stop(self, timeout: float = 15.0) -> None:
         """Finish the file. Waits for frames already queued to be encoded."""
         self._stop.set()
+        self._sound_pause(True)  # as push_audio: no sound after the stop
         self._thread.join(timeout)
 
     @property
@@ -1287,6 +1319,17 @@ class Recorder:
         return nv12_bytes(vf)
 
     def _writer_audio(self, writer) -> None:
+        held = self._sound_held  # (read first: every block Python took before the switch is queued by now)
+        self._writer_queued_audio(writer)
+        if held:
+            self._sound_held = False
+            mixer, tap = self._sound_tap
+            try:
+                mixer.tap_go(tap)
+            except Exception as exc:  # noqa: BLE001 - the tap went meanwhile (the output is being taken down)
+                log.debug("%s: the mixer's sound wasn't let through: %s", self.path.stem, exc)
+
+    def _writer_queued_audio(self, writer) -> None:
         for _ in range(self._audio.qsize()):  # only what is queued now, so sound can never starve pictures
             try:
                 block = self._audio.get_nowait()

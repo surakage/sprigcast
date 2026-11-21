@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 41
+#define SC_INTERFACE_VERSION 42
 
 enum {
     SC_OK = 0,
@@ -985,6 +985,15 @@ SC_API int sc_mixer_tap_remove(sc_mixer *mixer, int id);
 /* The oldest waiting block of a tap into `out` (`capacity` floats): returns 1, or 0 when none waits. *index: its
  * number (blocks mixed before it); *dropped: blocks this tap lost so far. */
 SC_API int sc_mixer_tap_take(sc_mixer *mixer, int id, float *out, int capacity, int64_t *index, uint64_t *dropped);
+/* A tap's blocks go straight into a writer's sound (as sc_writer_audio would, entry i into track i; a tap of one
+ * entry into every track), on the mixer's own thread, with no thread of the caller's between. From this call
+ * sc_mixer_tap_take gives nothing and blocks wait (at most 64) until sc_mixer_tap_go: the caller first writes what
+ * it took before, so no block changes places. writer NULL: taken with sc_mixer_tap_take again. The tap keeps the
+ * writer's encoder alive by itself; once the writer finishes or fails its blocks are left out.
+ * sc_mixer_tap_pause(1): blocks are left out until (0) (a paused recording). */
+SC_API int sc_mixer_tap_writer(sc_mixer *mixer, int id, sc_writer *writer);
+SC_API int sc_mixer_tap_go(sc_mixer *mixer, int id);
+SC_API int sc_mixer_tap_pause(sc_mixer *mixer, int id, int paused);
 /* An unclocked mixer mixes `count` blocks now. */
 SC_API int sc_mixer_tick(sc_mixer *mixer, int count);
 /* Waits up to timeout_ms for a block numbered after `after` (blocks mixed > after): 1 when there is one, 0 on

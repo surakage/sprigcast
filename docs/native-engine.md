@@ -351,9 +351,18 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   (`tests/test_native_capture.py`, `core_tests.cpp`).
 - **Filters** (`sc_mixer_source_filters`): gain, noise gate, compressor, limiter, invert polarity and ducking run
   in the engine, before mono, balance and delay, with the same numbers as `core/filters.py`
-  (`tests/test_native_filters.py` checks them block by block). A chain with any other filter (the FFmpeg ones),
-  or a sound a plugin listens to, keeps its whole chain in Python. New settings keep each filter's state.
+  (`tests/test_native_filters.py` checks them block by block). FFmpeg's filters (3-band equalizer, expander,
+  upward compressor, noise suppression, low cut, de-esser) run there too, through PyAV's libavfilter
+  (`sc_mixer_source_filters_text`, #817). A sound a plugin listens to keeps its whole chain in Python. New settings keep each filter's state.
   `SPRIGCAST_NO_NATIVE_FILTERS=1` runs every chain in Python.
+- **Sound into the writers** (`sc_mixer_tap_writer`, interface 42): an output the engine's writer encodes
+  (recordings, the shared stream and clips encoder, Source record) gets its sound straight from the mixer's
+  thread, with no thread of Python's between. Python's mixer thread asks the output (`Recorder.sound_writer`) once
+  its writer is open, switches the output's tap over and tells it (`sound_from_engine`); the tap's blocks wait
+  until the writer's thread has written what Python took before (`sc_mixer_tap_go`), so no block changes places.
+  A pause or a stop leaves blocks out (`sc_mixer_tap_pause`), as `push_audio` did. An output recorded through
+  PyAV, and a stream with its own encoder, are fed from Python as before. `SPRIGCAST_NO_NATIVE_SOUND=1` keeps
+  every output fed from Python.
 - **Playback** (`sc_playback_*`, `playback.cpp`): monitoring, and "Sound out" (the stream mix on a device such as a
   virtual cable), are played by a WASAPI thread of the engine's straight from the mix (`EngineMonitor` in
   `audio/native_mixer.py`, made by `make_monitor`). At most 120 ms waits, so it never drifts behind; when it runs

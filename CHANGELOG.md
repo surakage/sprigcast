@@ -6,6 +6,9 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- Sound goes from the C++ engine's mixer straight into its encoders for recordings, streams and clips, with no
+  step through Python, so a busy window can't delay or drop sound in them. `SPRIGCAST_NO_NATIVE_SOUND=1` turns
+  it off. Not tried on a PC yet.
 - Instant replay and clips are kept and saved by the C++ engine: the last seconds wait inside the engine and a
   clip is written there, so saving one never slows the window or the stream. With streams, recordings and clips
   all handled by the engine, no encoded video passes through Python any more while live.

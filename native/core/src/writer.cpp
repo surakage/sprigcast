@@ -1748,6 +1748,26 @@ void writers_leave_device(void *device) {
 }
 }  // namespace sc
 
+namespace {
+int core_audio(Core &c, int track, const float *stereo, int frames) {
+    if (track < 0 || track >= c.tracks) return sc::fail(SC_ERR_ARGUMENT, "sc_writer_audio: no such track");
+    std::vector<float> block(stereo, stereo + static_cast<size_t>(frames) * 2);
+    {
+        std::lock_guard<std::mutex> hold(c.lock);
+        if (c.state == SC_WRITER_FAILED || c.state == SC_WRITER_FINISHED || c.finishing) return SC_WRITER_REFUSED;
+        c.sounds[static_cast<size_t>(track)].push_back(std::move(block));
+    }
+    c.wake.notify_one();
+    return SC_OK;
+}
+}  // namespace
+
+sc::WriterSound sc::writer_sound(sc_writer *writer, int *tracks) {
+    std::shared_ptr<Core> core = writer->core;
+    if (tracks) *tracks = core->tracks;
+    return [core](int track, const float *stereo, int frames) { return core_audio(*core, track, stereo, frames); };
+}
+
 extern "C" {
 
 SC_API int sc_writer_open(const sc_writer_config *cfg, sc_writer **out) {
@@ -1839,16 +1859,7 @@ SC_API int sc_writer_video_span(sc_writer *w, const uint8_t *nv12, int stride, i
 SC_API int sc_writer_audio(sc_writer *w, int track, const float *stereo, int frames) {
     return sc::guarded("sc_writer_audio", [&]() -> int {
         if (!w || !stereo || frames < 0) return sc::fail(SC_ERR_ARGUMENT, "sc_writer_audio: no sound");
-        Core &c = *w->core;
-        if (track < 0 || track >= c.tracks) return sc::fail(SC_ERR_ARGUMENT, "sc_writer_audio: no such track");
-        std::vector<float> block(stereo, stereo + static_cast<size_t>(frames) * 2);
-        {
-            std::lock_guard<std::mutex> hold(c.lock);
-            if (c.state == SC_WRITER_FAILED || c.state == SC_WRITER_FINISHED || c.finishing) return SC_WRITER_REFUSED;
-            c.sounds[static_cast<size_t>(track)].push_back(std::move(block));
-        }
-        c.wake.notify_one();
-        return SC_OK;
+        return core_audio(*w->core, track, stereo, frames);
     });
 }
 

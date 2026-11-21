@@ -311,6 +311,7 @@ class NativeMixer:
         self._monitor_taps: list[Callable[[np.ndarray], None]] = []
         self._known: dict[int, _Sound] = {}  # id(source object) -> its sound in the engine
         self._native_taps: dict[tuple, int] = {}  # (callback, tracks) -> the engine's tap
+        self._writer_taps: dict[tuple, object] = {}  # keys of _native_taps the engine feeds into this writer itself
         self._listen_taps: dict[str, int] = {}  # a sound (or listen.MIX) heard by a plugin -> the engine's tap
         self._peek_taps: dict[str, tuple[int, int]] = {}  # a sound the Filters window hears -> (tap, its engine id)
         self._ducking_sent: Ducking | None = None
@@ -737,6 +738,7 @@ class NativeMixer:
         wanted.update({(cb, ("monitor",)): [sprigcore.MIXER_MONITOR] for cb in monitor_taps})
         for key in [k for k in self._native_taps if k not in wanted]:
             self._engine.remove_tap(self._native_taps.pop(key)[0])
+            self._writer_taps.pop(key, None)
         for key, what in wanted.items():
             if key not in self._native_taps:
                 self._native_taps[key] = (self._engine.add_tap(what), len(what))
@@ -780,6 +782,9 @@ class NativeMixer:
                 if fns:
                     peek.hand(fns, got[1][0])
         for key, (tap, count) in list(self._native_taps.items()):
+            if key in self._writer_taps:
+                self._to_writer(key, tap)  # (a new writer of the same output takes over)
+                continue  # the engine hands its blocks to the output's writer itself
             while (got := self._engine.take(tap, count)) is not None:
                 _index, data, _dropped = got
                 callback, tracks = key
@@ -788,12 +793,31 @@ class NativeMixer:
                 except Exception as exc:  # noqa: BLE001 - one output's problem: the others still get this block
                     self._problem("monitoring" if tracks == ("monitor",) else
                                   f"output {getattr(callback, '__qualname__', '?')}", exc)
+            self._to_writer(key, tap)
         tap = self._listen_taps.get(listen.MIX)
         mix_heard = heard.get(listen.MIX) if heard else None
         if tap is not None:
             while (got := self._engine.take(tap, 1)) is not None:
                 if mix_heard:
                     listen.hand(mix_heard, got[1][0])
+
+    def _to_writer(self, key: tuple, tap: int) -> None:
+        """An output written by the engine's writer gets its sound from the engine from here on: the tap's blocks
+        go straight into the writer on the mixer's thread, and none passes through Python (Recorder.sound_writer).
+        What Python took until now is written first; the tap waits for that (Recorder._writer_audio)."""
+        owner = getattr(key[0], "__self__", None)
+        ask = getattr(owner, "sound_writer", None)
+        if ask is None:
+            return
+        try:
+            writer = ask()
+            if writer is None or writer is self._writer_taps.get(key):
+                return
+            self._engine.tap_writer(tap, writer)
+            self._writer_taps[key] = writer
+            owner.sound_from_engine(self._engine, tap)
+        except Exception as exc:  # noqa: BLE001 - it stays fed from here
+            self._problem(f"handing sound to {getattr(key[0], '__qualname__', '?')}", exc)
 
     def _levels(self, sounds) -> None:
         meters = {}

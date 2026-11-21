@@ -421,3 +421,63 @@ def test_more_writers_than_engine_outputs_share_outputs_again(native, tmp_path, 
     plain = Recorder(tmp_path / "plain.mkv", W, H, FPS, 800, "libx264", 0.0, "mkv")
     monkeypatch.setattr(plain, "uses_writer", lambda: False)
     assert RenderEngine._output_keys(bridge, [(plain.push_frame, (W, H))]) == [((W, H), False)]
+
+
+class _Tone:
+    """A sound Python makes, as the mixer reads them."""
+    id, kind, name = "tone", "audio_input", "Tone"
+    volume, muted, monitor, mono, balance, sync_offset_ms = 1.0, False, False, False, 0.0, 0
+    tracks = ("stream", "recording")
+    audio_chain = None
+
+    def read_audio(self, frames):
+        return np.full((frames, 2), 0.1, np.float32)
+
+
+def _mixed(rec, mixer, frames=45, pause_at=None):
+    """A recording fed by a hand-ticked mixer, a block of sound per frame."""
+    start = rec.start_time
+    for i in range(frames):
+        rec.push_frame(Frame("h", W, H, _nv12(i), start + i / FPS, fmt="nv12"))
+        if pause_at is not None and i == pause_at[0]:
+            rec.pause()
+        if pause_at is not None and i == pause_at[1]:
+            rec.resume()
+        mixer.tick()
+        time.sleep(0.005)  # the writer's thread takes what is queued
+    rec.stop()
+
+
+@pytest.mark.parametrize("off", [False, True])
+def test_sound_reaches_the_writer_from_the_engines_mixer_without_python(native, tmp_path, monkeypatch, off):
+    from sprigcast.audio.native_mixer import NativeMixer
+
+    if off:
+        monkeypatch.setenv("SPRIGCAST_NO_NATIVE_SOUND", "1")
+    path = tmp_path / "mixed.mkv"
+    rec = Recorder(path, W, H, FPS, 800, "libx264", 1000.0, "mkv", tracks=("stream", "recording"))
+    handed = []
+    queued = rec._audio.put_nowait
+    monkeypatch.setattr(rec._audio, "put_nowait", lambda block: (handed.append(1), queued(block))[1])
+    mixer = NativeMixer(lambda levels: None, clocked=False)
+    try:
+        mixer.set_sources([_Tone()])
+        mixer.add_tap(rec.push_audio, rec.tracks)
+        rec.start()
+        assert rec.wait_open()
+        _mixed(rec, mixer, pause_at=None if off else (20, 30))
+        assert rec.error is None
+    finally:
+        mixer.remove_tap(rec.push_audio)
+        mixer._engine.close()
+    blocks = 45 if off else 35  # 10 of them fell into the pause
+    if off:
+        assert rec._sound_tap is None and len(handed) == 45
+    else:
+        assert rec._sound_tap is not None and len(handed) <= 3  # only until the engine took over
+    seconds = []
+    for i in (0, 1):
+        with av.open(str(path)) as f:
+            assert len(f.streams.audio) == 2
+            seconds.append(sum(fr.samples for fr in f.decode(audio=i)) / 48000)
+    assert abs(seconds[0] - blocks * 1024 / 48000) < 0.07 and seconds[0] == seconds[1], seconds
