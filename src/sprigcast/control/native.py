@@ -35,7 +35,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from sprigcast import __version__
+from sprigcast import __version__, build_label
 from sprigcast.control.protocol import Close, Sleep, auth_string
 from sprigcast.control.places import find_place, place_names, place_state
 from sprigcast.control.who import sound_changed
@@ -546,7 +546,7 @@ class NativeApi:
 
     @action("app.info", "Version, API version, the shapes that are on, each canvas's size, event groups and features.")
     def app_info(self, data):
-        return {"app": "SprigCast", "version": __version__, "api": API_VERSION, "preview": PREVIEW,
+        return {"app": "SprigCast", "version": __version__, "build": build_label(), "api": API_VERSION, "preview": PREVIEW,
                 "shapes": [c.id for c in self.col.canvases if c.enabled],
                 "canvases": [{"id": c.id, "width": c.width, "height": c.height, "fps": c.fps, "enabled": c.enabled}
                              for c in self.col.canvases],

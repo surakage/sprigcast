@@ -6,6 +6,9 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- The license files are also at the top of SprigCast's folder (Programs\SprigCast), where people look for them, not
+  only in its python folder. `app.info`, the hello and connection.json have `build`: the version as SprigCast
+  shows it, naming a test build.
 - Twitch Enhanced Broadcasting uses less memory. Its two NVIDIA encoders (and any NVENC stream or recording
   with B-frames or look-ahead) now open on the graphics device SprigCast already draws with, instead of each
   making a CUDA context of its own (about 490 MB together when going live on the test PC). If an encoder

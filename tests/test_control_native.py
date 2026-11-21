@@ -40,6 +40,7 @@ def test_actions_describe_themselves():
     assert "bloom.lineUp" not in listed and "studio.set" not in listed  # no Studio mode
     assert listed["bloom.show"]["fields"]["shape"].startswith("?")
     assert _ok(api, "app.info")["shapes"] == ["horizontal", "vertical"]
+    assert _ok(api, "app.info")["build"].startswith(_ok(api, "app.info")["version"])
     assert _fails(api, "nope.nothing") == "unknown_action"
 
 

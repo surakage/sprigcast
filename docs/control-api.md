@@ -107,7 +107,7 @@ These codes are never renamed; new ones may be added. `app.actions` returns ever
 
 ### Features
 
-`app.info` has `features`: names of what this SprigCast can do, so an app can check instead of guessing from the shape of an answer. Names are only ever added. `api` stays 0 (preview) until SprigCast's first public release; the features list is what to check. `app.info` also has `canvases`: each canvas's `id`, `width`, `height`, `fps` and `enabled`, for placing things in canvas pixels.
+`app.info` has `features`: names of what this SprigCast can do, so an app can check instead of guessing from the shape of an answer. Names are only ever added. `api` stays 0 (preview) until SprigCast's first public release; the features list is what to check. `app.info` also has `build`: the version as SprigCast shows it, which names a test build ("0.2.0 test build 44958599961 (478ea9a)"; the same as `version` for a release). `version` stays the plain version number. `app.info` also has `canvases`: each canvas's `id`, `width`, `height`, `fps` and `enabled`, for placing things in canvas pixels.
 
 | Feature | What it means |
 | --- | --- |

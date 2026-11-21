@@ -86,6 +86,10 @@ Type: filesandordirs; Name: "{app}\python\Lib\site-packages\sprigcast\tools"
 [Files]
 Source: "{#BuildDir}\python\*"; DestDir: "{app}\python"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "{#BuildDir}\sprigcast.ico"; DestDir: "{app}"; Flags: ignoreversion
+; The licenses (packaging/notices.py) also at the top of SprigCast's folder, where people look for them. The copies
+; in python\ stay: Help → About → Licenses opens that one.
+Source: "{#BuildDir}\python\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BuildDir}\python\THIRD-PARTY-NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\SprigCast"; Filename: "{app}\python\SprigCast.exe"; IconFilename: "{app}\sprigcast.ico"; WorkingDir: "{app}"
