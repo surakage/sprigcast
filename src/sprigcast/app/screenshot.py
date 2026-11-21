@@ -45,6 +45,8 @@ def grab(engine, canvas_ids: list[str], timeout: float = WAIT_S) -> dict[str, QI
         if shot is not None:
             data, w, h = shot
             read[canvas_id] = QImage(data, w, h, w * 4, QImage.Format.Format_ARGB32_Premultiplied).copy()
+            if canvas_id.startswith("view:"):  # a bloom off air: on black, as the ones Python draws below
+                read[canvas_id] = on_black(read[canvas_id])
     canvas_ids = [c for c in canvas_ids if c not in read]
     if not canvas_ids:
         return read
@@ -140,6 +142,30 @@ def _still_asleep(engine, scene) -> bool:
     return any(getattr(sources.get(sid), "asleep", False) for sid in ids)
 
 
+ENGINE_VIEW_WAIT_S = 0.5  # how long the native engine gets to take a bloom's view before Python draws it
+
+
+def _set_shot_view(engine, name: str, scene) -> None:
+    try:
+        engine.set_view(name, scene.canvas, "bloom", scene.id, shot=True)  # the native engine draws it, if it can
+    except TypeError:  # an engine without shot views
+        engine.set_view(name, scene.canvas, "bloom", scene.id)
+
+
+def _wait_for_engine_views(engine, names: list[str]) -> None:
+    """The native engine takes a view a tick or two after it is set: wait for that (briefly), so the picture is
+    read from the engine and Python's compositor needn't draw the bloom."""
+    ready = getattr(engine, "native_view_ready", None)
+    if ready is None:
+        return
+    until = time.monotonic() + ENGINE_VIEW_WAIT_S
+    while time.monotonic() < until:
+        states = [ready(name) for name in names]
+        if all(state is None for state in states) or all(state for state in states if state is not None):
+            return
+        time.sleep(0.01)
+
+
 def grab_scene(engine, scene, view: str = "apishot") -> QImage | None:
     """A picture of a bloom that isn't on air, on its own canvas, or None if it can't be made. It's drawn through
     an engine view for that moment only (as the bloom tile's Save screenshot is): nothing on air changes, its
@@ -154,7 +180,7 @@ def grab_scenes(engine, scenes, view: str = "apishot") -> list[QImage | None]:
     asleep = any(scene is not None and _still_asleep(engine, scene) for scene in scenes)
     for name, scene in zip(names, scenes):
         if scene is not None:
-            engine.set_view(name, scene.canvas, "bloom", scene.id)
+            _set_shot_view(engine, name, scene)
     try:
         if asleep:  # sources to wake first; nothing asleep (all on air anyway): straight to the picture
             until = time.monotonic() + SCENE_WAKE_S
@@ -163,6 +189,7 @@ def grab_scenes(engine, scenes, view: str = "apishot") -> list[QImage | None]:
                     and time.monotonic() < until:
                 time.sleep(0.05)
             time.sleep(SCENE_SETTLE_S)
+        _wait_for_engine_views(engine, [name for name, scene in zip(names, scenes) if scene is not None])
         ids = [f"view:{name}" for name, scene in zip(names, scenes) if scene is not None]
         got = grab(engine, ids) if ids else {}
         return [got.get(f"view:{name}") if scene is not None else None for name, scene in zip(names, scenes)]

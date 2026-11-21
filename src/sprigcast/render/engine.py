@@ -227,6 +227,7 @@ class Engine:
         # of a bloom on air that ride on that canvas's outputs (canvas id -> names), and the views it served
         # this tick (Python's compositor leaves those alone).
         self._engine_views: dict = {}
+        self._shot_views: frozenset[str] = frozenset()  # views only a screenshot reads (set_view shot=True)
         self._riders: dict[str, list[str]] = {}
         self._served_views: set[str] = set()
         self._ticks = 0  # ticks drawn (each counts itself up early on): what a hold or a screenshot waits for
@@ -354,15 +355,31 @@ class Engine:
             clean[canvas_id] = frozenset(hidden)
         self.clean_hidden = clean
 
-    def set_view(self, name: str, canvas_id: str | None = None, kind: str = "bloom", ref=None) -> None:
+    def set_view(self, name: str, canvas_id: str | None = None, kind: str = "bloom", ref=None,
+                 shot: bool = False) -> None:
         """Draw a bloom, a single source or a plugin's own Scene on a canvas's size for taps on "view:<name>"
-        (None: stop)."""
+        (None: stop). shot: a bloom pictured once (a screenshot off air): the native engine draws it in a slot of
+        its own and native_shot("view:<name>") reads it there, with nothing tapping it. Python's compositor drew
+        such a view before, every sprig of the bloom for the first time in one tick: a late frame of 35 to 57 ms
+        for each screenshot (PC 2026-11-21)."""
         views = dict(self.views)
         if canvas_id is None:
             views.pop(name, None)
+            self._shot_views = self._shot_views - {name}
         else:
             views[name] = (canvas_id, kind, ref)
+            self._shot_views = (self._shot_views | {name}) if shot and kind == "bloom" else self._shot_views - {name}
         self.views = views
+
+    def native_view_ready(self, name: str) -> bool | None:
+        """Whether the native engine draws this shot view now (native_shot can read it). None: it never will (no
+        native engine, or the view isn't one it takes), so a screenshot needn't wait for it."""
+        from sprigcast.render.native_bridge import view_key
+
+        native = self._native
+        if native is None or native.failed or name not in self._shot_views:
+            return None
+        return name in self._engine_views and native.draws(view_key(name))
 
     def _view_scene(self, name: str, sizes: dict | None = None):
         """The scene a view draws, or None when what it names is gone."""
@@ -409,6 +426,15 @@ class Engine:
             if kind == "bloom" and canvas_id in enabled and ref == active.get(canvas_id):
                 riders.setdefault(canvas_id, []).append(name)
                 continue
+            canvas, scene = self._view_scene(name, sizes)
+            if canvas is not None and scene is not None:
+                views[name] = (canvas, scene)
+        for name in sorted(self._shot_views):  # a screenshot's bloom off air: the engine's, with nothing tapping it
+            if name in views or name not in current:
+                continue
+            canvas_id, kind, ref = current[name]
+            if kind != "bloom" or (canvas_id in enabled and ref == active.get(canvas_id)):
+                continue  # on air: read from its canvas as it is
             canvas, scene = self._view_scene(name, sizes)
             if canvas is not None and scene is not None:
                 views[name] = (canvas, scene)
@@ -1841,7 +1867,10 @@ class Engine:
             return None
         try:
             hidden = self._not_in_screenshots()
-            if hidden and hidden & self._on_air_sources(self._collection, canvas_id):
+            if canvas_id.startswith("view:"):  # a shot view (set_view shot=True), drawn in a slot of its own
+                if canvas_id[5:] not in self._engine_views or hidden:
+                    return None
+            elif hidden and hidden & self._on_air_sources(self._collection, canvas_id):
                 return None  # Snap's polaroid is up in this canvas: Python draws it without it
             slot = native._slots.get(canvas_id)
             size = native.engine._sizes.get(slot) if slot is not None else None

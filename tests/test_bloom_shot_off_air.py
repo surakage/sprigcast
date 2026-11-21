@@ -257,3 +257,59 @@ def test_a_bloom_named_by_its_own_canvas_is_pictured_on_that_canvas():
         assert [s["shape"] for s in api.run("screenshot.take", {**asked, **ask})["shots"]] == ["horizontal", "vertical"]
     assert [s["shape"] for s in api.run("screenshot.take", {"bloom": "chat-v", "shape": "horizontal", **ask})["shots"]] \
         == ["horizontal"]
+
+
+def test_the_native_engine_draws_a_bloom_pictured_off_air(monkeypatch):
+    """PC 2026-11-21: every screenshot of a bloom off air cost a late frame of 35 to 57 ms: Python's compositor
+    drew every sprig of it for the first time in one tick. The view is the native engine's now (a slot of its own,
+    nothing tapping it) and the picture is read from there; Python draws it only when the engine can't."""
+    pytest.importorskip("PySide6.QtGui")
+    from sprigcast.app import screenshot
+
+    col = _collection()
+    brb = col.scene("brb-h")
+    calls, taps = [], []
+
+    class Engine:
+        _collection, _sources, _ticks = col, {}, 0
+        ready_after = 2
+
+        def set_view(self, name, canvas_id=None, kind="bloom", ref=None, shot=False):
+            calls.append((name, canvas_id, shot))
+
+        def native_view_ready(self, name):
+            self.ready_after -= 1
+            return self.ready_after <= 0
+
+        def native_shot(self, canvas_id):
+            calls.append(("read", canvas_id))
+            return bytes([0, 0, 255, 128] * 8 * 4), 8, 4  # BGRA premultiplied, half see-through
+
+        def add_frame_tap(self, key, tap):
+            taps.append(key)
+
+        def remove_frame_tap(self, key, tap):
+            pass
+
+    monkeypatch.setattr(screenshot.time, "sleep", lambda s: None)
+    image = screenshot.grab_scene(Engine(), brb)
+    assert calls == [("apishot", "horizontal", True), ("read", "view:apishot"), ("apishot", None, False)]
+    assert not taps  # Python's compositor was never asked to draw it
+    assert (image.width(), image.height()) == (8, 4) and image.pixelColor(0, 0).alpha() == 255  # on black
+
+
+def test_a_shot_view_is_the_engines_with_nothing_tapping_it():
+    from sprigcast.render.engine import Engine
+
+    col = _collection()
+    engine = Engine.__new__(Engine)
+    engine._collection, engine.views, engine._shot_views = col, {}, frozenset()
+    engine.staged, engine.editing_part = {}, None
+    off_air = next(s for s in col.scenes if s.canvas == "horizontal" and s.id != col.active_scenes["horizontal"])
+    engine.set_view("apishot", "horizontal", "bloom", off_air.id, shot=True)
+    engine.set_view("other", "horizontal", "bloom", off_air.id)  # an ordinary view nothing taps: not drawn
+    engine.set_view("onair", "horizontal", "bloom", col.active_scenes["horizontal"], shot=True)
+    views, riders = engine._native_views({}, {})
+    assert set(views) == {"apishot"} and views["apishot"][1].id == off_air.id and not riders
+    engine.set_view("apishot", None)
+    assert engine._shot_views == frozenset({"onair"}) and engine._native_views({}, {})[0] == {}
