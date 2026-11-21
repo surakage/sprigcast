@@ -355,6 +355,7 @@ struct sc_capture {
 
     void run() {
         sc::name_thread(L"sprigcast-sound-capture");
+        sc::sound_thread_priority();
         try {
             if (device == TEST_TONE)
                 tone();

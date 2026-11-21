@@ -18,6 +18,8 @@ void set_last_error(const std::string &message);
 // The calling thread's name as Task Manager, a debugger and the CPU-by-thread report show it (Windows 10 1607+;
 // does nothing elsewhere).
 void name_thread(const wchar_t *name);
+// The calling thread runs ahead of SprigCast's others (Windows): sound mixing and capture.
+void sound_thread_priority();
 
 // Every exported function runs inside this: no C++ exception crosses into Python. Built with /EHa, catch (...)
 // also stops Windows faults (an access violation in a driver or in our own code).

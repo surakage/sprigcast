@@ -32,6 +32,15 @@ void name_thread(const wchar_t *name) {
 #endif
 }
 
+void sound_thread_priority() {
+#ifdef _WIN32
+    // Sound can't wait: another app pinning the CPU at 100% (the user's PC live, 2026-11-21, SprigCast at 15%)
+    // made viewers hear choppy voice. Highest within SprigCast's class (above normal while live), as OBS does for
+    // its audio threads; a short burst of work every 10 ms, so it never starves anything else.
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+#endif
+}
+
 void log_line(int level, const std::string &message) {
     std::lock_guard<std::mutex> lock(g_log_mutex);
     g_log.push_back(std::to_string(level) + " " + message);

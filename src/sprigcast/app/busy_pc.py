@@ -14,6 +14,11 @@ import time
 BUSY_PCT = 80.0
 BUSY_FOR_S = 60.0
 WARN_EVERY_S = 600.0
+# For the log only: the CPU pinned for a few seconds, and who had it. On the user's PC (live, 2026-11-21) the CPU
+# sat at 100% for three minutes with SprigCast at 15%; viewers heard choppy voice and the log couldn't say why.
+SPIKE_PCT = 90.0
+SPIKE_FOR_S = 5.0
+SPIKE_EVERY_S = 60.0
 
 # Process names (lower case) of apps people stream with, by the name they know them as.
 KNOWN = {
@@ -32,19 +37,21 @@ IGNORE = {"system idle process", "idle", "system", "sprigcast.exe", "python.exe"
 class BusyWatch:
     """feed() a reading every few seconds; it says when a warning is due."""
 
-    def __init__(self, clock=time.monotonic):
+    def __init__(self, clock=time.monotonic, pct: float = BUSY_PCT, for_s: float = BUSY_FOR_S,
+                 every_s: float = WARN_EVERY_S):
         self._clock = clock
         self._since: float | None = None
         self._warned = float("-inf")
+        self.pct, self.for_s, self.every_s = pct, for_s, every_s
 
     def feed(self, cpu: float | None, gpu: float | None) -> bool:
         now = self._clock()
-        if max(cpu or 0.0, gpu or 0.0) < BUSY_PCT:
+        if max(cpu or 0.0, gpu or 0.0) < self.pct:
             self._since = None
             return False
         if self._since is None:
             self._since = now
-        if now - self._since < BUSY_FOR_S or now - self._warned < WARN_EVERY_S:
+        if now - self._since < self.for_s or now - self._warned < self.every_s:
             return False
         self._warned = now
         return True
@@ -55,8 +62,14 @@ def friendly(name: str) -> str:
     return KNOWN.get(key) or (name[:-4] if key.endswith(".exe") else name)
 
 
-def heavy_apps(limit: int = 3, wait: float = 1.0) -> list[str]:
-    """The other apps using the most CPU right now, by the names people know (takes `wait` seconds)."""
+def spike_watch(clock=time.monotonic) -> BusyWatch:
+    """The log-only watch: the CPU at SPIKE_PCT or more for SPIKE_FOR_S (feed it the CPU only)."""
+    return BusyWatch(clock, SPIKE_PCT, SPIKE_FOR_S, SPIKE_EVERY_S)
+
+
+def heavy_apps(limit: int = 3, wait: float = 1.0, with_use: bool = False) -> list:
+    """The other apps using the most CPU right now, by the names people know (takes `wait` seconds).
+    with_use: (name, % of the whole PC) pairs, heaviest first, whatever they are."""
     try:
         import psutil
     except ImportError:
@@ -83,6 +96,8 @@ def heavy_apps(limit: int = 3, wait: float = 1.0) -> list[str]:
             continue
     cores = psutil.cpu_count() or 1
     ranked = sorted(use.items(), key=lambda kv: kv[1], reverse=True)
+    if with_use:
+        return [(name, pct / cores) for name, pct in ranked[:limit]]
     known = set(KNOWN.values())
     # Streaming apps first when they are busy at all, then whatever else is heaviest.
     heavy = [n for n, pct in ranked if pct / cores >= 2.0]
@@ -103,3 +118,9 @@ def busy_message(apps: list[str], cpu: float | None, gpu: float | None) -> str:
     verb = "is" if len(apps) == 1 else "are"
     return (f"Your PC is busy ({load}): {names} {verb} using it too. "
             "Closing them helps; dropped frames now come from that, not from SprigCast.")
+
+
+def spike_line(apps: list[tuple[str, float]], cpu: float | None) -> str:
+    """The log line for a pinned CPU: who had it."""
+    who = ", ".join(f"{name} {pct:.0f}%" for name, pct in apps) or "no single app stood out"
+    return f"PC CPU {cpu or 0:.0f}% for {SPIKE_FOR_S:.0f} s or more (SprigCast not counted); heaviest: {who}"

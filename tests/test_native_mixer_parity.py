@@ -252,3 +252,18 @@ def test_a_player_closing_after_its_sound_left_the_mixer_asks_nothing(player_lib
         moved.player.close()
     finally:
         mixer._engine.close()
+
+
+def test_sounds_that_ran_dry_are_summed_up_in_the_log(caplog):
+    """Viewers heard choppy voice live (PC, 2026-11-21) and the log said nothing about sound: a sound the mixer
+    found empty (its next block hadn't come) is now counted and logged every 30 s, when it happened 3+ times."""
+    import logging
+
+    mixer = NativeMixer.__new__(NativeMixer)  # only the counting, no engine
+    with caplog.at_level(logging.WARNING):
+        assert mixer._note_short({"Mic": 5, "Music": 0}, now=0.0) is None  # the counts so far are the baseline
+        assert mixer._note_short({"Mic": 9, "Music": 1}, now=10.0) is None
+        line = mixer._note_short({"Mic": 12, "Music": 2}, now=31.0)
+        assert line == "sound ran dry (gaps you hear) in the last 30 s: Mic 7 times"  # Music twice: a pause
+        assert mixer._note_short({"Mic": 12, "Music": 2}, now=62.0) is None  # nothing new
+    assert "Mic 7 times" in caplog.text

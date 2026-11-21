@@ -248,6 +248,8 @@ def test_proven_kbps_only_counts_clean_long_streams():
     assert optimize.proven_kbps([st(), st()], 160, 20) is None  # too short to prove anything
     assert optimize.proven_kbps([st(), st(dropped=50)], 160, 120) == 0  # the network struggled
     assert optimize.proven_kbps([st(autopilot=NS(steps_down=1))], 160, 120) == 0
+    shared = NS(autopilot=NS(steps_down=2))  # four places on one encoder whose auto-pilot stepped down
+    assert optimize.proven_kbps([st(shared=shared), st(shared=shared)], 160, 120) == 0
 
 
 def test_a_place_that_never_connected_does_not_void_what_the_others_proved():

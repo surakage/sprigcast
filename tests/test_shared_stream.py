@@ -382,9 +382,9 @@ def test_one_slow_destination_costs_the_others_one_small_step_at_most():
     assert pilot.update(100.0, behind) == 4800
     behind, who = enc.steering_backlog(links)
     assert who is tw and pilot.update(110.0, behind) is None  # no further: Kick skips frames on its own
-    yt.behind = 0.9  # YouTube behind too: the PC's own upload, so everyone comes down
-    behind, who = enc.steering_backlog([(lk.behind, lk) for lk in (yt, kick, tw)])
-    assert who is kick and pilot.update(120.0, behind) < 4800
+    yt.behind = 0.9  # YouTube behind too: the PC's own upload, so everyone comes down, by YouTube's 0.9 s, not
+    behind, who = enc.steering_backlog([(lk.behind, lk) for lk in (yt, kick, tw)])  # Kick's 3 s (PC live 2026-11-21)
+    assert who is yt and behind == 0.9 and pilot.update(120.0, behind) < 4800
     lone = SharedStreamEncoder(_Canvas(), 30, 6000, "libx264", time.perf_counter(), auto_bitrate=True)
     assert lone.steering_backlog([(3.0, kick)]) == (3.0, kick)  # on its own a link steers its encoder fully
     enc.links = [StreamLink("YouTube", "rtmp://x/app", "k", enc), StreamLink("Kick", "rtmp://x/app", "k", enc)]
@@ -448,3 +448,30 @@ def test_a_failed_connect_names_the_server_but_never_the_key(monkeypatch):
     finally:
         link.stop()
         enc.stop()
+
+
+def test_a_place_falling_behind_doesnt_force_keyframes_on_the_others():
+    """A slow place used to force a keyframe each time it fell behind, so it could rejoin sooner: with others on
+    the same encoder every one of them got the extra keyframes, bursts of bitrate on an upload already short (PC
+    live 2026-11-21, Twitch showed Unstable). Now it waits for the next regular keyframe; alone it still asks."""
+    from fractions import Fraction
+
+    from sprigcast.output.replay import _Packet
+
+    enc = SharedStreamEncoder(_Canvas(), 30, 6000, "libx264", time.perf_counter())
+    asked = []
+    enc.request_keyframe = lambda: asked.append(True)
+    slow, fine = StreamLink("YouTube", "rtmp://x/app", "k", enc), StreamLink("Kick", "rtmp://x/app", "k", enc)
+    enc.links = [slow, fine]
+    for link in (slow, fine):
+        link._ready, link._started, link._zero = True, True, 0.0
+    slow._backlog_bytes = 10**9  # far behind
+    packet = _Packet("video", b"x" * 100, 1, 1, Fraction(1, 30), False)
+    slow.offer(packet)
+    assert slow._congested and slow.dropped == 1 and asked == []
+    fine.offer(packet)
+    assert not fine._congested
+    enc.links = [slow]
+    slow._congested = False
+    slow.offer(packet)
+    assert asked == [True]  # on its own, a keyframe now lets it rejoin soon

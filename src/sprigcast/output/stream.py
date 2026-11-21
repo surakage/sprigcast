@@ -545,12 +545,40 @@ class Streamer(Recorder):
 
 
 def log_live(st) -> None:
-    """One line when a destination starts going out, and when it's back after dropping."""
+    """One line when a destination starts going out, and when it's back after dropping; the first time also
+    which server it went to and how far away that is (looked up on a thread of its own)."""
     if st.reconnects:
         log.info("stream %s back live after %d reconnect%s", st.name, st.reconnects,
                  "" if st.reconnects == 1 else "s")
     else:
         log.info("stream %s live", st.name)
+        url = getattr(st, "_url", "")
+        if isinstance(url, str) and "://" in url:
+            threading.Thread(target=log_server, args=(st.name, url), name="sprigcast-ingest-rtt", daemon=True).start()
+
+
+def round_trip_ms(host: str, port: int, timeout: float = 3.0) -> float | None:
+    """How long a TCP connection to the server takes to open (about one round trip), or None."""
+    import socket
+
+    began = time.perf_counter()
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return (time.perf_counter() - began) * 1000
+    except OSError:
+        return None
+
+
+def log_server(name: str, url: str, measure=round_trip_ms) -> str:
+    """Which server a place goes to (no key), over what, and the round trip to it. Live on the PC (2026-11-21)
+    both YouTube links fell seconds behind while the others were fine, and the log couldn't say where they went."""
+    parts = urlsplit(url)
+    port = parts.port or {"rtmps": 443, "rtmp": 1935, "srt": 0}.get(parts.scheme, 0)
+    rtt = measure(parts.hostname, port) if parts.hostname and port and parts.scheme.startswith("rtmp") else None
+    line = (f"stream {name} goes to {ingest_name(url)} over {parts.scheme.upper()}"
+            + (f", {rtt:.0f} ms away" if rtt is not None else ""))
+    log.info(line)
+    return line
 
 
 def engine_encodes_streams() -> bool:

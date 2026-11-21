@@ -3157,6 +3157,16 @@ class MainWindow(QMainWindow):
             from sprigcast.core import workers
 
             workers.run(look, name="busy-pc")
+        spike = getattr(self, "_spike_watch", None)
+        if spike is None:
+            spike = self._spike_watch = busy_pc.spike_watch()
+        if spike.feed(cpu, None):
+            def name_them() -> None:
+                log.info(busy_pc.spike_line(busy_pc.heavy_apps(with_use=True), cpu))
+
+            from sprigcast.core import workers
+
+            workers.run(name_them, name="busy-pc-log")
 
     def _preview_mode(self) -> str:
         """Settings → General → This PC → Preview while live: "smooth" unless on air with Light or Off."""

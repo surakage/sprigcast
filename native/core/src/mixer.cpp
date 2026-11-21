@@ -423,6 +423,7 @@ struct sc_mixer {
 
     void run() {
         sc::name_thread(L"sprigcore sound mixer");
+        sc::sound_thread_priority();
         using clock = std::chrono::steady_clock;
         const auto period = std::chrono::duration_cast<clock::duration>(std::chrono::duration<double>(
             static_cast<double>(BLOCK) / RATE));
