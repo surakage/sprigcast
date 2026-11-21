@@ -1,4 +1,5 @@
 import time
+from fractions import Fraction
 from types import SimpleNamespace as NS
 
 import numpy as np
@@ -137,6 +138,70 @@ def test_multitrack_stream_aligns_keyframes_and_tags_them(tmp_path):
         for p in c.demux(video=list(range(3))):
             if p.is_keyframe:
                 keys.setdefault(p.stream.index, []).append(round(float(p.pts * p.time_base), 2))
-                tagged.append(e.BPM_ERM_UUID in bytes(p))
+                tagged.append(_metrics_before_picture(bytes(p)))
     assert keys[0] == keys[1] == keys[2] and len(keys[0]) == 2
     assert all(tagged)
+
+
+def _metrics_before_picture(frame: bytes) -> bool:
+    """A keyframe as FLV holds it (length-prefixed NAL units): the broadcast metrics come before the picture
+    slice. After it, H.264 starts a new access unit and Twitch dropped the connection (PC, 2026-11-21)."""
+    at, metrics, picture = 0, None, None
+    while at + 4 <= len(frame):
+        size = int.from_bytes(frame[at:at + 4], "big")
+        nal = frame[at + 4:at + 4 + size]
+        if nal and nal[0] & 0x1F == 6 and e.BPM_ERM_UUID in nal and metrics is None:
+            metrics = at
+        if nal and nal[0] & 0x1F in (1, 5) and picture is None:
+            picture = at
+        at += 4 + size
+    return at == len(frame) and metrics is not None and picture is not None and metrics < picture
+
+
+def test_metrics_go_in_front_of_the_picture_slice():
+    sei = b"\x00\x00\x00\x01\x06SEI"
+    frame = b"\x00\x00\x00\x01\x67sps\x00\x00\x00\x01\x68pps\x00\x00\x01\x65slice"
+    assert e.with_sei(frame, sei) == b"\x00\x00\x00\x01\x67sps\x00\x00\x00\x01\x68pps" + sei + b"\x00\x00\x01\x65slice"
+    four = b"\x00\x00\x00\x01\x06x264\x00\x00\x00\x01\x65slice"
+    assert e.with_sei(four, sei) == b"\x00\x00\x00\x01\x06x264" + sei + b"\x00\x00\x00\x01\x65slice"
+    assert e.with_sei(b"\x00\x00\x00\x01\x41p", sei) == sei + b"\x00\x00\x00\x01\x41p"
+    assert e.with_sei(b"\x00\x00\x00\x05\x65abcd", sei) == b"\x00\x00\x00\x05\x65abcd" + sei  # not Annex-B
+
+
+def test_twitch_dropping_leaves_the_quality_encoding_for_the_other_places(monkeypatch):
+    """Twitch's Enhanced connection failing is that stream's to handle (it reconnects). It used to raise inside the
+    quality's encoder, which stopped for good: Kick, Facebook and YouTube sending that quality starved and the
+    replay files failed (PC, 2026-11-21). Now the encoder carries on, the links still get every packet, and the
+    stream sees the failure."""
+    import io
+
+    import av
+
+    from sprigcast.output import enhanced_stream
+    from sprigcast.output.enhanced_stream import EnhancedStreamer
+
+    monkeypatch.setattr(enhanced_stream, "engine_encodes_streams", lambda: True)  # each quality on an engine writer
+
+    cfg = e.parse_config(ANSWER, "live_user", "libx264")
+    h = Canvas(id="horizontal", width=640, height=360, fps=30)
+    v = Canvas(id="vertical", width=360, height=640, fps=30)
+    st = EnhancedStreamer("Twitch", cfg, [h, v], time.perf_counter(), user_key="live_user")
+    enc = st.tracks[0].encoder
+    offered = []
+    enc.links = [NS(offer=offered.append)]
+    failure = ConnectionAbortedError(10053, "aborted")
+
+    def mux(container, packets):
+        raise failure
+
+    st._mux = mux
+    st._live = (object(), st.start_time)
+    packet = NS(kind="video", pts=0, dts=0, time_base=Fraction(1, 30), keyframe=True,
+                payload=lambda: b"\x00\x00\x00\x01\x65slice", data=b"\x00\x00\x00\x01\x65slice")
+    st.tracks[0].stream = av.open(io.BytesIO(), "w", format="flv").add_stream("libx264", rate=30)
+    st.tracks[0].started = False
+    enc._on_packet(packet)  # raised before
+    assert st._send_error is failure
+    assert offered == [packet]
+    enc._on_packet(packet)  # the connection already failed: nothing more is sent until it reconnects
+    assert offered == [packet, packet]
