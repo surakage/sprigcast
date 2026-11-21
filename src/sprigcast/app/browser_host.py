@@ -145,6 +145,10 @@ def chromium_flags(current: str = "") -> str:
         # Sound plays without a click in frames too, not only the top page (StreamBridge's combined Sounds page
         # plays from same-origin iframes, 2026-11-21). PlaybackRequiresUserGesture covers the page itself.
         flags = f"{flags} --autoplay-policy=no-user-gesture-required"
+    if "--enable-precise-memory-info" not in flags:
+        # A page's own count of its script memory to the byte and fresh (page_rest.PageSizes): Chromium rounds it
+        # to buckets and renews it every 20 minutes otherwise.
+        flags = f"{flags} --enable-precise-memory-info"
     if "--renderer-process-limit" in current:
         return flags.strip()  # set by hand (to test something): kept
     return f"{flags} --renderer-process-limit={RENDERER_LIMIT}".strip()
@@ -246,6 +250,65 @@ def forget_notes(page) -> None:
         page.host.set_note(page.id, "")
 
 
+def arm_rest(page) -> None:
+    """A page just hidden: looked at again after REST_AFTER_S (page_rest)."""
+    import time
+
+    from sprigcast.app import page_rest
+
+    page._hidden_at = time.monotonic()
+    QTimer.singleShot(int(page_rest.REST_AFTER_S * 1000), page._rest_if_still_hidden)
+
+
+def rest_if_still_hidden(page) -> None:
+    """Put a page kept running to rest once it has been hidden REST_AFTER_S: Chromium's frozen state, where its
+    scripts and timers stop and it stays loaded. 18 pages ran on off screen for a whole stream (PC 2026-11-21)
+    while their page process grew 11 MB a minute. One still making sound is looked at again later."""
+    import time
+
+    from sprigcast.app import page_rest
+
+    if not page.paused or page.resting or getattr(page, "_closed", False) or not page_rest.may_rest(page):
+        return
+    if time.monotonic() - getattr(page, "_hidden_at", 0.0) < page_rest.REST_AFTER_S - 1:
+        return  # hidden again since: its own timer comes later
+    try:
+        if page._audible():
+            QTimer.singleShot(int(page_rest.AUDIBLE_RETRY_S * 1000), page._rest_if_still_hidden)
+            return
+        page._lifecycle(page_rest.FROZEN)
+    except Exception as exc:  # noqa: BLE001 - it runs on, as before
+        log.info("browser source %s: couldn't be put to rest (%s)", page.id, exc)
+        return
+    page.resting = True
+    log.info("browser source %s: off screen %d min, resting until it is shown again", page.id,
+             round(page_rest.REST_AFTER_S / 60))
+
+
+def unrest(page) -> None:
+    """A resting page runs again (shown, loaded again or given new settings)."""
+    from sprigcast.app import page_rest
+
+    if not page.resting:
+        return
+    page.resting = False
+    try:
+        page._lifecycle(page_rest.ACTIVE)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("browser source %s: couldn't be woken from its rest (%s)", page.id, exc)
+        return
+    log.info("browser source %s: awake again", page.id)
+    page.push_state()
+
+
+def stir(page) -> None:
+    """Before a page is loaded again or given new settings: awake for it, and its rest counted from now."""
+    if getattr(page, "resting", False):
+        unrest(page)
+        if page.paused:
+            arm_rest(page)
+
+
 class _Painted(QObject):
     """Notices when Chromium has drawn a new picture into the view."""
 
@@ -298,6 +361,7 @@ class _Page:
 
     def apply(self, settings: dict[str, Any]) -> None:
         old, self.settings = self.settings, dict(settings)
+        stir(self)
         w, h = max(1, int(settings.get("width", 800))), max(1, int(settings.get("height", 600)))
         if self.view.size().width() != w or self.view.size().height() != h:
             self.view.resize(w, h)
@@ -388,10 +452,37 @@ class _Page:
         state = {**self.host.page_state(self.id), "visible": not self.paused}
         self.page.runJavaScript(f"window.__sprigcastSet && window.__sprigcastSet({json.dumps(state)})")
 
+    # Rest (app/page_rest.py) -------------------------------------------------------
+
+    resting = False
+
+    def _lifecycle(self, state: int) -> None:
+        self.page.setLifecycleState(self.page.LifecycleState(state))
+
+    def _audible(self) -> bool:
+        return bool(self.page.recentlyAudible())
+
+    def measure(self, got) -> None:
+        """Ask the page how much it holds (page_rest.MEASURE_JS); got(text) is called with its answer."""
+        from sprigcast.app import page_rest
+
+        if not self.resting:
+            self.page.runJavaScript(page_rest.MEASURE_JS, 0, lambda text: got(str(text or "")))
+
+    def _rest_if_still_hidden(self) -> None:
+        rest_if_still_hidden(self)
+
+    def unrest(self) -> None:
+        unrest(self)
+
     def set_paused(self, paused: bool) -> None:
         if paused == self.paused:
             return
         self.paused = paused
+        if paused:
+            arm_rest(self)
+        else:
+            self.unrest()
         self.page.runJavaScript(f"window.__sprigcastVisible && window.__sprigcastVisible({'false' if paused else 'true'})")
         # A hidden page kept running (an alert box that must stay connected) is told it is hidden, as a
         # background browser tab is: Chromium stops painting it and runs its timers about once a second,
@@ -421,6 +512,7 @@ class _Page:
 
     def reload(self) -> None:
         forget_notes(self)
+        stir(self)
         self.page.triggerAction(self.page.WebAction.ReloadAndBypassCache)
 
     def grab(self) -> np.ndarray:
@@ -518,6 +610,10 @@ class BrowserHost(QObject):
         self.target_for = None
         self.card_drawn = None
         self.page_closed = None  # callable(source id): its page is gone now (the helper lets go of its block)
+        from sprigcast.app.page_rest import PageSizes
+
+        self.sizes = PageSizes()  # what each page says it holds, for the log (page_rest)
+        self._measuring = False
 
     # Any thread ---------------------------------------------------------------------
 
@@ -624,6 +720,45 @@ class BrowserHost(QObject):
 
         QTimer.singleShot(1000, later)
 
+    def _tick_sizes(self) -> None:
+        """Ask every running page how much it holds, every MEASURE_EVERY_S while pages exist, and write what
+        they said to the log (page_rest.PageSizes.line). Holds the host only weakly."""
+        import time
+        import weakref
+
+        from sprigcast.app import page_rest
+
+        if self._measuring:
+            return
+        self._measuring = True
+        ref = weakref.ref(self)
+
+        def ask():
+            host = ref()
+            if host is None or host._shut:
+                return
+            host._measuring = False
+            if not host.pages:
+                return
+            now = time.monotonic()
+            for page_id, page in list(host.pages.items()):
+                try:
+                    page.measure(lambda text, page_id=page_id: host.sizes.feed(page_id, text, now))
+                except Exception:  # noqa: BLE001 - one page that can't be asked
+                    log.debug("page size", exc_info=True)
+            QTimer.singleShot(3000, say)
+            host._tick_sizes()
+
+        def say():
+            host = ref()
+            if host is None or host._shut:
+                return
+            line = host.sizes.line(sum(1 for page in host.pages.values() if getattr(page, "resting", False)))
+            if line:
+                log.info(line)
+
+        QTimer.singleShot(int(page_rest.MEASURE_EVERY_S * 1000), ask)
+
     def _check_state(self) -> None:
         if not self.pages:
             return
@@ -652,12 +787,14 @@ class BrowserHost(QObject):
                     self.pages[source_id] = self._new_page(source_id, value)
                     self._check_state()
                     self._tick_state()
+                    self._tick_sizes()
                 else:
                     page.apply(value)
             elif action == "close":
                 try:
                     if page is not None:
                         del self.pages[source_id]
+                        self.sizes.forget(source_id)
                         page.close()
                 finally:
                     if self.page_closed is not None:
