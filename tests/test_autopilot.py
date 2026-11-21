@@ -14,25 +14,44 @@ from sprigcast.render.engine import Frame
 def test_steps_down_when_behind_and_stops_at_the_floor():
     ap = Autopilot(6000)
     assert ap.update(0, 0.0) is None  # caught up at full bitrate: nothing to do
-    assert ap.update(1, 0.8) == 4800  # behind: small step
-    assert ap.update(2, 0.9) is None  # too soon after the last step
-    assert ap.update(3.5, 2.0) == 2880  # far behind: big step
-    assert ap.update(6, 3.0) == 2100  # floor: 35% of 6000
-    assert ap.update(9, 3.0) is None
-    assert ap.steps_down == 3 and ap.lowest_kbps == 2100 and ap.lowered
+    assert ap.update(1, 0.8) is None  # one reading alone is a spike
+    assert ap.update(2, 0.9) == 4800  # two in a row: small step
+    assert ap.update(3, 2.0) is None  # too soon after the last step
+    assert ap.update(4, 2.0) == 3840  # far behind, but not three readings in a row yet: small step
+    assert ap.update(6, 2.0) == 2304  # three far behind in a row: big step
+    assert ap.update(8, 3.0) == 2100  # floor: 35% of 6000
+    assert ap.update(11, 3.0) is None
+    assert ap.steps_down == 4 and ap.lowest_kbps == 2100 and ap.lowered
 
 
-def test_climbs_back_slowly_once_caught_up():
+def test_one_reading_after_a_switch_never_cuts():
+    """PC live 2026-11-21: a 3 s reading right after a bloom switch, empty again within 5 s, cut 5400 -> 2592."""
+    ap = Autopilot(5400)
+    assert ap.update(0, 3.0) is None and ap.update(1, 0.0) is None and not ap.lowered
+
+
+def test_a_spike_that_empties_fast_goes_straight_back():
+    ap = Autopilot(5400)
+    ap.update(0, 0.9)
+    assert ap.update(1, 3.0) == 4320
+    seen = [(t, k) for t in range(2, 30) if (k := ap.update(float(t), 0.0))]
+    assert seen == [(12, 5400)]  # 10 s caught up, then back where it was in one step
+
+
+def test_climbs_back_in_steps_after_a_real_slowdown_and_waits_longer_when_it_comes_back():
     ap = Autopilot(6000)
-    ap.update(0, 1.0)  # down to 4800
-    t, seen = 1.0, []
-    while t < 200:
-        kbps = ap.update(t, 0.0)
-        if kbps:
-            seen.append((t, kbps))
-        t += 1
-    assert seen[0] == (30, 5400)  # waits 30 s after a drop, then +10% of the target
-    assert seen[-1][1] == 6000 and len(seen) == 2 and not ap.lowered
+    for t in range(0, 12):
+        ap.update(float(t), 2.0)  # 12 s far behind: a real slowdown
+    assert ap.current_kbps == ap.floor_kbps
+    last_down = ap._last_down
+    seen = [(t, k) for t in range(12, 200) if (k := ap.update(float(t), 0.0))]
+    assert seen[0][0] - last_down >= 20  # 20 s after the last step down
+    assert all(b - a >= 5 for (a, _), (b, _) in zip(seen, seen[1:]))
+    assert seen[-1][1] == 6000 and not ap.lowered
+    up_at = seen[-1][0]
+    ap.update(up_at + 1.0, 0.8)
+    ap.update(up_at + 2.0, 0.8)  # the climb brought it back
+    assert ap.lowered and ap._up_wait == 40.0
 
 
 def test_small_targets_keep_their_bitrate_as_the_floor():
@@ -53,7 +72,9 @@ def test_steering_needs_a_connection_older_than_the_grace_period():
     assert st._want_kbps == 6000  # just connected: the handshake backlog doesn't count
     st._connected_at -= 60
     st._steer(2.0)
-    assert st._want_kbps == 3600
+    st._autopilot_at -= 1.0
+    st._steer(2.0)
+    assert st._want_kbps == 4800
     off = Streamer("T", "rtmp://x/app", "k", 16, 16, 30, 6000, "libx264", 0.0,
                    encoder=EncoderSettings(rate_control="cqp"), auto_bitrate=True)
     assert off.autopilot is None  # constant quality has no bitrate to steer

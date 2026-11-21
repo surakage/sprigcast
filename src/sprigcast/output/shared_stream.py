@@ -367,7 +367,9 @@ class StreamLink:
         self._thread.join(timeout)
 
     def backlog_seconds(self) -> float:
-        return self._backlog_bytes * 8 / (max(1, self.current_kbps) * 1000)
+        # Against the bitrate set, not the lowered one: the same bytes waiting read as more seconds after each step
+        # down, and that alone asked for the next (5400 -> 4320 -> 2592 kbps, PC live 2026-11-21).
+        return self._backlog_bytes * 8 / (max(1, self.bitrate_kbps) * 1000)
 
     def redact(self, text: str) -> str:
         return privacy.mask(text, [self._key])

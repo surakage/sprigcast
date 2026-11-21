@@ -115,6 +115,7 @@ These codes are never renamed; new ones may be added. `app.actions` returns ever
 | `effects.freeze` | freeze.start / freeze.stop / freeze.toggle (Freeze plugin), effect.ended "freeze.start" |
 | `record.pause` | record.pause / resume / toggle_pause / chapter, record.status paused, record.paused event |
 | `place.bandwidth_test` | place.set bandwidth_test (Twitch test mode); places.list says it where there is one |
+| `place.bitrate` | place.set bitrateKbps (500-50000) for the next Go live; places.list says each place's bitrateKbps |
 | `screenshot.bloom_off_air` | screenshot.take {bloom, shape}: any bloom on its canvas without putting it on air |
 | `item.place_full` | item.place crop, bounds, bounds_width/height, bounds_align, align |
 | `item.edit` | item.lock, item.remove, item.duplicate, source.remove, source.refresh |
@@ -330,7 +331,7 @@ With `overlaps`, each shape also has `overlaps`: `[{"a", "a_name", "a_in", "b", 
 
 | Action | What it does | Fields |
 | --- | --- | --- |
-| `place.set` | Switch a place on or off for the next Go live, and/or its test mode (Twitch: the stream reaches Twitch but viewers never see it). | `place`: id from places.list, `on` (optional): true or false, `bandwidth_test` (optional): true or false (only places whose service has a test mode) |
+| `place.set` | Switch a place on or off for the next Go live, and/or its test mode (Twitch: the stream reaches Twitch but viewers never see it). | `place`: id from places.list, `on` (optional): true or false, `bandwidth_test` (optional): true or false (only places whose service has a test mode), `bitrateKbps` (optional): 500 to 50000: its bitrate for the next Go live |
 | `place.start` | While live: start sending to one more place (switched on for next time too). | `place`: id from places.list |
 | `place.stop` | While live: stop sending to one place (the others keep going; the last one ends the stream). | `place`: id from places.list |
 | `places.list` | Where the stream goes, each one's `service`, `name` (Twitch, YouTube, Facebook...), `shape`, `on`, `bitrateKbps`, and `ready` with `problem` saying why it can't go live yet ("Needs a stream key", "Needs a server URL", a canvas that's off), else null. `bandwidth_test` where the service has a test mode. A place added without its key stays off until it has one. | none |

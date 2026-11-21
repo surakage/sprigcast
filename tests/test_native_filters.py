@@ -113,6 +113,7 @@ def test_a_fully_open_gate_stays_open_without_fluttering():
 
 
 @pytest.mark.usefixtures("player_lib")
+@pytest.mark.usefixtures("player_lib")
 def test_ffmpeg_filters_run_in_the_engine_and_match_python(monkeypatch):
     """Equalizer, low cut, RNNoise...: FFmpeg filter chains run in the engine's mixer too (PC 2026-11-21: a mic with
     one of these was pulled through Python every block and ran dry on a busy PC). The same sound out as Python's."""
@@ -133,6 +134,32 @@ def test_ffmpeg_filters_run_in_the_engine_and_match_python(monkeypatch):
     (py, _, _), (nat, _, _) = both(sounds, ("stream",), 30)
     SOUND_LEVELS.clear()
     assert len(py) == len(nat) == 30
+    for a, b in zip(py, nat):
+        same(a[0], b[0], tol=1e-5)
+    assert np.max(np.abs(np.asarray(py))) > 0.01
+
+
+@pytest.mark.usefixtures("player_lib")
+def test_an_expander_runs_in_the_engine_and_matches_python():
+    """The user's mic was the only sound Python captured, for its Expander alone (2026-11-21)."""
+    sprigcore.sound_filters_ready.cache_clear()
+    if not sprigcore.sound_filters_ready():
+        pytest.skip("PyAV's libavfilter isn't here")
+    from sprigcast.audio.native_mixer import _python_only
+
+    settings = {"ratio": 3.0, "threshold_db": -30.0, "attack_ms": 10, "release_ms": 80}
+    got = engine_filters(chain(("expander", settings)), {})
+    assert [k for k, _, _ in got] == [sprigcore.FILTER_GRAPH] and got[0][2].startswith("agate\tmode=downward")
+
+    def sounds():
+        mic = Swell("mic", 0.3, kind="audio_input", name="Mic")
+        mic.audio_chain = chain(("expander", settings))
+        return [mic]
+
+    assert _python_only(sounds()[0]) == ["unknown"]  # nothing left that only Python runs
+    SOUND_LEVELS.clear()
+    (py, _, _), (nat, _, _) = both(sounds, ("stream",), 30)
+    SOUND_LEVELS.clear()
     for a, b in zip(py, nat):
         same(a[0], b[0], tol=1e-5)
     assert np.max(np.abs(np.asarray(py))) > 0.01

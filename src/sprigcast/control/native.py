@@ -63,6 +63,7 @@ FEATURES = (
     "effects.freeze",      # freeze.start / freeze.stop / freeze.toggle (Freeze plugin), effect.ended "freeze.start"
     "record.pause",        # record.pause / resume / toggle_pause / chapter, record.status paused, record.paused event
     "place.bandwidth_test",  # place.set bandwidth_test (Twitch test mode); places.list says it where there is one
+    "place.bitrate",  # place.set bitrateKbps (500-50000, as the window allows), for the next Go live
     "screenshot.bloom_off_air",  # screenshot.take {bloom, shape}: any bloom on its canvas without putting it on air
     "item.place_full",     # item.place crop, bounds, bounds_width/height, bounds_align, align
     "item.edit",           # item.lock, item.remove, item.duplicate, source.remove, source.refresh
@@ -1468,7 +1469,8 @@ class NativeApi:
 
     @action("place.set", "Switch a place on or off for the next Go live, and/or its test mode (Twitch: the stream "
             "reaches Twitch but viewers never see it).", place="id from places.list", on="?true or false",
-            bandwidth_test="?true or false (only places whose service has a test mode)")
+            bandwidth_test="?true or false (only places whose service has a test mode)",
+            bitrateKbps="?500 to 50000: its bitrate for the next Go live")
     def place_set(self, data):
         from sprigcast.output.stream import SERVICES
 
@@ -1478,8 +1480,11 @@ class NativeApi:
             raise _missing(f"No place {wanted!r}.", "place", wanted)
         on = _get(data, "on", bool, optional=True)
         test = _get(data, "bandwidth_test", bool, optional=True)
-        if on is None and test is None:
-            raise _bad("Give on and/or bandwidth_test.")
+        kbps = _get(data, "bitrateKbps", int, optional=True)
+        if on is None and test is None and kbps is None:
+            raise _bad("Give on, bandwidth_test and/or bitrateKbps.")
+        if kbps is not None and not 500 <= kbps <= 50000:
+            raise _bad("bitrateKbps must be 500 to 50000.")
         service = SERVICES.get(output.service or "custom", SERVICES["custom"])
         if test is not None and not service.bandwidth_test:
             raise _bad(f"{service.label} has no test mode.")
@@ -1489,6 +1494,8 @@ class NativeApi:
             output.enabled = on
         if test is not None:
             output.bandwidth_test = test
+        if kbps is not None:
+            output.bitrate_kbps = kbps
         self.host.commit("places")
 
     @action("record.status", "Recording or not, for how long, the file, and whether it's paused.")
