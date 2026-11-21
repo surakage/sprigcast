@@ -1409,12 +1409,13 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
             if (code == SC_NOT_YET) continue;
             if (code == SC_GONE) {  // its texture is closed: the page's next picture comes in a new one
                 block.seen = seq;
-                if (++block.page_gone == PAGE_GONE_SAID && !block.page_said) {
+                if (++block.page_gone == SharedPictures::PAGE_GONE_SAID && !block.page_said) {
                     block.page_said = true;
                     char hex[16];
                     std::snprintf(hex, sizeof hex, "0x%08lX", static_cast<unsigned long>(block.page.gone));
                     log_line(SC_LOG_WARNING, std::string("engine: a browser page's texture can't be opened (") + hex +
-                                                 "), " + std::to_string(PAGE_GONE_SAID) + " pictures in a row");
+                                                 "), " + std::to_string(SharedPictures::PAGE_GONE_SAID) +
+                                                 " pictures in a row");
                 }
                 continue;
             }
