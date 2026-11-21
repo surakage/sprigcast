@@ -558,6 +558,36 @@ class ChatPanel(QWidget):
         self.acted.connect(self._acted)
         self.needs_allow.connect(self._offer_allow)
 
+        self._prepare_link()
+
+    def _prepare_link(self) -> None:
+        """With a chat link saved, its browser is made now, while the window is still being built.
+
+        The first web view put in a window makes Qt build that window again for the graphics card, and starts the
+        browser engine, on the window's thread. Done when the link was picked mid-stream, the whole window vanished
+        and came back, the window stopped for 1.3 s and the stream hitched (PC, live, 2026-11-21). Before the
+        window is first shown neither can be seen. No page is loaded until the link is shown.
+        SPRIGCAST_CHAT_LINK_LATE=1 goes back to making it when first shown."""
+        import os
+        import time
+
+        from sprigcast.app.custom_docks import WebDockBody, web_engine_available
+
+        if not str(QSettings().value(LINK, "") or "") or os.environ.get("SPRIGCAST_CHAT_LINK_LATE") == "1":
+            return
+        if not web_engine_available():
+            return
+        began = time.perf_counter()
+        try:
+            self.web = WebDockBody("about:blank")
+            self.web_holder.layout().addWidget(self.web)
+            self.web.ensure_loaded()
+        except Exception:  # only a head start: the link still opens the old way
+            log.warning("chat: couldn't make the link's browser ahead", exc_info=True)
+            return
+        log.info("chat: the link's browser was made ahead, before the window (%d ms)",
+                 (time.perf_counter() - began) * 1000)
+
     # Chatting back -----------------------------------------------------------------------
 
     sent = Signal(str)  # "" when sent, else why not (from the sending thread)
