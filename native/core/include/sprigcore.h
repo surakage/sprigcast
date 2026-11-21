@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 39
+#define SC_INTERFACE_VERSION 40
 
 enum {
     SC_OK = 0,
@@ -795,6 +795,55 @@ SC_API int sc_link_finish(sc_link *link);
 /* Closes the connection at once (what waits is given up) and frees it. Waits up to 5 s for its thread; one still
  * stuck in the network after that is left to end by itself. */
 SC_API void sc_link_destroy(sc_link *link);
+
+/* ---- A recording written by the engine from a packets-mode writer's packets (interface 40, writer.cpp) ------
+ * A thread of the engine's own writes every packet the writer encodes into a file, starting at the next keyframe
+ * (it asks the writer for one) with times counted from it: the video and the sound tracks in `tracks` (bit 0 =
+ * the first sound track), in that order, a track's title kept when there are several. The packets still wait for
+ * sc_writer_packet_take as well.
+ * Pause leaves the file open and writes nothing; resume carries on from a keyframe it asks for, as if no time had
+ * passed. With split_seconds or split_bytes the recording goes on in "<name> part 2<.ext>", "part 3"... from the
+ * first keyframe past either. sc_file_chapter marks a chapter at the newest picture written; a part's chapters
+ * are put in the file as it closes (containers that hold them). sc_file_finish asks for a keyframe and ends the
+ * file just before it, so nothing still inside the encoder is lost; sc_file_destroy closes what there is at once.
+ * A file that can't be written (disk full, drive gone) fails by itself: the writer goes on. */
+typedef struct sc_file_config {
+    const char *path;            /* UTF-8; its folder exists */
+    const char *format;          /* muxer ("matroska", "mp4", ...), NULL = by the path's name */
+    const char *format_options;  /* "key=value" lines, or NULL */
+    unsigned tracks;             /* sound tracks kept, bit i = track i (0 = the first one only) */
+    double split_seconds;        /* 0 = never */
+    uint64_t split_bytes;        /* 0 = never */
+} sc_file_config;
+enum { SC_FILE_WAITING = 0, SC_FILE_WRITING = 1, SC_FILE_PAUSED = 2, SC_FILE_FINISHED = 3, SC_FILE_FAILED = 4 };
+typedef struct sc_file_stats {
+    int state;                 /* WAITING: no keyframe came yet (nothing written) */
+    int parts;                 /* files started so far */
+    uint64_t bytes;            /* packet bytes written, all parts */
+    uint64_t queued_bytes;     /* waiting for the disk */
+    double seconds;            /* into the part being written, of its newest picture */
+    double write_seconds, longest_write;
+    char error[256];
+} sc_file_stats;
+typedef struct sc_file sc_file;
+SC_API int sc_file_open(sc_writer *writer, const sc_file_config *cfg, sc_file **out);
+SC_API int sc_file_pause(sc_file *file);   /* 1 paused, 0 it already was (or the file has ended) */
+SC_API int sc_file_resume(sc_file *file);  /* 1 resumed, 0 it wasn't paused */
+/* 1 and *seconds (may be NULL) = where in the part being written the mark is; 0 when nothing is being written. */
+SC_API int sc_file_chapter(sc_file *file, const char *name, double *seconds);
+SC_API int sc_file_finish(sc_file *file);
+SC_API int sc_file_stats_get(sc_file *file, sc_file_stats *out);
+/* Part `index` (0 ..): its path copied to `path` (UTF-8), its length in seconds and how many chapters it got.
+ * SC_ERR_ARGUMENT when there is no such part. */
+SC_API int sc_file_part(sc_file *file, int index, char *path, int capacity, double *seconds, int *chapters);
+/* Chapter `chapter` of a finished part: its start and end in milliseconds and its title. */
+SC_API int sc_file_part_chapter(sc_file *file, int index, int chapter, int64_t *start_ms, int64_t *end_ms,
+                                char *title, int capacity);
+/* Closes what there is at once (no waiting for a keyframe) and waits up to 10 s for that: 1 closed, 0 still busy
+ * on the disk. The numbers and parts can still be read afterwards. */
+SC_API int sc_file_stop(sc_file *file);
+/* sc_file_stop, then frees it. */
+SC_API void sc_file_destroy(sc_file *file);
 
 /* A player with no file. `playing` = 0 makes it wait for play (a sound file), 1 plays as soon as it has one. */
 SC_API int sc_media_create(int playing, sc_media **out);

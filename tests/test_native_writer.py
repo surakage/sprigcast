@@ -553,3 +553,109 @@ def test_a_link_behind_skips_until_a_keyframe_and_a_delay_holds_packets(player_l
             if link is not None:
                 link.close()
         writer.close()
+
+
+def _packets_writer(tmp_path, tracks=1, keyframes=3000):
+    return sprigcore.Writer(str(tmp_path / "streams.nut"), "libx264", W, H, fps=30,
+                            video_options={"preset": "ultrafast", "forced-idr": "1"}, video_kbps=300,
+                            keyframe_frames=keyframes, audio_tracks=tracks, queue_frames=120, packets=True,
+                            track_titles=["Game", "Voice", "Clips"][:tracks] if tracks > 1 else None)
+
+
+def _fed_tracks(writer, frames, start, tracks):
+    for n in range(start, start + frames):
+        assert writer.video(nv12(16 + (3 * n) % 200), n) == sprigcore.SC_OK
+        for t in range(tracks):
+            writer.audio(np.zeros((1600, 2), np.float32), t)
+        while writer.take_packet() is not None:
+            pass
+
+
+def _lumas(path):
+    with av.open(str(path)) as f:
+        return [int(frame.to_ndarray()[:H].mean()) for frame in f.decode(video=0)]
+
+
+def test_the_engine_writes_a_recording_from_the_writers_packets(player_lib, tmp_path):  # noqa: F811
+    """sc_file: the file starts at a keyframe it asks for (times from zero), keeps the tracks asked for with their
+    titles, pauses and resumes as if no time passed, gets its chapters, and ends just before a keyframe."""
+    writer = _packets_writer(tmp_path, tracks=3)
+    path = tmp_path / "rec.mkv"
+    file = None
+    try:
+        _fed_tracks(writer, 20, 0, 3)  # before the recording: not in the file
+        _until(lambda: writer.stats().frames_written >= 20)
+        file = writer.file(path, "matroska", tracks=(0, 1))
+        assert file.stats().state_name == "waiting" and file.chapter("too early") is None
+        _fed_tracks(writer, 30, 20, 3)
+        _until(lambda: file.stats().seconds >= 28 / 30)
+        assert file.stats().state_name == "writing" and file.stats().parts == 1
+        assert abs(file.chapter("Boss fight") - file.stats().seconds) < 1e-9
+        assert file.pause() and not file.pause() and file.stats().state_name == "paused"
+        _fed_tracks(writer, 30, 50, 3)  # paused: left out
+        _until(lambda: writer.stats().frames_written >= 79)
+        assert file.resume() and not file.resume()
+        _fed_tracks(writer, 30, 80, 3)
+        _until(lambda: file.stats().seconds >= 55 / 30)
+        file.finish()
+        _fed_tracks(writer, 5, 110, 3)  # the keyframe it ends before
+        _until(lambda: file.stats().state_name == "finished")
+        parts = file.parts()
+        file.close()
+        assert file.parts() == parts and file.stats().state_name == "finished"  # closed: still safe to ask
+    finally:
+        if file is not None:
+            file.close()
+        writer.close()
+    assert [p[0] for p in parts] == [str(path)]
+    assert [c["metadata"]["title"] for c in parts[0][2]] == ["Start", "Boss fight"]
+    with av.open(str(path)) as f:
+        assert [s.metadata.get("title") for s in f.streams.audio] == ["Game", "Voice"]
+        assert [c["metadata"]["title"] for c in f.chapters()] == ["Start", "Boss fight"]
+        stamps = [p.pts * p.time_base for p in f.demux(video=0) if p.size]
+    assert stamps[0] == 0 and 56 <= len(stamps) <= 60
+    gaps = [float(b - a) for a, b in zip(stamps, stamps[1:])]
+    assert max(gaps) < 0.05  # the pause left no hole
+    lumas = _lumas(path)
+    assert abs(lumas[0] - (16 + 60)) <= 4 and abs(lumas[30] - (16 + (3 * 80) % 200)) <= 4
+
+
+def test_a_recording_splits_into_parts_and_closes_what_there_is(player_lib, tmp_path):  # noqa: F811
+    writer = _packets_writer(tmp_path, keyframes=15)
+    path = tmp_path / "long take.mp4"
+    file = None
+    try:
+        file = writer.file(path, "mp4", {"movflags": "frag_keyframe+empty_moov+default_base_moof"},
+                           split_seconds=1.0)
+        _fed_tracks(writer, 75, 0, 1)
+        _until(lambda: file.stats().parts == 3)
+        file.close()  # no keyframe waited for: what there is
+        parts = file.parts()
+    finally:
+        if file is not None:
+            file.close()
+        writer.close()
+    assert [p[0] for p in parts] == [str(path), str(tmp_path / "long take part 2.mp4"),
+                                     str(tmp_path / "long take part 3.mp4")]
+    counts = [len(_lumas(p[0])) for p in parts]
+    assert counts[:2] == [30, 30] and 10 <= counts[2] <= 15 and abs(parts[0][1] - 1.0) < 0.01
+
+
+def test_a_recording_that_cant_be_written_fails_alone_and_one_outlives_its_writer(player_lib, tmp_path):  # noqa: F811
+    writer = _packets_writer(tmp_path)
+    kept = None
+    try:
+        lost = writer.file(tmp_path / "no-such-folder" / "rec.mkv", "matroska")
+        kept = writer.file(tmp_path / "kept.mkv", "matroska")
+        _fed_tracks(writer, 30, 0, 1)
+        _until(lambda: lost.stats().state_name == "failed")
+        assert "opening the file" in lost.stats().error_text
+        lost.close()
+        _until(lambda: kept.stats().seconds >= 0.9)
+        assert writer.stats().state_name == "running"
+        finished(writer)
+    finally:
+        writer.close()
+    _until(lambda: kept.stats().state_name == "finished")  # the writer ended: the file is closed properly
+    kept.close()
+    assert len(_lumas(tmp_path / "kept.mkv")) == 30

@@ -282,7 +282,9 @@ def test_scenes_without_dividers_are_sorted_by_what_they_hold():
     col, _ = from_obs(data, _like(), size_of=lambda kind, s: (200, 100))
     where = {s.name: col.folder(s.folder).name for s in col.scenes if s.folder and s.shape_of is None}
     assert where["Overlay"] == "Browser Scenes" and where["Webcam"] == "Capture Scenes"
-    assert where["Music"] == "Audio Scenes" and where["Corner"] == "Capture Scenes"
+    assert where["Corner"] == "Capture Scenes"
+    # An audio-only scene isn't a sprig: its sound lives in the Sound area, playing in the same blooms.
+    assert "Music" not in where and any(c.kind == "audio_input" for c in col.sources)
     shows = [s for s in col.scenes if s.kind == "show" and s.shape_of is None]
     assert all(col.folder(s.folder).name == "Main Scenes" for s in shows)
 
