@@ -150,8 +150,10 @@ class SettingsDialog(CardDialog):
         self.placeholders: dict[str, str] = dict(getattr(cls, "placeholders", None) or {})  # shown when empty
         self.secret_fields: dict[str, QLineEdit] = {}
         secrets_after = getattr(cls, "secrets_after", None)  # the field the secrets follow (else at the end)
-        self._opened_with = {k: settings.get(k, v) for k, v in defaults.items()}  # for the log line on OK
+        hides = set(getattr(cls, "form_hides", None) or ()) - set(getattr(cls, "form_shows", None) or ())
+        defaults = {k: v for k, v in defaults.items() if k not in hides}  # drawn from their defaults (text plugins)
         self.defaults = defaults
+        self._opened_with = {k: settings.get(k, v) for k, v in defaults.items()}  # for the log line on OK
         self.fields: dict[str, Any] = {}
         self.look_note: QLabel | None = None
         styled = [k for k in style.style_keys(defaults) if k not in self.secrets]

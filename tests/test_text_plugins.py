@@ -32,7 +32,9 @@ def test_text_source_reads_file(tmp_path):
     src.video_frame()
     width_a = src.size[0]
     f.write_text("A much longer song title", encoding="utf-8")
-    src._next_check = 0.0
+    from sprigcast.core import file_watch
+
+    file_watch.check_now()  # the watch thread's next look, now
     src.video_frame()
     assert src.size[0] > width_a
 

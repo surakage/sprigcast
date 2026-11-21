@@ -197,7 +197,9 @@ BUILT_IN_KINDS = {"display_capture", "window_capture", "camera", "color", "image
 
 
 def _name_from(settings: dict, fallback: str) -> str:
-    """A text source is named after its first line, so the sources list is readable."""
+    """A text source is named after its first line (or the file it reads), so the sources list is readable."""
+    if "text" in settings and settings.get("read_file", True) and str(settings.get("file", "") or "").strip():
+        return Path(str(settings["file"]).strip()).stem or fallback
     first = str(settings.get("text", "")).strip().splitlines()
     if not first:
         return fallback
@@ -4914,6 +4916,10 @@ class MainWindow(QMainWindow):
             from sprigcast.app.web_page_dialog import WebPageDialog
 
             dialog = WebPageDialog("New web page", defaults, self, primary="Add")
+        elif kind == "text":
+            from sprigcast.app.text_leaf_dialog import TextLeafDialog
+
+            dialog = TextLeafDialog(f"New {name}", defaults, self, primary="Save")
         else:
             dialog = SettingsDialog(f"New {name}", defaults, defaults, self, cls=cls, collection=self.collection)
         if not modal(dialog):
@@ -5646,6 +5652,10 @@ class MainWindow(QMainWindow):
                 from sprigcast.app.media_dialog import MediaDialog
 
                 dialog = MediaDialog(config.name, config.settings, self)
+            elif config.kind == "text":
+                from sprigcast.app.text_leaf_dialog import TextLeafDialog
+
+                dialog = TextLeafDialog(config.name, config.settings, self)
             else:
                 dialog = SettingsDialog(config.name, defaults, config.settings, self, cls=cls,
                                         collection=self.collection)

@@ -60,7 +60,7 @@ OBS_SETTING_NAMES = {
               "close_when_inactive": "clear_on_end", "speed_percent": "speed", "hw_decode": "hw_decode"},
     "browser": {"local_file": "file", "is_local_file": None, "reroute_audio": None, "css": "css",
                 "restart_when_active": "reload_on_air"},
-    "text": {"text": "text", "file": "file", "read_from_file": None},
+    "text": {"text": "text", "file": "file", "read_from_file": "read_file"},
 }
 PICTURE_REUSE_S = 1.0
 KEEP_ON_REPLACE = ("volume_db", "muted", "balance", "monitor", "sync_ms")  # mixer settings stay
@@ -93,6 +93,8 @@ def settings_for_obs(kind: str, settings: dict[str, Any]) -> dict[str, Any]:
     out = dict(settings)
     if kind == "browser":
         out["shutdown"] = not bool(settings.get("keep_running", False))
+    if kind == "text":  # OBS's switch for a text read from a file
+        out["read_from_file"] = bool(str(settings.get("file", "") or "").strip()) and bool(settings.get("read_file", True))
     return out
 
 
