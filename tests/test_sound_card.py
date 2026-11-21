@@ -244,3 +244,17 @@ def test_a_new_set_of_sounds_reuses_the_rows(app):
     card.show_sound([])
     assert not card.rows
     card.close()
+
+
+def test_page_on_desktop_says_so(app):
+    from sprigcast.app.sound_card import Sound, SoundCard
+
+    card = SoundCard(lambda *_: None, lambda *_: None, lambda *_: None)
+    card.show_sound([Sound("a", "Alerts", group="Browser"), Sound("b", "Countdown", group="Browser"),
+                     Sound("c", "Sound Alerts", group="Browser", desktop=True)])
+    card.set_levels({}, now=100.0)
+    assert card.parts["Browser"]["sub"].text() == "2 quiet, 1 on desktop"
+    assert card.notes["c"].text() == "on desktop"
+    card.show_sound([Sound("c", "Sound Alerts", group="Browser", desktop=True)])
+    card.set_levels({}, now=101.0)
+    assert card.parts["Browser"]["sub"].text() == "1 on desktop"

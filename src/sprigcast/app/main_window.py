@@ -159,6 +159,7 @@ from sprigcast.output.shared import EncoderPool, SharedRecording, SharedReplay
 from sprigcast.output.stream import SERVICES, StreamSession, StreamTarget
 from sprigcast.render.engine import Engine
 from sprigcast.core.device_makers import label as camera_label
+from sprigcast.sources.browser import DESKTOP_SOUND
 from sprigcast.sources.audio import device_label as sound_label
 from sprigcast.sources.audio import list_audio_devices
 from sprigcast.sources.camera import is_capture_card, list_cameras
@@ -3283,6 +3284,10 @@ class MainWindow(QMainWindow):
                     plugin_hooks.levels_heard(self.api, event.levels)
             elif isinstance(event, SourceInfo):
                 self.source_sizes, self.source_statuses = event.sizes, event.statuses
+                desk = frozenset(sid for sid, st in event.statuses.items() if st == DESKTOP_SOUND)
+                if desk != getattr(self, "_desktop_sounds", frozenset()):
+                    self._desktop_sounds = desk  # a page's sound went to desktop audio: the Sound card says so
+                    self._refresh_audio_soon()
                 if self._start_sizes:
                     self._place_new_sources(event.sizes)
                 moved, touched = self.collection.keep_cards_put(event.sizes)  # a clock card's box grew or shrank
@@ -4002,6 +4007,7 @@ class MainWindow(QMainWindow):
             can_monitor=config.kind != "audio_output",  # desktop audio already plays on your speakers
             tracks=planned_tracks(config),  # Just me shows where it goes once it is back
             apps=self._sound_source_text(config),
+            desktop=config.kind == "browser" and self.source_statuses.get(config.id) == DESKTOP_SOUND,
         )
 
     def _sound_source_text(self, config) -> str | None:

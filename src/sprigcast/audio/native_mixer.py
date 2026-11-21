@@ -151,6 +151,33 @@ class EngineMonitor:
         return f"error: {st['error'] or st['state']}"
 
 
+class LevelLog:
+    """Once a minute, each sound's loudest moment in that minute goes into the log: a meter that reads "quiet"
+    on the PC can then be told apart from a sound that really is silent in the mix (2026-11-21)."""
+
+    EVERY_S = 60.0
+
+    def __init__(self, now: float | None = None):
+        self.loudest: dict[str, float] = {}
+        self.since = time.monotonic() if now is None else now
+
+    def feed(self, meters: dict[str, tuple[float, float]], now: float | None = None) -> str | None:
+        """The line logged (None when it isn't time yet)."""
+        for sid, (peak, _rms) in meters.items():
+            if sid != "duck" and peak > self.loudest.get(sid, FLOOR_DB - 1):
+                self.loudest[sid] = peak
+        now = time.monotonic() if now is None else now
+        if now - self.since < self.EVERY_S:
+            return None
+        parts = [f"{sid} {'silent' if db <= FLOOR_DB else f'{db:.0f} dB'}" for sid, db in sorted(self.loudest.items())]
+        self.loudest, self.since = {}, now
+        if not parts:
+            return None
+        line = "sound levels, loudest in the last minute: " + ", ".join(parts)
+        log.info(line)
+        return line
+
+
 _CURRENT: Callable[[], NativeMixer | None] = lambda: None
 
 
@@ -272,6 +299,7 @@ class NativeMixer:
         self._thread = threading.Thread(target=self._run, name="sprigcast-audio", daemon=True)
         self._said: dict[str, tuple[str, float]] = {}
         self._meters: dict[str, tuple[float, float]] = {}
+        self._level_log = LevelLog()
         self._fed = -1  # the last block number pushed for
         self._sounds: list = []  # (source, _Sound) as last fed
         self._visuals: dict = {}  # SoundVisual -> the sound it hears (a source id or listen.MIX); swapped whole
@@ -737,6 +765,7 @@ class NativeMixer:
         duck_db = to_db(duck)
         meters["duck"] = (duck_db, duck_db)
         self._meters = meters
+        self._level_log.feed(meters)
         self._note_short(short)
         try:
             self.report(meters)

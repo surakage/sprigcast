@@ -124,6 +124,16 @@ class Sound:
     can_monitor: bool = True
     tracks: tuple[str, ...] = ("stream", "recording", "clips")  # the named tracks it goes to
     apps: str | None = None  # where it comes from: its apps, device or file; None when there's nothing to change
+    desktop: bool = False  # a page whose sound plays on desktop audio: SprigCast can't mix or measure it
+
+
+def note_text(sound: Sound) -> str:
+    """A sound row's note: muted, on desktop, or its volume when not 0 dB."""
+    if sound.muted:
+        return "muted"
+    if sound.desktop:
+        return "on desktop"
+    return f"{sound.volume_db:+.0f} dB" if sound.volume_db else ""
 
 
 class VolumeMeter(ThinMeter):
@@ -345,7 +355,7 @@ class SoundCard(QWidget):
         self._show_muted()
         for sid, sound in self.sounds.items():  # volume changes in place: a drag isn't cut off by a rebuild
             note = self.notes.get(sid)
-            text = "muted" if sound.muted else f"{sound.volume_db:+.0f} dB" if sound.volume_db else ""
+            text = note_text(sound)
             if note is not None and note.text() != text:
                 note.setText(text)
             meter = self.meters.get(sid)
@@ -531,7 +541,7 @@ class SoundCard(QWidget):
         row.sid = sound.id
         if row.name.text() != sound.name:
             row.name.setText(sound.name)
-        note = "muted" if sound.muted else f"{sound.volume_db:+.0f} dB" if sound.volume_db else ""
+        note = note_text(sound)
         if row.note.text() != note:
             row.note.setText(note)
         meter = row.meter
@@ -576,8 +586,8 @@ class SoundCard(QWidget):
         if sound is not None:
             sound.volume_db = db
         note = self.notes.get(sound_id)
-        if note is not None and not (sound and sound.muted):
-            note.setText(f"{db:+.0f} dB" if db else "")
+        if note is not None and sound is not None:
+            note.setText(note_text(sound))
         self.on_change(sound_id, {"volume_db": db})
 
     # Calm by default ----------------------------------------------------------------------
@@ -618,7 +628,12 @@ class SoundCard(QWidget):
                 text = playing.get(group) or self.sounds[heard[0]].name
                 style = f"color: {theme.TEXT}; background: transparent; font-size: 12px;"
             else:
-                text = f"{part['count']} quiet" if part["count"] > 1 else "quiet"
+                desk = sum(1 for sid in part["ids"] if sid in self.sounds and self.sounds[sid].desktop
+                           and not self.sounds[sid].muted)
+                quiet = part["count"] - desk
+                text = f"{quiet} quiet" if quiet > 1 else "quiet" if quiet else ""
+                if desk:  # its sound isn't in SprigCast's mix, so its bar can't move
+                    text = ", ".join(t for t in (text, f"{desk} on desktop") if t)
                 style = f"color: {theme.MUTED}; background: transparent; font-size: 12px;"
             key = (lit, text, opened)
             if self._lit.get(group) == key:

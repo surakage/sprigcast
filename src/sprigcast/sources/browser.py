@@ -122,7 +122,8 @@ def page_name(settings: dict[str, Any]) -> str:
 
 
 # Statuses that come from the page itself (they change back to "ok" on their own).
-_PAGE_NOTES = ("Sound plays on desktop audio", "Video can't play: page uses H.264 (MP4)",
+DESKTOP_SOUND = "Sound plays on desktop audio"
+_PAGE_NOTES = (DESKTOP_SOUND, "Video can't play: page uses H.264 (MP4)",
                "Video can't play: format not supported")
 
 
@@ -238,7 +239,7 @@ class BrowserSource(Source):
             return
         page = getattr(_host, "page_note", lambda _id: "")(self.id)
         sound = getattr(_host, "sound_note", lambda _id: "")(self.id)
-        self.status = page or ("Sound plays on desktop audio" if sound else "ok")
+        self.status = page or (DESKTOP_SOUND if sound else "ok")
 
     def video_frame(self) -> np.ndarray | None:
         self._note_sound()
