@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 40  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 41  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 PUSH_OFF, PUSH_TALK, PUSH_MUTE = 0, 1, 2  # sc_mixer_push_set modes
 DLL_NAME = "sprigcore.dll"
 
@@ -1242,7 +1242,7 @@ class MediaInfo(ctypes.Structure):
                 ("faulted", ctypes.c_int), ("replaying", ctypes.c_int), ("position", ctypes.c_double),
                 ("duration", ctypes.c_double), ("speed", ctypes.c_double), ("decoded", ctypes.c_uint64),
                 ("passes", ctypes.c_uint64), ("picture_bytes", ctypes.c_uint64), ("status", ctypes.c_char * 96),
-                ("hardware", ctypes.c_int)]
+                ("hardware", ctypes.c_int), ("given_width", ctypes.c_int), ("given_height", ctypes.c_int)]
 
     @property
     def state_name(self) -> str:

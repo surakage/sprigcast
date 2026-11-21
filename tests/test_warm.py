@@ -69,3 +69,14 @@ def test_the_password_store_is_loaded_without_reading_anything(monkeypatch):
     assert asked == []
     monkeypatch.setattr(keyring, "get_keyring", lambda: 1 / 0)
     warm.warm_keyring()  # never raises
+
+
+def test_a_slow_warm_up_names_what_took_it():
+    """PC 2026-11-21: the first start of a new build warmed up in 3,698 ms against 566 to 890 ms, and the log
+    couldn't say which load it was."""
+    from sprigcast.core import warm
+
+    took = [(2100.4, "sprigcast.output.recorder"), (12.0, "av.video.frame"), (600.0, "sprigcast.app.doctor"),
+            (3.0, "sprigcast.app.about")]
+    assert warm.slowest(took, 900.0) == ""
+    assert warm.slowest(took, 3698.0) == "; slowest: output.recorder 2100 ms, app.doctor 600 ms, av.video.frame 12 ms"

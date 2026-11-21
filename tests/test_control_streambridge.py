@@ -562,7 +562,7 @@ def test_source_get_says_what_a_loaded_source_is_doing():
     source = _ok(api, "source.new", name="Card", kind="camera", settings={})
     got = _ok(api, "source.get", source="Card")
     assert got["loaded"] is False and "state" not in got  # its bloom hasn't been on screen
-    feed = SimpleNamespace(picture=(2560, 1440), status="capturing 2560x1440")
+    feed = SimpleNamespace(picture=(1920, 1080), given=(2560, 1440), status="capturing 2560x1440")  # shrunk as read
     live = SimpleNamespace(status="starting", asleep=False, _size=(1920, 1080), _feed=feed)
     window = SimpleNamespace(engine=SimpleNamespace(_sources={source["id"]: live}))
     host.source_now = lambda source_id: WindowHost.source_now(SimpleNamespace(w=window), source_id)

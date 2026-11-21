@@ -341,6 +341,7 @@ struct Core : std::enable_shared_from_this<Core> {
     float speed = 1.0f;          // the speed the decoder and clock run at now
     bool blank = false;
     int width = 0, height = 0;
+    int given_width = 0, given_height = 0;  // what the file or device gives, before it is fitted
     double duration = 0;         // 0 = unknown
     bool has_video = true;
     bool parked = false;         // asleep
@@ -1323,6 +1324,8 @@ bool Core::decode(const std::string &file, uint64_t gen, uint64_t serial, double
             length = duration;
             width = size_w;
             height = size_h;
+            given_width = video ? held.vdec->width : 0;
+            given_height = video ? held.vdec->height : 0;
             status = "ok";
         }
         // Times in the file can start above 0 (MPEG-TS, some MP4s): count from the file's start.
@@ -1817,6 +1820,8 @@ SC_API int sc_media_info_get(sc_media *media, sc_media_info *out) {
         out->passes = c.passes;
         out->picture_bytes = c.picture_bytes;
         out->hardware = c.on_card;
+        out->given_width = c.given_width;
+        out->given_height = c.given_height;
         std::snprintf(out->status, sizeof out->status, "%s", c.status.c_str());
         return SC_OK;
     });

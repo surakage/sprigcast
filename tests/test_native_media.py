@@ -720,3 +720,16 @@ def test_decoding_on_the_graphics_card_is_the_engines_too(player_lib, files, mon
         time.sleep(0.005)
     assert got is not None
     switched.stop()
+
+
+def test_the_size_the_file_gives_is_said_next_to_the_size_it_is_fitted_to(player_lib, files):
+    """PC 2026-11-21: source.get said a capture card delivered 1280x720 while the engine read 2560x1440 from it and
+    shrunk it as it was read. The player says both sizes."""
+    player = sprigcore.MediaPlayer(True)
+    player.set_picture("", (160, 120))
+    player.set_file(files["video"], True, True)
+    player.control(sprigcore.MEDIA_START)
+    pump(player, 3, until=lambda g: len(g) >= 1)
+    info = player.info()
+    assert (info.width, info.height) == (160, 120) and (info.given_width, info.given_height) == (320, 240)
+    player.close()

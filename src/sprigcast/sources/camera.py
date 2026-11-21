@@ -455,6 +455,7 @@ class _Feed:
         self.player: sprigcore.MediaPlayer | None = None
         self._engine_refused = False  # the engine's player couldn't: Python reads it from now on
         self.picture: tuple[int, int] | None = None  # the size the engine's player plays (its own mode's, at times)
+        self.given: tuple[int, int] | None = None  # the size the device really delivers, before it is fitted
 
     def start(self, after: "_Feed | None" = None) -> None:
         """after: the same camera still closing after a sleep(); this feed opens it once that's done."""
@@ -580,6 +581,7 @@ class _Feed:
                 if text == "ok" and info.width > 0:
                     self.status = f"capturing {info.width}x{info.height}"
                     self.picture = (info.width, info.height)
+                    self.given = (info.given_width, info.given_height) if info.given_width > 0 else self.picture
                     for source in list(self.subscribers):
                         source._size = source.fit(self.picture)
                     if lost is not None:

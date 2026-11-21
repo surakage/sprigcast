@@ -402,9 +402,11 @@ class WindowHost:
         if isinstance(size, tuple) and len(size) == 2 and min(size) > 0:
             out["size"] = [int(size[0]), int(size[1])]
         feed = getattr(source, "_feed", None)
-        picture = getattr(feed, "picture", None)
+        # What the device really delivers (a card fed 1440p gives 2560x1440 for a 720p source: PC 2026-11-21, where
+        # this said the size it was shrunk to as it was read).
+        picture = getattr(feed, "given", None) or getattr(feed, "picture", None)
         if picture:
-            out["cameraSize"] = [int(picture[0]), int(picture[1])]  # what the device gives, before it is fitted
+            out["cameraSize"] = [int(picture[0]), int(picture[1])]
         if feed is not None and getattr(feed, "status", ""):
             out["state"] = str(feed.status)
         return out
