@@ -60,6 +60,15 @@ def warm(modules: list[str] | None = None, pause_s: float = 0.02) -> list[str]:
         except Exception as exc:  # noqa: BLE001 (a missing optional part: it loads, or fails, when used)
             log.debug("warm-up: %s didn't load: %s", name, exc)
         time.sleep(pause_s)  # let the window and the renderer have Python between modules
+    if modules is None and sys.platform == "win32":
+        try:
+            from sprigcast.sources import camera
+
+            lister = camera.warm_lister()
+            if lister != "light":
+                log.info("warm-up: cameras are listed by %s", lister or "nothing (no lister loads)")
+        except Exception as exc:  # noqa: BLE001
+            log.debug("warm-up: the camera lister didn't load: %s", exc)
     if loaded:
         log.info("warm-up: loaded %d modules in %.0f ms", len(loaded), 1000 * (time.perf_counter() - began))
     return loaded

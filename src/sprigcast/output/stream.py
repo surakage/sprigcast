@@ -901,11 +901,18 @@ class StreamSession:
         return True
 
     def encoders_by_canvas(self) -> dict:
-        """Canvas id -> a running shared encoder of this stream: what a "Same as stream" recording writes from."""
+        """Canvas id -> a running shared encoder of this stream: what a "Same as stream" recording writes from.
+        The best one when a canvas has several (Enhanced Broadcasting's qualities, places of different sizes): the
+        biggest picture, then the highest bitrate, so the recording is never the small quality."""
+        def worth(enc) -> tuple:
+            return (getattr(enc, "out_width", 0) * getattr(enc, "out_height", 0), getattr(enc, "bitrate_kbps", 0))
+
         found: dict = {}
         for enc in getattr(self, "shared", []):
             if enc.running and "stream" in enc.holders:
-                found.setdefault(enc.source_id, enc)
+                had = found.get(enc.source_id)
+                if had is None or worth(enc) > worth(had):
+                    found[enc.source_id] = enc
         return found
 
     def finished(self, timeout: float | None = None) -> bool:

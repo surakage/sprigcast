@@ -50,18 +50,19 @@ def _cv2():
     return cv2
 
 
-def _dshow_list():
-    """DirectShow's camera list as (name, device path) pairs, without importing OpenCV, or None.
+def _dshow_backend():
+    """cv2_enumerate_cameras' native DirectShow lister, loaded on its own straight from its file, or None.
 
-    cv2_enumerate_cameras' package imports OpenCV just for a few constants, so its native DirectShow
-    lister is loaded on its own, straight from its file.
+    The package itself imports OpenCV just for a few constants. Loaded at start by the warm-up (core/warm.py):
+    its first load, or OpenCV's when this one isn't there, held the window 318 ms when a camera's properties
+    opened (PC, 2026-11-21).
     """
     if sys.platform != "win32":
         return None
     name = "cv2_enumerate_cameras._windows_backend"
     module = sys.modules.get(name)
     if module is not None:
-        return module.DSHOW_enumerate_cameras() or []
+        return module
     import glob
     import importlib.machinery
     import importlib.util
@@ -84,7 +85,30 @@ def _dshow_list():
     module = importlib.util.module_from_spec(importlib.util.spec_from_file_location(name, files[0], loader=loader))
     loader.exec_module(module)
     sys.modules[name] = module
-    return module.DSHOW_enumerate_cameras() or []
+    return module
+
+
+def _dshow_list():
+    """DirectShow's camera list as (name, device path) pairs, without importing OpenCV, or None."""
+    module = _dshow_backend()
+    return None if module is None else module.DSHOW_enumerate_cameras() or []
+
+
+def warm_lister() -> str:
+    """Load what lists cameras, off the window's thread (core/warm.py). Says which: "light", "opencv" or ""."""
+    if sys.platform != "win32":
+        return ""
+    try:
+        if _dshow_backend() is not None:
+            return "light"
+    except Exception as exc:  # noqa: BLE001
+        log.info("camera list: the light lister didn't load (%s); OpenCV lists cameras", type(exc).__name__)
+    try:
+        _cv2()
+        import cv2_enumerate_cameras  # noqa: F401
+    except Exception:  # noqa: BLE001 (no cameras are listed then, as before)
+        return ""
+    return "opencv"
 
 
 OWN_CAMERA = "SprigCast Camera"  # our own virtual camera: showing it in SprigCast would loop the picture
@@ -272,6 +296,28 @@ def choose_modes(modes, w: int, h: int, fps: int) -> list[dict[str, str]]:
     return out
 
 
+OTHER_SIZES = 3  # sizes tried after the best one is refused, before the camera's own mode
+
+
+def other_modes(modes, w: int, h: int, fps: int, tried: list[dict[str, str]]) -> list[dict[str, str]]:
+    """What to try when every mode of choose_modes is refused, before the camera's own mode: its other sizes, the
+    next bigger one first, then the biggest below, then the rest. The PC's HD60 X with no signal (2026-11-21) refused the size
+    asked and came up in its own mode, 32 MB a picture: SprigCast held 1.1 GB more and a fifth of a core just
+    took the pictures in."""
+    usable = [m for m in modes if m[0] == "pixel_format" or m[1] == "mjpeg"]
+    sizes = sorted({(m[2], m[3]) for m in usable}, key=lambda s: s[0] * s[1])
+    done = {option.get("video_size") for option in tried}
+    left = [s for s in sizes if f"{s[0]}x{s[1]}" not in done]
+    above = [s for s in left if s[0] >= w and s[1] >= h]
+    below = [s for s in reversed(left) if s not in above]
+    order = above[:1] + below[:1] + above[1:] + below[1:]  # (a far bigger one is a lot of data to take in)
+    out: list[dict[str, str]] = []
+    for size in order[:OTHER_SIZES]:
+        out += [option for option in choose_modes([m for m in usable if (m[2], m[3]) == size], *size, fps)
+                if option not in out]
+    return out
+
+
 _BYTES_PER_PIXEL = {"nv12": 1.5, "yuyv422": 2.0, "mjpeg": 0.3}  # mjpeg: compressed, roughly
 
 
@@ -385,6 +431,7 @@ class _Feed:
         # hands it to the engine, and no picture passes through Python. None while Python reads it.
         self.player: sprigcore.MediaPlayer | None = None
         self._engine_refused = False  # the engine's player couldn't: Python reads it from now on
+        self.picture: tuple[int, int] | None = None  # the size the engine's player plays (its own mode's, at times)
 
     def start(self, after: "_Feed | None" = None) -> None:
         """after: the same camera still closing after a sleep(); this feed opens it once that's done."""
@@ -464,8 +511,11 @@ class _Feed:
 
     def shrink(self) -> float:
         """The least any source of this camera may be shrunk (one shown big keeps it full size for all). A source
-        asking a smaller mode than the feed's is already that much smaller."""
-        width = max(1, self._mode()[0])
+        asking a smaller mode than the feed's is already that much smaller. So is every source when the camera
+        came up bigger than any asked: the PC's HD60 X (2026-11-21) took none of its listed modes and opened in its
+        own, and its full-size pictures (32 MB each) were made and kept for sources laid out at 1080p and 720p:
+        SprigCast held 1.1 GB more on that bloom."""
+        width = max(1, self._mode()[0], (getattr(self, "picture", None) or (0, 0))[0])
         return max((min(1.0, getattr(s, "shrink", 1.0) * min(1.0, _mode_of(s.settings)[0] / width))
                     for s in list(self.subscribers)), default=1.0)
 
@@ -505,8 +555,9 @@ class _Feed:
                 text = info.status_text
                 if text == "ok" and info.width > 0:
                     self.status = f"capturing {info.width}x{info.height}"
+                    self.picture = (info.width, info.height)
                     for source in list(self.subscribers):
-                        source._size = source.fit((info.width, info.height))
+                        source._size = source.fit(self.picture)
                     if lost is not None:
                         log.info("%s: %r is back (%dx%d)", self.id, device.name, info.width, info.height)
                         lost = None
@@ -547,6 +598,7 @@ class _Feed:
                  {"video_size": f"{w}x{h}", "framerate": str(fps), "vcodec": "mjpeg"},
                  {"video_size": f"{w}x{h}", "framerate": str(fps)},
                  {"video_size": f"{w}x{h}"},  # e.g. a camera whose 60 is really 59.94: its own rate, paced below
+                 *other_modes(self.modes_seen, w, h, fps, listed),
                  {}]
         for name in names:
             for mode in modes:
@@ -667,6 +719,7 @@ def _engine_choices(feed: _Feed, device: CameraDevice) -> tuple[str, list[tuple[
              {"video_size": f"{w}x{h}", "framerate": str(fps), "vcodec": "mjpeg"},
              {"video_size": f"{w}x{h}", "framerate": str(fps)},
              {"video_size": f"{w}x{h}"},
+             *other_modes(feed.modes_seen, w, h, fps, listed),
              {}]
     return "dshow", [(name, mode) for name in names for mode in modes]
 
@@ -827,6 +880,14 @@ class CameraSource(Source):
         the render thread then only calls :meth:`engine_tick`."""
         feed = self._feed
         return feed.player if self._attached and feed is not None else None
+
+    @property
+    def engine_layout(self) -> tuple[int, int] | None:
+        """The size the engine lays this source out at when its feed's player plays another (a feed shared with
+        a source asking a bigger mode plays that one's); None: the player's own size."""
+        feed = self._feed
+        picture = getattr(feed, "picture", None) if self._attached else None
+        return self._size if picture and self._size != picture and min(self._size) > 0 else None
 
     def engine_tick(self) -> None:
         """Render thread, on a tick the engine showed the picture itself: nothing to do (the feed keeps the size)."""

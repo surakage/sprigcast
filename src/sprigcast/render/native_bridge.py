@@ -246,6 +246,7 @@ class NativeCanvases:
         self._signature = None
         self._last_upload: dict[str, float] = {}
         self._media: dict[str, object] = {}  # source id -> the engine's player its pictures come straight from
+        self._media_sizes: dict[str, tuple[int, int]] = {}  # those laid out at another size than the player's
         self._item_holds: dict[str, tuple[object, str]] = {}  # item key -> (which freeze, its still copy's id)
         self._hold_count = 0
         self._held: set[str] = set()  # browser pages whose pictures the engine takes but doesn't show (a freeze)
@@ -377,6 +378,20 @@ class NativeCanvases:
             self._guard("media", self.engine.attach_media, source_id, player)
         return not self.failed
 
+    def media_size(self, source_id: str, size: tuple[int, int] | None) -> None:
+        """A source shown from a player is laid out at ``size``, not the size of the player's pictures (None: the
+        player's own). Two sources of one capture card saved at 1080p and 720p share one player open at 1080p
+        (sources/camera.py _Feed.widen): the 720p one was drawn 1080p big, past its selection border (PC,
+        2026-11-21)."""
+        size = (int(size[0]), int(size[1])) if size and size[0] > 0 and size[1] > 0 else None
+        if self.failed or self._media_sizes.get(source_id) == size:
+            return
+        if size is None:
+            self._media_sizes.pop(source_id, None)
+        else:
+            self._media_sizes[source_id] = size
+        self._guard("media size", self.engine.media_size, source_id, size)
+
     SPARE_ARTS = 16  # pictures a drawn source keeps on the card beyond those its newest list uses...
     SPARE_BYTES = 48 << 20  # ...and at most this much of them (the oldest used go first)
 
@@ -419,6 +434,7 @@ class NativeCanvases:
         for gone in (set(self._last_upload) | set(self._media) | set(self._arts)) - set(source_ids):
             self._last_upload.pop(gone, None)
             had = self._media.pop(gone, None)
+            self._media_sizes.pop(gone, None)  # (the engine drops it with the source)
             if isinstance(had, sprigcore.CaptureTarget) or (isinstance(had, str) and hasattr(had, "link")):
                 had.link(None)
             self._held.discard(gone)

@@ -137,6 +137,9 @@ class FakeNative:
             self.attached.pop(source_id, None)
         return player is not None
 
+    def media_size(self, source_id, size):
+        self.media_sizes = {**getattr(self, "media_sizes", {}), source_id: size}
+
     def forget_gone(self, ids):
         pass
 
@@ -596,6 +599,35 @@ class EngineVideo:
         if name.startswith("__"):
             raise AttributeError(name)
         return lambda *a, **k: None
+
+
+def test_a_camera_on_a_shared_feed_is_laid_out_at_its_own_size():
+    """PC 2026-11-21: the HD60 X saved at 720p shared the feed another source opened at 1080p, and the engine drew
+    it 1080p big, past its selection border. The render thread tells the engine each such source's own size."""
+    engine, fake = _engine(), FakeCompositor()
+    engine.previews = frozenset({"h"})
+
+    class SharedCamera(EngineVideo):
+        engine_layout = (1280, 720)
+
+    engine._sources["clip"] = SharedCamera()
+    engine._sources["film"] = EngineVideo()
+    engine._collection.scenes[0].items += [SceneItem(source="clip"), SceneItem(source="film")]
+    _run(engine, fake, seconds=0.2)
+    assert engine._native.media_sizes == {"clip": (1280, 720)}  # a plain video isn't touched
+
+
+def test_the_bridge_tells_the_engine_a_media_size_once():
+    from sprigcast.render import native_bridge
+
+    said = []
+    bridge = native_bridge.NativeCanvases.__new__(native_bridge.NativeCanvases)
+    bridge.failed, bridge._media_sizes = False, {}
+    bridge.engine = SimpleNamespace(media_size=lambda source_id, size: said.append((source_id, size)))
+    bridge._guard = lambda what, call, *a, **k: call(*a, **k)
+    for size in ((1280, 720), (1280, 720), None, None, (0, 0), (640, 360)):
+        bridge.media_size("cam", size)
+    assert said == [("cam", (1280, 720)), ("cam", None), ("cam", (640, 360))]
 
 
 def test_a_video_the_engine_plays_never_passes_through_python():

@@ -768,15 +768,22 @@ void Core::open(Held &held, const std::string &file) {
         const AVInputFormat *input = ff.av_find_input_format(format.c_str());
         if (!input) throw Error("this FFmpeg can't open " + format + " devices");
         r = AVERROR(ENODEV);
+        std::string refused;
         for (const auto &[name, options] : choices) {
             AVDictionary *opts = nullptr;
             if (!options.empty()) ff.av_dict_parse_string(&opts, options.c_str(), "=", ":", 0);
             ff.av_dict_set(&opts, "rtbufsize", "16M", 0);
             r = ff.avformat_open_input(&held.fmt, name.c_str(), input, &opts);
             ff.av_dict_free(&opts);
+            if (r < 0 && refused.size() < 240)  // (the mode only: a device's name can hold its path)
+                refused += (refused.empty() ? "" : "; ") + (options.empty() ? std::string("its own mode") : options) +
+                           ": " + av_text(r);
             if (r >= 0) {
                 sc::log_line(SC_LOG_INFO, "media: a camera opened with " + (options.empty() ? std::string("its own mode")
                                                                                             : options));
+                // Its own mode after the ones asked were refused: say which and why (the PC's HD60 X with no signal
+                // came up in its own, far bigger than asked, with nothing in the log about the modes it refused).
+                if (!refused.empty()) sc::log_line(SC_LOG_INFO, "media: the camera refused " + refused);
                 std::lock_guard<std::mutex> hold(lock);
                 status = "ok";
                 break;
@@ -806,6 +813,22 @@ void Core::open(Held &held, const std::string &file) {
         }
     }
     if (held.vi < 0 && held.ai < 0) throw Error("no picture or sound in the file");
+    if (camera && held.vi >= 0) {  // what it gives, on every open: size, format and rate
+        const AVStream *v = held.fmt->streams[held.vi];
+        const AVCodec *codec = ff.avcodec_find_decoder(v->codecpar->codec_id);
+        std::string gives = codec && codec->name ? codec->name : "an unknown format";
+        if (v->codecpar->codec_id == AV_CODEC_ID_RAWVIDEO) {
+            const int f = v->codecpar->format;
+            gives = f == AV_PIX_FMT_NV12 ? "nv12" : f == AV_PIX_FMT_YUYV422 ? "yuyv422" : f == AV_PIX_FMT_UYVY422 ? "uyvy422"
+                     : f == AV_PIX_FMT_YUV420P ? "yuv420p" : f == AV_PIX_FMT_BGR24 ? "bgr24" : f == AV_PIX_FMT_BGRA ? "bgra"
+                     : f == AV_PIX_FMT_BGR0 ? "bgr0" : "raw format " + std::to_string(f);
+        }
+        const double rate = v->avg_frame_rate.den > 0 ? av_q2d(v->avg_frame_rate) : 0.0;
+        char text[160];
+        std::snprintf(text, sizeof text, "media: the camera gives %dx%d %s at %.4g fps", v->codecpar->width,
+                      v->codecpar->height, gives.c_str(), rate);
+        sc::log_line(SC_LOG_INFO, text);
+    }
     auto decoder = [&](int index, bool video) -> AVCodecContext * {
         const AVStream *s = held.fmt->streams[index];
         const AVCodec *codec = nullptr;

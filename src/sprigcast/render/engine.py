@@ -2311,6 +2311,10 @@ class Engine:
             if freeze is not None and not (isinstance(player, str) or getattr(player, "holds", False)):
                 player = None
             direct = native is not None and native.attach_media(source_id, player, held=freeze is not None)
+            if direct and hasattr(type(source), "engine_layout"):
+                # A player shared with other sources may play bigger than this one is laid out (one camera, two
+                # modes): the engine draws it at this source's size, where its border is.
+                native.media_size(source_id, source.engine_layout)
             if source.asleep or not self._budget_allows(source_id) or (
                     self._failing and now < self._failing.get(source_id, 0.0)):
                 if freeze is not None and source_id in textures:

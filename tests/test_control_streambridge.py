@@ -518,6 +518,15 @@ def test_place_set_switches_twitch_test_mode():
     assert next(p for p in _ok(api, "places.list")["places"] if p["id"] == out.id)["bitrateKbps"] == 4500
     assert _fails(api, "place.set", place=out.id, bitrateKbps=100) == "bad_request"
     assert _fails(api, "place.set", place=out.id, bitrateKbps="4500") == "bad_request"
+    # places.list says what each place sends: its own size and rate, else its shape's; Enhanced on Twitch.
+    canvas = next(c for c in col.canvases if c.id == out.canvas)
+    places = {p["id"]: p for p in _ok(api, "places.list")["places"]}
+    assert places[out.id]["size"] == [canvas.width, canvas.height] and places[out.id]["fps"] == canvas.fps
+    assert places[out.id]["enhanced"] is False and "enhanced" not in places[other.id]
+    out.size, out.fps, out.enhanced = (1280, 720), 60, True
+    place = next(p for p in _ok(api, "places.list")["places"] if p["id"] == out.id)
+    assert (place["size"], place["fps"], place["enhanced"]) == ([1280, 720], 60, True)
+    assert "places.size" in FEATURES
     assert _fails(api, "place.set", place=out.id, bandwidth_test="yes") == "bad_request"
     host.start_stream()
     assert _fails(api, "place.set", place=out.id, bandwidth_test=False) == "busy"

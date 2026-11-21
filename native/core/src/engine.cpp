@@ -516,6 +516,10 @@ struct sc_engine {
     std::unordered_map<uint64_t, std::vector<uint8_t>> spare;   // buffers to reuse for the next picture
     std::set<uint64_t> forgets;
     std::unordered_map<uint64_t, std::shared_ptr<void>> medias;  // sources shown straight from a media player
+    // A media source laid out at another size than its player's picture (sc_engine_source_media_size): one camera
+    // opened once for two sources asking 1080p and 720p gives both the 1080p picture, the second shown as 720p.
+    std::unordered_map<uint64_t, std::pair<int, int>> media_sizes;
+    std::unordered_map<uint64_t, std::pair<int, int>> media_sized;  // frame thread: the size its picture has now
     std::unordered_map<uint64_t, std::wstring> shareds;          // sources shown from another process's memory
     std::set<uint64_t> shared_held;  // shareds held still (a freeze): their pictures taken, not shown
     std::unordered_map<uint64_t, std::shared_ptr<void>> visuals; // sources an audio visualizer draws (visual.cpp)
@@ -1259,6 +1263,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     std::shared_ptr<const SnapData> snapshot;
     std::vector<PreviewCfg> previews;
     std::vector<std::pair<uint64_t, std::shared_ptr<void>>> medias;
+    std::unordered_map<uint64_t, std::pair<int, int>> media_sizes;
     std::vector<std::pair<uint64_t, std::shared_ptr<void>>> visuals;
     std::vector<std::pair<uint64_t, std::wstring>> shareds;
     std::set<uint64_t> shared_held;
@@ -1277,6 +1282,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
             if (read_asked[i]) --e.read_asks[i];
         }
         medias.assign(e.medias.begin(), e.medias.end());
+        media_sizes = e.media_sizes;
         visuals.assign(e.visuals.begin(), e.visuals.end());
         shareds.assign(e.shareds.begin(), e.shareds.end());
         shared_held = e.shared_held;
@@ -1317,12 +1323,27 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
                           std::any_of(visuals.begin(), visuals.end(), same);
         found = here ? std::next(found) : e.media_seen.erase(found);
     }
+    for (auto found = e.media_sized.begin(); found != e.media_sized.end();) {
+        const auto same = [&](const auto &m) { return m.first == found->first; };
+        found = std::any_of(medias.begin(), medias.end(), same) ? std::next(found) : e.media_sized.erase(found);
+    }
     for (auto &[id, player] : medias) {
         auto &seen = e.media_seen[id];
         if (seen.first != player.get()) seen = {player.get(), 0};
+        const auto sized = media_sizes.find(id);
+        const std::pair<int, int> size = sized == media_sizes.end() ? std::pair<int, int>{0, 0} : sized->second;
+        auto &has = e.media_sized[id];
+        if (has != size) {  // a new size: the picture it has is taken again, laid out at it
+            has = size;
+            seen.second = 0;
+        }
         MediaDue due;
         at(e, "asking a video for its picture", id);
         media_due(player, &seen.second, &due);
+        if (due.what == SC_MEDIA_PICTURE && size.first > 0 && size.second > 0) {
+            due.how.layout_width = size.first;
+            due.how.layout_height = size.second;
+        }
         if (due.what == SC_MEDIA_PICTURE && due.texture) {  // still on the card, where the decoder left it
             e.kept_sources.erase(id);
             at(e, "taking a video's picture on the card", id);
@@ -2021,6 +2042,7 @@ SC_API int sc_engine_source_forget(sc_engine *engine, uint64_t id) {
         engine->uploads.erase(id);
         engine->spare.erase(id);
         engine->medias.erase(id);
+        engine->media_sizes.erase(id);
         engine->visuals.erase(id);
         engine->draws.erase(id);
         engine->shareds.erase(id);
@@ -2058,6 +2080,16 @@ SC_API int sc_engine_source_media(sc_engine *engine, uint64_t id, sc_media *medi
         } else {
             engine->medias.erase(id);
         }
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_source_media_size(sc_engine *engine, uint64_t id, int width, int height) {
+    return engine_call(engine, "sc_engine_source_media_size", [&]() -> int {
+        if (!id) return fail(SC_ERR_ARGUMENT, "sc_engine_source_media_size: no id");
+        std::lock_guard<std::mutex> lock(engine->state);
+        if (width > 0 && height > 0) engine->media_sizes[id] = {width, height};
+        else engine->media_sizes.erase(id);
         return SC_OK;
     });
 }

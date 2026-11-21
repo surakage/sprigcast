@@ -214,6 +214,21 @@ def test_memory_is_logged_every_ten_minutes_with_what_python_keeps_aside(monkeyp
     assert first.startswith("memory now: ") and "python objects" in first and "kept aside" in first
     assert pacing.watch_memory(now=1000.0 + 60) is None  # not every minute
     assert pacing.watch_memory(now=1000.0 + pacing.MEMORY_EVERY_S + 1) is not None
+    # Sooner when it grew a lot since the last line, and once after a bloom switch (the PC's Gameplay bloom grew
+    # 1.1 GB in 9 minutes, 2026-11-21, with nothing in the log to say where).
+    at = 3000.0
+    monkeypatch.setattr(pacing, "_committed_mb", lambda: 500.0)
+    monkeypatch.setattr(pacing, "_memory_logged", None)
+    assert pacing.watch_memory(now=at) is not None and pacing.watch_memory(now=at + 40) is None
+    monkeypatch.setattr(pacing, "_committed_mb", lambda: 500.0 + pacing.MEMORY_GREW_MB)
+    assert "(grew 200 MB in 80 s)" in pacing.watch_memory(now=at + 80)
+    assert pacing.watch_memory(now=at + 120) is None  # measured from that line on
+    monkeypatch.setattr(pacing, "_memory_switch_said", float("-inf"))
+    pacing._memory_after_switch(at + 130)
+    assert pacing.watch_memory(now=at + 140) is None
+    assert "(after a bloom switch)" in pacing.watch_memory(now=at + 130 + pacing.MEMORY_AFTER_SWITCH_S)
+    pacing._memory_after_switch(at + 170)  # switching all the time: not a line for each
+    assert pacing.watch_memory(now=at + 200) is None
 
 
 def test_the_stall_watch_never_stops(monkeypatch, caplog):

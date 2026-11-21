@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 36
+#define SC_INTERFACE_VERSION 37
 
 enum {
     SC_OK = 0,
@@ -383,6 +383,10 @@ SC_API int sc_engine_source_hold(sc_engine *engine, uint64_t id, uint64_t source
  * alive as long as it is attached, and sc_engine_source_forget detaches it. */
 struct sc_media;
 SC_API int sc_engine_source_media(sc_engine *engine, uint64_t id, struct sc_media *media);
+/* Source `id`, shown from a player, is laid out as width x height whatever size the player's pictures are (0 x 0:
+ * the player's own size again). One camera opened once for sources asking different modes plays the biggest;
+ * each source is laid out at the size it asked for. Stays until changed or sc_engine_source_forget. */
+SC_API int sc_engine_source_media_size(sc_engine *engine, uint64_t id, int width, int height);
 /* Source `id` shows the pictures another process writes into the named shared memory block `name` (a browser
  * page in SprigCast's browser helper): a 64-byte header (u64 counter, then u32 width, height and slot), then two
  * slots of equal size, each holding one RGBA picture; the writer fills the slot not being read, then the size and
