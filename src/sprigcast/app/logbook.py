@@ -21,7 +21,9 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import queue
 import sys
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -371,22 +373,42 @@ class StreamReport:
             folder.mkdir(parents=True, exist_ok=True)
             self.path = folder / f"stream {(now or datetime.now()):%Y-%m-%d %H-%M-%S}.txt"
             self._file = open(self.path, "w", encoding="utf-8", buffering=1)  # noqa: SIM115 (open while live)
+            self._start_writer()
         except OSError as exc:
             log.warning("no stream report (%s)", exc)
             self.path = None
             return
         self._header(collection)
 
+    def _start_writer(self) -> None:
+        """Lines are checked for private data and written on a thread of their own: on the window's thread, a slow
+        disk or a busy PC held the window (PC 2026-11-21, a 1.5 s stall went through these writes)."""
+        self._lines: queue.SimpleQueue = queue.SimpleQueue()
+        self._writer = threading.Thread(target=self._write_lines, name="sprigcast-stream-report", daemon=True)
+        self._writer.start()
+
     def _write(self, text: str) -> None:
         if self._file is None:
             return
-        for st in [st for _, st in self.session.streamers]:
-            redact = getattr(st, "redact", None)
-            if redact:
-                text = redact(text)
-        text = privacy.scrub(text)
+        redactors = [r for _, st in self.session.streamers if (r := getattr(st, "redact", None))]
+        self._lines.put((text, redactors))
+
+    def _write_lines(self) -> None:
+        file = self._file
+        while True:
+            got = self._lines.get()
+            if got is None:
+                break
+            text, redactors = got
+            try:
+                for redact in redactors:
+                    text = redact(text)
+                text = privacy.scrub(text)
+                file.write(text + "\n")
+            except Exception:  # noqa: BLE001 (a line lost, never the report)
+                pass
         try:
-            self._file.write(text + "\n")
+            file.close()
         except OSError:
             pass
 
@@ -460,8 +482,6 @@ class StreamReport:
         for line in summaries:
             self._write(line)
         if self._file is not None:
-            try:
-                self._file.close()
-            except OSError:
-                pass
+            self._lines.put(None)  # the writer closes the file once every line is written
+            self._writer.join(5)
             self._file = None

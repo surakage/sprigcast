@@ -192,8 +192,11 @@ def test_the_stream_report_is_scrubbed(tmp_path):
     report.session = _Session()
     report.path = tmp_path / "stream.txt"
     report._file = open(report.path, "w", encoding="utf-8")
+    report._started, report.clock = 0.0, lambda: 15.0
+    report._start_writer()  # lines are written on a thread of their own
     report._write(f"  0:15  Twitch Enhanced: disconnected: 'rtmp://ingest.example.net/app/{ENHANCED_KEY}'")
-    report._file.close()
+    report.finish([])
+    assert not report._writer.is_alive() and "0:15  Twitch Enhanced" in report.path.read_text(encoding="utf-8")
     assert _leaks(report.path.read_text(encoding="utf-8")) == []
 
 

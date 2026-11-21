@@ -202,6 +202,7 @@ class Engine:
         # Sources nothing on screen shows rest: "not_cameras" (cameras stay ready, they take a second
         # to open), "all", or "off". Set by the UI from Settings → General.
         self.sleep_policy = "not_cameras"
+        self.live = False  # streaming: cameras stay open off screen (set by the window, app/main_window.py)
         self._last_shown: dict[str, float] = {}  # source id -> when something on screen last showed it
         self._camera_wait: dict[str, float] = {}  # camera id -> how long it stays open off screen (see above)
         self._slept_at: dict[str, float] = {}  # camera id -> when it last closed
@@ -1349,6 +1350,10 @@ class Engine:
 
     def _may_sleep(self, source) -> bool:
         if not source.sleeps or self.sleep_policy == "off":
+            return False
+        if source.kind == "camera" and self.live:
+            # Live, a camera stays open once opened: reopened at each switch it held the switch up to 2 s, came up
+            # in another format and lined up with the stinger (PC, 2026-11-21).
             return False
         if self.sleep_policy == "all" or source.kind != "camera":
             return True

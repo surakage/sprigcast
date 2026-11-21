@@ -6898,7 +6898,9 @@ class MainWindow(QMainWindow):
         try:
             request = enhanced.build_request(
                 target.key, [enhanced.CanvasInfo(c.width, c.height, c.fps) for c in canvases], __version__,
-                max_tracks=output.enhanced_max_tracks or None,
+                # Auto: two qualities a canvas (each more is another picture made and another encoder on the card;
+                # at 4,500 kbps viewers lose little). A number picked in the place's settings wins.
+                max_tracks=output.enhanced_max_tracks or enhanced.LIGHT_TRACKS * len(canvases),
                 max_bitrate_kbps=output.enhanced_max_kbps or None,
             )
             from sprigcast.core.workers import wait_answering
@@ -7504,6 +7506,9 @@ class MainWindow(QMainWindow):
         Windows' power saving only while the window is out of sight."""
         from sprigcast.app import priority
 
+        engine, live = getattr(self, "engine", None), self.streaming is not None
+        if engine is not None and getattr(engine, "live", None) is not live:
+            engine.live = live  # cameras stay open while live (render/engine.py _may_sleep)
         if self._going_out():
             self._wake_up()
             return

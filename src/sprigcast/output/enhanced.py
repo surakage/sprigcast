@@ -162,6 +162,9 @@ class CanvasInfo:
     fps: int
 
 
+LIGHT_TRACKS = 2  # qualities a canvas asks Twitch for when the place leaves it on Auto
+
+
 def build_request(stream_key: str, canvases: list[CanvasInfo], version: str, *,
                   max_tracks: int | None = None, max_bitrate_kbps: int | None = None) -> dict:
     """The JSON body for GetClientConfiguration. canvases[0] is the main (horizontal) canvas."""

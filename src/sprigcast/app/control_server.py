@@ -54,6 +54,7 @@ DEFAULT_PORT = 4455  # OBS's port, so apps find SprigCast without changes (use a
 NATIVE_PATH = "/sprigcast"  # ws://127.0.0.1:4455/sprigcast is the SprigCast API; any other path, the OBS door
 WEB_TIMEOUT_MS = 5000  # a connection that hasn't said what it is by then is dropped
 MAX_WAITING = 32  # messages from one connection waiting their turn; past that it's asking faster than answers come
+SOON_GAP_S = 0.1  # full looks for changes at most this often: a burst of requests (StreamBridge's pages) shares one
 FULL_EVERY = 6  # every this many watches (3 s) the settings are written out and compared anyway
 WATCH_MS = 500  # how often stream and record states are compared while an app is connected
 
@@ -903,7 +904,10 @@ class ControlServer(QObject):
         self._edited = True
         if self.sessions and not self._notify_queued:
             self._notify_queued = True
-            QTimer.singleShot(0, self.notify)
+            # Each full look writes every source's settings out to compare: a burst of requests from many pages,
+            # each with its own look, held the window up while live (PC 2026-11-21). One look per SOON_GAP_S.
+            wait = SOON_GAP_S - (time.monotonic() - getattr(self, "_full_at", -SOON_GAP_S))
+            QTimer.singleShot(max(0, round(1000 * wait)), self.notify)
 
     def notify(self, full: bool = True) -> None:
         """full=False (the half-second watch): only what changes by itself (stream, recording, media, states)
@@ -913,6 +917,7 @@ class ControlServer(QObject):
             full, self._light = True, 0  # a plugin may change its own settings: looked at fully now and then
         if full:
             self._notify_queued, self._edited = False, False
+            self._full_at = time.monotonic()
         try:
             if self._obs():
                 for event_type, intent, data in self.api.changes():
