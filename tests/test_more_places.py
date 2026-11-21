@@ -189,3 +189,23 @@ def test_the_stream_page_can_be_made_a_part_at_a_time(fake_keyring):
     # Made all at once (the default), it is the same page.
     whole = StreamPage(col)
     assert whole._built and whole.service.currentData() == "twitch"
+
+
+def test_opening_on_a_place_does_not_make_the_whole_form_at_once(fake_keyring):
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    from sprigcast.app.stream_dialog import StreamPage
+
+    col = _collection(*(Output(id=k, type="stream", service=k, canvas="horizontal", key_ref=f"sprigcast/{k}")
+                        for k in ("twitch", "youtube", "kick")))
+    d = StreamPage(col, later=True)
+    d.select_output("kick")  # Live's Destinations row, just after Settings opens
+    assert not d._built and d.list.currentRow() == 2
+    for _ in range(StreamPage.PARTS):
+        d.take_part()
+    assert d._built and d.list.currentRow() == 2 and d.service.currentData() == "kick" and d.hero.text() == "Kick"
+    new = StreamPage(col, later=True)
+    new.add_output()  # Settings opened to add a place
+    assert not new._built and len(new.outputs) == 3
+    for _ in range(StreamPage.PARTS):
+        new.take_part()
+    assert len(new.outputs) == 4 and new.list.currentRow() == 3 and new.hero.text() == "New place"
