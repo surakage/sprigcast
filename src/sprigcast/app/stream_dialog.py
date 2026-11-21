@@ -502,6 +502,8 @@ class StreamPage(QWidget):
         self._built = True
         yield
         self._refresh_list(max(0, self.list.currentRow()))
+        if self.__dict__.pop("_add_when_built", False):
+            self._add()
         if self._expert:  # asked for while the form was still being made
             self.set_expert(True)
 
@@ -576,12 +578,22 @@ class StreamPage(QWidget):
         return self.outputs[row] if 0 <= row < len(self.outputs) else None
 
     def select_output(self, output_id: str) -> None:
-        self.finish()
         row = next((i for i, o in enumerate(self.outputs) if o.id == output_id), None)
-        if row is not None:
+        if row is None:
+            return
+        if not self._built:
+            # Its card is picked now and its form filled in when the form is made: making the rest at once
+            # here was the whole page in one go again, each time a place was opened from Live (2026-11-21).
+            self.list.blockSignals(True)
             self.list.setCurrentRow(row)
+            self.list.blockSignals(False)
+            return
+        self.list.setCurrentRow(row)
 
     def add_output(self) -> None:
+        if not self._built:
+            self._add_when_built = True  # (a new place needs the form: added as soon as it's made)
+            return
         self._add()
 
     def _add(self) -> None:

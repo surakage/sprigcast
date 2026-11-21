@@ -111,6 +111,7 @@ def test_live_locks_the_places_sending_and_video(app):
     # Only a place that is sending is locked; one that was ended can be fixed and started again.
     assert w.stream_page.isEnabled() and w.stream_page.live_ids == {sending}
     w.stream_page.select_output(sending)
+    w.stream_page.finish()  # (the form is made a part a tick; all of it now)
     assert not w.stream_page.remove_button.isEnabled() and not w.stream_page.live_note.isHidden()
     assert not w.video_fields["horizontal"][1].isEnabled()
     assert w.recording_page.isEnabled()
