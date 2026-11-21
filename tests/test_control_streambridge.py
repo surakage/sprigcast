@@ -235,7 +235,7 @@ def test_native_screenshot_of_one_source_or_bloom():
     assert _fails(api, "screenshot.take", source="Nobody", save=False, data=True) == "not_found"
     # A bloom on air is its canvas; one off air holding one sprig is that sprig on its own.
     on_air = _ok(api, "screenshot.take", bloom="Chatting", save=False, data=True)["shots"]
-    assert [s["shape"] for s in on_air] == ["horizontal"] and on_air[0]["bloom"] == "Chatting"
+    assert [s["shape"] for s in on_air] == ["horizontal", "vertical"] and on_air[0]["bloom"] == "Chatting"  # both: each shape
     _ok(api, "bloom.new", name="Snap me")
     _ok(api, "item.add", bloom="Snap me", source="Cam")
     shot = _ok(api, "screenshot.take", bloom="Snap me", save=False, data=True)["shots"][0]

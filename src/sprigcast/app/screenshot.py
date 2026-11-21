@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QObject, Qt, Signal
-from PySide6.QtGui import QImage
+from PySide6.QtGui import QImage, QPainter
 
 from sprigcast.core.quiet import Every
 
@@ -74,9 +74,22 @@ def grab(engine, canvas_ids: list[str], timeout: float = WAIT_S) -> dict[str, QI
             engine.remove_frame_tap(_tap_key(canvas_id), tap)
     with lock:
         frames = dict(got)
-    return {**read, **{canvas_id: QImage(f.data, f.width, f.height, f.width * 4,
-                                         QImage.Format.Format_RGBA8888_Premultiplied).copy()
-                       for canvas_id, f in frames.items()}}
+    images = {**read, **{canvas_id: QImage(f.data, f.width, f.height, f.width * 4,
+                                           QImage.Format.Format_RGBA8888_Premultiplied)
+                         for canvas_id, f in frames.items()}}
+    return {canvas_id: on_black(image) for canvas_id, image in images.items()}
+
+
+def on_black(image: QImage) -> QImage:
+    """A canvas's picture as viewers get it: on black, with nothing see-through. The canvas keeps how see-through
+    each pixel is (an empty chat area was alpha 26), and a PNG saved with that looked black in one viewer and
+    white in another (PC, 2026-11-21). A stream has no see-through: what isn't covered is black."""
+    out = QImage(image.size(), QImage.Format.Format_RGB32)
+    out.fill(Qt.GlobalColor.black)
+    painter = QPainter(out)
+    painter.drawImage(0, 0, image)
+    painter.end()
+    return out
 
 
 def _tap_key(canvas_id: str) -> str:

@@ -126,6 +126,7 @@ These codes are never renamed; new ones may be added. `app.actions` returns ever
 | `layout.get` | layout.get: every item's place, crop, bounds, source size and canvas box; flat, overlaps |
 | `source.state` | source.get loaded, state ("capturing 1920x1080", "camera not found, retrying"), size, cameraSize, asleep |
 | `places.size` | places.list size [w, h] and fps (what is sent: the place's own, else its shape's), and enhanced on Twitch |
+| `screenshot.skipped` | screenshot.take {bloom}: every shape it's in, skipped names a shape left out; canvas pictures are on black |
 | `places.ready` | places.list name, ready, problem ("Needs a stream key"): why a place can't go live yet |
 | `app_audio.pids` | app_audio settings pids: [process id, ...] catches those processes' trees instead of apps |
 | `browser.h264` | Only when Web pages play H.264/AAC themselves (video tags, streaming players); without it MP4 files still play, converted |
@@ -366,7 +367,7 @@ With `overlaps`, each shape also has `overlaps`: `[{"a", "a_name", "a_in", "b", 
 | `screenshot.take` | A picture of what's on air in each shape, or of one source or bloom. | `shape` (optional): both (default), horizontal or vertical, `source` (optional): just this source (a camera...), name or id, `bloom` (optional): just this bloom, name or id, `width` (optional): shrink to this width in pixels (keeps the shape), `save` (optional): true (default): save PNGs in the recordings folder, under Screenshots, `data` (optional): true: send the picture back as base64 PNG (for bots and pages; large) |
 
 
-`screenshot.take` with `bloom` pictures that bloom on the `shape` you name, whether it's on air or not. A bloom on air is pictured as its canvas. A bloom off air is drawn on its own canvas without being put on air: its sources wake for the moment it takes (up to about 4 seconds for cameras and web pages), then rest again, and its shot has `"on_air": false`. That isn't done while live or recording (`not_allowed`), so the stream never pays for it.
+`screenshot.take` with `bloom` pictures that bloom on the `shape` you name, whether it's on air or not. A bloom on air is pictured as its canvas. A bloom off air is drawn on its own canvas without being put on air: its sources wake for the moment it takes (up to about 4 seconds for cameras and web pages), then rest again, and its shot has `"on_air": false`. That isn't done while live or recording (`not_allowed`), so the stream never pays for it. With `shape` both (the default) you get a picture for each shape the bloom is in; a shape left out is named in `skipped` (`shape`, `why`): the bloom has no layout for that canvas (its vertical look is a bloom of its own: ask for that one by name), or it's on air on one canvas only. A canvas's or bloom's picture is on black with nothing see-through, as viewers get it; a single source's picture keeps its see-through parts.
 
 ### sound
 
