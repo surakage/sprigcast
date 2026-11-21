@@ -429,6 +429,28 @@ def test_where_it_goes_switches_and_edit_adds_nothing(app, tmp_path, monkeypatch
         monkeypatch.setattr(twitch_auth, "connected_account", lambda: "someone")
         side.add_menu.actions()[0].trigger()  # Twitch with a connected account: ready, nothing to open
         assert col.outputs[3].twitch_account and len(opened) == 2
+        # A place + Add made: Settings closed without saving takes it away again; saved without a key, it stays
+        # but switched off; saved with its server and key, it stays on.
+        answers = iter([False, True, True])
+        monkeypatch.setattr(w, "_open_settings", lambda tab="General", output_id=None: next(answers))
+        monkeypatch.setattr(w, "_has_key", lambda ref: False)
+        w._edit_destination("new:facebook")
+        assert len(col.outputs) == 4 and "facebook" not in [o.service for o in col.outputs]
+        w._edit_destination("new:facebook")
+        assert col.outputs[4].service == "facebook" and not col.outputs[4].enabled
+        col.outputs.pop()
+        monkeypatch.setattr(w, "_has_key", lambda ref: True)
+        made = []
+        real_new, real_has_key = w._new_destination, type(w)._has_key.__get__(w)
+        monkeypatch.setattr(w, "_new_destination", lambda key: (
+            made.append(real_new(key)), setattr(col.outputs[-1], "server", "rtmps://example.invalid/live"))[0] or made[-1])
+        w._edit_destination("new:facebook")
+        assert col.outputs[4].service == "facebook" and col.outputs[4].enabled
+        col.outputs.pop()
+        monkeypatch.setattr(w, "_new_destination", real_new)
+        monkeypatch.setattr(w, "_has_key", real_has_key)
+        monkeypatch.setattr(w, "_open_settings", lambda tab="General", output_id=None: opened.append(output_id))
+        w._live_destinations()
         # The menu: the five everyday places, Custom RTMP, then Show all… with every other place behind it.
         assert [a.text() for a in side.add_menu.actions() if not a.isSeparator()] == [
             "Twitch", "YouTube", "Kick", "TikTok", "Facebook", "Custom RTMP", "Show all…"]

@@ -1992,14 +1992,41 @@ class MainWindow(QMainWindow):
         if output_id == "details":  # Live's Destinations card: title, category and the rest
             self.open_stream_details()
             return
+        added = None
         if output_id and output_id.startswith("new:"):
-            output_id = self._new_destination(output_id.split(":", 1)[1])
+            added = output_id = self._new_destination(output_id.split(":", 1)[1])
             if output_id is None:
                 return  # ready to go: a Twitch account gives the key
         if output_id is None:
             first = next((o.id for o in self.collection.outputs if o.type == "stream"), None)
             output_id = first or "new"
-        self._open_settings("Stream", output_id=output_id)
+        saved = self._open_settings("Stream", output_id=output_id)
+        if added is not None and saved is not None:
+            self._settle_new_place(added, saved)
+
+    def _settle_new_place(self, output_id: str, saved: bool) -> None:
+        """A place just made by + Add, once Settings has closed on it. Closed without saving: it was never
+        wanted, so it goes (it stayed in the list, switched on with no key; PC, 2026-11-20). Saved without
+        its server or key: it stays, switched off until it has them."""
+        from sprigcast.app.destinations import problem
+
+        output = next((o for o in self.collection.outputs if o.id == output_id), None)
+        if output is None:
+            return
+        if not saved:
+            if self.streaming is not None:
+                return
+            log.info("places: %s (%s) added and Settings closed without saving, removed", output.id, output.service)
+            self._place_action(output_id, "remove")
+            self._keep_path_file()
+            return
+        why = problem(output, self.collection, self._has_key)
+        if output.enabled and why and why.startswith("Needs"):
+            log.info("places: %s (%s) saved switched off: %s", output.id, output.service, why)
+            output.enabled = False
+            self.collection.save(self.scenes_path)
+            self._refresh_stream_boxes()
+            self._keep_path_file()
 
     def _new_destination(self, service_key: str) -> str | None:
         """Add a place to stream. Returns its id when it still needs a key or server (Settings opens on it)."""
@@ -6835,7 +6862,9 @@ class MainWindow(QMainWindow):
         log.info("settings: gear clicked (window %s)", "active" if self.isActiveWindow() else "not active")
         self._open_settings()
 
-    def _open_settings(self, tab: str = "General", output_id: str | None = None) -> None:
+    def _open_settings(self, tab: str = "General", output_id: str | None = None) -> bool | None:
+        """Open Settings and wait for it. True when something was saved (Apply or Save), False when it was
+        closed without; None when no Settings window of this call was shown and closed."""
         from sprigcast.core import workers
 
         if workers.when_free(lambda: self._open_settings(tab, output_id)):
@@ -6883,6 +6912,8 @@ class MainWindow(QMainWindow):
         elif output_id:
             window.soon(lambda: window.stream_page.select_output(output_id))
         window.applied.connect(self._after_settings)
+        saved = []
+        window.applied.connect(lambda: saved.append(True))
         window.on_ducking = self._open_ducking  # handed to the Audio page when it's made
         window.on_clear_data = self.clear_all_data
 
@@ -6894,6 +6925,7 @@ class MainWindow(QMainWindow):
         window.optimize_requested.connect(lambda: QTimer.singleShot(0, self, self.open_optimizer))
         window.restart_requested.connect(lambda: QTimer.singleShot(0, self, self.restart_app))
         modal(window)
+        return bool(saved)
 
     WARM_SETTINGS_MS = 2_000  # the off-screen Settings is let go this long after it's shown
     WARM_SETTINGS_RETRY_MS, WARM_SETTINGS_TRIES = 2_000, 30  # while the password store loads: later, then never
