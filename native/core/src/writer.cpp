@@ -1035,10 +1035,10 @@ void File::finish_part() {
         std::stable_sort(use.begin(), use.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
         if (!use.empty() && use.front().first > 0.5) use.insert(use.begin(), {0.0, "Start"});
         for (size_t i = 0; i < use.size(); ++i) {
-            const double stop = i + 1 < use.size() ? use[i + 1].first : std::max(end, use[i].first + 0.001);
+            const double until = i + 1 < use.size() ? use[i + 1].first : std::max(end, use[i].first + 0.001);
             Chapter c;
             c.start_ms = std::llround(use[i].first * 1000);
-            c.end_ms = std::max<int64_t>(std::llround(stop * 1000), c.start_ms + 1);
+            c.end_ms = std::max<int64_t>(std::llround(until * 1000), c.start_ms + 1);
             c.title = use[i].second;
             chapters.push_back(std::move(c));
         }
