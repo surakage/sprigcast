@@ -10,21 +10,28 @@ Version 0.2.0. See [CHANGELOG.md](CHANGELOG.md) for what changed and what has be
 
 ## Install
 
-The easiest way is the Windows installer, `SprigCast-Setup-<version>.exe`. It is built on GitHub
-(Actions, *Windows installer* workflow) and asks you to close SprigCast before it installs or uninstalls.
-To run from the source code instead, follow the steps below.
+Download `SprigCast-Setup-<version>.exe` from the [latest release](https://github.com/surakage/sprigcast/releases/latest)
+and run it.
 
-## Requirements
+The installer isn't signed yet, so Windows may show "Windows protected your PC". Choose **More info**, then
+**Run anyway**. The file's fingerprint is in `SHA256.txt` on the same release page.
 
-- Windows 10 or 11, 64-bit
-- An NVIDIA GPU with a recent driver (other GPUs work for the previews; NVENC is used for streaming later)
-- [uv](https://docs.astral.sh/uv/), Git, and the FFmpeg CLI for the test stream:
+## What it needs
+
+- Windows 10 (version 1809 or newer) or Windows 11, 64-bit
+- A graphics card with OpenGL 3.3. NVIDIA (NVENC), AMD (AMF) and Intel (Quick Sync) encoders are used when
+  there; without one, SprigCast encodes on the CPU (x264).
+- 4 GB of memory works for one 720p30 canvas; 8 GB or more for both canvases.
+
+## Run it from the source code
+
+For developers. You need [uv](https://docs.astral.sh/uv/), Git, and the FFmpeg CLI for the test stream:
 
 ```powershell
 winget install astral-sh.uv Git.Git Gyan.FFmpeg
 ```
 
-## Run it
+### Run it
 
 ```powershell
 git clone https://github.com/surakage/sprigcast
@@ -136,6 +143,12 @@ Each release is listed in [CHANGELOG.md](CHANGELOG.md). To make one: bump the ve
 and `src/sprigcast/__init__.py`, move the changelog's "not released yet" to the date, then push a tag like
 `v0.2.0`. The tag builds the installer on GitHub.
 
+Running the *Windows installer* workflow without a tag makes a test build. It says so wherever SprigCast shows
+or logs its version ("0.2.0 test build 44932007527 (eafa358)"), so a log or a problem report always names
+the build it came from.
+
 ## License
 
-GPL-3.0-or-later. See [LICENSE](LICENSE).
+GPL-3.0-or-later. See [LICENSE](LICENSE). The installer also puts `LICENSE.txt` and
+`THIRD-PARTY-NOTICES.txt` (every bundled library with its license, made by `packaging/notices.py`) in SprigCast's
+folder.

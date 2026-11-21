@@ -87,7 +87,8 @@ def test_twitch_account_row(fake_keyring, monkeypatch):
     assert not d.twitch_row.isVisibleTo(d) and not d.outputs[0].twitch_account
 
 
-def test_multitrack_and_advanced_options(fake_keyring):
+def test_multitrack_and_advanced_options(fake_keyring, monkeypatch):
+    monkeypatch.setenv("SPRIGCAST_TWITCH_VERTICAL", "1")  # the vertical row is hidden until it works
     app = QApplication.instance() or QApplication([])  # noqa: F841
     from sprigcast.app.stream_dialog import StreamPage
 

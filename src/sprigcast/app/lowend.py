@@ -216,7 +216,9 @@ def spare_canvas(collection: SceneCollection):
     if len(on) < 2:
         return None
     streamed = {o.canvas for o in collection.outputs if o.type == "stream"}  # set up, ticked or not
-    if any(o.type == "stream" and o.enhanced and o.enhanced_vertical for o in collection.outputs):
+    from sprigcast.output.enhanced import sends_vertical
+
+    if any(o.type == "stream" and sends_vertical(o) for o in collection.outputs):
         streamed.add("vertical")  # Twitch dual format sends the vertical canvas too
     return next((c for c in sorted(on, key=lambda c: c.id != "vertical") if c.id not in streamed), None)
 

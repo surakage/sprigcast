@@ -36,6 +36,21 @@ TWITCH_CONFIG_URL = "https://ingest.twitch.tv/api/v3/GetClientConfiguration"
 SCHEMA_VERSION = "2025-01-25"
 CLIENT_NAME = "sprigcast"
 REQUEST_TIMEOUT = 5  # seconds, like OBS
+# Sending the vertical canvas to Twitch too (dual format) is switched off for now: on the 2026-11-21 PC test
+# Twitch closed the connection within a second, seven times in a row (WSAECONNABORTED), and it hasn't worked
+# yet. A saved "Additional canvas" is kept but not used; SPRIGCAST_TWITCH_VERTICAL=1 brings it back to try.
+VERTICAL_ENV = "SPRIGCAST_TWITCH_VERTICAL"
+
+
+def vertical_allowed() -> bool:
+    """Whether Twitch Enhanced may send the vertical canvas too (off until it works; see VERTICAL_ENV)."""
+    return os.environ.get(VERTICAL_ENV, "").strip() == "1"
+
+
+def sends_vertical(output) -> bool:
+    """This place's Twitch Enhanced stream carries the vertical canvas too."""
+    return bool(getattr(output, "enhanced", False) and getattr(output, "enhanced_vertical", False)
+                and vertical_allowed())
 
 
 class EnhancedError(Exception):

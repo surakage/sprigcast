@@ -25,3 +25,6 @@ recordings/
 # Installer build output
 packaging/build/
 packaging/out/
+
+# Written by the installer build for test builds (sprigcast.build_label)
+src/sprigcast/build.json

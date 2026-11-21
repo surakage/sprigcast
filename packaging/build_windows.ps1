@@ -103,6 +103,15 @@ Remove-Item -Recurse -Force (Join-Path $py "include") -ErrorAction SilentlyConti
 # Unused Qt modules, plugins and tools, WebEngine's debug resources and other languages, Tk, pip and
 # OpenCV's FFmpeg (prune.py says why each is safe). The build checks the app still starts afterwards.
 uv run --no-project --with pefile python (Join-Path $PSScriptRoot "prune.py") $py
+# SprigCast's license and every bundled part's license (notices.py): LICENSE.txt and THIRD-PARTY-NOTICES.txt in
+# the installed folder.
+& $python (Join-Path $PSScriptRoot "notices.py") $py $root
+# A test build (any build that isn't from a v* tag) says so, with its run number and commit, in the version
+# SprigCast shows and logs (sprigcast.build_label), so reports and logs can tell builds apart.
+if ($env:GITHUB_RUN_ID -and -not ($env:GITHUB_REF -like "refs/tags/v*")) {
+    $stamp = @{ kind = "test"; run = $env:GITHUB_RUN_ID; commit = $env:GITHUB_SHA.Substring(0, 7) } | ConvertTo-Json -Compress
+    Set-Content -Path (Join-Path $py "Lib\site-packages\sprigcast\build.json") -Value $stamp -Encoding utf8
+}
 # Every file this version installs: the next update deletes what it no longer ships (manifest.py).
 & $python (Join-Path $PSScriptRoot "manifest.py") $py
 

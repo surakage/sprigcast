@@ -7013,7 +7013,10 @@ class MainWindow(QMainWindow):
         from sprigcast.output import enhanced
 
         canvases = [target.canvas]
-        if output.enhanced_vertical:
+        if output.enhanced_vertical and not enhanced.vertical_allowed():
+            log.info("Enhanced Broadcasting: the vertical canvas isn't sent to Twitch for now (%s=1 tries it)",
+                     enhanced.VERTICAL_ENV)
+        if enhanced.sends_vertical(output):
             vertical = next((c for c in self.collection.canvases if c.enabled and c.height > c.width
                              and c.id != target.canvas.id), None)
             if vertical is not None:
@@ -7053,7 +7056,7 @@ class MainWindow(QMainWindow):
         log.info("Enhanced Broadcasting: %s", config.describe())
         log.info("Enhanced Broadcasting: Twitch asked for %s", enhanced.answer_summary(answer))
         vertical = any(t.canvas_index > 0 for t in config.tracks)
-        if output.enhanced_vertical and not vertical:
+        if enhanced.sends_vertical(output) and not vertical:
             # Twitch decides per channel and PC: a channel not yet allowed Dual Format, or a PC Twitch thinks can't
             # encode both, gets horizontal qualities only.
             why = ("Turn on a vertical canvas to send it to Twitch too." if len(canvases) < 2 else
