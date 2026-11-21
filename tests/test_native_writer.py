@@ -444,3 +444,112 @@ def test_what_waited_is_written_without_dropping_new_frames(player_lib, tmp_path
     assert stats.state_name == "finished", stats.error_text
     assert stats.recoveries == 1 and stats.frames_dropped == 0 and stats.frames_repeated == 0
     assert stats.frames_written == 90
+
+
+def _fed(writer, frames, start=0, pace=0.0):
+    for n in range(start, start + frames):
+        assert writer.video(nv12(16 + (3 * n) % 200), n) == sprigcore.SC_OK
+        writer.audio(np.zeros((1600, 2), np.float32), 0)
+        while writer.take_packet() is not None:
+            pass
+        if pace:
+            time.sleep(pace)
+
+
+def _until(test, seconds=10.0):
+    deadline = time.monotonic() + seconds
+    while not test():
+        assert time.monotonic() < deadline, "it never happened"
+        time.sleep(0.01)
+
+
+def test_a_link_sends_the_writers_packets_without_python(player_lib, tmp_path):  # noqa: F811
+    """A stream sent by the engine (sc_link): it connects by itself, asks for a keyframe and starts there with times
+    from zero; sound from before that keyframe is left out; finish() sends what waits and closes properly."""
+    writer = sprigcore.Writer(str(tmp_path / "streams.nut"), "libx264", W, H, fps=30,
+                              video_options={"preset": "ultrafast", "forced-idr": "1"}, video_kbps=300,
+                              keyframe_frames=300, audio_tracks=2, queue_frames=120, packets=True)
+    sent = tmp_path / "sent.flv"
+    link = None
+    try:
+        _fed(writer, 20)  # before anyone is connected: never sent
+        _until(lambda: writer.stats().frames_written >= 20)
+        link = writer.link(str(sent), 300)
+        _until(lambda: link.stats().state_name == "ready")
+        _fed(writer, 40, start=20)
+        _until(lambda: link.stats().frames >= 39)  # the encoder may still hold the newest picture
+        stats = link.stats()
+        assert stats.state_name == "live" and stats.dropped == 0 and stats.bytes > 0
+        assert abs(stats.first_seconds - 20 / 30) < 1e-6  # the keyframe it asked for was the next picture
+        link.finish()
+        _until(lambda: link.stats().state_name == "finished")
+        assert writer.stats().state_name == "running"  # the encoder goes on (clips, other places)
+    finally:
+        if link is not None:
+            link.close()
+        writer.close()
+    with av.open(str(sent)) as f:
+        assert len(f.streams.audio) == 1
+        video = list(f.demux(video=0))
+        video = [p for p in video if p.size]
+        assert len(video) >= 39 and video[0].is_keyframe and video[0].pts == 0
+        sound = [p for p in f.demux(audio=0) if p.size] if f.seek(0) is None else []
+        assert sound and min(p.pts for p in sound) >= 0
+    with av.open(str(sent)) as f:
+        lumas = [int(frame.to_ndarray()[:H].mean()) for frame in f.decode(video=0)]
+    assert len(lumas) >= 39 and abs(lumas[0] - (16 + 60)) <= 4
+
+
+def test_a_link_that_cant_connect_or_loses_its_writer_fails_and_says_why(player_lib, tmp_path):  # noqa: F811
+    writer = sprigcore.Writer(str(tmp_path / "streams.nut"), "libx264", W, H, fps=30,
+                              video_options={"preset": "ultrafast"}, audio_tracks=1, queue_frames=120, packets=True)
+    try:
+        nowhere = writer.link(str(tmp_path / "no-such-folder" / "sent.flv"), 300)
+        _until(lambda: nowhere.stats().state_name == "failed")
+        assert "couldn't connect" in nowhere.stats().error_text
+        assert "no-such-folder" not in nowhere.stats().error_text  # an address holds the stream key
+        nowhere.close()
+        link = writer.link(str(tmp_path / "sent.flv"), 300)
+        _until(lambda: link.stats().state_name == "ready")
+        _fed(writer, 10)
+    finally:
+        writer.close()
+    _until(lambda: link.stats().state_name == "failed")
+    assert "encoder stopped" in link.stats().error_text
+    link.close()
+    assert link.stats().state_name == "failed"  # closed: still safe to ask
+
+
+def test_a_link_behind_skips_until_a_keyframe_and_a_delay_holds_packets(player_lib, tmp_path, monkeypatch):  # noqa: F811
+    """A stream delay holds every packet that long; a link with more than max_backlog waiting skips pictures (and,
+    alone on its writer, asks for a keyframe to come back at)."""
+    writer = sprigcore.Writer(str(tmp_path / "streams.nut"), "libx264", W, H, fps=30,
+                              video_options={"preset": "ultrafast", "forced-idr": "1"}, video_kbps=300,
+                              keyframe_frames=3000, audio_tracks=1, queue_frames=120, packets=True)
+    delayed = late = None
+    try:
+        delayed = writer.link(str(tmp_path / "delayed.flv"), 300, delay_s=1.0)
+        _until(lambda: delayed.stats().state_name == "ready")
+        began = time.monotonic()
+        _fed(writer, 30)
+        _until(lambda: delayed.stats().delayed > 0)
+        assert delayed.stats().frames == 0 and delayed.stats().backlog_bytes == 0
+        _until(lambda: delayed.stats().frames >= 29)
+        assert time.monotonic() - began >= 0.95
+        delayed.close()
+        delayed = None
+        # kbps 1: any packet waiting is "seconds" of backlog, and each takes 40 ms to send (a slow upload), so
+        # packets offered meanwhile find it behind
+        monkeypatch.setenv("SPRIGCAST_LINK_SLOW_MS", "40")
+        late = writer.link(str(tmp_path / "late.flv"), 1, delay_s=0, max_backlog_s=0.001, resume_backlog_s=1e9)
+        _until(lambda: late.stats().state_name == "ready")
+        _fed(writer, 60, start=30, pace=0.005)
+        _until(lambda: writer.stats().frames_written >= 90)
+        _until(lambda: late.stats().backlog_bytes == 0)
+        stats = late.stats()
+        assert stats.dropped > 0 and stats.frames >= 1 and stats.frames + stats.dropped <= 60
+    finally:
+        for link in (delayed, late):
+            if link is not None:
+                link.close()
+        writer.close()

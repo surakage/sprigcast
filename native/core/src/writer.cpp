@@ -82,6 +82,8 @@ struct Track {
     int64_t next_pts = 0;        // in samples
 };
 
+struct Link;
+
 struct Core {
     // Set once, before the thread starts.
     std::string target, format, video_codec, video_options, format_options;
@@ -146,6 +148,12 @@ struct Core {
         std::vector<uint8_t> data;
     };
     std::deque<Out> outs;
+    // Streams the engine sends itself (sc_link): each is offered every packet as it is encoded (writer thread).
+    std::mutex links_lock;
+    std::vector<std::shared_ptr<Link>> links;
+    bool streams_ready = false;  // under links_lock: `out`'s streams hold the codec headers (open() .. close_all)
+    void offer_links(const Out &o);
+    void end_links(const std::string &why);
     std::atomic<int> want_kbps{0}, want_max{0}, want_buffer{0};  // sc_writer_set_bitrate, applied before a picture
     bool key_next = false;  // sc_writer_keyframe: the next picture queued starts a keyframe (under `lock`)
     FramePtr i420;
@@ -248,6 +256,8 @@ void Core::open() {
     }
     pkt = ff.av_packet_alloc();
     if (!pkt) throw std::bad_alloc();
+    std::lock_guard<std::mutex> hold(links_lock);
+    streams_ready = true;
 }
 
 // The video encoder: on the card (hw_frames) or taking pictures from memory, NV12 or else I420.
@@ -338,6 +348,7 @@ void Core::write_packets(AVCodecContext *enc, AVStream *stream, AVPacket *use) {
             o.tb = enc->time_base;
             o.data.assign(p->data, p->data + p->size);
             ff.av_packet_unref(p);
+            offer_links(o);
             std::lock_guard<std::mutex> hold(lock);
             if (outs.size() >= 4096) throw WriteError("the encoded packets weren't taken for a minute");
             bytes += o.data.size();
@@ -547,7 +558,309 @@ void Core::encode_sound(Track &t, bool flush) {
     }
 }
 
+
+// ---- A stream sent by the engine (sc_link) -------------------------------------------------------------------
+// One connection of a packets-mode writer: output/shared_stream.py's StreamLink (offer, _send, _session and the
+// DelayLine), on a thread of the engine's own. Python only looks at its numbers and decides when to try again.
+struct Link {
+    std::shared_ptr<Core> core;
+    std::string url, format;
+    double bytes_per_s = 750000, delay_s = 0, max_backlog = 4, resume_backlog = 2, behind_s = 0.25;
+    double connect_s = 10, send_s = 20;
+    int slow_ms = 0;  // SPRIGCAST_LINK_SLOW_MS (tests): each packet takes this long to send (a slow upload)
+
+    struct Packet {
+        int track = 0;
+        bool key = false;
+        int64_t pts = 0, dts = 0;
+        AVRational tb{1, 1};
+        std::vector<uint8_t> data;  // with FFmpeg's padding after `size` bytes
+        size_t size = 0;
+        double seconds = 0;
+    };
+    struct Held {
+        std::shared_ptr<const Packet> packet;
+        double due = 0;
+    };
+    std::mutex lock;
+    std::condition_variable wake, done_cv;
+    std::deque<Held> delayed;                           // not yet due (a stream delay)
+    std::deque<std::shared_ptr<const Packet>> waiting;  // to be sent
+    int state = SC_LINK_CONNECTING;
+    bool started = false, congested = false, finishing = false, done = false;
+    std::string error, ended;  // ended: the writer closed (says why)
+    double zero = 0;           // the writer's seconds of the keyframe this connection started at
+    uint64_t frames = 0, dropped = 0, bytes = 0, backlog_bytes = 0;
+    double send_seconds = 0, longest_send = 0, behind_seconds = 0, sent_at = -1;
+    std::atomic<bool> stop{false};
+    std::atomic<bool> closing{false};  // saying goodbye: only the deadline ends a network call now
+    std::atomic<double> deadline{0};   // the network call running now is given up after this (now_s)
+    bool header = false, broken = false, trailer = false;  // link thread only
+    std::thread thread;
+
+    // `lock` held: packets whose delay has passed may be sent.
+    void ripen(double now) {
+        while (!delayed.empty() && delayed.front().due <= now) {
+            backlog_bytes += delayed.front().packet->size;
+            waiting.push_back(std::move(delayed.front().packet));
+            delayed.pop_front();
+        }
+    }
+    // Writer thread. True: this link fell behind just now and, alone on its writer, wants a keyframe to rejoin at.
+    bool offer(const std::shared_ptr<const Packet> &p) {
+        std::lock_guard<std::mutex> hold(lock);
+        if ((state != SC_LINK_READY && state != SC_LINK_LIVE) || finishing) return false;
+        const bool picture = p->track == 0;
+        if (!started) {
+            if (!(picture && p->key)) return false;  // a connection starts at a keyframe
+            started = true;
+            zero = p->seconds;
+        }
+        const double now = now_s();
+        ripen(now);
+        const double backlog = static_cast<double>(backlog_bytes) / bytes_per_s;
+        if (congested) {
+            if (backlog < resume_backlog && picture && p->key) {
+                congested = false;  // caught up: carry on from this keyframe
+            } else {
+                if (picture) ++dropped;
+                return false;
+            }
+        } else if (backlog > max_backlog) {
+            congested = true;
+            if (picture) ++dropped;
+            return true;
+        }
+        if (delay_s > 0) {
+            delayed.push_back(Held{p, now + delay_s});
+        } else {
+            backlog_bytes += p->size;
+            waiting.push_back(p);
+        }
+        wake.notify_one();
+        return false;
+    }
+    void run();
+    void session(AVFormatContext *&ctx);
+};
+
+int link_interrupted(void *opaque) {
+    auto *l = static_cast<Link *>(opaque);
+    if (now_s() > l->deadline.load()) return 1;
+    return (l->stop.load() && !l->closing.load()) ? 1 : 0;
+}
+
+void Core::offer_links(const Out &o) {
+    if (o.track > 1) return;  // a stream carries the video and the first sound track
+    std::vector<std::shared_ptr<Link>> to;
+    {
+        std::lock_guard<std::mutex> hold(links_lock);
+        if (links.empty()) return;
+        to = links;
+    }
+    auto p = std::make_shared<Link::Packet>();
+    p->track = o.track;
+    p->key = o.key;
+    p->pts = o.pts;
+    p->dts = o.dts;
+    p->tb = o.tb;
+    p->size = o.data.size();
+    p->data.resize(o.data.size() + AV_INPUT_BUFFER_PADDING_SIZE);
+    if (!o.data.empty()) std::memcpy(p->data.data(), o.data.data(), o.data.size());
+    p->seconds = static_cast<double>(o.pts) * o.tb.num / std::max(1, o.tb.den);
+    bool key = false;
+    for (auto &l : to) key = l->offer(p) || key;
+    if (key && to.size() < 2) {
+        // With others on the same encoder it waits for the next regular keyframe: one forced each time a slow
+        // place fell behind gave every place bursts of bitrate (output/shared_stream.py StreamLink.offer).
+        std::lock_guard<std::mutex> hold(lock);
+        key_next = true;
+    }
+}
+
+void Core::end_links(const std::string &why) {
+    std::vector<std::shared_ptr<Link>> gone;
+    {
+        std::lock_guard<std::mutex> hold(links_lock);
+        streams_ready = false;
+        gone.swap(links);
+    }
+    for (auto &l : gone) {
+        std::lock_guard<std::mutex> hold(l->lock);
+        if (l->ended.empty()) l->ended = why;
+        l->wake.notify_all();
+    }
+}
+
+void Link::session(AVFormatContext *&ctx) {
+    // The writer's encoders may still be opening (a link is made as soon as the stream starts).
+    const double until = now_s() + 10;
+    for (;;) {
+        {
+            std::lock_guard<std::mutex> hold(core->links_lock);
+            if (core->streams_ready) break;
+        }
+        {
+            std::lock_guard<std::mutex> hold(lock);
+            if (!ended.empty()) throw Error(ended);
+        }
+        if (stop.load()) return;
+        if (now_s() > until) throw Error("the shared encoder did not start");
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    must(ff.avformat_alloc_output_context2(&ctx, nullptr, format.c_str(), url.c_str()), "the connection");
+    ctx->interrupt_callback.callback = link_interrupted;
+    ctx->interrupt_callback.opaque = this;
+    {
+        std::lock_guard<std::mutex> hold(core->links_lock);
+        if (!core->streams_ready || !core->out) throw Error("the encoder stopped");
+        const unsigned count = std::min(2u, core->out->nb_streams);
+        for (unsigned i = 0; i < count; ++i) {
+            AVStream *st = ff.avformat_new_stream(ctx, nullptr);
+            if (!st) throw std::bad_alloc();
+            must(ff.avcodec_parameters_copy(st->codecpar, core->out->streams[i]->codecpar), "the stream's headers");
+            st->codecpar->codec_tag = 0;  // the tag is the other muxer's
+        }
+    }
+    deadline = now_s() + connect_s;
+    if (!(ctx->oformat->flags & AVFMT_NOFILE)) {
+        AVIOInterruptCB cb{link_interrupted, this};
+        const int r = ff.avio_open2(&ctx->pb, url.c_str(), AVIO_FLAG_WRITE, &cb, nullptr);
+        if (r < 0) throw Error("couldn't connect: " + av_text(r));
+    }
+    const int head = ff.avformat_write_header(ctx, nullptr);
+    if (head < 0) throw Error("couldn't connect: " + av_text(head));
+    this->header = true;
+    {
+        std::lock_guard<std::mutex> hold(lock);
+        state = SC_LINK_READY;
+    }
+    {
+        std::lock_guard<std::mutex> hold(core->lock);
+        core->key_next = true;  // a connection starts at a keyframe: the next picture is one
+    }
+    AVPacket *pkt = ff.av_packet_alloc();
+    if (!pkt) throw std::bad_alloc();
+    struct Free {
+        AVPacket *p;
+        ~Free() { ff.av_packet_free(&p); }
+    } free_pkt{pkt};
+    for (;;) {
+        std::shared_ptr<const Packet> p;
+        double first = 0;
+        {
+            std::unique_lock<std::mutex> hold(lock);
+            for (;;) {
+                ripen(now_s());
+                if (stop.load()) return;
+                if (!waiting.empty()) break;
+                if (!ended.empty()) throw Error(ended);
+                if (finishing && delayed.empty()) {
+                    hold.unlock();
+                    closing = true;
+                    deadline = now_s() + 5;
+                    trailer = true;
+                    ff.av_write_trailer(ctx);
+                    hold.lock();
+                    state = SC_LINK_FINISHED;
+                    return;
+                }
+                if (delayed.empty()) {
+                    wake.wait_for(hold, std::chrono::milliseconds(200));
+                } else {
+                    const double left = std::clamp(delayed.front().due - now_s(), 0.001, 0.2);
+                    wake.wait_for(hold, std::chrono::duration<double>(left));
+                }
+            }
+            p = std::move(waiting.front());
+            waiting.pop_front();
+            first = zero;
+        }
+        // Times count from the keyframe the connection started at; sound from just before it is left out.
+        const int64_t offset = std::llround(first * p->tb.den / std::max(1, p->tb.num));
+        int w = 0;
+        bool sent = false;
+        double spent = 0;
+        if (p->pts >= offset && p->track < static_cast<int>(ctx->nb_streams)) {
+            AVStream *st = ctx->streams[p->track];
+            pkt->data = const_cast<uint8_t *>(p->data.data());  // not reference-counted: the muxer copies it
+            pkt->size = static_cast<int>(p->size);
+            pkt->pts = p->pts - offset;
+            pkt->dts = p->dts - offset;
+            pkt->flags = p->key ? AV_PKT_FLAG_KEY : 0;
+            pkt->stream_index = st->index;
+            ff.av_packet_rescale_ts(pkt, p->tb, st->time_base);
+            const double began = now_s();
+            deadline = began + send_s;
+            if (slow_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(slow_ms));
+            w = ff.av_interleaved_write_frame(ctx, pkt);
+            spent = now_s() - began;
+            ff.av_packet_unref(pkt);
+            sent = true;
+        }
+        std::lock_guard<std::mutex> hold(lock);
+        backlog_bytes -= std::min<uint64_t>(backlog_bytes, p->size);
+        if (!sent) continue;
+        if (w < 0) {
+            broken = true;
+            throw Error(stop.load() ? "stopped" : "sending: " + av_text(w));
+        }
+        const double done_at = now_s();
+        send_seconds += spent;
+        longest_send = std::max(longest_send, spent);
+        if (sent_at >= 0 && static_cast<double>(backlog_bytes) / bytes_per_s >= behind_s)
+            behind_seconds += done_at - sent_at;
+        sent_at = done_at;
+        bytes += p->size;
+        if (p->track == 0) ++frames;
+        state = SC_LINK_LIVE;
+    }
+}
+
+void Link::run() {
+    sc::name_thread(L"SprigCast stream link");
+    sc::sender_thread_priority();
+    AVFormatContext *ctx = nullptr;
+    std::string why;
+    bool faulted = false;
+    try {
+        session(ctx);
+    } catch (const std::exception &e) {
+        why = e.what();
+    } catch (...) {
+        // Crash gate: a fault inside FFmpeg ends this connection, never the app; nothing of it is touched again.
+        faulted = true;
+        why = "the connection faulted";
+    }
+    if (!faulted) {
+        try {
+            closing = true;
+            deadline = now_s() + 2;  // closing says goodbye to the server: not for long
+            if (ctx && header && !broken && !trailer) ff.av_write_trailer(ctx);  // what the muxer still holds goes out
+            if (ctx && !(ctx->oformat->flags & AVFMT_NOFILE) && ctx->pb) ff.avio_closep(&ctx->pb);
+            if (ctx) ff.avformat_free_context(ctx);
+        } catch (...) {
+        }
+    }
+    {
+        std::lock_guard<std::mutex> hold(core->links_lock);
+        auto &all = core->links;
+        all.erase(std::remove_if(all.begin(), all.end(), [&](const auto &l) { return l.get() == this; }), all.end());
+    }
+    std::lock_guard<std::mutex> hold(lock);
+    if (state != SC_LINK_FINISHED) {
+        state = SC_LINK_FAILED;
+        if (error.empty()) error = why.empty() ? "stopped" : why;
+    }
+    delayed.clear();
+    waiting.clear();
+    backlog_bytes = 0;
+    done = true;
+    done_cv.notify_all();
+}
+
 void Core::close_all(bool trailer) {
+    end_links("the encoder stopped");
     if (out && trailer && !packets) {  // packets mode: the streams' file was finished when it opened
         const int r = ff.av_write_trailer(out);
         if (r < 0) set_failed("writing the file's ending: " + av_text(r));
@@ -1158,6 +1471,106 @@ SC_API void sc_writer_destroy(sc_writer *w) {
     } catch (...) {
     }
     delete w;
+}
+
+}  // extern "C"
+
+struct sc_link {
+    std::shared_ptr<Link> link;
+};
+
+extern "C" {
+
+SC_API int sc_link_open(sc_writer *w, const sc_link_config *cfg, sc_link **out) {
+    return sc::guarded("sc_link_open", [&]() -> int {
+        if (!w || !cfg || !out || !cfg->url || !*cfg->url)
+            return sc::fail(SC_ERR_ARGUMENT, "sc_link_open: no writer or address");
+        *out = nullptr;
+        if (!w->core->packets) return sc::fail(SC_ERR_ARGUMENT, "sc_link_open: the writer doesn't hand out packets");
+        auto l = std::make_shared<Link>();
+        l->core = w->core;
+        l->url = cfg->url;
+        l->format = cfg->format && *cfg->format ? cfg->format : "flv";
+        l->bytes_per_s = std::max(1, cfg->kbps) * 125.0;
+        l->delay_s = std::clamp(cfg->delay_s, 0.0, 3600.0);
+        if (cfg->max_backlog_s > 0) l->max_backlog = cfg->max_backlog_s;
+        if (cfg->resume_backlog_s > 0) l->resume_backlog = cfg->resume_backlog_s;
+        if (cfg->behind_s > 0) l->behind_s = cfg->behind_s;
+        if (cfg->connect_timeout_ms > 0) l->connect_s = cfg->connect_timeout_ms / 1000.0;
+        if (cfg->send_timeout_ms > 0) l->send_s = cfg->send_timeout_ms / 1000.0;
+        l->deadline = now_s() + 3600;
+        l->slow_ms = std::clamp(std::atoi(env_text("SPRIGCAST_LINK_SLOW_MS").c_str()), 0, 1000);
+        {
+            std::lock_guard<std::mutex> hold(w->core->lock);
+            if (w->core->done) return sc::fail(SC_ERR_ARGUMENT, "sc_link_open: the writer has ended");
+        }
+        auto handle = std::make_unique<sc_link>();
+        handle->link = l;
+        {
+            std::lock_guard<std::mutex> hold(w->core->links_lock);
+            w->core->links.push_back(l);
+        }
+        l->thread = std::thread([l] { l->run(); });
+        *out = handle.release();
+        return SC_OK;
+    });
+}
+
+SC_API int sc_link_stats_get(sc_link *h, sc_link_stats *out) {
+    return sc::guarded("sc_link_stats_get", [&]() -> int {
+        if (!h || !out) return sc::fail(SC_ERR_ARGUMENT, "sc_link_stats_get: nothing given");
+        Link &l = *h->link;
+        std::lock_guard<std::mutex> hold(l.lock);
+        std::memset(out, 0, sizeof *out);
+        l.ripen(now_s());
+        out->state = l.state;
+        out->congested = l.congested ? 1 : 0;
+        out->frames = l.frames;
+        out->dropped = l.dropped;
+        out->bytes = l.bytes;
+        out->backlog_bytes = l.backlog_bytes;
+        out->delayed = static_cast<int>(l.delayed.size());
+        out->send_seconds = l.send_seconds;
+        out->longest_send = l.longest_send;
+        out->behind_seconds = l.behind_seconds;
+        out->first_seconds = l.zero;
+        std::snprintf(out->error, sizeof out->error, "%s", l.error.c_str());
+        return SC_OK;
+    });
+}
+
+SC_API int sc_link_finish(sc_link *h) {
+    return sc::guarded("sc_link_finish", [&]() -> int {
+        if (!h) return sc::fail(SC_ERR_ARGUMENT, "sc_link_finish: no link");
+        std::lock_guard<std::mutex> hold(h->link->lock);
+        h->link->finishing = true;
+        h->link->wake.notify_all();
+        return SC_OK;
+    });
+}
+
+SC_API void sc_link_destroy(sc_link *h) {
+    if (!h) return;
+    try {
+        Link &l = *h->link;
+        l.stop.store(true);
+        {
+            std::lock_guard<std::mutex> hold(l.lock);
+            l.wake.notify_all();
+        }
+        if (l.thread.joinable()) {
+            std::unique_lock<std::mutex> hold(l.lock);
+            const bool ended = l.done_cv.wait_for(hold, std::chrono::seconds(5), [&] { return l.done; });
+            hold.unlock();
+            if (ended) {
+                l.thread.join();
+            } else {
+                l.thread.detach();  // still stuck in the network: it keeps its Link and ends by itself
+            }
+        }
+    } catch (...) {
+    }
+    delete h;
 }
 
 }  // extern "C"

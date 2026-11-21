@@ -88,6 +88,71 @@ def test_a_stream_steers_the_writers_bitrate(native, tmp_path):
         assert sum(1 for _ in f.decode(video=0)) > 10
 
 
+def test_the_engine_sends_a_stream_itself_and_python_only_reads_its_numbers(native, tmp_path, monkeypatch):
+    """With the writer encoding, a link's connection is the engine's too (sc_link): no packet is queued or sent
+    in Python. A connection that can't be made is tried again as before, with the reason and never the key."""
+    enc = SharedStreamEncoder(stream_tests._Canvas(), 30, 800, "libx264", stream_tests.time.perf_counter())
+    link = stream_tests.StreamLink("a", str(tmp_path), "sent.flv", enc)
+    lost = stream_tests.StreamLink("lost", str(tmp_path / "no-such-folder"), "live_SECRET", enc)
+    monkeypatch.setattr(stream_mod, "RETRY_FIRST", 0.05)
+    enc.links += [link, lost]
+    enc.start()
+    link.start()
+    lost.start()
+    try:
+        stream_tests._feed(enc, 1.0)
+        assert link.connected and link.status == "live" and link._sender is not None
+        assert link._q.empty() and link.frames > 10 and link.bytes_out > 0 and link.dropped == 0
+        assert link.stats()["frames"] == link.frames
+        assert not lost.connected and lost.reconnects >= 1 and "disconnected: couldn't connect" in lost.status
+        assert "SECRET" not in lost.status
+    finally:
+        lost.stop()
+        link.stop()
+        enc.stop()
+    assert enc.error is None and link.status == "stopped" and link._sender is None
+    with av.open(str(tmp_path / "sent.flv")) as f:
+        packets = [p for p in f.demux(video=0) if p.size]
+        assert packets[0].is_keyframe and packets[0].pts == 0 and 0 <= len(packets) - link.frames <= 1
+
+
+def test_the_engines_sender_can_be_turned_off(native, tmp_path, monkeypatch):
+    monkeypatch.setenv("SPRIGCAST_NO_NATIVE_LINK", "1")
+    enc = SharedStreamEncoder(stream_tests._Canvas(), 30, 800, "libx264", stream_tests.time.perf_counter())
+    link = stream_tests.StreamLink("a", str(tmp_path), "sent.flv", enc)
+    enc.links.append(link)
+    enc.start()
+    link.start()
+    try:
+        stream_tests._feed(enc, 1.0)
+        assert link.connected and link._sender is None and link.frames > 0
+    finally:
+        link.stop()
+        enc.stop()
+
+
+def test_a_stream_delay_is_kept_by_the_engine_and_sent_out_at_the_end(native, tmp_path):
+    enc = SharedStreamEncoder(stream_tests._Canvas(), 30, 800, "libx264", stream_tests.time.perf_counter())
+    link = stream_tests.StreamLink("a", str(tmp_path), "sent.flv", enc)
+    link.delay_s = 1.0
+    enc.links.append(link)
+    enc.start()
+    link.start()
+    try:
+        stream_tests._feed(enc, 0.7)
+        assert link._ready and link.frames == 0  # held back
+        link.stop()
+        assert link.status.startswith("ending: sending the last 1 s")
+        stream_tests._feed(enc, 0.2)  # nothing new is taken while it ends
+        link._thread.join(8)
+        assert not link._thread.is_alive() and link.status == "stopped" and link.frames > 3
+    finally:
+        link._stop.set()
+        enc.stop()
+    with av.open(str(tmp_path / "sent.flv")) as f:
+        assert 0 <= sum(1 for _ in f.decode(video=0)) - link.frames <= 1
+
+
 def test_a_lone_stream_gets_a_shared_encoder_on_the_writer(native):
     engine = stream_tests._Engine()
     target = stream_mod.StreamTarget("Alone", stream_tests._Canvas(), "rtmp://127.0.0.1:1/app", "secretkey", 800,

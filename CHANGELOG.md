@@ -6,6 +6,11 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- Streams are sent by the C++ engine: each place's connection is made, packed and sent on a thread of the
+  engine's own, so a busy moment in the window can no longer hold up what goes out to Twitch, YouTube, Kick and
+  the others. Reconnecting, stream delay, skipping when the upload can't keep up, auto bitrate and the numbers
+  in Stats work as before. Twitch Enhanced Broadcasting's own connection is still sent the old way for now.
+  `SPRIGCAST_NO_NATIVE_LINK=1` turns it off. Not tried on a PC yet.
 - Backdrop filter for cameras and capture cards: blur the room behind you, swap it for a picture, or take it
   out. A small person-finding model (MediaPipe Selfie Segmentation, Apache 2.0) runs inside the engine as
   graphics card programs: no AI library, nothing on the processor, about 0.2 MB added to the engine. It makes a

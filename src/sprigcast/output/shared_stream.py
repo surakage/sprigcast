@@ -15,6 +15,7 @@ it lowers for all of them (as far as the second-worst asks); when one alone does
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
 import time
@@ -26,15 +27,18 @@ from sprigcast.output.recorder import measured_kbps, rate_limits
 from sprigcast.output.replay import ReplayBuffer, _Packet
 from sprigcast.output.shared import FileTap
 from sprigcast.output.stream import (
+    CONNECT_TIMEOUT,
     GRACE_SECONDS,
     HOLD_SECONDS,
     MAX_BACKLOG,
     RESUME_BACKLOG,
     RETRY_FIRST,
+    SEND_TIMEOUT,
     SEVERITY,
     log_live,
     retry_plan,
     explain_connect,
+    ingest_name,
     open_ingest,
     stream_url,
 )
@@ -293,6 +297,7 @@ class StreamLink:
         self._congested = False
         self.delay_s = 0.0  # Settings → Stream → Quality → Stream delay
         self._delay_line = None
+        self._sender = None  # the engine sends this connection itself (sprigcore.StreamLinkSender)
         self._zero = 0.0  # seconds of the first packet sent on this connection
         self._connected_at = 0.0
         self._health: tuple | None = None
@@ -353,6 +358,18 @@ class StreamLink:
         self._thread.start()
 
     def stop(self, timeout: float = 5.0) -> None:
+        sender = self._sender
+        if sender is not None and self._ready and self.delay_s > 0:
+            self.status = f"ending: sending the last {self.delay_s:g} s"
+
+            def finish_sender():
+                sender.finish()  # the engine sends the delayed part at its times, then closes; _session_engine ends
+                self._thread.join(self.delay_s + 5)
+                self._stop.set()
+                self._thread.join(timeout)
+
+            threading.Thread(target=finish_sender, name=f"sprigcast-end-{self.name}", daemon=True).start()
+            return
         line = self._delay_line
         if line is not None and self._ready and self.delay_s > 0:
             # Ending with a stream delay: the delayed part still goes out (like OBS), in the background.
@@ -449,7 +466,7 @@ class StreamLink:
     # Encoder thread: packets in ----------------------------------------------------------
 
     def offer(self, p: _Packet) -> None:
-        if not self._ready:
+        if not self._ready or self._sender is not None:  # the engine's sender takes its packets from the writer
             return
         if not self._started:
             if not (p.kind == "video" and p.keyframe):
@@ -490,12 +507,93 @@ class StreamLink:
     def _default_open(self, url: str):
         return open_ingest(url)
 
-    def _connect(self):
-        out = self._open_container(self._url)
+    def _await_encoder(self) -> None:
         deadline = time.monotonic() + 10
         while self.shared._templates is None:  # the encoder is still opening
             if self._stop.wait(0.05) or time.monotonic() > deadline:
                 raise RuntimeError("the shared encoder did not start")
+
+    def _engine_may_send(self) -> bool:
+        """Nothing stands in for the connection (a test's own container) and it isn't turned off."""
+        return (self._open_container == self._default_open and type(self)._default_open is _OPEN_INGEST
+                and not os.environ.get("SPRIGCAST_NO_NATIVE_LINK"))
+
+    def _engine_writer(self):
+        """The shared encoder's writer when the engine can send this connection itself (packets mode, interface
+        39), else None: PyAV sends it from this thread as before (SPRIGCAST_NO_NATIVE_LINK=1 too)."""
+        if not self._engine_may_send():
+            return None
+        writer = getattr(self.shared, "writer", None)
+        return writer if writer is not None and getattr(writer, "packets", False) and hasattr(writer, "link") else None
+
+    def _session_engine(self, writer) -> None:
+        """One connection sent by the engine: a thread of its own connects, packs and sends the writer's packets
+        (native/core/src/writer.cpp Link), so no packet waits for Python's lock on its way out. This thread only
+        reads its numbers; when it drops, _run tries again as before."""
+        import av.logging as avlog
+
+        base = (self.frames, self.dropped, self.bytes_out, self.mux_seconds, self.behind_seconds)
+        sender = None
+        old = avlog.get_level()
+        louder = old is None or old > avlog.WARNING
+        if louder:
+            avlog.set_level(avlog.WARNING)
+        try:
+            # The reason a connect fails is in what FFmpeg logs (explain_connect), said on the engine's thread:
+            # every thread's lines are kept while it connects.
+            with avlog.Capture(False) as logs:
+                sender = writer.link(self._url, self.bitrate_kbps, delay_s=self.delay_s, max_backlog_s=MAX_BACKLOG,
+                                     resume_backlog_s=RESUME_BACKLOG, connect_timeout_s=CONNECT_TIMEOUT,
+                                     send_timeout_s=SEND_TIMEOUT, behind_s=NETWORK_BEHIND_S)
+                while (stats := sender.stats()).state_name == "connecting":
+                    if self._stop.wait(0.02):
+                        return
+                said = [str(line[2]).strip() for line in logs if str(line[2]).strip()]
+            if stats.state_name == "failed":
+                detail = " | FFmpeg: " + " / ".join(said[-4:]) if said else ""
+                why = (stats.error_text or "no answer").removeprefix("couldn't connect: ")
+                raise ConnectionError(f"couldn't connect to {ingest_name(self._url)}: {why}{detail}")
+            self._sender = sender
+            self._started = self._congested = False
+            self._ready = True
+            self.shared.links_changed()
+            def numbers():
+                stats = sender.stats()
+                self.frames, self.dropped = base[0] + stats.frames, base[1] + stats.dropped
+                self.bytes_out = base[2] + stats.bytes
+                self.mux_seconds, self.behind_seconds = base[3] + stats.send_seconds, base[4] + stats.behind_seconds
+                self.longest_stall = max(self.longest_stall, stats.longest_send)
+                self._backlog_bytes, self._congested = stats.backlog_bytes, bool(stats.congested)
+                return stats
+
+            while True:
+                stats = numbers()
+                state = stats.state_name
+                if state == "failed":
+                    raise RuntimeError(stats.error_text or "the connection dropped")
+                if state == "finished":
+                    return
+                if state == "live" and not self.connected:
+                    self._zero = stats.first_seconds
+                    self.connected, self._connected_at, self.status = True, time.monotonic(), "live"
+                    log_live(self)
+                if self._stop.wait(0.1):
+                    numbers()  # as they stand at the end, for the summary
+                    return
+        finally:
+            if louder:
+                avlog.set_level(old)
+            self._ready = False
+            self.connected = False
+            self._sender = None
+            self._backlog_bytes = 0
+            self.shared.links_changed()
+            if sender is not None:
+                sender.close()
+
+    def _connect(self):
+        out = self._open_container(self._url)
+        self._await_encoder()
         video_t, audio_t = self.shared._templates[:2]
         streams = self.shared._ask(lambda: {"video": out.add_stream_from_template(video_t),
                                             "audio": out.add_stream_from_template(audio_t)})
@@ -540,6 +638,12 @@ class StreamLink:
             log_live(self)
 
     def _session(self) -> None:
+        if self._engine_may_send():
+            self._await_encoder()
+            writer = self._engine_writer()
+            if writer is not None:
+                self._session_engine(writer)
+                return
         out = None
         try:
             out, streams = self._connect()
@@ -607,3 +711,6 @@ class StreamLink:
                     self.status = "stopped"
                     return
                 delay = after
+
+
+_OPEN_INGEST = StreamLink._default_open

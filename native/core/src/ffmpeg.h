@@ -50,7 +50,7 @@ namespace sc::ffm {
     X(4, swr_get_out_samples)                                                                                      \
     X(0, av_dict_parse_string) X(0, av_dict_free) X(0, av_dict_set) X(0, av_dict_get) X(0, av_frame_get_buffer)                      \
     X(0, av_frame_make_writable) X(1, avcodec_find_encoder) X(1, avcodec_find_encoder_by_name)                     \
-    X(1, avcodec_send_frame) X(1, avcodec_receive_packet) X(1, avcodec_parameters_from_context)                    \
+    X(1, avcodec_send_frame) X(1, avcodec_receive_packet) X(1, avcodec_parameters_from_context) X(1, avcodec_parameters_copy)                    \
     X(1, av_packet_rescale_ts) X(2, avformat_alloc_output_context2) X(2, avformat_new_stream)                      \
     X(2, avio_open2) X(2, avio_closep) X(2, avformat_write_header) X(2, av_interleaved_write_frame)                \
     X(2, av_write_trailer) X(2, avformat_free_context) X(2, avformat_network_init)                                     \
