@@ -224,19 +224,27 @@ def dshow_modes(name: str) -> list[tuple[str, str, int, int, float, float]]:
         import av.logging as avlog
     except ImportError:
         return []
-    old = avlog.get_level()
-    listing_errors.clear()
-    avlog.set_level(avlog.INFO)  # the list comes as log lines, which PyAV drops by default
-    try:
-        with avlog.Capture(False) as logs:  # FFmpeg may log from its own threads too
-            try:
-                av.open(name, format="dshow", options={"list_options": "true"}).close()
-            except Exception as exc:  # listing always "fails": there is nothing to open
-                listing_errors.append(str(exc))
-    finally:
-        avlog.set_level(old)
-    listing_lines[:] = [str(entry[-1]) if isinstance(entry, tuple) else str(entry) for entry in logs]
-    return parse_dshow_modes(listing_lines)
+    # One camera at a time: the list comes as FFmpeg's log lines, and the capture takes every thread's. Two cameras
+    # opening together at start had one take both lists and the other none (PC 2026-11-21: the HD60 X tried the
+    # Streamfog camera's 35 modes on top of its own, and the Streamfog camera, with no list, came up in its own
+    # mode, bgr24 at 30 fps, not nv12).
+    with _listing_lock:
+        old = avlog.get_level()
+        listing_errors.clear()
+        avlog.set_level(avlog.INFO)  # the list comes as log lines, which PyAV drops by default
+        try:
+            with avlog.Capture(False) as logs:  # FFmpeg may log from its own threads too
+                try:
+                    av.open(name, format="dshow", options={"list_options": "true"}).close()
+                except Exception as exc:  # listing always "fails": there is nothing to open
+                    listing_errors.append(str(exc))
+        finally:
+            avlog.set_level(old)
+        listing_lines[:] = [str(entry[-1]) if isinstance(entry, tuple) else str(entry) for entry in logs]
+        return parse_dshow_modes(listing_lines)
+
+
+_listing_lock = threading.Lock()
 
 
 _listed: dict[str, list] = {}  # device name -> the modes it last listed (kept for when it lists none)

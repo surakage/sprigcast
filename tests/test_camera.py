@@ -635,3 +635,36 @@ def test_the_log_says_every_size_a_camera_offers():
              ("vcodec", "mjpeg", 1920, 1080, 30.0, 60.0), ("pixel_format", "nv12", 2560, 1440, 30.0, 30.0)]
     assert modes_line(modes) == "1920x1080 mjpeg/yuyv422 up to 60 fps; 2560x1440 nv12 up to 60 fps"
     assert modes_line([]) == "no list of modes"
+
+
+def test_two_cameras_list_their_modes_one_at_a_time(monkeypatch):
+    """PC 2026-11-21: two cameras opening together at start. The modes come as FFmpeg's log lines and the capture
+    takes every thread's: the HD60 X took the Streamfog camera's 35 modes on top of its own, and the Streamfog
+    camera, left with no list, came up as bgr24 at 30 fps and not nv12."""
+    import threading
+    import time
+
+    import av
+
+    from sprigcast.sources import camera
+
+    inside, most = [0], [0]
+
+    class Opened:
+        def close(self):
+            pass
+
+    def fake_open(name, format=None, options=None):  # noqa: A002
+        inside[0] += 1
+        most[0] = max(most[0], inside[0])
+        time.sleep(0.05)
+        inside[0] -= 1
+        return Opened()
+
+    monkeypatch.setattr(av, "open", fake_open)
+    threads = [threading.Thread(target=camera.dshow_modes, args=(f"video=Camera {n}",)) for n in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert most[0] == 1
