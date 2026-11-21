@@ -43,6 +43,21 @@ def short_name(original: str, fallback: str) -> str:
     return name
 
 
+def sound_name(kind: str, device: str) -> str:
+    """The name SprigCast gives a mic or desktop sound for a device ("Mic", "Mic (Wave)")."""
+    base = "Desktop audio" if kind == "audio_output" else "Mic"
+    device = str(device or "default")
+    return base if device == "default" else short_name(device, base)
+
+
+def sound_name_is_ours(name: str, kind: str, device: str) -> bool:
+    """True when a mic or desktop sound still has a name SprigCast made for its device, so a device change may
+    rename it; a name the streamer chose ("[AIC] Microphone", which Streamer.bot steps use) never changes."""
+    base = "Desktop audio" if kind == "audio_output" else "Mic"
+    device = str(device or "default")
+    return name in (base, f"{base} ({device})", short_name(device, base))
+
+
 def window_name(title: str, process: str = "") -> str:
     """A window is named after its app ('chrome.exe' -> 'Chrome'), else the last part of its title."""
     app = re.sub(r"\.exe$", "", (process or "").rsplit("\\", 1)[-1].rsplit("/", 1)[-1], flags=re.IGNORECASE)

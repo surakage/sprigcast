@@ -1213,6 +1213,8 @@ class NativeApi:
         name = _get(data, "name", str).strip()
         if not name:
             raise _bad("name is empty.")
+        if name != source.name:  # in the log: which name an app gave a sound, and when (StreamBridge 2026-11-20)
+            log.info("control: an app renamed %s %r -> %r", source.id, source.name, name)
         source.name = name
         self.host.commit("items")
 

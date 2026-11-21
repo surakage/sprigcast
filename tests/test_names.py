@@ -5,7 +5,8 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6.QtWidgets")
 
-from sprigcast.app.names import short_name, short_status, status_summary, window_name
+from sprigcast.app.names import (short_name, short_status, sound_name, sound_name_is_ours, status_summary,
+                                 window_name)
 
 
 def test_short_names_drop_brands_and_model_codes():
@@ -42,3 +43,14 @@ def test_name_dialog_keeps_or_renames(monkeypatch):
     assert dialog.name() == "Face"
     dialog._keep()
     assert dialog.name() == "Elgato Facecam MK.2"
+
+
+def test_only_a_sound_name_sprigcast_made_follows_the_device():
+    assert sound_name("audio_input", "default") == "Mic"
+    assert sound_name("audio_output", "default") == "Desktop audio"
+    assert sound_name("audio_input", "Microphone (Voicemod)") == "Microphone"
+    for made in ("Mic", "Mic (UG-08S)", short_name("UG-08S", "Mic")):
+        assert sound_name_is_ours(made, "audio_input", "UG-08S")
+    assert sound_name_is_ours("Desktop audio", "audio_output", "default")
+    assert not sound_name_is_ours("[AIC] Microphone", "audio_input", "UG-08S")
+    assert not sound_name_is_ours("Mic (Microphone (Voicemod))", "audio_input", "UG-08S")
