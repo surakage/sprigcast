@@ -148,14 +148,20 @@ runs:
           exit 0
         }
         $stopped = Get-Date
-        & taskkill /PID $p.Id /T /F | Out-Null
+        & taskkill /PID $p.Id /T /F 2>&1 | Out-Null
+        # taskkill can leave some compilers running ("could not be terminated"): stop whatever is left.
+        Get-Process ninja, cl, link, lib, cmake, clang-cl, lld-link -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
         Start-Sleep 10
         # A file a stopped compiler or linker was writing may be half there but newer than its inputs, and ninja
         # would take it as built: everything written in the last 30 minutes is made again next stage.
         Get-ChildItem C:\qtwe\b -Recurse -File -Include *.obj, *.o, *.lib, *.dll, *.exe, *.pdb, *.res, *.ilk |
-          Where-Object { $_.LastWriteTime -gt $stopped.AddMinutes(-30) } | Remove-Item -Force
+          Where-Object { $_.LastWriteTime -gt $stopped.AddMinutes(-30) } | Remove-Item -Force -ErrorAction SilentlyContinue
         "done=false" >> $env:GITHUB_OUTPUT
         Get-PSDrive C, D | Format-Table -AutoSize | Out-String | Write-Host
+        # Stopping at the deadline is the plan, not a failure: taskkill's exit code must not fail the step,
+        # or the tree isn't saved and the stage's work is lost (run 12).
+        $global:LASTEXITCODE = 0
+        exit 0
     - name: Save the tree for the next stage
       if: steps.build.outputs.done != 'true'
       shell: cmd
