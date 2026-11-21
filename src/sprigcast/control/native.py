@@ -71,6 +71,7 @@ FEATURES = (
     "events.item_moved",   # item.moved when something is moved, sized, cropped or turned
     "filters.share",       # a placed sprig's filters follow on its other canvases; filters.share, filters.list same_on_both_canvases
     "layout.get",          # layout.get: every item's place, crop, bounds, source size and canvas box; flat, overlaps
+    "places.ready",        # places.list name, ready, problem ("Needs a stream key"): why a place can't go live yet
     "app_audio.pids",      # app_audio settings pids: [process id, ...] catches those processes' trees instead of apps
 )
 
@@ -1454,7 +1455,10 @@ class NativeApi:
         for o in self.col.outputs:
             if o.type != "stream":
                 continue
-            place = {"id": o.id, "service": o.service, "shape": o.canvas, "on": o.enabled, "bitrateKbps": o.bitrate_kbps}
+            service = SERVICES.get(o.service or "custom", SERVICES["custom"])
+            why = getattr(self.host, "place_problem", lambda _id: None)(o.id)
+            place = {"id": o.id, "service": o.service, "shape": o.canvas, "on": o.enabled, "bitrateKbps": o.bitrate_kbps,
+                     "name": service.label, "ready": why is None, "problem": why}
             if SERVICES.get(o.service or "custom", SERVICES["custom"]).bandwidth_test:
                 place["bandwidth_test"] = o.bandwidth_test  # only where the service has a test mode (Twitch)
             out.append(place)

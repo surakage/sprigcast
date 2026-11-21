@@ -95,6 +95,38 @@ These codes are never renamed; new ones may be added. `app.actions` returns ever
 
 `app.info` has `features`: names of what this SprigCast can do, so an app can check instead of guessing from the shape of an answer. Names are only ever added. `api` stays 0 (preview) until SprigCast's first public release; the features list is what to check. `app.info` also has `canvases`: each canvas's `id`, `width`, `height`, `fps` and `enabled`, for placing things in canvas pixels.
 
+| Feature | What it means |
+| --- | --- |
+| `bloom.new` | bloom.new, bloom.remove, source.new, item.add |
+| `places.status` | stream.status places, place.start, place.stop |
+| `screenshot.source` | screenshot.take with source or bloom |
+| `plugins.enabled` | plugins.list: id, enabled, store plugins not added |
+| `plugin.missing` | plugin_missing error |
+| `effects.autoend` | hide.*, roll.spin, freeze.* end by themselves after seconds (1-600); a new call restarts the time |
+| `source.rotate` | source.rotate |
+| `start.warnings` | stream.start / record.start answer doctor_warnings, force: true goes ahead |
+| `canvas.size` | app.info canvases: id, width, height, fps, enabled |
+| `item.scale_xy` | item.place scale_x / scale_y |
+| `events.effect` | effect.ended |
+| `events.plugins` | plugins.changed |
+| `events.lists` | sources.changed, items.changed |
+| `notfound.what` | not_found errors carry what and name |
+| `page.api` | Web page sources: window.sprigcast (app, version, visible, bloom...) and its events |
+| `effects.freeze` | freeze.start / freeze.stop / freeze.toggle (Freeze plugin), effect.ended "freeze.start" |
+| `record.pause` | record.pause / resume / toggle_pause / chapter, record.status paused, record.paused event |
+| `place.bandwidth_test` | place.set bandwidth_test (Twitch test mode); places.list says it where there is one |
+| `screenshot.bloom_off_air` | screenshot.take {bloom, shape}: any bloom on its canvas without putting it on air |
+| `item.place_full` | item.place crop, bounds, bounds_width/height, bounds_align, align |
+| `item.edit` | item.lock, item.remove, item.duplicate, source.remove, source.refresh |
+| `edit.undo` | edit.undo / edit.redo; {"steps", "one_step": true}: all or none, one undo step |
+| `steps.dry_run` | {"steps", "dry_run": true}: nothing kept; answers the layouts and overlaps it would make |
+| `events.item_moved` | item.moved when something is moved, sized, cropped or turned |
+| `filters.share` | a placed sprig's filters follow on its other canvases; filters.share, filters.list same_on_both_canvases |
+| `layout.get` | layout.get: every item's place, crop, bounds, source size and canvas box; flat, overlaps |
+| `places.ready` | places.list name, ready, problem ("Needs a stream key"): why a place can't go live yet |
+| `app_audio.pids` | app_audio settings pids: [process id, ...] catches those processes' trees instead of apps |
+| `browser.h264` | Only when Web pages play H.264/AAC themselves (video tags, streaming players); without it MP4 files still play, converted |
+
 ### Step lists
 
 Send several actions in one message, with waits between them. One answer comes back when the
@@ -209,6 +241,13 @@ for. The connection closes next. Look again in a second or two: it's often a res
 | `clips.set` | Keep clips ready (on) or stop (off). | `on`: true or false |
 | `clips.status` | Whether clips are ready and how long a clip is. | none |
 
+### edit
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `edit.redo` | Redo the change that was last undone. Answers `{"redone": true}`, false when there was nothing to redo. | none |
+| `edit.undo` | Undo the last change to the garden (as Ctrl+Z in SprigCast). Answers `{"undone": true}`, false when there was nothing to undo. | none |
+
 ### filter
 
 | Action | What it does | Fields |
@@ -294,7 +333,7 @@ With `overlaps`, each shape also has `overlaps`: `[{"a", "a_name", "a_in", "b", 
 | `place.set` | Switch a place on or off for the next Go live, and/or its test mode (Twitch: the stream reaches Twitch but viewers never see it). | `place`: id from places.list, `on` (optional): true or false, `bandwidth_test` (optional): true or false (only places whose service has a test mode) |
 | `place.start` | While live: start sending to one more place (switched on for next time too). | `place`: id from places.list |
 | `place.stop` | While live: stop sending to one place (the others keep going; the last one ends the stream). | `place`: id from places.list |
-| `places.list` | Where the stream goes (Twitch, YouTube...), each one's shape and if it's on (and `bandwidth_test` where the service has a test mode). | none |
+| `places.list` | Where the stream goes, each one's `service`, `name` (Twitch, YouTube, Facebook...), `shape`, `on`, `bitrateKbps`, and `ready` with `problem` saying why it can't go live yet ("Needs a stream key", "Needs a server URL", a canvas that's off), else null. `bandwidth_test` where the service has a test mode. A place added without its key stays off until it has one. | none |
 
 ### path
 
@@ -348,6 +387,8 @@ With `overlaps`, each shape also has `overlaps`: `[{"a", "a_name", "a_in", "b", 
 | `source.rotate` | Turn a source to an angle wherever it's shown (0: upright again). | `source`: name or id, `degrees`: clockwise, -3600 to 3600 |
 | `source.set` | Change some of a source's settings: text, a browser page's url, an image file, a color... | `source`: name or id, `settings`: {key: value} |
 | `sources.list` | Every source (cameras, text, browser pages, images, sounds...). | none |
+
+A Text source's settings (`source.get` shows them all, `source.set` changes the ones you give): `text`, `font`, `size`, `color`, `bold`, `italic`, `letter_case` (as_typed, lower, upper), `align` (left, center, right), `wrap_width`, `line_spacing`, `outline_color`, `outline_width`, `gradient`, `gradient_color`, `gradient_direction` (across, down), `shadow`, `shadow_color`, `shadow_distance`, `shadow_blur`, `box`, `box_color`, `box_padding`, `box_corners`. To show a text file and follow it as it changes: `file` (its path), `read_file` (true) and `file_lines` (all, first, last). Colors are `#rrggbbaa`.
 
 ### sprig
 

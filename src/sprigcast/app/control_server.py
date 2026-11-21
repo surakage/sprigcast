@@ -234,6 +234,13 @@ class WindowHost:
             }
         return out
 
+    def place_problem(self, output_id: str) -> str | None:
+        """Why this place can't go live yet ("Needs a stream key"), or None when it's ready."""
+        from sprigcast.app.destinations import problem
+
+        output = next((o for o in self.w.collection.outputs if o.id == output_id), None)
+        return problem(output, self.w.collection, self.w._has_key) if output is not None else None
+
     def start_place(self, output_id: str) -> str | None:
         return self.w.start_place(output_id)
 
