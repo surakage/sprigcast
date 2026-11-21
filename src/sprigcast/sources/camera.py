@@ -338,12 +338,21 @@ def mirror_picture(frame: np.ndarray, order: str, size: tuple[int, int]) -> np.n
     return out
 
 
+def _mode_of(settings: dict[str, Any]) -> tuple[int, int, int]:
+    return int(settings.get("width", 1280)), int(settings.get("height", 720)), int(settings.get("fps", 30))
+
+
 class _Feed:
-    """One open camera, shared by every camera source set to the same device and mode.
+    """One open camera, shared by every camera source set to the same device, whatever mode each asks for.
 
     Two sources showing the same webcam (a wide shot in one scene, a cropped one in another) used to
     open the device twice: two capture threads, two decoders, two sets of frames. Now they subscribe
-    to one feed and each gets the same frame.
+    to one feed and each gets the same frame. Sources of one device in different modes shared nothing
+    either: the PC's Gameplay bloom (2026-11-21) had the HD60 X saved at 1080p60 and at 720p30, so it
+    was opened twice; the second open was refused every mode the device offers while the first ran
+    ("Could not set video options" 15 times) and came up in its own mode, and SprigCast went from 10%
+    to 24% of the PC. Now the feed opens the device once, in the biggest size and fastest rate any of
+    its sources asks for (see widen), and each source shows that picture at its own size.
     """
 
     def __init__(self, feed_id: str, settings: dict[str, Any]):
@@ -396,7 +405,22 @@ class _Feed:
     # Capture thread ------------------------------------------------------------------
 
     def _mode(self) -> tuple[int, int, int]:
-        return int(self.settings.get("width", 1280)), int(self.settings.get("height", 720)), int(self.settings.get("fps", 30))
+        return _mode_of(self.settings)
+
+    def widen(self) -> bool:
+        """Grow the mode to the biggest size and fastest rate its sources ask for, reopening the camera if that
+        grew (never shrinks while shared: a source going to sleep and back would reopen it each time)."""
+        w, h, fps = self._mode()
+        modes = [_mode_of(s.settings) for s in list(self.subscribers)]
+        big = max([(w, h, fps), *modes], key=lambda m: m[0] * m[1])
+        want = (big[0], big[1], max([fps, *(m[2] for m in modes)]))
+        if want == (w, h, fps):
+            return False
+        log.info("%s: one camera for %d sources, now opened at %dx%d %d fps (was %dx%d %d fps)",
+                 self.id, len(modes), *want, w, h, fps)
+        self.settings = {**self.settings, "width": want[0], "height": want[1], "fps": want[2]}
+        self._restart.set()
+        return True
 
     def _run(self, after: "_Feed | None" = None) -> None:
         if after is not None:
@@ -425,8 +449,11 @@ class _Feed:
             source._receive(frame, order, size, full)
 
     def shrink(self) -> float:
-        """The least any source of this camera may be shrunk (one shown big keeps it full size for all)."""
-        return max((getattr(s, "shrink", 1.0) for s in list(self.subscribers)), default=1.0)
+        """The least any source of this camera may be shrunk (one shown big keeps it full size for all). A source
+        asking a smaller mode than the feed's is already that much smaller."""
+        width = max(1, self._mode()[0])
+        return max((min(1.0, getattr(s, "shrink", 1.0) * min(1.0, _mode_of(s.settings)[0] / width))
+                    for s in list(self.subscribers)), default=1.0)
 
     # The engine's own player (SPRIGCAST_ENGINE=native) ----------------------------------
 
@@ -465,7 +492,7 @@ class _Feed:
                 if text == "ok" and info.width > 0:
                     self.status = f"capturing {info.width}x{info.height}"
                     for source in list(self.subscribers):
-                        source._size = (info.width, info.height)
+                        source._size = source.fit((info.width, info.height))
                     if lost is not None:
                         log.info("%s: %r is back (%dx%d)", self.id, device.name, info.width, info.height)
                         lost = None
@@ -635,10 +662,13 @@ _closing: dict[tuple, _Feed] = {}  # feeds told to stop without waiting (a sourc
 _feeds_lock = threading.Lock()
 
 
+_PER_SOURCE = ("pause_off_screen", "width", "height", "fps")  # a shared feed takes the biggest mode (_Feed.widen)
+
+
 def _feed_key(settings: dict[str, Any]) -> tuple:
-    """Sources with the same device, size and rate share a feed; mirroring is done per source (with the engine
-    its player mirrors, so a mirrored source has a feed of its own)."""
-    skip = ("pause_off_screen",) if sprigcore.use_native_camera() else ("mirror", "pause_off_screen")
+    """Sources with the same device share a feed, whatever size and rate each asks for; mirroring is done per
+    source (with the engine its player mirrors, so a mirrored source has a feed of its own)."""
+    skip = _PER_SOURCE if sprigcore.use_native_camera() else ("mirror", *_PER_SOURCE)
     return tuple(sorted((k, repr(v)) for k, v in settings.items() if k not in skip))
 
 
@@ -700,6 +730,8 @@ class CameraSource(Source):
                 feed = _feeds[key] = _Feed(self.id, self.settings)
             feed.subscribers.append(self)
             self._feed, self._attached = feed, True
+            if not new:
+                feed.widen()
         if new:
             feed.start(after=old)  # old: still closing the device after a sleep(), let it finish first
 
@@ -740,10 +772,20 @@ class CameraSource(Source):
 
     def update(self, settings: dict[str, Any]) -> None:
         reopen = _feed_key(settings) != _feed_key(self.settings)
+        new_mode = _mode_of(settings) != _mode_of(self.settings)
         super().update(settings)
-        if not (reopen and self._attached):
+        if not self._attached:
             return
         feed = self._feed
+        if not reopen:
+            if new_mode:
+                with _feeds_lock:
+                    alone = feed.subscribers == [self]
+                    if alone:  # its own camera: the mode asked, smaller too
+                        feed.retune(settings)
+                    else:
+                        feed.widen()
+            return
         with _feeds_lock:
             alone = feed.subscribers == [self] and _feed_key(settings) not in _feeds
             if alone:  # keep the thread: it closes the camera and opens the new mode in order
@@ -758,6 +800,12 @@ class CameraSource(Source):
     @property
     def size(self) -> tuple[int, int]:
         return self._size
+
+    def fit(self, picture: tuple[int, int]) -> tuple[int, int]:
+        """This source's size for the feed's picture: the picture shrunk to fit the mode this source asks for, as
+        if it had the camera to itself (a shared feed may be open at a bigger mode, for another source)."""
+        w, h, _ = _mode_of(self.settings)
+        return shrunk_size(picture, (w, h)) or picture
 
     @property
     def engine_player(self) -> sprigcore.MediaPlayer | None:
@@ -800,5 +848,5 @@ class CameraSource(Source):
         size = size or (frame.shape[1], frame.shape[0])
         if self.settings.get("mirror"):
             frame = mirror_picture(frame, order, size)
-        self._size = full or size
+        self._size = self.fit(full or size)
         self._frames.put((frame, order))

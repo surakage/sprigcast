@@ -385,9 +385,10 @@ def test_two_sources_on_one_camera_share_one_open_device(fake_cv2):
         wide.wake()
         assert wait_for(lambda: wide._frames.peek() is not None) and len(FakeCapture.opened) == 1
 
-        crop.update({**settings, "width": 32, "height": 18})  # a different mode: its own feed
-        assert wait_for(lambda: len(FakeCapture.opened) == 2)
-        assert not wide.shared and len(camera._feeds) == 2
+        crop.update({**settings, "width": 32, "height": 18})  # a smaller mode: still the one camera, shown smaller
+        assert wait_for(lambda: (f := crop._frames.peek()) is not None and crop.size == (32, 18))
+        assert len(FakeCapture.opened) == 1 and wide.shared and len(camera._feeds) == 1
+        assert wide.size == (64, 36)
     finally:
         wide.stop()
         crop.stop()
@@ -494,3 +495,32 @@ def test_nv12_and_mjpeg_pictures_go_up_without_a_conversion_pass(monkeypatch):
     calls.clear()
     array, order, _ = camera.camera_picture(jpeg, None)
     assert not calls and order.endswith("/pc")  # MJPEG's full range is kept and labelled
+
+
+def test_one_camera_in_two_modes_opens_once_at_the_bigger(fake_cv2):
+    """The PC's Gameplay bloom (2026-11-21): the HD60 X saved at 1080p60 in one source and 720p30 in another was
+    opened twice, the second open refused every mode and came up in the device's own; SprigCast doubled its CPU.
+    Now the camera opens once, at the bigger mode, and the smaller source shows that picture at its own size."""
+    from sprigcast.sources import camera
+
+    small = create_source("camera", "small", {"name": "Cam A", "path": "usb#a", "width": 32, "height": 18, "fps": 30})
+    big = create_source("camera", "big", {"name": "Cam A", "path": "usb#a", "width": 64, "height": 36, "fps": 60})
+    small.start()
+    try:
+        assert wait_for(lambda: small._frames.peek() is not None)
+        big.start()
+        assert wait_for(lambda: (f := big._frames.peek()) is not None and f[0].shape[1] == 64)
+        assert len(camera._feeds) == 1 and small.shared and big.shared
+        assert FakeCapture.opened[-1].props["W"] == 64 and FakeCapture.opened[-1].props["FPS"] == 60
+        assert small._feed.settings["fps"] == 60
+        assert wait_for(lambda: small._frames.peek() is not None and small.size == (32, 18))
+        assert big.size == (64, 36)
+        small.set_shrink(1.0)
+        big.set_shrink(0.25)  # the big one shown small: the small one still needs half the picture
+        assert small._feed.shrink() == 0.5
+        big.stop()  # it doesn't shrink back while the camera runs
+        assert small._feed.settings["width"] == 64
+    finally:
+        small.stop()
+        big.stop()
+    assert camera._feeds == {}

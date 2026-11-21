@@ -156,6 +156,12 @@ class NativeStinger:
         self.channel_order = got[1]
         return got[0]
 
+    def native_sound(self):
+        """The engine's player, for the engine's sound mixer to read straight from (audio/native_mixer.py _link).
+        Pushed from Python a block at a time, the clip's sound came in choppy while live with a busy PC
+        (2026-11-21): each block waited for Python's lock. Paused until play(), it gives silence until then."""
+        return None if self._closed else self._player
+
     def read_block(self, count: int) -> np.ndarray:
         if not self._playing or self._closed:
             return np.zeros((count, 2), dtype=np.float32)
