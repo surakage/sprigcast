@@ -441,6 +441,33 @@ def proven_kbps(streamers, audio_kbps: int, seconds: float) -> int | None:
     return total
 
 
+def network_trouble(streamers, started: float) -> list[str]:
+    """Which places had trouble and when ("YouTube: auto-pilot lowered at 1:07:13 (to 4320 kbps), 2 times"), for the
+    end-of-stream line: "this stream had network trouble" said neither (PC live 2026-11-21). `started` is the
+    stream's start on time.monotonic()'s clock."""
+    def at(t: float) -> str:
+        s = max(0, int(t - started))
+        return f"{s // 3600}:{s // 60 % 60:02d}:{s % 60:02d}"
+
+    lines = []
+    for st in streamers:
+        bits = []
+        if st.frames and st.dropped > st.frames * 0.001:
+            bits.append(f"{st.dropped} frames dropped")
+        if st.reconnects:
+            bits.append(f"reconnected {st.reconnects} time{'s' if st.reconnects != 1 else ''}")
+        own = getattr(st, "autopilot", None)
+        pilot = own if own is not None else getattr(getattr(st, "shared", None), "autopilot", None)
+        if pilot is not None and pilot.steps_down:
+            first = ", ".join(f"{at(t)} (to {k} kbps)" for t, k in getattr(pilot, "down_at", [])[:3])
+            shared = "" if own is not None else " (its shared encoder)"
+            bits.append(f"auto-pilot lowered{shared} {pilot.steps_down} time{'s' if pilot.steps_down != 1 else ''}"
+                        + (f", first at {first}" if first else ""))
+        if bits:
+            lines.append(f"{getattr(st, 'name', '?')}: " + "; ".join(bits))
+    return lines
+
+
 def remember_proven(settings, value: int | None) -> None:
     """Keep the most a clean stream has carried: a lighter clean stream proves nothing new, trouble forgets it."""
     if value is None:

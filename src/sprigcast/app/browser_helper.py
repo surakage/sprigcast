@@ -188,6 +188,9 @@ class RemoteHost:
         self._notes: dict[str, str] = {}  # source id -> what its page said is wrong (a video that can't play)
         self._lock = threading.RLock()
         self._send_lock = threading.Lock()
+        self._outbox: list[tuple[Any, bytes]] = []  # (helper process, line) waiting for the sending thread
+        self._outbox_ready = threading.Condition(self._send_lock)
+        self._sender: threading.Thread | None = None
         self.proc: subprocess.Popen | None = None
         self._reader: threading.Thread | None = None
         self._empty_since: float | None = None
@@ -238,15 +241,35 @@ class RemoteHost:
             return True
 
     def _send(self, message: dict) -> None:
+        """Queued for the sending thread: written here, a helper still starting (not reading yet) held the window
+        on a full pipe ("the window didn't answer for 407 ms; browser_helper.py _send <- _check_state", PC
+        2026-11-21)."""
         proc = self.proc
         if proc is None or proc.stdin is None:
             return
-        try:
-            with self._send_lock:
-                proc.stdin.write((json.dumps(message) + "\n").encode())
-                proc.stdin.flush()
-        except (OSError, ValueError):
-            pass  # it stopped: the pipe reader starts it again
+        line = (json.dumps(message) + "\n").encode()
+        with self._outbox_ready:
+            self._outbox.append((proc, line))
+            if self._sender is None or not self._sender.is_alive():
+                self._sender = threading.Thread(target=self._send_all, name="sprigcast-browser-send", daemon=True)
+                self._sender.start()
+            self._outbox_ready.notify()
+
+    def _send_all(self) -> None:
+        while True:
+            with self._outbox_ready:
+                if not self._outbox:
+                    self._outbox_ready.wait(30.0)
+                    if not self._outbox:
+                        self._sender = None
+                        return  # idle a while: a new one starts with the next message
+                batch, self._outbox = self._outbox, []
+            for proc, line in batch:
+                try:
+                    proc.stdin.write(line)
+                    proc.stdin.flush()
+                except (OSError, ValueError, AttributeError):
+                    pass  # it stopped: the pipe reader starts it again
 
     def _read(self, proc: subprocess.Popen) -> None:
         stream = proc.stdout

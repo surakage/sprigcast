@@ -2445,7 +2445,7 @@ class Engine:
                 if native_out:  # recordings and streams: the frames the native engine finished since last tick
                     self._native_outputs(native, canvas, ridden)
                     self._served_views.update(self._riders.get(canvas.id, ()))
-                    self._mark(f"{canvas.id} native outputs")
+                    self._mark(f"{canvas.id} streams and recordings")  # the engine's finished frames, handed on
                     outputs = ()
             if not self._engine_staged(native, canvas, now):
                 self._render_staged(compositor, canvas, sizes, now)

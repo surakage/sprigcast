@@ -235,17 +235,30 @@ class LiveFlvQuiet(logging.Filter):
     ("Failed to update header with correct duration/filesize"): normal for every stream that stops, so it's logged
     as information, not a warning (PC test 2026-11-20)."""
 
+    NORMAL = (
+        ("Failed to update header with correct", "normal when a live stream ends"),
+        # Twitch Enhanced Broadcasting sends several video tracks in one FLV on purpose (E-RTMP multitrack)
+        ("more than one video stream", "normal for Twitch Enhanced Broadcasting: one track per quality"),
+        # The AAC encoder closed with its last few frames (a fraction of a second at the very end) not flushed
+        ("frames left in the queue on closing", "normal when a stream or recording stops: the last moment's sound"),
+    )
+
     def filter(self, record: logging.LogRecord) -> bool:
-        if record.levelno == logging.WARNING and "Failed to update header with correct" in str(record.msg):
-            record.levelno, record.levelname = logging.INFO, "INFO"
-            record.msg = f"{record.msg} (normal when a live stream ends)"
+        if record.levelno == logging.WARNING:
+            text = str(record.msg)
+            for found, why in self.NORMAL:
+                if found in text:
+                    record.levelno, record.levelname = logging.INFO, "INFO"
+                    record.msg = f"{record.msg} ({why})"
+                    break
         return True
 
 
 def quiet_live_flv() -> None:
-    logger = logging.getLogger("libav.flv")
-    if not any(isinstance(f, LiveFlvQuiet) for f in logger.filters):
-        logger.addFilter(LiveFlvQuiet())
+    for name in ("libav.flv", "libav.aac"):
+        logger = logging.getLogger(name)
+        if not any(isinstance(f, LiveFlvQuiet) for f in logger.filters):
+            logger.addFilter(LiveFlvQuiet())
 
 
 class _Formatter(logging.Formatter):

@@ -266,4 +266,8 @@ def test_sounds_that_ran_dry_are_summed_up_in_the_log(caplog):
         line = mixer._note_short({"Mic": 12, "Music": 2}, now=31.0)
         assert line == "sound ran dry (gaps you hear) in the last 30 s: Mic 7 times"  # Music twice: a pause
         assert mixer._note_short({"Mic": 12, "Music": 2}, now=62.0) is None  # nothing new
+        # a capture card with no signal: silent all along, so its gaps aren't heard and aren't said
+        mixer._note_short({"Card": 0, "Mic": 12}, now=63.0, loud={"Card": -120.0, "Mic": -20.0})
+        line = mixer._note_short({"Card": 9, "Mic": 16}, now=94.0, loud={"Card": -120.0, "Mic": -18.0})
+        assert line is not None and "Mic 4 times" in line and "Card" not in line
     assert "Mic 7 times" in caplog.text

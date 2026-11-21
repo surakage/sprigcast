@@ -6999,7 +6999,11 @@ class MainWindow(QMainWindow):
         proven = optimize.proven_kbps(streamers, self.collection.stream_encoder.audio_kbps, session.elapsed)
         optimize.remember_proven(QSettings(), proven)
         if proven is not None:
-            log.info("upload: this stream %s", f"proved {proven} kbps fits" if proven else "had network trouble")
+            if proven:
+                log.info("upload: this stream proved %d kbps fits", proven)
+            else:
+                trouble = optimize.network_trouble(streamers, time.monotonic() - session.elapsed)
+                log.info("upload: this stream had network trouble: %s", " | ".join(trouble) or "no place said which")
         else:  # said too: a soak that left no line couldn't be told from one that never got here
             log.info("upload: this stream proves nothing (%d s, frames sent per place: %s)", seconds,
                      ", ".join(str(getattr(st, "frames", 0)) for st in streamers) or "none")

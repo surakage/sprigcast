@@ -172,6 +172,11 @@ def native_thread_label(tid: int) -> str | None:
         kernel32.GetModuleFileNameW.argtypes = [wintypes.HMODULE, wintypes.LPWSTR, wintypes.DWORD]
         if not kernel32.GetModuleFileNameW(module, path, 512):
             return None
-        return "threads started in " + path.value.rsplit("\\", 1)[-1]
+        module = path.value.rsplit("\\", 1)[-1]
+        if module.lower() == "ntdll.dll":
+            # Started by Windows itself: its thread pool, which Windows' own parts (sound devices, screen capture,
+            # graphics, networking) run their work on. "threads started in ntdll.dll" named nothing (2026-11-21).
+            return "threads started in Windows' thread pool (ntdll.dll: Windows sound, capture, graphics, network)"
+        return "threads started in " + module
     finally:
         kernel32.CloseHandle(handle)
