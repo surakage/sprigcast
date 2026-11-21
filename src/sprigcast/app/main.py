@@ -73,7 +73,7 @@ def load_collection(path: Path) -> SceneCollection:
 
 
 def app_icon():
-    """The SprigCast S on its dark green tile (data/logo.svg) as the window and taskbar icon."""
+    """The SprigCast S on transparency (data/logo.svg) as the window and taskbar icon."""
     from PySide6.QtGui import QIcon
 
     if sys.platform == "win32":
