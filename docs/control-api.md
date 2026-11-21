@@ -125,7 +125,7 @@ server → {"id": "9", "ok": true, "result": {"steps": [{"ok": true, …}], "app
             "layouts": [{"bloom": "Main", "shapes": {"vertical": {"canvas": {…}, "items": […], "overlaps": […]}}}]}}
 ```
 
-Only changes to the garden can be taken as one, so they can all be taken back: `item.add`, `item.place`, `item.order`, `item.show`, `item.hide`, `item.toggle`, `item.lock`, `item.remove`, `item.duplicate`, `source.new`, `source.set`, `source.rename`, `source.rotate`, `source.remove`, `filter.add`, `filter.set`, `filter.remove`, `filter.move`, plus `items.list` and `layout.get`. Anything else, or a `wait`, is refused with `bad_request` and nothing is done.
+Only changes to the garden can be taken as one, so they can all be taken back: `item.add`, `item.place`, `item.order`, `item.show`, `item.hide`, `item.toggle`, `item.lock`, `item.remove`, `item.duplicate`, `source.new`, `source.set`, `source.rename`, `source.rotate`, `source.remove`, `filter.add`, `filter.set`, `filter.remove`, `filter.move`, `sound.mute`, `sound.volume`, `sound.balance`, plus `items.list` and `layout.get`. Anything else, or a `wait`, is refused with `bad_request` and nothing is done.
 
 `edit.undo` and `edit.redo` are SprigCast's own undo and redo (the last 50 changes to the garden, whoever made them). They answer `{"undone": true}` or `{"redone": true}`, false when there was nothing to undo or redo.
 
