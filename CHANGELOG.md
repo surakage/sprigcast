@@ -6,6 +6,10 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- A chat box on the canvas draws new messages on a background worker instead of on the drawing thread.
+- Source record's picture (the bloom without the sources you leave out) is drawn by the C++ engine and goes
+  straight to its file, instead of Python drawing the whole bloom a second time every frame.
+  `SPRIGCAST_NO_NATIVE_CLEAN=1` turns it off. Not tried on a PC yet.
 - While the C++ engine draws and hands every frame to the encoders by itself, Python's drawing thread now rests
   between previews instead of working every frame (about half the work at 60 fps, less with the window hidden).
   A bloom switch, a setting or anything else asked wakes it at once. `SPRIGCAST_NO_REST=1` turns it off. Not

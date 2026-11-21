@@ -67,3 +67,43 @@ def test_chat_source_redraws_only_when_chat_changes(monkeypatch):
     frame = source.video_frame()
     assert frame is not None and not frame[:, :, 3].any()
     FEED.clear()
+
+
+def test_a_new_message_is_drawn_on_the_pictures_lane_not_on_the_render_thread(monkeypatch):
+    import threading
+    import time
+
+    from sprigcast.core import painted
+
+    monkeypatch.setattr(chat_source.EMOTES, "get", lambda url: None)
+    monkeypatch.setattr(painted, "DRAW_ASIDE", True)
+    FEED.clear()
+    source = chat_source.ChatSource("chat2", {"width": 240, "height": 160})
+    first = source.video_frame()  # the first box is drawn at once, so the source has a picture
+    assert first is not None
+    drew = []
+    draw = chat_source.ChatBox.draw
+    monkeypatch.setattr(chat_source.ChatBox, "draw",
+                        lambda box, lines: (drew.append(threading.current_thread().name), draw(box, lines))[1])
+    FEED.push(ChatMessage("twitch", "fern", "hello"))
+    source._next = 0.0
+    assert source.video_frame() is None  # being drawn: the box shows the one before meanwhile
+    frame, deadline = None, time.monotonic() + 5
+    while frame is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+        frame = source.video_frame()
+    assert frame is not None and not np.array_equal(frame, first)
+    assert drew and all(name.startswith("sprigcast-pictures") for name in drew)
+    FEED.push(ChatMessage("twitch", "moss", "again"))
+    source._next = 0.0
+    assert source.video_frame() is None
+    source.update({"width": 200, "height": 160})  # a new look while one is being drawn: that one is let go
+    while source._aside is not None and time.monotonic() < deadline:
+        time.sleep(0.01)
+        assert source.video_frame() is None
+    frame = None
+    while frame is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+        frame = source.video_frame()
+    assert frame is not None and frame.shape[1] == 200
+    FEED.clear()

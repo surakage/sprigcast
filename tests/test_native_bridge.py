@@ -1526,3 +1526,46 @@ def test_the_off_switch_keeps_every_tick_working(monkeypatch):
     engine.previews = frozenset()
     _run(engine, fake, seconds=2.0)
     assert engine.rested_ticks == 0 and engine._native.synced == 120
+
+
+# ---- Source record's copy from the engine ----------------------------------------------------------------------
+
+def _clean_engine():
+    engine = _engine()
+    engine._collection.sources.append(SourceConfig(id="cam", name="Cam", kind="color"))
+    engine._collection.scenes[0].items.append(SceneItem(source="cam"))
+    return engine
+
+
+def test_source_records_copy_is_an_engine_view_and_python_draws_nothing():
+    engine, fake = _clean_engine(), FakeCompositor()
+    engine.previews = frozenset({"h"})
+    got = []
+    engine.set_clean("h", {"cam"})
+    engine.add_frame_tap("clean:h", got.append, nv12_size=(64, 36))
+    _run(engine, fake, seconds=0.5)
+    assert fake.rendered == [] and engine.readbacks == 0  # Python's compositor drew and copied nothing
+    assert len(got) == 30 and got[0].fmt == "nv12" and got[0].canvas_id == "view:~clean:h"
+    canvas, scene = engine._native.views["~clean:h"]
+    assert canvas.id == "h" and [i.visible for i in scene.items if i.source == "cam"] == [False]
+    assert engine._native.outputs["view:~clean:h"] == ([((64, 36), False)], "bicubic")
+    _run(engine, fake, seconds=0.1)
+    assert engine._native.views["~clean:h"][1] is scene  # the same bloom object: no new snapshot each frame
+    engine.set_clean("h", None)
+    engine.remove_frame_tap("clean:h", got.append)
+    _run(engine, fake, seconds=0.1)
+    assert "~clean:h" not in engine._native.views and engine._clean_scenes == {}
+
+
+def test_source_records_copy_stays_pythons_when_switched_off(monkeypatch):
+    class Copies(FakeCompositor):
+        def read_nv12_later(self, key, size, now, drawn):
+            return None, 0.0  # its first copy arrives a tick later
+
+    engine, fake = _clean_engine(), Copies()
+    monkeypatch.setenv("SPRIGCAST_NO_NATIVE_CLEAN", "1")
+    got = []
+    engine.set_clean("h", {"cam"})
+    engine.add_frame_tap("clean:h", got.append, nv12_size=(64, 36))
+    _run(engine, fake, seconds=0.1)
+    assert "clean:h" in fake.rendered and "~clean:h" not in engine._native.views
