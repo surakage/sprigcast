@@ -8,7 +8,7 @@ A link that falls behind (slow upload) skips packets until it has caught up and 
 so it never holds the encoder or the other destinations back. A link that drops reconnects on its
 own and starts again at a fresh keyframe; the others carry on. With auto bitrate on, the encoder
 follows the links' backlog, since they all share one bitrate: when several fall behind (the PC's own upload),
-it lowers for all of them; when one alone does (that service's own path), it may cost the others one small step
+it lowers for all of them (as far as the second-worst asks); when one alone does (that service's own path), it may cost the others one small step
 (LONE_LOWERS) and past that the slow link skips frames on its own instead of dragging the rest down.
 """
 
@@ -211,8 +211,13 @@ class SharedStreamEncoder(FileTap, ReplayBuffer):
         from sprigcast.output.autopilot import BEHIND_S, FAR_BEHIND_S
 
         ranked = sorted(backlogs, key=lambda b: -b[0])
-        if len(ranked) < 2 or ranked[1][0] > BEHIND_S:
+        if len(ranked) < 2:
             return ranked[0]
+        if ranked[1][0] > BEHIND_S:
+            # Several behind: the PC's upload, so all come down, but by the second-worst: the worst may be far
+            # behind on its own path too, and following it cut everyone in half (PC live 2026-11-21: YouTube 2 s
+            # behind with Kick at 0.8 s took the four places from 6000 to 3072 kbps; Twitch showed Unstable).
+            return ranked[1]
         if self.autopilot.current_kbps > self.autopilot.target_kbps * LONE_LOWERS:
             return min(ranked[0][0], FAR_BEHIND_S), ranked[0][1]  # a small step, never a big one, for one link
         return ranked[1]
@@ -453,7 +458,12 @@ class StreamLink:
                 return
         elif self.backlog_seconds() > MAX_BACKLOG:
             self._congested = True
-            self.shared.request_keyframe()  # so it can rejoin soon after catching up
+            if len(self.shared.links) < 2:  # alone on its encoder: a keyframe now lets it rejoin soon
+                self.shared.request_keyframe()
+            # With others on the same encoder it waits for the next regular keyframe: forcing one each time a slow
+            # place fell behind gave every place extra keyframes, bursts of bitrate on top of an upload already
+            # short (PC live 2026-11-21: YouTube fell behind again and again while Twitch, Kick and Facebook were
+            # fine, and Twitch showed Unstable).
             if p.kind == "video":
                 self.dropped += 1
             return

@@ -230,3 +230,15 @@ def test_measured_kbps_smooths_over_a_few_seconds():
         st.bytes_out += (1_000_000 if second % 2 else 500_000)
         readings.append(measured_kbps(st, float(second)))
     assert all(5000 <= r <= 7000 for r in readings[6:])
+
+
+def test_the_server_each_place_goes_to_is_logged_without_the_key():
+    """Live (PC, 2026-11-21) both YouTube links fell seconds behind and the log couldn't say where they went."""
+    from sprigcast.output import stream as s
+
+    line = s.log_server("YouTube", "rtmp://a.rtmp.youtube.com/live2/abcd-1234-secret", measure=lambda h, p: 23.4)
+    assert line == "stream YouTube goes to rtmp://a.rtmp.youtube.com/live2 over RTMP, 23 ms away"
+    asked = []
+    line = s.log_server("Kick", "rtmps://fa72.global-contribute.live-video.net/app/sk_secret",
+                        measure=lambda h, p: asked.append((h, p)))
+    assert asked == [("fa72.global-contribute.live-video.net", 443)] and "secret" not in line and "away" not in line

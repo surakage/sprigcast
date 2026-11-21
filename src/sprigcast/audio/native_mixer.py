@@ -722,8 +722,10 @@ class NativeMixer:
     def _levels(self, sounds) -> None:
         meters = {}
         followed = self.followed
+        short = {}
         for source, sound in sounds:
-            peak, rms, level, _underruns = self._engine.levels(sound.id)
+            peak, rms, level, underruns = self._engine.levels(sound.id)
+            short[getattr(source, "name", None) or getattr(source, "id", "?")] = underruns
             sid = getattr(source, "id", None)
             if sid is None:
                 continue
@@ -735,10 +737,39 @@ class NativeMixer:
         duck_db = to_db(duck)
         meters["duck"] = (duck_db, duck_db)
         self._meters = meters
+        self._note_short(short)
         try:
             self.report(meters)
         except Exception as exc:  # noqa: BLE001
             self._problem("levels", exc)
+
+    SHORT_EVERY_S = 30.0  # how often sounds that ran dry are summed up in the log
+    SHORT_AT_LEAST = 3  # a sound ran dry at least this often in that time (one now and then is a pause)
+
+    def _note_short(self, totals: dict, now: float | None = None) -> str | None:
+        """Sounds that ran dry (the mixer needed their next block and it hadn't come: a gap you hear) are logged
+        every SHORT_EVERY_S with how often. Live on the PC (2026-11-21) viewers heard choppy voice and the log
+        had nothing about sound."""
+        now = time.monotonic() if now is None else now
+        seen = self.__dict__.setdefault("_short_seen", {})
+        window = self.__dict__.setdefault("_short_window", {})
+        for name, count in totals.items():
+            before = seen.get(name, count)
+            if count > before:
+                window[name] = window.get(name, 0) + count - before
+            seen[name] = count
+        since = self.__dict__.setdefault("_short_since", now)
+        if now - since < self.SHORT_EVERY_S:
+            return None
+        self._short_since = now
+        worst = sorted(((n, c) for n, c in window.items() if c >= self.SHORT_AT_LEAST), key=lambda nc: -nc[1])
+        window.clear()
+        if not worst:
+            return None
+        line = (f"sound ran dry (gaps you hear) in the last {self.SHORT_EVERY_S:.0f} s: "
+                + ", ".join(f"{name} {count} times" for name, count in worst))
+        log.warning(line)
+        return line
 
     def _let_go_of_players(self) -> None:
         for sound in self._known.values():

@@ -432,6 +432,9 @@ def proven_kbps(streamers, audio_kbps: int, seconds: float) -> int | None:
     total = 0
     for st in sent:
         pilot = getattr(st, "autopilot", None)
+        if pilot is None:  # a place on a shared encoder: that encoder's auto-pilot steered it (live 2026-11-21 it
+            # halved four places and the stream still "proved" 33,800 kbps fits)
+            pilot = getattr(getattr(st, "shared", None), "autopilot", None)
         if st.dropped > st.frames * 0.001 or st.reconnects or (pilot is not None and pilot.steps_down):
             return 0
         total += int(st.bitrate_kbps) + audio_kbps
