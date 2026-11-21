@@ -75,7 +75,7 @@ def test_the_filter_folds_into_effects():
 
 def test_the_filter_is_listed_with_its_settings():
     info = filters.filter_kind(BACKGROUND)
-    assert info is not None and info.label == "Background" and info.media == "video"
+    assert info is not None and info.label == "Backdrop" and info.media == "video"
     assert [f.key for f in info.fields] == ["mode", "blur", "picture_file", "edge"]
     assert [v for v, _label in info.fields[0].choices] == ["blur", "picture", "remove"]  # A to Z
     assert isinstance(info.status("cam"), str)

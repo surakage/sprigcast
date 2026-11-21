@@ -212,7 +212,7 @@ BACKGROUND_MODES = {"remove": 1, "blur": 2, "picture": 3}  # include/sprigcore.h
 
 
 def _background_status(_source_id: str) -> str:
-    """The Background filter's note in the Filters window: how the person finder runs on this PC."""
+    """The Backdrop filter's note in the Filters window: how the person finder runs on this PC."""
     from sprigcast import sprigcore
 
     if not sprigcore.use_native():
@@ -231,7 +231,7 @@ def _background_status(_source_id: str) -> str:
 
 # The person found by a small model on the graphics card (native/core/src/segmenter.h): the room behind them
 # blurred, swapped for a picture, or taken out.
-_KINDS[BACKGROUND] = FilterKind(BACKGROUND, "Background", "video", [
+_KINDS[BACKGROUND] = FilterKind(BACKGROUND, "Backdrop", "video", [
     Field("mode", "Mode", "blur", choices=(("blur", "Blur"), ("picture", "Picture"), ("remove", "Remove"))),
     Field("blur", "Blur", 60, 1, 100, 1, "%", show_when=("mode", ("blur",))),
     Field("picture_file", "Picture", "", file_types="Images (*.png *.webp *.jpg *.jpeg)",

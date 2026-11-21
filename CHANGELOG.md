@@ -6,7 +6,7 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
-- Background filter for cameras and capture cards: blur the room behind you, swap it for a picture, or take it
+- Backdrop filter for cameras and capture cards: blur the room behind you, swap it for a picture, or take it
   out. A small person-finding model (MediaPipe Selfie Segmentation, Apache 2.0) runs inside the engine as
   graphics card programs: no AI library, nothing on the processor, about 0.2 MB added to the engine. It makes a
   mask up to 30 times a second (15 on a slow card) only while the picture shows; a card older than Direct3D 11,
