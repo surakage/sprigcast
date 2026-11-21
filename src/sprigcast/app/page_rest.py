@@ -14,7 +14,9 @@ import os
 from sprigcast.sources.browser import REST_AFTER_S  # noqa: F401 (the pages import it from here)
 
 MEASURE_EVERY_S = 300.0  # each running page is asked how much it holds
-LOG_EVERY = 3  # every third time it is written to the log (15 minutes), and whenever a page starts to grow
+MEASURE_FIRST_S = 60.0  # the first time, so a short run's log has the line too (PC test 2026-11-21: 8 minutes, none)
+LOG_EVERY = 3  # the first time and every third after it is written to the log (15 minutes), and whenever a page
+# starts to grow
 AUDIBLE_RETRY_S = 60.0  # a page still making sound isn't put to rest: looked at again after this
 GREW_TIMES, GREW_BY = 1.5, 300  # elements: this many times its first count and this many more is "growing"
 GREW_MEDIA = 5  # videos and sounds on the page: this many more than at first
@@ -69,13 +71,13 @@ class PageSizes:
         return (last[1] >= first[1] * GREW_TIMES and last[1] - first[1] >= GREW_BY) or last[3] - first[3] >= GREW_MEDIA
 
     def line(self, resting: int = 0) -> str | None:
-        """The log line after a round of asking, or None when this round has nothing new to say: every LOG_EVERY
-        rounds, and at once when a page starts to grow. Pages by source id only, never an address."""
+        """The log line after a round of asking, or None when this round has nothing new to say: the first round,
+        every LOG_EVERY rounds, and at once when a page starts to grow. Pages by source id only, never an address."""
         self.rounds += 1
         growing = {page_id for page_id in self.last if self.grew(page_id)}
         new = growing - self.growing
         self.growing = growing
-        if not self.last or (not new and self.rounds % LOG_EVERY):
+        if not self.last or (not new and self.rounds != 1 and self.rounds % LOG_EVERY):
             return None
         parts = [f"{len(self.last)} asked" + (f", {resting} resting" if resting else "")]
         ranked = sorted(growing, key=lambda p: self.last[p][1] - self.first[p][1], reverse=True)

@@ -854,7 +854,9 @@ def memory_line() -> str:
         pass
     objects = gc.get_objects()
     kinds = collections.Counter(map(type, objects)).most_common(5)
-    parts.append(f"python objects {len(objects):,} (" + ", ".join(f"{k.__name__} {n:,}" for k, n in kinds) + ")")
+    # Only what was made since the last tidy (every 10 s): the rest is kept aside and counted there. "python
+    # objects 199" beside the usual thousands read as something lost (PC test 2026-11-21).
+    parts.append(f"python objects since the last tidy {len(objects):,} (" + ", ".join(f"{k.__name__} {n:,}" for k, n in kinds) + ")")
     del objects
     parts.append(f"python threads {threading.active_count()} ({thread_names()})")
     return "; ".join(parts)

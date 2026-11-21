@@ -6,6 +6,10 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- The log's "pages:" line (what each web page holds) is first written a minute after pages start, then every
+  15 minutes. It used to come first after 15 minutes, so a short run never showed it.
+- The memory line's count of Python objects is named "python objects since the last tidy", which is what it
+  counts.
 - The frame rate SprigCast shows (status bar, Stream doctor, stream report, apps) is the C++ engine's own
   while it draws every picture and hands every stream its frames itself. It used to count the Python drawing
   thread's ticks, which can come late without costing the stream a frame: the Stream doctor said "The preview
