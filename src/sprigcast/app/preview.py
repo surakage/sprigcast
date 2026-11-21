@@ -405,14 +405,18 @@ class Preview(QWidget):
         menu.deleteLater()  # a new menu each time: kept, each held a window handle for good
         self.zoom_changed.emit()
 
-    def set_zoom_locked(self, on: bool) -> None:
+    def set_zoom_locked(self, on: bool, remember: bool = True) -> None:
+        """Locked: fitted, and the wheel, the zoom buttons and dragging leave the view alone (user, 2026-11-20:
+        the top bar's lock). remember=False when Build sets its other canvases to match."""
         self.zoom_locked = bool(on)
         if on:
             self.fit_view()
-        from PySide6.QtCore import QSettings
+        if remember:
+            from PySide6.QtCore import QSettings
 
-        QSettings().setValue("build/zoom_locked", self.zoom_locked)
+            QSettings().setValue("build/zoom_locked", self.zoom_locked)
         self.update()
+        self.zoom_changed.emit()
 
     def _zoom_bar_at(self, pos: QPointF) -> str | None:
         if not self._zoom_bar_shown():
@@ -709,9 +713,7 @@ class Preview(QWidget):
         if bar is not None:
             if bar == "fit":
                 self._scaling_menu(self.mapToGlobal(self._zoom_bar()["fit"].topLeft().toPoint()))
-            else:
-                if self.zoom_locked:
-                    self.set_zoom_locked(False)
+            elif not self.zoom_locked:  # locked: the lock in the top bar (or the scaling menu) lets go
                 self.zoom_at(1.25 if bar == "in" else 1 / 1.25)
             return
         middle = event.button() == Qt.MouseButton.MiddleButton
@@ -830,19 +832,22 @@ class Preview(QWidget):
         self.opened.emit(self.canvas_id, -1 if index is None else index)
 
     def wheelEvent(self, event) -> None:  # noqa: N802
-        """Build: the wheel zooms at the mouse (in past fit and out below it); Shift+wheel moves sideways.
-        Middle-drag or Space+drag moves around. Live never zooms."""
+        """Build: Ctrl+wheel zooms at the mouse (in past fit and out below it); Shift+wheel moves sideways. The
+        wheel alone does nothing (user, 2026-11-20: scrolling zoomed the canvas by accident). Middle-drag or
+        Space+drag moves around. Locked, or in Live, nothing zooms."""
         if self.twin or not self.editable:
             super().wheelEvent(event)
             return
         steps = event.angleDelta().y() / 120 or event.angleDelta().x() / 120
-        if self.zoom_locked:
+        mods = event.modifiers()
+        if self.zoom_locked or not mods & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
+            event.ignore()
             return
-        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+        if mods & Qt.KeyboardModifier.ControlModifier:
+            self.zoom_at(1.15 ** steps, event.position())
+        else:
             self.pan += QPointF(steps * 80, 0)
             self.update()
-        else:
-            self.zoom_at(1.15 ** steps, event.position())
 
     # A touchpad pinch zooms Build's view. Watched by a small filter only while this view can be edited: a Python
     # event() here ran for every event of every preview (each frame's paint, a pop-up's deactivation), and

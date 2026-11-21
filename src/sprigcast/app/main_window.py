@@ -2476,7 +2476,9 @@ class MainWindow(QMainWindow):
             tools_row.addWidget(button)
         from sprigcast.app.zoom_control import ZoomControl
 
-        self.zoom_control = ZoomControl(self._build_preview)
+        self.zoom_control = ZoomControl(self._build_preview,
+                                        lambda: [p for p in [self._build_preview(), *self.previews.values(),
+                                                             self.part_preview] if p is not None])
         tools_row.addWidget(self.zoom_control)
         self._build_only.append(bar.addWidget(tools))
         self.mode_clock = QLabel("")

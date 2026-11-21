@@ -119,3 +119,52 @@ def test_build_canvas_real_size_and_lock():
     preview.set_zoom_locked(False)
     preview.zoom_at(2.0)
     assert preview.zoom == 2.0
+
+
+def test_the_wheel_zooms_only_with_ctrl_and_the_lock_stops_it(monkeypatch):
+    """User, 2026-11-20: scrolling zoomed the canvas by accident; zoom with a key held, and a lock by − % + Fit
+    that stops zooming and moving the canvas."""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QCoreApplication, QPoint, QPointF, QSettings, Qt
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.preview import Preview
+    from sprigcast.app.zoom_control import ZoomControl
+
+    app = QApplication.instance() or QApplication([])
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("ZoomLock")
+    QSettings().clear()
+    previews = [Preview("horizontal", "Build", (1920, 1080)), Preview("vertical", "Build", (1080, 1920))]
+    preview = previews[0]
+    for p in previews:
+        p.editable = True
+        p.resize(1000, 600)
+
+    def wheel(mods):
+        event = QWheelEvent(QPointF(500, 300), QPointF(500, 300), QPoint(0, 0), QPoint(0, 120), Qt.MouseButton.NoButton,
+                            mods, Qt.ScrollPhase.NoScrollPhase, False)
+        app.sendEvent(preview, event)
+
+    wheel(Qt.KeyboardModifier.NoModifier)
+    assert preview.zoom == 1.0  # the wheel alone leaves it
+    wheel(Qt.KeyboardModifier.ControlModifier)
+    assert preview.zoom > 1.0
+    control = ZoomControl(lambda: preview, lambda: previews)
+    assert control.out.isEnabled() and not control.lock.isChecked()
+    control.lock.click()
+    assert all(p.zoom_locked and p.zoom == 1.0 for p in previews)  # every canvas, fitted
+    assert not control.out.isEnabled() and not control.inn.isEnabled() and not control.fit.isEnabled()
+    assert QSettings().value("build/zoom_locked", type=bool)  # remembered
+    wheel(Qt.KeyboardModifier.ControlModifier)
+    control._zoom(1.25)
+    assert preview.zoom == 1.0
+    control.lock.click()
+    assert not any(p.zoom_locked for p in previews) and control.inn.isEnabled()
+    assert not QSettings().value("build/zoom_locked", type=bool)
+    control.inn.click()
+    assert preview.zoom > 1.0
+    QSettings().clear()
