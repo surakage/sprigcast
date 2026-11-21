@@ -91,6 +91,7 @@ class ZoomControl(QFrame):
             return
         locked = bool(preview.zoom_locked)
         self.label.setText(f"{preview.pixel_scale() * 100:.0f}%")
+        self.label.setAccessibleName(f"Scaling {self.label.text()}")  # screen readers hear the value too
         for button in (self.out, self.inn, self.fit):
             button.setEnabled(not locked)
         shade = theme.MUTED if locked else theme.TEXT  # icons don't dim on their own

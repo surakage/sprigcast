@@ -200,4 +200,4 @@ def test_ctrl_held_now_counts_even_if_the_wheel_event_lacks_it(monkeypatch):
     assert preview.zoom > 1.0
     control = ZoomControl(lambda: preview)
     names = [b.accessibleName() for b in (control.out, control.label, control.inn, control.fit, control.lock)]
-    assert names == ["Zoom out", "Scaling", "Zoom in", "Fit", "Lock zoom"]
+    assert names == ["Zoom out", f"Scaling {control.label.text()}", "Zoom in", "Fit", "Lock zoom"]  # with its value

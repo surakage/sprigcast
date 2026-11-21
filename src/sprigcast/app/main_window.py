@@ -4907,7 +4907,7 @@ class MainWindow(QMainWindow):
 
     def _add_new(self, kind: str, label: str) -> None:
         """+ Add → a kind → New…: the leaf goes in, then its picker opens (after the menu has closed), so you
-        choose the screen, window, camera or file right away. Cancel keeps the leaf: double-click it later."""
+        choose the screen, window, camera or file right away. Cancel takes the leaf out again."""
         before = {c.id for c in self.collection.sources}
         self._add_blank(kind, label)
         new = [c for c in self.collection.sources if c.id not in before and c.kind not in self.AUDIO_KINDS]
@@ -4917,8 +4917,13 @@ class MainWindow(QMainWindow):
 
         def pick() -> None:
             item = self._item()
-            if item is not None and item.source == source_id:
-                self._edit_source_settings()
+            if item is None or item.source != source_id:
+                return
+            if not self._edit_source_settings():  # Cancel leaves nothing behind (PC test of #796)
+                item = self._item()
+                if item is not None and item.source == source_id:
+                    self._remove_item()
+                    self.statusBar().clearMessage()
 
         QTimer.singleShot(0, pick)
 
@@ -5725,24 +5730,25 @@ class MainWindow(QMainWindow):
         self._changed()
         self._refresh_sources(keep_row=self.source_list.currentRow())
 
-    def _edit_source_settings(self) -> None:
+    def _edit_source_settings(self) -> bool:
+        """Double-click or Properties: the leaf's pop-up. False when it was cancelled (or there was none)."""
         item = self._item()
         if item is None:
-            return
+            return False
         config = self.collection.source(item.source)
         if config.kind == PART_KIND:
             self._open_part_item()
-            return
+            return False
         blank = config.settings.get("blank") and next((k for k, v in BLANK_KINDS.items() if config.name == k), None)
         before = dict(config.settings)
         if config.kind == "app_audio":
             self._pick_app_sound_apps(config.id)
-            return
+            return False
         if config.kind == "color":
             current = QColor(str(config.settings.get("color", "#000000"))[:7])
             color = QColorDialog.getColor(current, self, "Color", QColorDialog.ColorDialogOption.ShowAlphaChannel)
             if not color.isValid():
-                return
+                return False
             config.settings = {
                 **config.settings,
                 "color": f"#{color.red():02x}{color.green():02x}{color.blue():02x}{color.alpha():02x}",
@@ -5750,19 +5756,19 @@ class MainWindow(QMainWindow):
         elif config.kind == "image":
             path, _ = QFileDialog.getOpenFileName(self, "Choose image", "", "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif)")
             if not path:
-                return
+                return False
             config.settings = {**config.settings, "path": path}
         elif config.kind == "display_capture":
             changes = self._display_dialog(config.settings)
             if changes is None:
-                return
+                return False
             if config.name == f"Monitor {config.settings.get('monitor', 1)}":  # a name you chose stays
                 config.name = f"Monitor {changes['monitor']}"
             config.settings = {**config.settings, **changes}
         elif config.kind == "camera":
             settings = self._camera_dialog(config.settings, config.id)
             if settings is None:
-                return
+                return False
             old = str(config.settings.get("name", ""))
             config.settings = settings
             if config.name in (old, short_name(old, "Camera")):  # a name you chose stays
@@ -5774,7 +5780,7 @@ class MainWindow(QMainWindow):
             dialog = GameCaptureDialog(config.settings, list_windows(), capture_sound(self.collection, config.id)
                                        is not None, self, list_windows=list_windows)
             if not modal(dialog):
-                return
+                return False
             changes, sound = dialog.values()
             config.settings = {**config.settings, **changes}
             if sound != (capture_sound(self.collection, config.id) is not None):
@@ -5786,7 +5792,7 @@ class MainWindow(QMainWindow):
             old = str(config.settings.get("device", "default") or "default")
             device = self._pick_audio_device(config.kind, old, config.name, "Save")
             if device is None or device == old:
-                return
+                return False
             base = "Desktop audio" if config.kind == "audio_output" else "Mic"
             if config.name in (base, f"{base} ({old})", short_name(old, base)):  # a name you chose stays
                 config.name = base if device == "default" else short_name(device, base)
@@ -5798,7 +5804,7 @@ class MainWindow(QMainWindow):
             had_sound = capture_sound(self.collection, config.id) is not None
             picked = self._window_dialog(config.settings, had_sound)
             if picked is None:
-                return
+                return False
             changes, sound = picked
             old = window_name(str(config.settings.get("title", "")), str(config.settings.get("process", "")))
             old_title = str(config.settings.get("title", ""))
@@ -5814,7 +5820,7 @@ class MainWindow(QMainWindow):
             defaults = getattr(cls, "defaults", None) if cls is not None else None
             if not defaults:
                 msgbox.information(self, "SprigCast", f"{config.kind!r} sources have no settings to edit.")
-                return
+                return False
             if config.kind == "browser":
                 from sprigcast.app.web_page_dialog import WebPageDialog
 
@@ -5833,7 +5839,7 @@ class MainWindow(QMainWindow):
                 dialog = SettingsDialog(config.name, defaults, config.settings, self, cls=cls,
                                         collection=self.collection)
             if not modal(dialog):
-                return
+                return False
             old_auto = _name_from(config.settings, config.name)
             config.settings = {**config.settings, **dialog.values()}  # volume, mute... aren't in the form
             if config.name == old_auto:  # the name followed the text, so keep it following
@@ -5842,6 +5848,7 @@ class MainWindow(QMainWindow):
             self._name_after_pick(config, blank)
         self._changed()
         self._refresh_sources(keep_row=self.source_list.currentRow())
+        return True
 
     # Recording -----------------------------------------------------------------
 
