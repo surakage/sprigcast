@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from test_control_api import FakeHost, _collection, _qt, _wait
 
 from sprigcast.control import web
@@ -57,6 +59,47 @@ def test_links_are_safe_by_default():
     evil = "GET /api/stream.start?password=leafy HTTP/1.1\r\nOrigin: https://example.com\r\n\r\n"
     assert web.handle(api, _request(evil), enabled=True, password="leafy")[0] == 403
     assert host.live is None
+    # The whole host counts: a site whose name only starts like this PC's is another site.
+    for origin, status in (("http://localhost.example.com", 403), ("http://127.0.0.1.example.com", 403),
+                           ("http://localhost:8080", 200), ("http://[::1]:8080", 200), ("null", 200)):
+        req = f"GET /api/bloom.show?bloom=BRB&password=leafy HTTP/1.1\r\nOrigin: {origin}\r\n\r\n"
+        assert web.handle(api, _request(req), enabled=True, password="leafy")[0] == status, origin
+
+
+def test_localhost_by_its_ipv6_address_connects_too():
+    """An app that connects to "localhost" tries ::1 first; with nobody there Windows waited about 2 s before
+    trying 127.0.0.1 (2,020 ms on the PC, 2026-11-21)."""
+    app = _qt()
+    from PySide6.QtCore import QUrl
+    from PySide6.QtNetwork import QHostAddress, QTcpServer
+    from PySide6.QtWebSockets import QWebSocket
+
+    from sprigcast.app.control_server import ControlServer
+    from sprigcast.control.api import ControlApi
+
+    probe = QTcpServer()
+    if not probe.listen(QHostAddress(QHostAddress.SpecialAddress.LocalHostIPv6), 0):
+        pytest.skip("this machine has no ::1")
+    probe.close()
+    host = FakeHost(_collection())
+    server = ControlServer(ControlApi(host), native=NativeApi(host))
+    assert server.start(0, password="")
+    ws, got = QWebSocket(), []
+    ws.textMessageReceived.connect(lambda t: got.append(json.loads(t)))
+    try:
+        assert server.tcp6 is not None and server.tcp6.serverPort() == server.port
+        ws.open(QUrl(f"ws://[::1]:{server.port}/sprigcast"))
+        assert _wait(app, lambda: got and "hello" in got[0])
+    finally:
+        ws.close()
+        server.stop()
+    assert server.tcp6 is None
+    # Open to the network: one listener on every address, as before.
+    assert server.start(0, password="leafy", lan=True)
+    try:
+        assert server.tcp6 is None
+    finally:
+        server.stop()
 
 
 def test_one_port_serves_links_and_websockets():

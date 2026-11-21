@@ -28,7 +28,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from sprigcast.core.scene import (
+from sprigcast.core.scene import (  # noqa: I001
+    new_filter_id,
     ANY,
     PART_KIND,
     Filter,
@@ -377,7 +378,7 @@ def _filters(obs: dict[str, Any], notes: list[str]) -> list[Filter]:
             continue
         if mapped[0] in _PICTURE_FILTERS and str(obs.get("id") or "") in AUDIO_IDS:
             continue  # a picture filter on a sound does nothing in OBS either
-        out.append(Filter(id=f"f-{n}", kind=mapped[0], name=str(f.get("name") or mapped[0]),
+        out.append(Filter(id=new_filter_id(), kind=mapped[0], name=str(f.get("name") or mapped[0]),
                           enabled=bool(f.get("enabled", True)), settings=mapped[1]))
     return out
 

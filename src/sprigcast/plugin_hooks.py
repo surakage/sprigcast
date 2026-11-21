@@ -357,16 +357,13 @@ def filter_on(api, source, kind: str, name: str, settings: dict | None = None, s
     commit False: the caller commits once after switching on several (a sprig's sources). Returns the filter.
     """
     from sprigcast.core.filters import filter_kind
-    from sprigcast.core.scene import Filter
+    from sprigcast.core.scene import Filter, new_filter_id
 
     flt = find_filter(source, kind)
     if flt is None:
         taken = {f.id for s in api.col.sources for f in s.filters} | {f.id for f in source.filters}
-        n = 1
-        while f"filter-{n}" in taken:
-            n += 1
         info = filter_kind(kind)
-        flt = Filter(id=f"filter-{n}", kind=kind, name=name, settings=dict(info.defaults) if info else {})
+        flt = Filter(id=new_filter_id(taken), kind=kind, name=name, settings=dict(info.defaults) if info else {})
         source.filters.append(flt)
     flt.settings = {**flt.settings, **(settings or {})}
     flt.enabled = True

@@ -29,11 +29,23 @@ from sprigcast.control.pairing import matches
 log = logging.getLogger(__name__)
 
 MAX_REQUEST = 64 * 1024
-LOCAL_ORIGINS = ("null", "http://127.0.0.1", "http://localhost", "https://127.0.0.1", "https://localhost")
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
+
 STATUS_TEXT = {200: "OK", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
                405: "Method Not Allowed", 409: "Conflict", 413: "Payload Too Large", 500: "Internal Server Error"}
 ERROR_STATUS = {"bad_request": 400, "not_found": 404, "unknown_action": 404, "not_allowed": 409, "busy": 409,
                 "failed": 500, "auth": 401, "off": 403}
+
+
+def local_origin(origin: str) -> bool:
+    """A page on this PC (or a file, "null"). The whole host is compared: http://localhost.example.com is not local."""
+    if origin == "null":
+        return True
+    try:
+        parts = urlsplit(origin)
+        return parts.scheme in ("http", "https") and parts.hostname in LOCAL_HOSTS
+    except ValueError:
+        return False
 
 
 @dataclass
@@ -123,7 +135,7 @@ def handle(api: NativeApi, request: Request, *, enabled: bool, password: str, ke
     if not request.path.rstrip("/").startswith("/api"):
         return _error("not_found", "Use /api/<action>, like /api/bloom.show?bloom=BRB.")
     origin = request.headers.get("origin")
-    if origin is not None and not origin.startswith(LOCAL_ORIGINS):
+    if origin is not None and not local_origin(origin):
         return _error("off", "Requests from web pages on other sites are refused.")
     if request.path.rstrip("/") == "/api/pair":  # works with web links off too: the key also opens the WebSocket
         return _pair(request, pairing)

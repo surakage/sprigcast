@@ -140,3 +140,14 @@ def test_apps_name_a_sprig_and_every_placement_follows():
             api.run("filter.set", bad)
     with pytest.raises(ApiError):
         api.run("filter.set", {"filter": "sharpen", "on": True})  # neither source nor sprig
+
+
+def test_a_new_filter_never_gets_an_id_one_had_before():
+    """PC 2026-11-21: a new Backdrop came out as "filter-2", the id a removed Pixelate on another source had."""
+    col, api = _api()
+    first = api.run("filter.add", {"source": "Cam", "kind": "sharpen"})["id"]
+    api.run("filter.remove", {"source": "Cam", "filter": first})
+    second = api.run("filter.add", {"source": "Alert", "kind": "sharpen"})["id"]
+    third = api.run("filter.add", {"sprig": "Frame", "kind": "sharpen"})["id"]
+    ids = [first, second, third, *(f.id for s in col.sources for f in s.filters)]
+    assert first != second and len(set(ids)) == 4 and all(i.startswith("filter-") for i in ids)  # the twin's own too
