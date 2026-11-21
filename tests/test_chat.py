@@ -646,3 +646,20 @@ def test_right_click_moderates_where_you_are_signed_in(app, monkeypatch):
     QSettings().setValue(sd.ACCOUNT_SETTING.format("kick"), "")
     chat_panel.save_names({})
     panel.sleep()
+
+
+def test_a_saved_chat_link_has_its_browser_made_before_the_window(app, monkeypatch):
+    """Made when the link was picked mid-stream, the first web view rebuilt the whole window (it vanished and came
+    back) and stopped it 1.3 s (PC, live, 2026-11-21)."""
+    from sprigcast.app import chat_panel, custom_docks
+
+    made = []
+    monkeypatch.setattr(custom_docks, "web_engine_available", lambda: True)
+    monkeypatch.setattr(custom_docks.WebDockBody, "ensure_loaded", lambda self: made.append(self.url))
+    assert chat_panel.ChatPanel().web is None and not made  # no link saved: no browser, nothing loaded
+    QSettings().setValue(chat_panel.LINK, "https://example.com/chat")
+    panel = chat_panel.ChatPanel()
+    assert panel.web is not None and made == ["about:blank"]  # the browser, and no page yet
+    assert panel.web.parent() is panel.web_holder
+    monkeypatch.setenv("SPRIGCAST_CHAT_LINK_LATE", "1")
+    assert chat_panel.ChatPanel().web is None

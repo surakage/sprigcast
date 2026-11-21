@@ -135,7 +135,8 @@ class WebDockBody(QWidget):
             return
         self.view = QWebEngineView()
         self.view.setPage(QWebEnginePage(_shared_profile(), self.view))
-        self.view.setUrl(QUrl(self.url))
+        if self.url and self.url != "about:blank":  # made ahead (the Chat panel's link): no page yet
+            self.view.setUrl(QUrl(self.url))
         self._layout.removeWidget(self.placeholder)
         self.placeholder.hide()
         self._layout.addWidget(self.view)
