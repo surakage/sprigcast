@@ -197,9 +197,28 @@ def mask(text: str, secrets=()) -> str:
         return text
 
     def url(match: re.Match) -> str:
+        # The app part ("app", "live2") stays when it's a short plain word: it says which server part was used.
+        # What comes after it, and the query, could be a key.
         host = match.group(2).rsplit("@", 1)[-1]
         rest = match.group(3)
-        return f"{match.group(1)}://{host}" + ("/****" if rest.strip("/").strip("*") else rest)
+        end = rest[len(rest.rstrip(":;.!")):]  # "...rtmp://host/app: [Errno 111]": the colon is the sentence's
+        rest = rest[: len(rest) - len(end)]
+        path = re.split(r"[?#]", rest, maxsplit=1)
+        kept, hidden = [], len(path) > 1 and bool(path[1])
+        parts = path[0].split("/")
+        for n, part in enumerate(parts):
+            first = n == 1 or (n == 0 and part)
+            if part == "" or (first and len(part) <= 12 and part.isalnum()
+                              and not any(c.isdigit() for c in part[:-1])):
+                kept.append(part)
+            else:
+                kept.append("****")
+                hidden = True
+                break
+        out = "/".join(kept)
+        if hidden and not out.endswith("****"):
+            out = out.rstrip("/") + "/****"
+        return f"{match.group(1)}://{host}{out}{end}"
 
     text = _URL.sub(url, text)
     for secret in sorted({f for s in secrets if s for f in _forms(s)}, key=len, reverse=True):
