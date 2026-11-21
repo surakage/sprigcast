@@ -378,6 +378,51 @@ def test_each_taker_gets_the_picture_on_screen_once(player_lib, files):
 
 
 @pytest.mark.skipif(not sprigcore.available(), reason="sprigcore.dll isn't built here")
+def test_a_player_shared_by_a_smaller_source_is_drawn_at_that_sources_size(player_lib, files):
+    """One camera opened once for a 1080p and a 720p source plays 1080p for both: the engine lays the smaller
+    source out at its own size, so its picture ends where its border does (PC, 2026-11-21: drawn 1.5x too big).
+    Here a 320x240 player is laid out as 160x120, then at its own size again."""
+    from sprigcast.core.scene import Canvas, Scene, SceneCollection, SceneItem, SourceConfig
+    from sprigcast.render import native_bridge
+
+    col = SceneCollection(
+        canvases=[Canvas(id="h", width=320, height=240)],
+        sources=[SourceConfig(id="clip", kind="media", name="Clip", settings={"path": files["video"]})],
+        scenes=[Scene(id="a", name="A", canvas="h", items=[SceneItem(source="clip", x=0, y=0, align="top_left")])],
+        active_scenes={"h": "a"},
+    )
+    player = opened(files["video"], loop=True)
+    bridge = native_bridge.NativeCanvases(col, warp=True)
+    try:
+        assert bridge.attach_media("clip", player)
+        bridge.media_size("clip", (160, 120))
+        bridge.sync(col, {}, lambda collection, layout: (layout, None), False)
+        bridge.watch("h", (320, 240), 0)
+
+        def covered(seconds=5.0):
+            """Columns and rows of the canvas the picture covers, look after look."""
+            deadline, seen = time.monotonic() + seconds, None
+            while time.monotonic() < deadline:
+                player.read_audio(240)
+                got = bridge.take("h")
+                if got is not None:
+                    solid = np.frombuffer(got[0], np.uint8).reshape(240, 320, 4)[..., 3] > 127
+                    seen = (int(solid.any(axis=0).sum()), int(solid.any(axis=1).sum()))
+                    yield seen
+                time.sleep(0.005)
+
+        assert any(seen == (160, 120) for seen in covered()) and not bridge.failed
+        bridge.media_size("clip", None)  # alone on its camera again: the player's own size
+        assert any(seen == (320, 240) for seen in covered()) and not bridge.failed
+        bridge.media_size("clip", (160, 120))
+        bridge.forget_gone([])
+        assert "clip" not in bridge._media_sizes and not bridge.failed
+    finally:
+        player.close()
+        bridge.close()
+
+
+@pytest.mark.skipif(not sprigcore.available(), reason="sprigcore.dll isn't built here")
 def test_the_engines_compositor_takes_pictures_straight_from_the_player(player_lib, files):
     """A video attached to the engine shows on its canvas with Python sending no picture at all, goes on showing
     after the player's handle is closed (the engine holds it), and forgetting the source lets it go."""

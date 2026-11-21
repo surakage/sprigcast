@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 36  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 37  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 PUSH_OFF, PUSH_TALK, PUSH_MUTE = 0, 1, 2  # sc_mixer_push_set modes
 DLL_NAME = "sprigcore.dll"
 
@@ -355,6 +355,7 @@ def _lib():
         "sc_engine_source_hold": (c_int, [vp, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64]),
         "sc_engine_source_draws": (c_int, [vp, ctypes.c_uint64, c_int, c_int, ctypes.POINTER(Item), c_int]),
         "sc_engine_source_media": (c_int, [vp, ctypes.c_uint64, vp]),
+        "sc_engine_source_media_size": (c_int, [vp, ctypes.c_uint64, c_int, c_int]),
         "sc_engine_source_shared": (c_int, [vp, ctypes.c_uint64, ctypes.c_wchar_p]),
         "sc_engine_source_shared_hold": (c_int, [vp, ctypes.c_uint64, c_int]),
         "sc_engine_source_visual": (c_int, [vp, ctypes.c_uint64, vp]),
@@ -949,6 +950,12 @@ class Engine:
                 _check(lib.sc_engine_source_media(self.handle, key(source_id), None))  # closed with its mixer
         else:
             _check(player._call(lambda media: lib.sc_engine_source_media(self.handle, key(source_id), media)))
+
+    def media_size(self, source_id: str, size: tuple[int, int] | None) -> None:
+        """A source shown from a player is laid out at ``size`` whatever size the player's pictures are (None: the
+        player's own). One camera opened once for sources asking different modes plays the biggest."""
+        w, h = size or (0, 0)
+        _check(_need().sc_engine_source_media_size(self.handle, key(source_id), int(w), int(h)))
 
     def attach_shared(self, source_id: str, name: str | None) -> None:
         """Source ``source_id`` shows the pictures in the shared memory block ``name`` (a browser page's, written

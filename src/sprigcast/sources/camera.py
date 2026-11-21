@@ -505,8 +505,9 @@ class _Feed:
                 text = info.status_text
                 if text == "ok" and info.width > 0:
                     self.status = f"capturing {info.width}x{info.height}"
+                    self.picture = (info.width, info.height)
                     for source in list(self.subscribers):
-                        source._size = source.fit((info.width, info.height))
+                        source._size = source.fit(self.picture)
                     if lost is not None:
                         log.info("%s: %r is back (%dx%d)", self.id, device.name, info.width, info.height)
                         lost = None
@@ -827,6 +828,14 @@ class CameraSource(Source):
         the render thread then only calls :meth:`engine_tick`."""
         feed = self._feed
         return feed.player if self._attached and feed is not None else None
+
+    @property
+    def engine_layout(self) -> tuple[int, int] | None:
+        """The size the engine lays this source out at when its feed's player plays another (a feed shared with
+        a source asking a bigger mode plays that one's); None: the player's own size."""
+        feed = self._feed
+        picture = getattr(feed, "picture", None) if self._attached else None
+        return self._size if picture and self._size != picture and min(self._size) > 0 else None
 
     def engine_tick(self) -> None:
         """Render thread, on a tick the engine showed the picture itself: nothing to do (the feed keeps the size)."""

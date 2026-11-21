@@ -515,6 +515,10 @@ def test_one_camera_in_two_modes_opens_once_at_the_bigger(fake_cv2):
         assert small._feed.settings["fps"] == 60
         assert wait_for(lambda: small._frames.peek() is not None and small.size == (32, 18))
         assert big.size == (64, 36)
+        # With the engine's own player the feed says what it plays: the smaller source is laid out at its size.
+        assert small.engine_layout is None
+        small._feed.picture = (64, 36)
+        assert small.engine_layout == (32, 18) and big.engine_layout is None
         small.set_shrink(1.0)
         big.set_shrink(0.25)  # the big one shown small: the small one still needs half the picture
         assert small._feed.shrink() == 0.5
