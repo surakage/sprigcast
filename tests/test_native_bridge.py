@@ -1498,6 +1498,8 @@ def test_ticks_rest_between_previews_while_the_engine_hands_every_frame_on(monke
         shown += engine.frames["h"].take() is not None
     assert 28 <= engine.rested_ticks <= 31 and 28 <= shown <= 31, (engine.rested_ticks, shown)
     assert out.got == [] and fake.rendered == []  # linked: no frame came through Python at all
+    engine._native.pace = (5.0, 300, 0, 3.0)
+    assert engine._engine_pace() == (5.0, 300, 0, 3.0)  # the frame rate shown is the engine's own
     engine.previews = frozenset()  # the window is hidden: a working tick only every 70 ms
     before = engine._native.synced
     for i in range(60):
@@ -1542,6 +1544,8 @@ def test_frames_that_pass_through_python_keep_every_tick_working(monkeypatch):
     engine.add_frame_tap("h", out.push, nv12_size=(64, 36))
     _run(engine, fake, seconds=2.0)
     assert engine.rested_ticks == 0 and len(out.got) == 120
+    engine._native.pace = (5.0, 300, 0, 3.0)
+    assert engine._engine_pace() is None  # a late tick can cost these frames: the ticks are what's counted
 
 
 def test_the_off_switch_keeps_every_tick_working(monkeypatch):

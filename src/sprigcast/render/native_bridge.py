@@ -241,6 +241,7 @@ class NativeCanvases:
         self._paused: dict[tuple[int, int], tuple] = {}  # (owner, writer) unlinked for a transition Python draws
         self._link_refused = weakref.WeakSet()  # recordings whose writer an output wouldn't link to
         self.output_drops = 0
+        self.pace: tuple | None = None  # (engine clock, frames drawn, frame times missed, ms a frame) at the last check
         self._late: dict[str, int] = {}  # output ("horizontal 1280x720 on the card") -> frames not taken, since said
         self.lost = 0  # frames of the output take_outputs last looked at that the engine let go of
         self._wipe_maps: set[str] = set()
@@ -1000,6 +1001,8 @@ class NativeCanvases:
         stats = self._guard("stats", self.engine.stats)
         if stats is None:
             return
+        # The engine's own pace, for the frame rate SprigCast shows (render/engine.py _engine_pace).
+        self.pace = (stats.get("time", now), stats.get("ticks", 0), stats.get("late", 0), stats.get("render_ms_avg", 0.0))
         if stats["rebuilds"] != self._rebuilds:
             self._rebuilds = stats["rebuilds"]
             log.warning("native engine: rebuilt its device (%d so far)", self._rebuilds)

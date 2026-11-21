@@ -594,7 +594,7 @@ class DoctorDialog(CardWindow):
         from sprigcast.core import workers
 
         self._busy = workers.run(lambda: busy_pc.heavy_apps(limit=5, with_use=True), name="doctor-busy")
-        QTimer.singleShot(int(self._listen * 1000), self.finish)
+        QTimer.singleShot(int(self._listen * 1000), self, self.finish)  # not after the window is closed
 
     def finish(self) -> None:
         checkup = self._gather()
