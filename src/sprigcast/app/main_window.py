@@ -6914,6 +6914,8 @@ class MainWindow(QMainWindow):
         key = get_key(output.key_ref)
         if output.twitch_account and output.service == "twitch":
             key = self._fresh_twitch_key(output, key)
+        elif output.service == "youtube" and output.account and key:
+            key = self._fresh_youtube_key(output, key)
         canvas = next((c for c in self.collection.canvases if c.id == output.canvas and c.enabled), None)
         if not server:
             return None, f"{service.label}: paste the server URL in Stream…"
@@ -7049,6 +7051,35 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 log.warning("could not save the fetched Twitch key: %s", exc)
         return key
+
+    def _fresh_youtube_key(self, output, saved: str) -> str:
+        """A YouTube place whose key came from signing in: before going live, ask YouTube which key its stream
+        is waiting on, since a channel can have several and a saved one can be an old one that shows nothing
+        (it was refused five times, live 2026-11-21). Not signed in, or YouTube not answering: the saved key."""
+        from sprigcast.output import service_signin, stream_details
+        from sprigcast.output.keys import set_key
+
+        if not stream_details.account("youtube"):
+            return saved
+        self._say("Checking your stream key with YouTube…")
+        try:
+            from sprigcast.core.workers import wait_answering
+
+            fetched = wait_answering(service_signin.key_from_account, "youtube", output.canvas == "vertical", saved)
+        except Exception as exc:  # noqa: BLE001 (any failure: go live with the saved key, as before)
+            log.warning("could not check the YouTube stream key: %s", exc)
+            return saved
+        if not fetched.key or fetched.key == saved:
+            return saved
+        log.warning("YouTube (%s): the saved stream key isn't the one YouTube is waiting on; using the channel's "
+                    "current key", output.canvas)
+        self.statusBar().showMessage("YouTube's stream key had changed. Using the current one.", 15000)
+        if output.key_ref:
+            try:
+                set_key(output.key_ref, fetched.key)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("could not save the fetched YouTube key: %s", exc)
+        return fetched.key
 
     def _stop_streaming(self) -> None:
         session, self.streaming = self.streaming, None

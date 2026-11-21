@@ -238,3 +238,79 @@ def test_one_destination_sign_in_also_signs_in_stream_details_and_names_chat(ids
     stream_details._remember("kick", "")
     stream_details.set_key(stream_details.TOKEN_REF["kick"], "")
     QSettings().remove(NAMES)
+
+
+def test_youtube_sends_to_the_key_a_stream_is_waiting_on_not_the_first_listed(monkeypatch):
+    """The channel's first reusable key was taken, and with an old key listed first SprigCast sent to a dead one:
+    YouTube closed the connection five times with only "I/O error" (live 2026-11-21)."""
+    def stream(ident, key, title="Default stream key"):
+        return {"id": ident, "contentDetails": {"isReusable": True}, "snippet": {"title": title},
+                "cdn": {"ingestionType": "rtmp", "ingestionInfo": {"streamName": key}}}
+
+    old, current, other = stream("s-old", "dead-key"), stream("s-now", "live-key"), stream("s-3", "third")
+    pick = service_signin.pick_youtube_key
+    assert pick([old, current], None, ("s-now",))[0] == "live-key"
+    assert pick([old, current], "dead-key", ("s-now",))[0] == "live-key"  # nothing waits on the saved one
+    assert pick([old, current, other], "third", ("s-now", "s-3"))[0] == "third"  # a stream waits on the saved one
+    assert pick([old, current], "live-key", ())[0] == "live-key"  # YouTube didn't say: the saved one stays
+    assert pick([old, current], "gone", ())[0] == "dead-key" and pick([], "x", ("s-now",)) == ("", "")
+
+    asked = []
+
+    def yt(token, method, path, body=None):
+        asked.append(path.split("broadcastStatus=")[1].split("&")[0])
+        if "active" in path:
+            return {"items": []}
+        return {"items": [{"snippet": {"scheduledStartTime": "2026-12-01"}, "contentDetails": {"boundStreamId": "s-3"}},
+                          {"snippet": {"scheduledStartTime": "2026-11-21"}, "contentDetails": {"boundStreamId": "s-now"}},
+                          {"snippet": {}, "contentDetails": {}}]}
+
+    from sprigcast.output import stream_details
+
+    monkeypatch.setattr(stream_details, "_yt", yt)
+    streams = [old, current, other, stream("s-v", "tall", "SprigCast Vertical")]
+    monkeypatch.setattr(service_signin, "get_json", lambda url, token, who, headers=None: {"items": list(streams)})
+    assert service_signin._youtube_key("tok", saved="dead-key") == "live-key" and asked == ["active", "upcoming"]
+    assert service_signin._youtube_key("tok", saved="third") == "third"
+    asked.clear()
+    assert service_signin._youtube_key("tok", vertical=True, saved="dead-key") == "tall" and asked == []
+
+    def down(token, method, path, body=None):
+        raise stream_details.DetailsError("YouTube isn't answering.")
+
+    monkeypatch.setattr(stream_details, "_yt", down)
+    assert service_signin._youtube_key("tok", saved="live-key") == "live-key"
+
+
+def test_going_live_checks_a_signed_in_youtube_key_and_keeps_the_saved_one_when_youtube_is_silent(monkeypatch):
+    import types
+
+    mw = pytest.importorskip("sprigcast.app.main_window")
+    from sprigcast.output import keys, stream_details
+
+    said, saved = [], {}
+    window = types.SimpleNamespace(_say=said.append)
+    window.statusBar = lambda: types.SimpleNamespace(showMessage=lambda text, ms: said.append(text))
+    output = types.SimpleNamespace(canvas="horizontal", key_ref="ref-1", account="Sloth Bloom", service="youtube")
+    monkeypatch.setattr(keys, "set_key", lambda ref, key: saved.update({ref: key}))
+    monkeypatch.setattr(stream_details, "account", lambda service: "Sloth Bloom")
+    asked = []
+
+    def from_account(service, vertical=False, saved=None):
+        asked.append((service, vertical, saved))
+        return service_signin.Fetched(account="Sloth Bloom", key="live-key")
+
+    monkeypatch.setattr(service_signin, "key_from_account", from_account)
+    fresh = mw.MainWindow._fresh_youtube_key
+    assert fresh(window, output, "dead-key") == "live-key" and saved == {"ref-1": "live-key"}
+    assert asked == [("youtube", False, "dead-key")] and "live-key" not in " ".join(said)
+    assert fresh(window, output, "live-key") == "live-key" and len(saved) == 1
+
+    def down(*a, **k):
+        raise service_signin.SignInError("Couldn't reach YouTube.")
+
+    monkeypatch.setattr(service_signin, "key_from_account", down)
+    assert fresh(window, output, "dead-key") == "dead-key"
+    monkeypatch.setattr(stream_details, "account", lambda service: "")
+    monkeypatch.setattr(service_signin, "key_from_account", from_account)
+    assert fresh(window, output, "dead-key") == "dead-key" and len(asked) == 2  # not signed in: nothing is asked

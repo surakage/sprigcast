@@ -6,6 +6,9 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- YouTube: a place signed in to YouTube checks its stream key when you go live and sends to the key your
+  stream is waiting on. It used to keep the channel's first key, which could be an old one that YouTube
+  refuses. Not tried on a PC yet.
 - A place that can't connect says why in plain words (for example "the server ended the connection as it was
   starting") in front of the network's own "I/O error".
 - A place switched off and back on while live sends the same encoded video as before (Twitch's quality or a
