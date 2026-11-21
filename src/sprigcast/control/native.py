@@ -74,6 +74,7 @@ FEATURES = (
     "layout.get",          # layout.get: every item's place, crop, bounds, source size and canvas box; flat, overlaps
     "source.state",        # source.get loaded, state ("capturing 1920x1080"), size, cameraSize, asleep
     "places.size",         # places.list size [w, h], fps, and enhanced where the service has it
+    "screenshot.skipped",  # screenshot.take {bloom}: every shape it's in, skipped names a shape left out; canvas pictures are on black
     "places.ready",        # places.list name, ready, problem ("Needs a stream key"): why a place can't go live yet
     "app_audio.pids",      # app_audio settings pids: [process id, ...] catches those processes' trees instead of apps
 )
@@ -1727,12 +1728,23 @@ class NativeApi:
         else:
             bloom = self._bloom(data)
             family = self.col.linked_with(bloom.id)
+            # A shape this bloom has no layout for is said, not quietly left out: a bloom made for one canvas (its
+            # vertical look being another bloom) answered "both" with one picture and no word why (PC, 2026-11-21).
+            asked = self._shapes() if shape == "both" else [shape]
+            skipped = [{"shape": c, "why": f"{bloom.name!r} has no {c} layout."}
+                       for c in asked if all(s.canvas != c for s in family)]
             if shape != "both":
                 family = [s for s in family if s.canvas == shape] or family
+            def noted(out):
+                return {**out, "skipped": skipped} if skipped else out
+
             on_air = [s.canvas for s in family if self.col.active_scenes.get(s.canvas) == s.id]
-            if on_air:
-                return self._canvas_shots(on_air[:1], width, save, as_data,
-                                          lambda shots: {"shots": [{**shot, "bloom": bloom.name} for shot in shots]})
+            if on_air and shape == "both":
+                skipped += [{"shape": s.canvas, "why": f"{bloom.name!r} isn't on air there."}
+                            for s in family if s.canvas not in on_air]
+            if on_air:  # each shape it's on air in ("both" gave only the first)
+                return self._canvas_shots(on_air if shape == "both" else on_air[:1], width, save, as_data,
+                                          lambda shots: noted({"shots": [{**shot, "bloom": bloom.name} for shot in shots]}))
             off_air = getattr(self.host, "bloom_screenshot", None)
             if off_air is not None:  # drawn on its own canvas, nothing on air changes; its sources wake for it
                 if self.host.stream_status() is not None or self.host.record_status() is not None:
@@ -1746,7 +1758,7 @@ class NativeApi:
                                  for layout, shot in zip(layouts, got) if shot is not None]
                         if not shots:
                             raise ApiError("not_allowed", "Nothing is drawing right now, so there's nothing to picture.")
-                        return {"shots": shots}
+                        return noted({"shots": shots})
 
                     return _saving(later([layout.id for layout in layouts], bloom.name, width, save,
                                          as_data)).map(collected)
@@ -1760,7 +1772,7 @@ class NativeApi:
                         shots.append({"shape": layout.canvas, **shot, "bloom": bloom.name, "on_air": False})
                 if not shots:
                     raise ApiError("not_allowed", "Nothing is drawing right now, so there's nothing to picture.")
-                return {"shots": shots}
+                return noted({"shots": shots})
             placed = [i.source for i in family[0].items]
             if len(placed) != 1:
                 raise ApiError("not_allowed", f"{bloom.name!r} isn't on air, so there's nothing to picture.")
