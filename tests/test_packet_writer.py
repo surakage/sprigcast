@@ -153,6 +153,48 @@ def test_a_stream_delay_is_kept_by_the_engine_and_sent_out_at_the_end(native, tm
         assert 0 <= sum(1 for _ in f.decode(video=0)) - link.frames <= 1
 
 
+def _engine_wrote(caplog, monkeypatch):
+    """Watches for "written by the engine" said about a recording's file (output/shared.py FileTap)."""
+    caplog.set_level(logging.INFO, logger="sprigcast.output.shared")
+    return lambda: [r.getMessage() for r in caplog.records if r.name == "sprigcast.output.shared"
+                    and "written by the engine" in r.getMessage()]
+
+
+def test_the_engine_writes_the_recording_file_itself(native, tmp_path, monkeypatch):
+    """A recording from a shared encoder is written by the engine (sc_file): Python packs and writes nothing."""
+    from sprigcast.output import replay as replay_mod
+
+    said = _engine_wrote(native, monkeypatch)
+    made = []
+    real = replay_mod.PacketFile.__init__
+    monkeypatch.setattr(replay_mod.PacketFile, "__init__", lambda self, *a, **k: (made.append(a), real(self, *a, **k))[1])
+    shared_tests.test_recording_alone_then_again(tmp_path)
+    assert said() and not [a for a in made if "replay" not in str(a[0]).lower() and "clip" not in str(a[0]).lower()]
+
+
+def test_the_engines_recording_file_can_be_turned_off(native, tmp_path, monkeypatch):
+    monkeypatch.setenv("SPRIGCAST_NO_NATIVE_FILE", "1")
+    said = _engine_wrote(native, monkeypatch)
+    shared_tests.test_recording_alone_then_again(tmp_path)
+    assert not said()
+
+
+def test_recordings_written_by_the_engine_split_pause_and_keep_chapters(native, tmp_path, monkeypatch):
+    import test_obs_lessons_3 as lessons
+
+    said = _engine_wrote(native, monkeypatch)
+    for i, test in enumerate((lessons.test_a_long_recording_splits_at_keyframes_with_nothing_lost,
+                              lessons.test_chapter_marks_land_in_the_file,
+                              lessons.test_an_mp4_keeps_its_chapters_when_made_plain,
+                              shared_tests.test_stopping_a_recording_can_leave_the_wait_to_another_thread,
+                              shared_tests.test_recording_can_be_saved_smaller_than_the_canvas,
+                              shared_tests.test_without_the_voice_track_a_recording_has_one_sound)):
+        folder = tmp_path / str(i)
+        folder.mkdir()
+        test(folder)
+    assert len(said()) >= 6
+
+
 def test_a_lone_stream_gets_a_shared_encoder_on_the_writer(native):
     engine = stream_tests._Engine()
     target = stream_mod.StreamTarget("Alone", stream_tests._Canvas(), "rtmp://127.0.0.1:1/app", "secretkey", 800,

@@ -83,6 +83,17 @@ struct Track {
 };
 
 struct Link;
+struct File;
+// One encoded packet on its way to the engine's own senders and files (sc_link, sc_file), shared between them.
+struct Encoded {
+    int track = 0;  // 0 the video, 1.. the sound tracks
+    bool key = false;
+    int64_t pts = 0, dts = 0;
+    AVRational tb{1, 1};
+    std::vector<uint8_t> data;  // with FFmpeg's padding after `size` bytes
+    size_t size = 0;
+    double seconds = 0;
+};
 
 struct Core {
     // Set once, before the thread starts.
@@ -151,9 +162,12 @@ struct Core {
     // Streams the engine sends itself (sc_link): each is offered every packet as it is encoded (writer thread).
     std::mutex links_lock;
     std::vector<std::shared_ptr<Link>> links;
+    std::vector<std::shared_ptr<File>> files;  // recordings the engine writes itself (sc_file), under links_lock
     bool streams_ready = false;  // under links_lock: `out`'s streams hold the codec headers (open() .. close_all)
     void offer_links(const Out &o);
     void end_links(const std::string &why);
+    void offer_files(const std::vector<std::shared_ptr<File>> &to, const std::shared_ptr<const Encoded> &p);
+    void end_files(const std::vector<std::shared_ptr<File>> &gone);
     std::atomic<int> want_kbps{0}, want_max{0}, want_buffer{0};  // sc_writer_set_bitrate, applied before a picture
     bool key_next = false;  // sc_writer_keyframe: the next picture queued starts a keyframe (under `lock`)
     FramePtr i420;
@@ -569,15 +583,7 @@ struct Link {
     double connect_s = 10, send_s = 20;
     int slow_ms = 0;  // SPRIGCAST_LINK_SLOW_MS (tests): each packet takes this long to send (a slow upload)
 
-    struct Packet {
-        int track = 0;
-        bool key = false;
-        int64_t pts = 0, dts = 0;
-        AVRational tb{1, 1};
-        std::vector<uint8_t> data;  // with FFmpeg's padding after `size` bytes
-        size_t size = 0;
-        double seconds = 0;
-    };
+    using Packet = Encoded;
     struct Held {
         std::shared_ptr<const Packet> packet;
         double due = 0;
@@ -651,13 +657,15 @@ int link_interrupted(void *opaque) {
 }
 
 void Core::offer_links(const Out &o) {
-    if (o.track > 1) return;  // a stream carries the video and the first sound track
     std::vector<std::shared_ptr<Link>> to;
+    std::vector<std::shared_ptr<File>> into;
     {
         std::lock_guard<std::mutex> hold(links_lock);
-        if (links.empty()) return;
-        to = links;
+        if (links.empty() && files.empty()) return;
+        if (o.track <= 1) to = links;  // a stream carries the video and the first sound track
+        into = files;
     }
+    if (to.empty() && into.empty()) return;
     auto p = std::make_shared<Link::Packet>();
     p->track = o.track;
     p->key = o.key;
@@ -668,6 +676,7 @@ void Core::offer_links(const Out &o) {
     p->data.resize(o.data.size() + AV_INPUT_BUFFER_PADDING_SIZE);
     if (!o.data.empty()) std::memcpy(p->data.data(), o.data.data(), o.data.size());
     p->seconds = static_cast<double>(o.pts) * o.tb.num / std::max(1, o.tb.den);
+    offer_files(into, p);
     bool key = false;
     for (auto &l : to) key = l->offer(p) || key;
     if (key && to.size() < 2) {
@@ -680,11 +689,14 @@ void Core::offer_links(const Out &o) {
 
 void Core::end_links(const std::string &why) {
     std::vector<std::shared_ptr<Link>> gone;
+    std::vector<std::shared_ptr<File>> written;
     {
         std::lock_guard<std::mutex> hold(links_lock);
         streams_ready = false;
         gone.swap(links);
+        written.swap(files);
     }
+    end_files(written);
     for (auto &l : gone) {
         std::lock_guard<std::mutex> hold(l->lock);
         if (l->ended.empty()) l->ended = why;
@@ -855,6 +867,336 @@ void Link::run() {
     delayed.clear();
     waiting.clear();
     backlog_bytes = 0;
+    done = true;
+    done_cv.notify_all();
+}
+
+
+// ---- A recording written by the engine (sc_file) ---------------------------------------------------------------
+// output/shared.py's FileTap and output/replay.py's PacketFile on a thread of the engine's own: the file starts at
+// a keyframe, pauses and resumes as if no time passed, splits into parts and ends just before a keyframe.
+struct File {
+    std::shared_ptr<Core> core;
+    std::string path, format, options;
+    std::vector<int> kept;  // sound tracks kept (0 = the first), in order
+    double split_seconds = 0, frame_s = 1.0 / 30;
+    uint64_t split_bytes = 0;
+
+    struct Chapter {
+        int64_t start_ms = 0, end_ms = 0;
+        std::string title;
+    };
+    struct Part {
+        std::string path;
+        double seconds = 0;
+        std::vector<Chapter> chapters;
+    };
+    std::mutex lock;
+    std::condition_variable wake, done_cv;
+    std::deque<std::shared_ptr<const Link::Packet>> waiting;
+    uint64_t queued_bytes = 0, bytes = 0;
+    int state = SC_FILE_WAITING;
+    bool paused = false, resuming = false, closing = false, ended = false, done = false;
+    std::string error;
+    std::vector<Part> parts;
+    std::vector<std::pair<double, std::string>> marks;  // chapter marks of the part being written
+    double last_rel = 0, write_seconds = 0, longest_write = 0;
+    std::atomic<bool> stop{false};
+    std::thread thread;
+
+    // File thread only.
+    AVFormatContext *streams = nullptr;  // the writer's streams (codec headers), kept for every part
+    AVFormatContext *out = nullptr;
+    AVPacket *pkt = nullptr;
+    double zero = 0, part_zero = 0;
+    uint64_t part_bytes = 0;
+    std::vector<int64_t> last_dts;
+
+    static constexpr uint64_t QUEUE_BYTES = 512ull << 20;  // waiting for the disk: past this the file is given up
+
+    void offer(const std::shared_ptr<const Link::Packet> &p) {
+        std::lock_guard<std::mutex> hold(lock);
+        if (state == SC_FILE_FINISHED || state == SC_FILE_FAILED || ended) return;
+        if (queued_bytes > QUEUE_BYTES) {
+            if (error.empty()) error = "the disk can't keep up";
+            wake.notify_one();
+            return;
+        }
+        queued_bytes += p->size;
+        waiting.push_back(p);
+        wake.notify_one();
+    }
+    std::string part_path(size_t number) const {  // "<name> part 2<.ext>" (output/shared.py part_path)
+        if (number <= 1) return path;
+        const size_t slash = path.find_last_of("/\\");
+        const size_t dot = path.find_last_of('.');
+        const bool ext = dot != std::string::npos && (slash == std::string::npos || dot > slash + 1);
+        const std::string stem = ext ? path.substr(0, dot) : path;
+        return stem + " part " + std::to_string(number) + (ext ? path.substr(dot) : std::string());
+    }
+    void take_streams();
+    void open_part(double seconds);
+    void finish_part();
+    void write(const Link::Packet &p);
+    bool step(const Link::Packet &p);
+    void run();
+};
+
+void Core::offer_files(const std::vector<std::shared_ptr<File>> &to, const std::shared_ptr<const Link::Packet> &p) {
+    for (auto &f : to) f->offer(p);
+}
+
+void Core::end_files(const std::vector<std::shared_ptr<File>> &gone) {
+    for (auto &f : gone) {
+        std::lock_guard<std::mutex> hold(f->lock);
+        f->ended = true;  // what waits is still written, then the file is closed properly
+        f->wake.notify_all();
+    }
+}
+
+// The writer's streams, copied once: a part started after the writer closed (its last packets still waiting)
+// still gets its headers.
+void File::take_streams() {
+    const double until = now_s() + 10;
+    for (;;) {
+        {
+            std::lock_guard<std::mutex> hold(core->links_lock);
+            if (core->streams_ready && core->out) {
+                must(ff.avformat_alloc_output_context2(&streams, nullptr, "nut", nullptr), "the file's streams");
+                for (unsigned i = 0; i < core->out->nb_streams; ++i) {
+                    AVStream *st = ff.avformat_new_stream(streams, nullptr);
+                    if (!st) throw std::bad_alloc();
+                    must(ff.avcodec_parameters_copy(st->codecpar, core->out->streams[i]->codecpar), "the headers");
+                    const AVDictionaryEntry *title =
+                        ff.av_dict_get(core->out->streams[i]->metadata, "title", nullptr, 0);
+                    if (title) ff.av_dict_set(&st->metadata, "title", title->value, 0);
+                }
+                return;
+            }
+        }
+        {
+            std::lock_guard<std::mutex> hold(lock);
+            if (ended) throw Error("the encoder stopped");
+        }
+        if (stop.load()) throw Error("stopped");
+        if (now_s() > until) throw Error("the encoder did not start");
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+}
+
+void File::open_part(double seconds) {
+    size_t number;
+    {
+        std::lock_guard<std::mutex> hold(lock);
+        number = parts.size() + 1;
+    }
+    const std::string target = part_path(number);
+    must(ff.avformat_alloc_output_context2(&out, nullptr, format.empty() ? nullptr : format.c_str(), target.c_str()),
+         "the file");
+    std::vector<unsigned> from{0};
+    for (int t : kept)
+        if (static_cast<unsigned>(t) + 1 < streams->nb_streams) from.push_back(static_cast<unsigned>(t) + 1);
+    for (unsigned i : from) {
+        AVStream *st = ff.avformat_new_stream(out, nullptr);
+        if (!st) throw std::bad_alloc();
+        must(ff.avcodec_parameters_copy(st->codecpar, streams->streams[i]->codecpar), "the file's streams");
+        st->codecpar->codec_tag = 0;
+        const AVDictionaryEntry *title = ff.av_dict_get(streams->streams[i]->metadata, "title", nullptr, 0);
+        if (title && from.size() > 2) ff.av_dict_set(&st->metadata, "title", title->value, 0);
+    }
+    if (!(out->oformat->flags & AVFMT_NOFILE))
+        must(ff.avio_open2(&out->pb, target.c_str(), AVIO_FLAG_WRITE, nullptr, nullptr), "opening the file");
+    AVDictionary *muxing = nullptr;
+    if (!options.empty()) ff.av_dict_parse_string(&muxing, options.c_str(), "=", "\n", 0);
+    const int header = ff.avformat_write_header(out, &muxing);
+    ff.av_dict_free(&muxing);
+    must(header, "the file's header");
+    zero = part_zero = seconds;
+    part_bytes = 0;
+    last_dts.assign(out->nb_streams, INT64_MIN);
+    std::lock_guard<std::mutex> hold(lock);
+    parts.push_back(Part{target, 0, {}});
+    marks.clear();
+    last_rel = 0;
+    if (state == SC_FILE_WAITING) state = SC_FILE_WRITING;
+}
+
+// Chapters from the marks (output/replay.py chapter_list): each runs to the next or the end, and "Start" covers
+// the time before the first.
+void File::finish_part() {
+    if (!out) return;
+    std::vector<Chapter> chapters;
+    {
+        std::lock_guard<std::mutex> hold(lock);
+        const double end = last_rel + frame_s;
+        std::vector<std::pair<double, std::string>> use;
+        for (auto &m : marks)
+            if (m.first <= end) use.emplace_back(std::max(0.0, m.first), m.second);
+        std::stable_sort(use.begin(), use.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+        if (!use.empty() && use.front().first > 0.5) use.insert(use.begin(), {0.0, "Start"});
+        for (size_t i = 0; i < use.size(); ++i) {
+            const double stop = i + 1 < use.size() ? use[i + 1].first : std::max(end, use[i].first + 0.001);
+            Chapter c;
+            c.start_ms = std::llround(use[i].first * 1000);
+            c.end_ms = std::max<int64_t>(std::llround(stop * 1000), c.start_ms + 1);
+            c.title = use[i].second;
+            chapters.push_back(std::move(c));
+        }
+        marks.clear();
+        if (!parts.empty()) {
+            parts.back().seconds = end;
+            parts.back().chapters = chapters;
+        }
+    }
+    if (!chapters.empty() && !out->chapters) {  // a container without chapters leaves them out: the file is fine
+        auto **list = static_cast<AVChapter **>(ff.av_mallocz(chapters.size() * sizeof(AVChapter *)));
+        if (list) {
+            unsigned made = 0;
+            for (const Chapter &c : chapters) {
+                auto *ch = static_cast<AVChapter *>(ff.av_mallocz(sizeof(AVChapter)));
+                if (!ch) break;
+                ch->id = static_cast<int64_t>(made) + 1;
+                ch->time_base = AVRational{1, 1000};
+                ch->start = c.start_ms;
+                ch->end = c.end_ms;
+                ff.av_dict_set(&ch->metadata, "title", c.title.c_str(), 0);
+                list[made++] = ch;
+            }
+            out->chapters = list;
+            out->nb_chapters = made;
+        }
+    }
+    AVFormatContext *ctx = out;
+    out = nullptr;
+    const int r = ff.av_write_trailer(ctx);
+    if (!(ctx->oformat->flags & AVFMT_NOFILE) && ctx->pb) ff.avio_closep(&ctx->pb);
+    ff.avformat_free_context(ctx);
+    if (r < 0) throw WriteError("writing the file's ending: " + av_text(r));
+}
+
+void File::write(const Link::Packet &p) {
+    int index = 0;
+    if (p.track > 0) {
+        const auto at = std::find(kept.begin(), kept.end(), p.track - 1);
+        if (at == kept.end()) return;  // a track this file leaves out
+        index = static_cast<int>(at - kept.begin()) + 1;
+    }
+    if (index >= static_cast<int>(out->nb_streams)) return;
+    const int64_t offset = std::llround(zero * p.tb.den / std::max(1, p.tb.num));
+    if (p.pts < offset) return;  // sound from just before the first keyframe
+    const int64_t stamp = p.dts - offset;
+    if (stamp <= last_dts[static_cast<size_t>(index)]) return;  // sound from just before a resumed keyframe
+    last_dts[static_cast<size_t>(index)] = stamp;
+    AVStream *st = out->streams[index];
+    pkt->data = const_cast<uint8_t *>(p.data.data());  // not reference-counted: the muxer copies it
+    pkt->size = static_cast<int>(p.size);
+    pkt->pts = p.pts - offset;
+    pkt->dts = stamp;
+    pkt->flags = p.key ? AV_PKT_FLAG_KEY : 0;
+    pkt->stream_index = index;
+    ff.av_packet_rescale_ts(pkt, p.tb, st->time_base);
+    const double began = now_s();
+    const int w = ff.av_interleaved_write_frame(out, pkt);
+    const double spent = now_s() - began;
+    ff.av_packet_unref(pkt);
+    if (w < 0) throw WriteError("writing: " + av_text(w));
+    part_bytes += p.size;
+    std::lock_guard<std::mutex> hold(lock);
+    bytes += p.size;
+    write_seconds += spent;
+    longest_write = std::max(longest_write, spent);
+    if (p.track == 0) last_rel = p.seconds - zero;
+}
+
+// One packet, as FileTap._to_file takes it. False: the file has ended (finish asked, and its keyframe came).
+bool File::step(const Link::Packet &p) {
+    const bool key = p.track == 0 && p.key;
+    bool hold_off, carry_on;
+    double rel;
+    {
+        std::lock_guard<std::mutex> hold(lock);
+        if (closing && key) return false;
+        hold_off = paused;
+        carry_on = resuming;
+        rel = last_rel;
+    }
+    if (hold_off) return true;
+    if (carry_on && out) {
+        if (!key) return true;  // the file carries on at a keyframe
+        // This file's clock moves on by the pause, so this picture follows the last one written.
+        const double shift = (p.seconds - zero) - (rel + frame_s);
+        zero += shift;
+        part_zero += shift;
+        std::lock_guard<std::mutex> hold(lock);
+        resuming = false;
+    }
+    if (out && key &&
+        ((split_seconds > 0 && p.seconds - part_zero >= split_seconds) || (split_bytes && part_bytes >= split_bytes)))
+        finish_part();  // the next part starts with this keyframe
+    if (!out) {
+        if (!key) return true;  // a file starts at a keyframe
+        open_part(p.seconds);
+        std::lock_guard<std::mutex> hold(lock);
+        resuming = false;
+    }
+    write(p);
+    return true;
+}
+
+void File::run() {
+    sc::name_thread(L"SprigCast recording file");
+    std::string why;
+    bool faulted = false;
+    try {
+        take_streams();
+        pkt = ff.av_packet_alloc();
+        if (!pkt) throw std::bad_alloc();
+        for (;;) {
+            std::shared_ptr<const Link::Packet> p;
+            {
+                std::unique_lock<std::mutex> hold(lock);
+                wake.wait(hold, [&] {
+                    return stop.load() || !waiting.empty() || ended || !error.empty() || (closing && !out);
+                });
+                if (!error.empty()) throw WriteError(error);
+                if (stop.load() || (closing && !out)) break;  // nothing written yet, or closed as it is
+                if (waiting.empty()) break;                   // the writer ended and everything is written
+                p = std::move(waiting.front());
+                waiting.pop_front();
+                queued_bytes -= std::min<uint64_t>(queued_bytes, p->size);
+            }
+            if (!step(*p)) break;
+        }
+        finish_part();
+    } catch (const std::exception &e) {
+        why = e.what();
+    } catch (...) {
+        faulted = true;  // crash gate: this file is given up, never the app; nothing of it is touched again
+        why = "writing the file faulted";
+    }
+    if (!faulted) {
+        try {
+            if (out) {  // it failed part way: what's on the disk stays as it is
+                if (!(out->oformat->flags & AVFMT_NOFILE) && out->pb) ff.avio_closep(&out->pb);
+                ff.avformat_free_context(out);
+                out = nullptr;
+            }
+            if (streams) ff.avformat_free_context(streams);
+            if (pkt) ff.av_packet_free(&pkt);
+        } catch (...) {
+        }
+    }
+    {
+        std::lock_guard<std::mutex> hold(core->links_lock);
+        auto &all = core->files;
+        all.erase(std::remove_if(all.begin(), all.end(), [&](const auto &f) { return f.get() == this; }), all.end());
+    }
+    if (!why.empty()) sc::log_line(SC_LOG_ERROR, "recording file: " + why);
+    std::lock_guard<std::mutex> hold(lock);
+    state = why.empty() ? SC_FILE_FINISHED : SC_FILE_FAILED;
+    if (!why.empty()) error = why;
+    waiting.clear();
+    queued_bytes = 0;
     done = true;
     done_cv.notify_all();
 }
@@ -1566,6 +1908,183 @@ SC_API void sc_link_destroy(sc_link *h) {
                 l.thread.join();
             } else {
                 l.thread.detach();  // still stuck in the network: it keeps its Link and ends by itself
+            }
+        }
+    } catch (...) {
+    }
+    delete h;
+}
+
+}  // extern "C"
+
+struct sc_file {
+    std::shared_ptr<File> file;
+};
+
+extern "C" {
+
+SC_API int sc_file_open(sc_writer *w, const sc_file_config *cfg, sc_file **out) {
+    return sc::guarded("sc_file_open", [&]() -> int {
+        if (!w || !cfg || !out || !cfg->path || !*cfg->path)
+            return sc::fail(SC_ERR_ARGUMENT, "sc_file_open: no writer or path");
+        *out = nullptr;
+        Core &c = *w->core;
+        if (!c.packets) return sc::fail(SC_ERR_ARGUMENT, "sc_file_open: the writer doesn't hand out packets");
+        auto f = std::make_shared<File>();
+        f->core = w->core;
+        f->path = cfg->path;
+        f->format = cfg->format ? cfg->format : "";
+        f->options = cfg->format_options ? cfg->format_options : "";
+        for (int t = 0; t < MAX_TRACKS; ++t)
+            if (cfg->tracks & (1u << t)) f->kept.push_back(t);
+        if (f->kept.empty()) f->kept.push_back(0);
+        f->split_seconds = std::max(0.0, cfg->split_seconds);
+        f->split_bytes = cfg->split_bytes;
+        f->frame_s = static_cast<double>(c.fps_den) / std::max(1, c.fps_num);
+        {
+            std::lock_guard<std::mutex> hold(c.lock);
+            if (c.done) return sc::fail(SC_ERR_ARGUMENT, "sc_file_open: the writer has ended");
+            c.key_next = true;  // the file starts at a keyframe: the next picture is one
+        }
+        auto handle = std::make_unique<sc_file>();
+        handle->file = f;
+        {
+            std::lock_guard<std::mutex> hold(c.links_lock);
+            c.files.push_back(f);
+        }
+        f->thread = std::thread([f] { f->run(); });
+        *out = handle.release();
+        return SC_OK;
+    });
+}
+
+SC_API int sc_file_pause(sc_file *h) {
+    return sc::guarded("sc_file_pause", [&]() -> int {
+        if (!h) return sc::fail(SC_ERR_ARGUMENT, "sc_file_pause: no file");
+        File &f = *h->file;
+        std::lock_guard<std::mutex> hold(f.lock);
+        if (f.paused || f.done || f.closing) return 0;
+        f.paused = true;
+        f.resuming = false;
+        if (f.state == SC_FILE_WRITING) f.state = SC_FILE_PAUSED;
+        return 1;
+    });
+}
+
+SC_API int sc_file_resume(sc_file *h) {
+    return sc::guarded("sc_file_resume", [&]() -> int {
+        if (!h) return sc::fail(SC_ERR_ARGUMENT, "sc_file_resume: no file");
+        File &f = *h->file;
+        {
+            std::lock_guard<std::mutex> hold(f.lock);
+            if (!f.paused || f.done) return 0;
+            f.paused = false;
+            f.resuming = true;
+            if (f.state == SC_FILE_PAUSED) f.state = SC_FILE_WRITING;
+        }
+        std::lock_guard<std::mutex> hold(f.core->lock);
+        f.core->key_next = true;
+        return 1;
+    });
+}
+
+SC_API int sc_file_chapter(sc_file *h, const char *name, double *seconds) {
+    return sc::guarded("sc_file_chapter", [&]() -> int {
+        if (!h || !name) return sc::fail(SC_ERR_ARGUMENT, "sc_file_chapter: no file or name");
+        File &f = *h->file;
+        std::lock_guard<std::mutex> hold(f.lock);
+        if (f.done || f.parts.empty() || f.state == SC_FILE_WAITING) return 0;
+        f.marks.emplace_back(f.last_rel, name);
+        if (seconds) *seconds = f.last_rel;
+        return 1;
+    });
+}
+
+SC_API int sc_file_finish(sc_file *h) {
+    return sc::guarded("sc_file_finish", [&]() -> int {
+        if (!h) return sc::fail(SC_ERR_ARGUMENT, "sc_file_finish: no file");
+        File &f = *h->file;
+        {
+            std::lock_guard<std::mutex> hold(f.lock);
+            f.closing = true;
+            f.wake.notify_all();
+        }
+        std::lock_guard<std::mutex> hold(f.core->lock);
+        f.core->key_next = true;  // it ends just before this keyframe: everything shown before it has been encoded
+        return SC_OK;
+    });
+}
+
+SC_API int sc_file_stats_get(sc_file *h, sc_file_stats *out) {
+    return sc::guarded("sc_file_stats_get", [&]() -> int {
+        if (!h || !out) return sc::fail(SC_ERR_ARGUMENT, "sc_file_stats_get: nothing given");
+        File &f = *h->file;
+        std::lock_guard<std::mutex> hold(f.lock);
+        std::memset(out, 0, sizeof *out);
+        out->state = f.state;
+        out->parts = static_cast<int>(f.parts.size());
+        out->bytes = f.bytes;
+        out->queued_bytes = f.queued_bytes;
+        out->seconds = f.last_rel;
+        out->write_seconds = f.write_seconds;
+        out->longest_write = f.longest_write;
+        std::snprintf(out->error, sizeof out->error, "%s", f.error.c_str());
+        return SC_OK;
+    });
+}
+
+SC_API int sc_file_part(sc_file *h, int index, char *path, int capacity, double *seconds, int *chapters) {
+    return sc::guarded("sc_file_part", [&]() -> int {
+        if (!h) return sc::fail(SC_ERR_ARGUMENT, "sc_file_part: no file");
+        File &f = *h->file;
+        std::lock_guard<std::mutex> hold(f.lock);
+        if (index < 0 || index >= static_cast<int>(f.parts.size())) return SC_ERR_ARGUMENT;
+        const File::Part &part = f.parts[static_cast<size_t>(index)];
+        if (path && capacity > 0) std::snprintf(path, static_cast<size_t>(capacity), "%s", part.path.c_str());
+        if (seconds) *seconds = part.seconds;
+        if (chapters) *chapters = static_cast<int>(part.chapters.size());
+        return SC_OK;
+    });
+}
+
+SC_API int sc_file_part_chapter(sc_file *h, int index, int chapter, int64_t *start_ms, int64_t *end_ms, char *title,
+                                int capacity) {
+    return sc::guarded("sc_file_part_chapter", [&]() -> int {
+        if (!h) return sc::fail(SC_ERR_ARGUMENT, "sc_file_part_chapter: no file");
+        File &f = *h->file;
+        std::lock_guard<std::mutex> hold(f.lock);
+        if (index < 0 || index >= static_cast<int>(f.parts.size())) return SC_ERR_ARGUMENT;
+        const File::Part &part = f.parts[static_cast<size_t>(index)];
+        if (chapter < 0 || chapter >= static_cast<int>(part.chapters.size())) return SC_ERR_ARGUMENT;
+        const File::Chapter &c = part.chapters[static_cast<size_t>(chapter)];
+        if (start_ms) *start_ms = c.start_ms;
+        if (end_ms) *end_ms = c.end_ms;
+        if (title && capacity > 0) std::snprintf(title, static_cast<size_t>(capacity), "%s", c.title.c_str());
+        return SC_OK;
+    });
+}
+
+SC_API int sc_file_stop(sc_file *h) {
+    return sc::guarded("sc_file_stop", [&]() -> int {
+        if (!h) return sc::fail(SC_ERR_ARGUMENT, "sc_file_stop: no file");
+        File &f = *h->file;
+        f.stop.store(true);
+        std::unique_lock<std::mutex> hold(f.lock);
+        f.wake.notify_all();
+        return f.done_cv.wait_for(hold, std::chrono::seconds(10), [&] { return f.done; }) ? 1 : 0;
+    });
+}
+
+SC_API void sc_file_destroy(sc_file *h) {
+    if (!h) return;
+    try {
+        File &f = *h->file;
+        const bool ended = sc_file_stop(h) == 1;
+        if (f.thread.joinable()) {
+            if (ended) {
+                f.thread.join();
+            } else {
+                f.thread.detach();  // still stuck on the disk: it keeps its File and ends by itself
             }
         }
     } catch (...) {
