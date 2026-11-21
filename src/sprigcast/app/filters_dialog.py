@@ -293,7 +293,7 @@ KIND_ICONS = {
     "barrel_roll": "spin", "blackout": "curtain", "blur": "mist", "chroma_key": "greenscreen",
     "color_correction": "tone", "color_key": "colorcut", "lut": "mood", "freeze": "freeze", "glow": "glow",
     "luma_key": "lightcut", "pixelate": "mosaic", "scroll": "drift", "shadow": "shadow", "shape": "frame",
-    "sharpen": "crisp", "stroke": "outline", "background": "backdrop",
+    "sharpen": "crisp", "stroke": "outline", "background_effect": "backdrop",
 }
 
 
@@ -366,7 +366,7 @@ class FilterRow(QStyledItemDelegate):
 # Where each filter sits in the Add filter picker (A to Z inside each group; a plugin's lands in More).
 KIND_GROUPS = {
     "color_correction": "Color", "lut": "Color",
-    "background": "Cut out", "chroma_key": "Cut out", "color_key": "Cut out", "luma_key": "Cut out",
+    "background_effect": "Cut out", "chroma_key": "Cut out", "color_key": "Cut out", "luma_key": "Cut out",
     "sharpen": "Look", "shape": "Look", "glow": "Look", "blur": "Look", "pixelate": "Look", "stroke": "Look",
     "shadow": "Look",
     "blackout": "Motion", "scroll": "Motion", "freeze": "Motion", "barrel_roll": "Motion",
