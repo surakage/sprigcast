@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import queue
 import threading
 import time
+import weakref
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -39,6 +41,15 @@ from sprigcast.render import move
 from sprigcast.render.stinger import StingerPlayer, open_stinger
 
 log = logging.getLogger(__name__)
+_LIVE = lambda: None  # the engine made last (stir)
+
+
+def stir() -> None:
+    """Something outside changed what the render thread must do (a recording paused or went on): its next tick
+    works instead of resting. Any thread."""
+    engine = _LIVE()
+    if engine is not None:
+        engine._stirred = True
 
 
 SLEEP_AFTER = 5.0  # seconds a source with its eye off (in a bloom still on screen) stays ready, so a quick
@@ -73,6 +84,11 @@ WAKE_WAIT_S = 2.0  # a switch to a bloom whose camera is closed shows the old bl
 STAGED_VIEW = "~next:"  # + canvas id: the engine's view of the bloom Build edits there (Engine._native_views)
 PART_VIEW = "~part"  # the engine's view of the sprig open in Build
 PREVIEW_FPS = 30  # the UI draws previews about 30 times a second; copying more is wasted
+# Resting ticks (Engine._rests): while the native engine draws and hands on every frame by itself and nothing of
+# Python's changes, the render thread's tick has nothing to do each frame. It then works only as often as a
+# preview is due (or this often with none shown), and at once when anything is asked of it.
+REST_CALM_S = 0.5  # nothing of Python's needed a frame for this long before ticks rest
+REST_MAX_S = 0.07  # the longest stretch between two working ticks
 FAIL_RETRY_S = 1.0  # a source whose picture keeps failing is asked again about once a second, not every frame
 CLOSE_ALL_S = 4.0  # quitting: sources close side by side for at most this long
 
@@ -182,6 +198,16 @@ class Engine:
         self._had_picture: set[str] = set()
         self._sprigs_held: frozenset = frozenset()  # canvases whose new bloom's sprigs weren't drawn this tick
         self._woke = 0  # sources woken this tick (the waking-frame log line)
+        self._tick_now = 0.0
+        self._stirred = True  # something was asked of the render thread since its last working tick: no rest
+        self._busy_at = float("-inf")  # the last tick that did something only Python does
+        self._worked_at = float("-inf")  # the last working tick
+        self._next_preview = float("inf")  # when the next preview copy is due
+        self._interval = 1.0 / 60  # seconds a tick (set by the loop)
+        self.rested_ticks = 0  # ticks that had nothing to do and did nothing
+        self._rest_said = False
+        global _LIVE
+        _LIVE = weakref.ref(self)
         self._source_ms: dict[str, float] = {}  # source id -> average ms per frame it was asked for
         self._source_every: dict[str, int] = {}  # source id -> asked every Nth tick (over its budget)
         self._budget_logged: set[str] = set()
@@ -274,6 +300,7 @@ class Engine:
         """
         with self._taps_lock:
             self._taps.setdefault(canvas_id, []).append((callback, nv12_size))
+        self._stirred = True
 
     def grab_source(self, source_id: str | None, callback: Callable[[np.ndarray | None], None],
                     raw: bool = False, limit: int = 1920, filters: list | None = None) -> None:
@@ -284,6 +311,7 @@ class Engine:
         and must not block."""
         with self._taps_lock:
             self._grabs.append((source_id, callback, raw, limit, filters))
+        self._stirred = True
 
     def _serve_grabs(self, compositor, sizes) -> None:
         with self._taps_lock:
@@ -328,22 +356,26 @@ class Engine:
                 start = old[1] if old is not None and old[0] is token else first
                 holds[source_id] = (token, start, now + max(0.0, float(seconds)))
             self._holds = holds
+        self._stirred = True
         return token
 
     def let_go(self, token: object) -> None:
         """End a hold (the sources move again from the next frame)."""
         with self._holds_lock:
             self._holds = {k: v for k, v in self._holds.items() if v[0] is not token}
+        self._stirred = True
 
     def remove_frame_tap(self, canvas_id: str, callback: Callable[[Frame], None]) -> None:
         with self._taps_lock:
             taps = self._taps.get(canvas_id, [])
             taps[:] = [t for t in taps if t[0] != callback]
+        self._stirred = True
 
     def refresh_outputs(self) -> None:
         """An output gets no frames (Recorder.check_flow): next tick the native engine's outputs and Python's
         output copies are let go and made again. Any thread."""
         self._refresh_outputs = True
+        self._stirred = True
 
     def set_clean(self, canvas_id: str, hidden) -> None:
         """Source record: draw a copy of this canvas without these sources (None: stop drawing it)."""
@@ -353,6 +385,7 @@ class Engine:
         else:
             clean[canvas_id] = frozenset(hidden)
         self.clean_hidden = clean
+        self._stirred = True
 
     def set_view(self, name: str, canvas_id: str | None = None, kind: str = "bloom", ref=None) -> None:
         """Draw a bloom, a single source or a plugin's own Scene on a canvas's size for taps on "view:<name>"
@@ -363,6 +396,7 @@ class Engine:
         else:
             views[name] = (canvas_id, kind, ref)
         self.views = views
+        self._stirred = True
 
     def _view_scene(self, name: str, sizes: dict | None = None):
         """The scene a view draws, or None when what it names is gone."""
@@ -496,9 +530,12 @@ class Engine:
                     continue
                 native.set_outputs(key, ())
             if all(size is None for _cb, size in outputs):  # only screens watch it (a projector): ~30 fps is plenty
-                if now - self._view_at.get(name, -1.0) < 1 / self.preview_fps - 0.002:
+                due = self._view_at.get(name, -1.0) + 1 / self.preview_fps - 0.002
+                if now < due:
+                    self._next_preview = min(self._next_preview, due)
                     continue
                 self._view_at[name] = now
+                self._next_preview = min(self._next_preview, now + 1 / self.preview_fps - 0.002)
             canvas, scene = self._view_scene(name, sizes)
             if canvas is None:
                 continue
@@ -595,7 +632,7 @@ class Engine:
         self._sync_sources(compositor)
         self._warm_up(compositor)
         fps = drawing_fps(self._collection.canvases)
-        interval = 1.0 / fps
+        interval = self._interval = 1.0 / fps
         next_tick = time.perf_counter()
         render_times: deque[float] = deque(maxlen=fps)
         log.info("drawing %d times a second", fps)
@@ -709,6 +746,7 @@ class Engine:
                     if wanted != fps:  # a canvas's frame rate changed, or one was turned on or off
                         log.info("drawing %d times a second (was %d)", wanted, fps)
                         fps, interval = wanted, 1.0 / wanted
+                        self._interval = interval
                         render_times = deque(render_times, maxlen=fps)
                         self._follow_rate(fps)
                     avg_ms = 1000 * sum(render_times) / max(1, len(render_times))
@@ -805,6 +843,7 @@ class Engine:
                 return True
             if isinstance(command, Shutdown):
                 return False
+            self._stirred = True
             if isinstance(command, UpdateSourceSettings):
                 self._update_settings(command.settings)
                 continue
@@ -1992,6 +2031,7 @@ class Engine:
         for (callback, _size), key in zip(outputs, keys):
             if id(getattr(callback, "__self__", None)) in linked:
                 continue
+            self._busy_at = self._tick_now  # its frames pass through here: every tick has work
             if key not in made:
                 made[key] = [frame if key[1] else Frame(canvas.id, key[0][0], key[0][1], frame[0], frame[1], "nv12")
                              for frame in native.take_outputs(canvas.id, key)]
@@ -2066,9 +2106,12 @@ class Engine:
         wanted = self.previews
         if wanted is not None and key not in wanted:
             return False
-        if now - self._preview_at.get(key, -1.0) < 1.0 / self.preview_fps - 0.002:
+        due = self._preview_at.get(key, -1.0) + 1.0 / self.preview_fps - 0.002
+        if now < due:
+            self._next_preview = min(self._next_preview, due)
             return False
         self._preview_at[key] = now
+        self._next_preview = min(self._next_preview, now + 1.0 / self.preview_fps - 0.002)
         return True
 
     def _sprig_plan(self, collection: SceneCollection) -> _SprigPlan:
@@ -2265,9 +2308,35 @@ class Engine:
             text += f"; window at {window}"
         return f" ({text})" if text else ""
 
+    def _rests(self, now: float) -> bool:
+        """This tick has nothing to do: the native engine draws, scales and hands every frame to the encoders by
+        itself, no source of Python's made a picture lately, nothing was asked since the last working tick and
+        no preview is due yet. SPRIGCAST_NO_REST=1: every tick works, as before."""
+        if self._stirred or os.environ.get("SPRIGCAST_NO_REST") or now - self._busy_at < REST_CALM_S or self._refresh_outputs or self._release_later \
+                or self._grabs or self._transitions or self._state_fades or self._waking or self._woke \
+                or self._missed or self._failing:
+            return False
+        native = self._native
+        if native is None or native.failed or self._python_drew:
+            return False
+        slack = 0.25 * self._interval
+        return now + slack < min(self._next_preview, self._worked_at + REST_MAX_S)
+
     def _tick(self, compositor, now: float) -> None:
         self._marks = [("start", time.perf_counter())]
         self._window_at = ""
+        self._tick_now = now
+        if self._rests(now):
+            self.rested_ticks += 1
+            if not self._rest_said:
+                self._rest_said = True
+                log.info("the render thread rests between previews while the native engine carries the picture")
+            return
+        self._stirred = False
+        self._worked_at = now
+        if self._busy_at == float("-inf"):
+            self._busy_at = now  # the first tick: calm is counted from here
+        self._next_preview = float("inf")
         compositor.time = now
         if self._release_later:
             self._release_unused(compositor)
@@ -2366,6 +2435,7 @@ class Engine:
                 else:
                     first_bytes += getattr(frame, "nbytes", 0)
             if frame is not None:
+                self._busy_at = now  # a picture made in Python: while they keep coming every tick works
                 layout = source.size if getattr(source, "sharp", False) or getattr(source, "shrinks", False) else None
                 if native is not None and not self._python_drew and source_id not in awaited and freeze is None:
                     # Python's compositor drew nothing last tick: only the engine gets it. Python's copy waits
@@ -2420,6 +2490,8 @@ class Engine:
             self._engine_views, self._riders = {}, {}
         self._engine_edits = self._engine_shows(native, PART_VIEW)
         self._python_drew = native is None or self._python_draws(native, taps)
+        if self._python_drew:
+            self._busy_at = now
         if self._held_back:
             if self._python_drew or native is None:  # it draws again: it gets the newest pictures it skipped
                 held_back, self._held_back = self._held_back, {}

@@ -6,6 +6,10 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- While the C++ engine draws and hands every frame to the encoders by itself, Python's drawing thread now rests
+  between previews instead of working every frame (about half the work at 60 fps, less with the window hidden).
+  A bloom switch, a setting or anything else asked wakes it at once. `SPRIGCAST_NO_REST=1` turns it off. Not
+  tried on a PC yet.
 - Sound goes from the C++ engine's mixer straight into its encoders for recordings, streams and clips, with no
   step through Python, so a busy window can't delay or drop sound in them. `SPRIGCAST_NO_NATIVE_SOUND=1` turns
   it off. Not tried on a PC yet.
