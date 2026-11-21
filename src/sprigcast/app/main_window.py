@@ -7255,11 +7255,29 @@ class MainWindow(QMainWindow):
         report, self._stream_report = getattr(self, "_stream_report", None), None
         if report is not None:
             report.finish(lines)
+        # Help improve SprigCast (only when turned on): this stream's report and today's log, scrubbed, sent on a
+        # worker. Asked once, after the first stream of a minute or more.
+        from sprigcast.app import share_reports
+
+        share_reports.send_after_stream(getattr(report, "path", None), seconds, collection=self.collection)
+        if seconds >= share_reports.MIN_SECONDS and not share_reports.asked():
+            QTimer.singleShot(2500, self, lambda: self._ask_to_share(seconds))
         health, self._health = getattr(self, "_health", None), None
         self.live_stage.card.set_notice("", "")
         if health is not None and seconds >= 10:  # not for a start that never got going
             health.finish(QSettings())
         self._show_last_stream()
+
+    def _ask_to_share(self, seconds: float) -> None:
+        """The one-time "Help improve SprigCast?" card, when nothing else is open and we're still offline."""
+        from PySide6.QtWidgets import QApplication
+
+        from sprigcast.app import share_reports
+
+        if self.streaming is not None or QApplication.activeModalWidget() is not None:
+            return  # asked after a later stream instead
+        if share_reports.maybe_ask(self, seconds):
+            self.statusBar().showMessage("Thank you! A summary goes to the developer after each stream.", 8000)
 
     def _refresh_stream_status(self) -> None:
         now = time.monotonic()

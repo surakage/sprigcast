@@ -11,7 +11,8 @@ Version 0.2.0. See [CHANGELOG.md](CHANGELOG.md) for what changed and what has be
 ## Install
 
 Download `SprigCast-Setup-<version>.exe` from the [latest release](https://github.com/surakage/sprigcast/releases/latest)
-and run it.
+and run it. New to SprigCast? The [user guide](docs/user-guide.md) walks you from install to your first stream,
+and says how to send a problem report.
 
 The installer isn't signed yet, so Windows may show "Windows protected your PC". Choose **More info**, then
 **Run anyway**. The file's fingerprint is in `SHA256.txt` on the same release page.
@@ -84,7 +85,7 @@ SprigCast has two screens. Switch with the buttons at the top left, or Ctrl+1 an
   [docs/control-api.md](docs/control-api.md).
 
 Logs, a report for each stream and crash reports go to `Documents\SprigCast\Logs`.
-Scenes save automatically to `scenes.json` in your AppData folder.
+Scenes save automatically to `scenes.json` in your AppData folder; Help → About SprigCast → Licenses opens the list.
 
 ## Plugins
 

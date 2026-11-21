@@ -36,6 +36,18 @@ test("a report is kept by day and number, with its version, kind and cause", asy
                    { version: "0.2.0", kind: "crash", cause: "Access violation in nvcuda64.dll" });
 });
 
+test("a stream summary keeps its kind, and a test build's whole version label", async () => {
+  const e = env();
+  const version = "0.2.0 test build 44932007527 (eafa358)";
+  const response = await worker.fetch(
+    post(zip(), { "x-sprigcast-version": version, "x-sprigcast-kind": "stream",
+                  "x-sprigcast-cause": "stream of 148 min" }), e, ctx);
+  assert.equal(response.status, 201);
+  assert.deepEqual(e.stored[0].options.customMetadata, { version, kind: "stream", cause: "stream of 148 min" });
+  await worker.fetch(post(zip(), { "x-sprigcast-kind": "anything" }), e, ctx);
+  assert.equal(e.stored[1].options.customMetadata.kind, "problem");
+});
+
 test("not a zip, too big, too many or the wrong method is refused and nothing is kept", async () => {
   const e = env();
   assert.equal((await worker.fetch(post(new Uint8Array([1, 2, 3, 4])), e, ctx)).status, 415);

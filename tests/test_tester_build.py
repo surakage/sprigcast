@@ -87,3 +87,16 @@ def test_stream_page_hides_the_vertical_row_and_keeps_a_saved_choice(monkeypatch
     page.bitrate.setValue(page.bitrate.value() + 500)  # any edit saves the form
     assert page.outputs[0].enhanced_vertical  # kept for when it works, just not used
     page.close()
+
+
+def test_about_names_a_test_build_and_links_the_licenses(monkeypatch):
+    from PySide6.QtWidgets import QApplication, QLabel
+
+    import sprigcast
+    from sprigcast.app import about
+
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    monkeypatch.setattr(sprigcast, "build_label", lambda: f"{sprigcast.__version__} test build 7 (abc1234)")
+    page = about.about_page()
+    assert page.findChild(QLabel, "aboutBuild").text() == "Test build 7 (abc1234)"
+    assert "LICENSE" in page.findChild(QLabel, "aboutLicenses").text()  # from source: the repo's license

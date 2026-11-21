@@ -970,6 +970,13 @@ class SettingsWindow(QDialog):
                 self.keep_logs.addItem(f"{days} days" if days else "Forever", days)
             self.keep_logs.setCurrentIndex(max(0, self.keep_logs.findData(logbook.keep_days())))
             lform.addRow("Keep logs for", self.keep_logs)
+            from sprigcast.app import share_reports
+
+            self.share_streams = QCheckBox("Send stream summaries to the developer")
+            self.share_streams.setChecked(share_reports.enabled())
+            self.share_streams.setToolTip("How each place did, your PC's details and the log. Stream keys, passwords,"
+                                          " names and addresses are removed first")
+            lform.addRow(self.share_streams)
 
             from sprigcast.app import features
 
@@ -1508,6 +1515,10 @@ class SettingsWindow(QDialog):
         from sprigcast.app import logbook
 
         settings.setValue(logbook.KEEP_SETTING, self.keep_logs.currentData())
+        from sprigcast.app import share_reports
+
+        if self.share_streams.isChecked() != share_reports.enabled(settings):  # untouched: still asked after a stream
+            share_reports.set_enabled(self.share_streams.isChecked(), settings)
         level = self.priority.currentData()
         if level != priority.chosen():
             priority.remember(level, settings)

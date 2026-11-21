@@ -1,11 +1,14 @@
-"""Help → About SprigCast: the welcome sloth, the S logo, the version, where the code lives and a tip link.
+"""Help → About SprigCast: the sloth, the S logo, the version, the code, the licenses and a tip link.
 
 A rounded pop-up like the rest of the app (transitions_panel.PopUp), instead of a plain system box.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+import sys
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from sprigcast.app.modal import modal
@@ -13,10 +16,22 @@ from sprigcast.app import theme
 from sprigcast.app.support import TIP_URL
 
 REPO_URL = "https://github.com/surakage/sprigcast"
+NOTICES = "THIRD-PARTY-NOTICES.txt"  # written next to python.exe by packaging/notices.py
+
+
+def notices_path() -> Path | None:
+    """The installed copy's list of bundled software and their licenses; None when running from source."""
+    path = Path(sys.base_prefix) / NOTICES
+    return path if path.is_file() else None
+
+
+def licenses_url() -> str:
+    path = notices_path()
+    return QUrl.fromLocalFile(str(path)).toString() if path else f"{REPO_URL}/blob/main/LICENSE"
 
 
 def about_page() -> QWidget:
-    from sprigcast import __version__
+    from sprigcast import __version__, build_label
     from sprigcast.app.empty import ArtPicture
     from sprigcast.app.main import brand_mark
 
@@ -42,6 +57,13 @@ def about_page() -> QWidget:
     name_row.addWidget(version)
     name_row.addStretch(1)
     layout.addLayout(name_row)
+    label = build_label()
+    if label != __version__:  # a test build: its run number and commit, for reports
+        build = QLabel(label.removeprefix(__version__).strip().capitalize())
+        build.setObjectName("aboutBuild")
+        build.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        build.setStyleSheet(f"color: {theme.MUTED};")
+        layout.addWidget(build)
 
     for text, style in (
         ("One show, every shape: stream and record horizontal and vertical at once.", f"color: {theme.TEXT};"),
@@ -58,6 +80,11 @@ def about_page() -> QWidget:
     link.setOpenExternalLinks(True)
     link.setAlignment(Qt.AlignmentFlag.AlignCenter)
     layout.addWidget(link)
+    licenses = QLabel(f"<a href='{licenses_url()}' style='color: {theme.ACCENT}; text-decoration: none;'>Licenses</a>")
+    licenses.setObjectName("aboutLicenses")
+    licenses.setOpenExternalLinks(True)
+    licenses.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    layout.addWidget(licenses)
     tip = QLabel(f"<a href='{TIP_URL}' style='color: {theme.ACCENT}; text-decoration: none;'>Support SprigCast</a>")
     tip.setObjectName("aboutTip")
     tip.setOpenExternalLinks(True)

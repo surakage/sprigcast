@@ -6,6 +6,23 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- Help improve SprigCast: after each stream of a minute or more, SprigCast can send that stream's report and
+  today's log to the developer, with stream keys, passwords, names and addresses removed first. Off unless
+  you turn it on: asked once after your first stream, and in Settings → General → Logs. Summaries go to the
+  same report inbox as problem reports (kind "stream") and are kept 30 days.
+- Help → About SprigCast has a Licenses link (every bundled part and its license), and a test build shows its
+  build number and commit there.
+- A plain user guide, docs/user-guide.md: install, first start, places, going live, and sending reports.
+- The installer now puts SprigCast's license (`LICENSE.txt`) and `THIRD-PARTY-NOTICES.txt` in SprigCast's
+  folder: every library it includes (Qt, Chromium, FFmpeg, Python and the rest) with its license.
+- A test build says so wherever SprigCast shows or logs its version, with the build's number and commit (for
+  example "0.2.0 test build 44932007527 (eafa358)"), so logs and problem reports name the build they came from.
+- Twitch Enhanced Broadcasting no longer sends the vertical canvas: Twitch closed that connection within a
+  second every time on the PC test. The "Additional canvas" setting is hidden and a saved choice is kept for
+  when it works. `SPRIGCAST_TWITCH_VERTICAL=1` brings it back to try.
+- The README says what SprigCast needs now (any graphics card with OpenGL 3.3; the CPU encodes when there's no
+  graphics-card encoder) and how to get past Windows' "protected your PC" warning while the installer isn't
+  signed.
 - The log's "page helper memory" line says how much the page helper itself grew or shrank since its last
   line. It used to repeat SprigCast's own "(grew N MB in 60 s)", which read as the helper's growth.
 - The log's "pages:" line (what each web page holds) is first written a minute after pages start, then every
@@ -18,17 +35,6 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
   runs at 42 of 60 fps" and stopped an app's go-live, and the report showed 54 fps at every bloom switch.
   Such a tick is logged as "late tick, no frame lost". Not tried on a PC yet.
 - The Stream doctor no longer writes an error to the log when its window is closed while it still listens.
-- The installer now puts SprigCast's license (`LICENSE.txt`) and `THIRD-PARTY-NOTICES.txt` in SprigCast's
-  folder: every library it includes (Qt, Chromium, FFmpeg, Python and the rest) with its license.
-- A test build says so wherever SprigCast shows or logs its version, with the build's number and commit (for
-  example "0.2.0 test build 44932007527 (eafa358)"), so logs and problem reports name the build they came from.
-- Twitch Enhanced Broadcasting no longer sends the vertical canvas: Twitch closed that connection within a
-  second every time on the PC test. The "Additional canvas" setting is hidden and a saved choice is kept for
-  when it works. `SPRIGCAST_TWITCH_VERTICAL=1` brings it back to try.
-- The README says what SprigCast needs now (any graphics card with OpenGL 3.3; the CPU encodes when there's no
-  graphics-card encoder) and how to get past Windows' "protected your PC" warning while the installer isn't
-  signed.
-
 - Going live first checks that every place's server can be reached (2 seconds at most, nothing is sent and the
   stream key isn't used). A place that would not connect is named in the Stream doctor's card before you are
   live, and in the warnings an app gets. Not tried on a PC yet.

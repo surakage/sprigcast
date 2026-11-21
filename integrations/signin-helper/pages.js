@@ -401,6 +401,10 @@ name, with no sign-in. Kick chat comes through Kick's official API by way of Spr
   <li><strong>Problem reports:</strong> only when you press Send report. A report holds your note and, if you
   leave it ticked, SprigCast's logs and PC details with stream keys, tokens, passwords, email addresses, your
   user name and your PC's name hidden. Reports are kept for 30 days to fix bugs and then deleted.</li>
+  <li><strong>Stream summaries:</strong> only if you turn on "Help improve SprigCast" (it's off unless you do).
+  After each stream of a minute or more, SprigCast sends how each place did, your PC's details and SprigCast's
+  log, hidden the same way as problem reports. They are kept for 30 days and then deleted. Turn it off any
+  time in Settings → General.</li>
 </ul>
 
 <h2>Cookies</h2>
