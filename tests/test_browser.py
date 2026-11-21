@@ -418,6 +418,13 @@ def test_a_video_the_page_engine_cant_play_shows_in_the_status(tmp_path):
         host.open("f", {"file": str(tmp_path / "frame.html"), "width": 200, "height": 200, "fps": 10})
         host.open("s", {"file": str(tmp_path / "mse.html"), "width": 64, "height": 64, "fps": 10})
         note = _wait_note(app, host, "s", 20)
+        # The MP4 page's own answer, once it has loaded: until then its title is its file's name, which read as
+        # "this engine plays H.264" when the streaming page's note came first (a busy run, 2026-11-21).
+        deadline = time.monotonic() + 20
+        while host.pages["m"].page.title().split(" ")[0] not in ("", "no", "maybe", "probably") and \
+                time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.05)
         if host.pages["m"].page.title().split(" ")[0] not in ("", "no"):
             assert note == "" and host.page_note("m") == "", "a page engine that plays H.264 blamed an MP4 on it"
             return
