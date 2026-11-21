@@ -316,6 +316,7 @@ class MediaSource(Source):
         self.status = info.status_text
         self._speed = info.speed
         self._hidden = bool(info.hidden)
+        self._state_seen = (time.monotonic(), info.state_name)
         if info.faulted and not self._fault_logged:
             self._fault_logged = True
             log.error("media %s: the engine's decoder faulted on %s; the file is given up, SprigCast goes on",
@@ -574,6 +575,17 @@ class MediaSource(Source):
             self._check_end()
             return self._state
 
+    STATE_FRESH_S = 1.0
+
+    def recent_state(self) -> str:
+        """The state as last read from the engine's player, when that was under STATE_FRESH_S ago (the render thread
+        reads it every tick a video is on screen): the Control API's half-second watch asked the player itself from
+        the window's thread, and waited 1.2 s there while the PC was at 100% (2026-11-21)."""
+        at, state = getattr(self, "_state_seen", (0.0, ""))
+        if self._native is not None and state and time.monotonic() - at < self.STATE_FRESH_S:
+            return state
+        return self.state
+
     @property
     def position(self) -> float:
         if self._native is not None:
@@ -583,7 +595,12 @@ class MediaSource(Source):
         return p % self.duration if self.duration and self.settings.get("loop") else p
 
     def info(self) -> dict[str, Any]:
-        return {"state": self.state, "position": round(self.position, 3),
+        if self._native is not None:  # one look at the engine's player, not one for the state and one for the place
+            now = self._sync()
+            state, position = now.state_name, now.position
+        else:
+            state, position = self.state, self.position
+        return {"state": state, "position": round(position, 3),
                 "duration": round(self.duration, 3) if self.duration else None,
                 "loop": bool(self.settings.get("loop")), "video": self.has_video, "status": self.status,
                 "speed": self._speed, "hidden": self._hidden}

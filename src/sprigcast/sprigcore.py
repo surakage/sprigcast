@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 38  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 41  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 PUSH_OFF, PUSH_TALK, PUSH_MUTE = 0, 1, 2  # sc_mixer_push_set modes
 DLL_NAME = "sprigcore.dll"
 
@@ -1305,6 +1305,62 @@ class WriterStats(ctypes.Structure):
 
 
 WRITER_STATES = ("opening", "running", "finished", "failed")
+
+
+class LinkConfig(ctypes.Structure):
+    """include/sprigcore.h sc_link_config."""
+
+    _fields_ = [("url", ctypes.c_char_p), ("format", ctypes.c_char_p), ("kbps", ctypes.c_int),
+                ("delay_s", ctypes.c_double), ("max_backlog_s", ctypes.c_double),
+                ("resume_backlog_s", ctypes.c_double), ("connect_timeout_ms", ctypes.c_int),
+                ("send_timeout_ms", ctypes.c_int), ("behind_s", ctypes.c_double)]
+
+
+class LinkStats(ctypes.Structure):
+    """include/sprigcore.h sc_link_stats."""
+
+    _fields_ = [("state", ctypes.c_int), ("congested", ctypes.c_int), ("frames", ctypes.c_uint64),
+                ("dropped", ctypes.c_uint64), ("bytes", ctypes.c_uint64), ("backlog_bytes", ctypes.c_uint64),
+                ("delayed", ctypes.c_int), ("send_seconds", ctypes.c_double), ("longest_send", ctypes.c_double),
+                ("behind_seconds", ctypes.c_double), ("first_seconds", ctypes.c_double),
+                ("error", ctypes.c_char * 256)]
+
+    @property
+    def state_name(self) -> str:
+        return LINK_STATES[self.state] if 0 <= self.state < len(LINK_STATES) else "failed"
+
+    @property
+    def error_text(self) -> str:
+        return self.error.decode("utf-8", "replace")
+
+
+LINK_STATES = ("connecting", "ready", "live", "finished", "failed")
+
+
+class FileConfig(ctypes.Structure):
+    """include/sprigcore.h sc_file_config."""
+
+    _fields_ = [("path", ctypes.c_char_p), ("format", ctypes.c_char_p), ("format_options", ctypes.c_char_p),
+                ("tracks", ctypes.c_uint), ("split_seconds", ctypes.c_double), ("split_bytes", ctypes.c_uint64)]
+
+
+class FileStats(ctypes.Structure):
+    """include/sprigcore.h sc_file_stats."""
+
+    _fields_ = [("state", ctypes.c_int), ("parts", ctypes.c_int), ("bytes", ctypes.c_uint64),
+                ("queued_bytes", ctypes.c_uint64), ("seconds", ctypes.c_double), ("write_seconds", ctypes.c_double),
+                ("longest_write", ctypes.c_double), ("error", ctypes.c_char * 256)]
+
+    @property
+    def state_name(self) -> str:
+        return FILE_STATES[self.state] if 0 <= self.state < len(FILE_STATES) else "failed"
+
+    @property
+    def error_text(self) -> str:
+        return self.error.decode("utf-8", "replace")
+
+
+FILE_STATES = ("waiting", "writing", "paused", "finished", "failed")
 WRITER_DROPPED, WRITER_REFUSED, WRITER_LATE = 1, 2, 3
 
 
@@ -1401,6 +1457,28 @@ def _media_sigs() -> dict:
         "sc_writer_packet_take": (c_int, [vp, ctypes.POINTER(WriterPacket), vp, c_int]),
         "sc_writer_set_bitrate": (c_int, [vp, c_int, c_int, c_int]),
         "sc_writer_keyframe": (c_int, [vp]),
+        "sc_link_open": (c_int, [vp, ctypes.POINTER(LinkConfig), ctypes.POINTER(vp)]),
+        "sc_link_stats_get": (c_int, [vp, ctypes.POINTER(LinkStats)]),
+        "sc_link_finish": (c_int, [vp]),
+        "sc_link_destroy": (None, [vp]),
+        "sc_file_open": (c_int, [vp, ctypes.POINTER(FileConfig), ctypes.POINTER(vp)]),
+        "sc_file_pause": (c_int, [vp]),
+        "sc_file_resume": (c_int, [vp]),
+        "sc_file_chapter": (c_int, [vp, ctypes.c_char_p, ctypes.POINTER(ctypes.c_double)]),
+        "sc_file_finish": (c_int, [vp]),
+        "sc_file_stats_get": (c_int, [vp, ctypes.POINTER(FileStats)]),
+        "sc_file_part": (c_int, [vp, c_int, ctypes.c_char_p, c_int, ctypes.POINTER(ctypes.c_double),
+                                 ctypes.POINTER(c_int)]),
+        "sc_file_part_chapter": (c_int, [vp, c_int, c_int, ctypes.POINTER(ctypes.c_int64),
+                                         ctypes.POINTER(ctypes.c_int64), ctypes.c_char_p, c_int]),
+        "sc_file_stop": (c_int, [vp]),
+        "sc_writer_keep": (c_int, [vp, ctypes.c_double, ctypes.c_char_p]),
+        "sc_writer_kept": (c_int, [vp, ctypes.POINTER(ctypes.c_double), ctypes.POINTER(c_int)]),
+        "sc_writer_hand_out": (c_int, [vp, c_int]),
+        "sc_clip_snapshot": (c_int, [vp, ctypes.POINTER(vp)]),
+        "sc_clip_write": (c_int, [vp, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]),
+        "sc_clip_destroy": (None, [vp]),
+        "sc_file_destroy": (None, [vp]),
         "sc_mixer_create": (c_int, [c_int, ctypes.POINTER(vp)]),
         "sc_mixer_destroy": (None, [vp]),
         "sc_mixer_source_add": (c_int, [vp, ctypes.POINTER(MixerSourceSettings), ctypes.POINTER(c_int)]),
@@ -1833,12 +1911,226 @@ class Writer:
         _check(self._call(self._lib.sc_writer_stats_get, ctypes.byref(out)))
         return out
 
+    def link(self, url: str, kbps: int, delay_s: float = 0.0, container: str | None = None,
+             max_backlog_s: float = 0.0, resume_backlog_s: float = 0.0, connect_timeout_s: float = 0.0,
+             send_timeout_s: float = 0.0, behind_s: float = 0.0) -> "StreamLinkSender":
+        """A connection the engine sends this writer's packets to itself (packets mode; sc_link_open)."""
+        config = LinkConfig(str(url).encode("utf-8"), container.encode() if container else None, int(kbps),
+                            float(delay_s), float(max_backlog_s), float(resume_backlog_s),
+                            int(connect_timeout_s * 1000), int(send_timeout_s * 1000), float(behind_s))
+        handle = ctypes.c_void_p()
+        _check(self._call(self._lib.sc_link_open, ctypes.byref(config), ctypes.byref(handle)))
+        return StreamLinkSender(self._lib, handle)
+
+    def file(self, path, container: str | None = None, container_options: dict[str, str] | None = None,
+             tracks: tuple[int, ...] = (0,), split_seconds: float = 0.0, split_bytes: int = 0) -> "PacketFileWriter":
+        """A recording the engine writes itself from this writer's packets (packets mode; sc_file_open), from
+        the next keyframe. ``tracks``: the sound tracks kept (0 = the first)."""
+        muxing = "\n".join(f"{k}={v}" for k, v in (container_options or {}).items())
+        mask = 0
+        for t in tracks:
+            mask |= 1 << int(t)
+        config = FileConfig(str(path).encode("utf-8"), container.encode() if container else None,
+                            muxing.encode() if muxing else None, mask, float(split_seconds), int(split_bytes))
+        handle = ctypes.c_void_p()
+        _check(self._call(self._lib.sc_file_open, ctypes.byref(config), ctypes.byref(handle)))
+        return PacketFileWriter(self._lib, handle)
+
+    def keep(self, seconds: float, spool_path=None) -> None:
+        """Keep the last ``seconds`` of packets for clips in the engine (0 = none; sc_writer_keep). spool_path: a
+        file of the writer's own for their bytes (removed when it closes); without one they stay in memory."""
+        _check(self._call(self._lib.sc_writer_keep, float(seconds),
+                          str(spool_path).encode("utf-8") if spool_path else None))
+
+    def kept(self) -> tuple[float, int]:
+        """(seconds of video kept for clips, packets kept)."""
+        seconds, packets = ctypes.c_double(), ctypes.c_int()
+        _check(self._call(self._lib.sc_writer_kept, ctypes.byref(seconds), ctypes.byref(packets)))
+        return seconds.value, packets.value
+
+    def hand_out(self, on: bool) -> None:
+        """False: packets are no longer queued for take_packet (the engine sends, writes and keeps them)."""
+        _check(self._call(self._lib.sc_writer_hand_out, 1 if on else 0))
+
+    def clip_snapshot(self) -> "ClipSnapshot":
+        """What a clip saved now would hold (no bytes read or copied); write() makes the file, on any thread.
+        Raises NativeError when nothing is kept yet."""
+        handle = ctypes.c_void_p()
+        _check(self._call(self._lib.sc_clip_snapshot, ctypes.byref(handle)))
+        return ClipSnapshot(self._lib, handle)
+
     def close(self) -> None:
         """Give up whatever is still unwritten and free the writer (finish() and wait() first to keep it)."""
         with self._lock:
             handle, self._handle = self._handle, None
         if handle:
             self._lib.sc_writer_destroy(handle)
+            drain_log()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 (interpreter shutting down)
+            pass
+
+
+class StreamLinkSender:
+    """One connection of a packets-mode writer, sent by a thread of the engine's own (include/sprigcore.h sc_link).
+    It outlives its writer safely (it then says "failed"). Every method is safe from any thread."""
+
+    def __init__(self, lib, handle: ctypes.c_void_p):
+        self._lib, self._handle = lib, handle
+        self._lock = __import__("threading").Lock()
+
+    def stats(self) -> LinkStats:
+        out = LinkStats()
+        with self._lock:
+            if not self._handle:
+                out.state = LINK_STATES.index("failed")
+                return out
+            _check(self._lib.sc_link_stats_get(self._handle, ctypes.byref(out)))
+        return out
+
+    def finish(self) -> None:
+        """Take nothing new, send what waits (a stream delay's packets at their times), then close properly."""
+        with self._lock:
+            if self._handle:
+                _check(self._lib.sc_link_finish(self._handle))
+
+    def close(self) -> None:
+        with self._lock:
+            handle, self._handle = self._handle, None
+        if handle:
+            self._lib.sc_link_destroy(handle)
+            drain_log()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 (interpreter shutting down)
+            pass
+
+
+class ClipSnapshot:
+    """A clip taken from a writer's kept packets (include/sprigcore.h sc_clip), to be written once."""
+
+    def __init__(self, lib, handle: ctypes.c_void_p):
+        self._lib, self._handle = lib, handle
+        self._lock = __import__("threading").Lock()
+
+    def write(self, path, container: str | None = None, container_options: dict[str, str] | None = None,
+              tracks: tuple[int, ...] = (0,)) -> None:
+        """Writes the clip on this thread (Python's lock is free meanwhile). Raises NativeError if it couldn't
+        be written, or its start has been recorded over since."""
+        muxing = "\n".join(f"{k}={v}" for k, v in (container_options or {}).items())
+        mask = 0
+        for t in tracks:
+            mask |= 1 << int(t)
+        with self._lock:
+            if not self._handle:
+                raise NativeError(-1, "the clip is closed")
+            _check(self._lib.sc_clip_write(self._handle, str(path).encode("utf-8"),
+                                           container.encode() if container else None,
+                                           muxing.encode() if muxing else None, mask))
+
+    def close(self) -> None:
+        with self._lock:
+            handle, self._handle = self._handle, None
+        if handle:
+            self._lib.sc_clip_destroy(handle)
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 (interpreter shutting down)
+            pass
+
+
+class PacketFileWriter:
+    """A recording written by a thread of the engine's own from a packets-mode writer's packets
+    (include/sprigcore.h sc_file). It outlives its writer safely. Every method is safe from any thread."""
+
+    def __init__(self, lib, handle: ctypes.c_void_p):
+        self._lib, self._handle = lib, handle
+        self._lock = __import__("threading").Lock()
+        self._last = FileStats()
+        self._last.state = FILE_STATES.index("finished")
+        self._parts: list[tuple[str, float, list[dict]]] = []
+
+    def _do(self, fn, *args) -> int:
+        with self._lock:
+            if not self._handle:
+                return 0
+            code = fn(self._handle, *args)
+        if code < 0:
+            _check(code)
+        return code
+
+    def pause(self) -> bool:
+        return self._do(self._lib.sc_file_pause) == 1
+
+    def resume(self) -> bool:
+        return self._do(self._lib.sc_file_resume) == 1
+
+    def chapter(self, name: str) -> float | None:
+        """Marks a chapter at the newest picture written; its seconds into the part, or None when nothing is
+        being written."""
+        at = ctypes.c_double()
+        done = self._do(self._lib.sc_file_chapter, str(name).encode("utf-8"), ctypes.byref(at))
+        return at.value if done == 1 else None
+
+    def finish(self) -> None:
+        """End the file just before the next keyframe (asked for now); stats().state_name turns "finished"."""
+        self._do(self._lib.sc_file_finish)
+
+    def stats(self) -> FileStats:
+        with self._lock:
+            if self._handle:
+                out = FileStats()
+                _check(self._lib.sc_file_stats_get(self._handle, ctypes.byref(out)))
+                self._last = out
+            return self._last
+
+    def parts(self) -> list[tuple[str, float, list[dict]]]:
+        """Every file started so far: (path, seconds, chapters as output/replay.py chapter_list gives them). A
+        part's seconds and chapters are filled once it's finished."""
+        from fractions import Fraction
+
+        with self._lock:
+            if not self._handle:
+                return list(self._parts)
+            out = []
+            path, title = ctypes.create_string_buffer(4096), ctypes.create_string_buffer(1024)
+            seconds, count = ctypes.c_double(), ctypes.c_int()
+            start, end = ctypes.c_int64(), ctypes.c_int64()
+            index = 0
+            while self._lib.sc_file_part(self._handle, index, path, len(path), ctypes.byref(seconds),
+                                         ctypes.byref(count)) == SC_OK:
+                chapters = []
+                for c in range(count.value):
+                    if self._lib.sc_file_part_chapter(self._handle, index, c, ctypes.byref(start), ctypes.byref(end),
+                                                      title, len(title)) != SC_OK:
+                        break
+                    chapters.append({"id": c + 1, "start": start.value, "end": end.value,
+                                     "time_base": Fraction(1, 1000),
+                                     "metadata": {"title": title.value.decode("utf-8", "replace")}})
+                out.append((path.value.decode("utf-8", "replace"), seconds.value, chapters))
+                index += 1
+            self._parts = out
+            return list(out)
+
+    def close(self) -> None:
+        """Close what there is at once (finish() first, and wait for "finished", to end it at a keyframe)."""
+        with self._lock:
+            handle = self._handle
+        if handle:
+            self._lib.sc_file_stop(handle)  # closed (or given 10 s): its last numbers and parts are kept
+            self.stats()
+            self.parts()
+        with self._lock:
+            handle, self._handle = self._handle, None
+        if handle:
+            self._lib.sc_file_destroy(handle)
             drain_log()
 
     def __del__(self):

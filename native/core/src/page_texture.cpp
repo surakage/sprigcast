@@ -61,7 +61,13 @@ int source_page(sc_device &dev, uint64_t id, PageTexture &page, const std::wstri
         if (FAILED(hr)) return fail_hr(SC_ERR_DEVICE, "the engine's device can't open shared textures", hr);
         hr = one->OpenSharedResourceByName(name.c_str(), DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE,
                                            IID_PPV_ARGS(&page.texture));
-        if (FAILED(hr)) return fail_hr(SC_ERR_DEVICE, "Opening a browser page's texture", hr);
+        if (FAILED(hr)) {
+            // The helper closed it: a page hidden for a while lets go of its graphics device, and its last picture
+            // is still named in the block when the page is shown again (PC 2026-11-21: 0x80070057 on a bloom
+            // switch). Not a fault: the page's next picture comes in a new texture.
+            page.gone = hr;
+            return SC_GONE;
+        }
         hr = page.texture.As(&page.mutex);
         if (FAILED(hr)) {
             page = PageTexture();

@@ -57,6 +57,11 @@ class FileTap:
         self._last_rel = 0.0  # seconds into the file of the last picture written
         self._marks: list[tuple[float, str]] = []  # chapter marks in the file being written
         self.file_chapters: dict[Path, list[dict]] = {}  # each finished part's chapters (for MP4s made plain)
+        # The engine writes the file itself from its writer's packets (sprigcore.PacketFileWriter, sc_file):
+        # no packet of the recording is packed or written under Python's lock. None: PacketFile, as before.
+        self._engine_file = None
+        self._engine_seen = (0.0, 0.0)  # its write time and longest write already counted
+        self._engine_looked = 0.0
 
     # Called from other threads ----------------------------------------------------------
 
@@ -74,6 +79,8 @@ class FileTap:
             self.split_seconds, self.split_bytes, self.file_parts = split_seconds, split_bytes, parts
             self._paused = self._resuming = False
             self._marks, self.file_chapters, self._last_rel = [], {}, 0.0
+            if self._start_engine_file():
+                return  # it asks its writer for the keyframe itself
             self._force_key = True
         # Handed over without waiting: a new encoder only takes it once it's open (270 ms on the PC,
         # 2026-11-16, with the window waiting). Later requests (pause, stop) queue behind it, in order.
@@ -86,6 +93,8 @@ class FileTap:
             if self.file_path is None or self._paused:
                 return False
             self._paused, self._resuming = True, False
+            if self._engine_file is not None:
+                self._engine_file.pause()
             return True
         return bool(self._ask(job))
 
@@ -94,6 +103,10 @@ class FileTap:
         def job():
             if self.file_path is None or not self._paused:
                 return False
+            if self._engine_file is not None:
+                self._paused = False
+                self._engine_file.resume()  # carries on from a keyframe it asks for
+                return True
             self._paused, self._resuming, self._force_key = False, True, True
             return True
         return bool(self._ask(job))
@@ -101,6 +114,8 @@ class FileTap:
     def mark_chapter(self, name: str) -> bool:
         """A chapter mark at the newest picture written ("Boss fight"). False when no file is being written."""
         def job():
+            if self._engine_file is not None:
+                return self._engine_file.chapter(name) is not None
             if self.file is None:
                 return False
             self._marks.append((self._last_rel, name))
@@ -121,7 +136,10 @@ class FileTap:
         self._file_done.clear()
 
         def job():
-            if self.file is None:
+            if self._engine_file is not None:
+                self._closing = True
+                self._engine_file.finish()  # ends just before a keyframe it asks for; _engine_file_turn sees it
+            elif self.file is None:
                 self._close_file()  # nothing written yet (no keyframe came)
             else:
                 self._closing = True
@@ -137,7 +155,85 @@ class FileTap:
 
     # Encoder thread ---------------------------------------------------------------------
 
+    def _start_engine_file(self) -> bool:
+        """The recording written by the engine (packets mode writer, interface 40). False: PacketFile writes it
+        here as before (PyAV encodes, SPRIGCAST_NO_NATIVE_FILE=1, or the engine couldn't start it)."""
+        import os
+
+        writer = getattr(self, "writer", None)
+        if (writer is None or not getattr(writer, "packets", False) or not hasattr(writer, "file")
+                or os.environ.get("SPRIGCAST_NO_NATIVE_FILE")):
+            return False
+        from sprigcast.output.replay import CONTAINERS, FRAGMENTED
+
+        container = self.file_container or self.container_kind
+        kinds = self.audio_kinds(*self.file_tracks) or ("audio",)
+        try:
+            self.file_path.parent.mkdir(parents=True, exist_ok=True)
+            self._engine_file = writer.file(
+                self.file_path, CONTAINERS[container],
+                {"movflags": FRAGMENTED, "flush_packets": "1"} if container == "mp4" else None,  # crash safe
+                tracks=tuple(0 if kind == "audio" else int(kind[5:]) for kind in kinds),
+                split_seconds=self.split_seconds, split_bytes=self.split_bytes)
+        except Exception as exc:  # noqa: BLE001 - written from here instead
+            log.warning("recording %s: the engine couldn't write it (%s); written from Python", self.file_path.name,
+                        exc)
+            self._engine_file = None
+            return False
+        self._engine_seen = (0.0, 0.0)
+        log.info("recording %s: written by the engine", self.file_path.name)
+        return True
+
+    def _writer_after(self, writer) -> None:
+        super()._writer_after(writer)
+        self._engine_file_turn()
+
+    engine_clips = True
+
+    def _python_wants_packets(self) -> bool:
+        return self.file_path is not None and self._engine_file is None  # a file written from here
+
+    def _engine_file_turn(self) -> None:
+        """Encoder thread, each turn of the writer loop: the engine's file's numbers, and its end."""
+        out = self._engine_file
+        now = time.monotonic()
+        if out is None or now - self._engine_looked < 0.05:
+            return
+        self._engine_looked = now
+        stats = out.stats()
+        self.mux_seconds += stats.write_seconds - self._engine_seen[0]
+        self.longest_stall = max(self.longest_stall, stats.longest_write)
+        self._engine_seen = (stats.write_seconds, stats.longest_write)
+        self._last_rel, self._file_bytes = stats.seconds, stats.bytes
+        if stats.parts > len(self.file_parts):
+            for path, _seconds, _chapters in out.parts()[len(self.file_parts):]:
+                self.file_parts.append(Path(path))
+                if len(self.file_parts) > 1:
+                    log.info("recording %s: part %d", self.file_path.name, len(self.file_parts))
+        if stats.state_name in ("finished", "failed"):
+            self._close_file()
+
+    def _close_engine_file(self, ended: bool) -> None:
+        out, self._engine_file = self._engine_file, None
+        if ended:  # the writer is gone: its last packets are still being written, then the file closes by itself
+            deadline = time.monotonic() + 10
+            while out.stats().state_name not in ("finished", "failed") and time.monotonic() < deadline:
+                time.sleep(0.01)
+        out.close()  # as it is, if it hasn't ended
+        stats = out.stats()
+        if stats.state_name == "failed":
+            log.error("recording %s failed: %s", self.file_path, stats.error_text)
+            self.file_error = self.file_error or stats.error_text or "the file couldn't be written"
+        parts = out.parts()
+        for path, _seconds, chapters in parts:
+            if Path(path) not in self.file_parts:
+                self.file_parts.append(Path(path))
+            if chapters:
+                self.file_chapters[Path(path)] = chapters
+
     def _to_file(self, p: _Packet) -> None:
+        if self._engine_file is not None:
+            return  # the engine writes it from its writer's packets
         try:
             if self._closing and p.kind == "video" and p.keyframe:
                 self._close_file()
@@ -190,7 +286,12 @@ class FileTap:
             self.file_chapters[out.path] = chapters
         out.close(chapters)
 
-    def _close_file(self) -> None:
+    def _close_file(self, ended: bool = False) -> None:
+        if self._engine_file is not None:
+            try:
+                self._close_engine_file(ended)
+            except Exception as exc:  # noqa: BLE001 - the encoder goes on
+                self.file_error = self.file_error or str(exc) or exc.__class__.__name__
         out, self.file_path, self._closing = self.file, None, False
         self._paused = self._resuming = False
         if out is not None:
@@ -201,7 +302,7 @@ class FileTap:
         self._file_done.set()
 
     def _before_close(self, container) -> bool:
-        self._close_file()  # after the encoder's last packets are flushed into it
+        self._close_file(ended=True)  # after the encoder's last packets are flushed into it
         return super()._before_close(container)
 
 

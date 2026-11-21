@@ -36,6 +36,7 @@ from sprigcast.core.scene import (
     SceneCollection,
     SceneFolder,
     SceneItem,
+    SOUND_KINDS,
     SourceConfig,
     Stinger,
     Transition,
@@ -599,6 +600,7 @@ def from_obs(data: dict[str, Any], like: SceneCollection, size_of: SizeOf | None
     set_aside_unused(col, notes)
     sort_by_content(col)
     plays_in(col)
+    drop_sound_sprigs(col, notes)
     if not any(s.kind == "show" for s in col.scenes):
         raise ConvertError("That scene collection has no scenes.")
     col = SceneCollection.model_validate(col.model_dump())
@@ -750,6 +752,26 @@ def plays_in(col: SceneCollection) -> None:
         where = [b.id for b in blooms if config.id in reach[b.id]]
         if where and len(where) < len(blooms):
             config.settings["blooms"] = where
+
+
+def drop_sound_sprigs(col: SceneCollection, notes: list[str]) -> None:
+    """OBS's audio scenes (only mics, desktop and app sounds in them) aren't brought in as sprigs: their sounds live
+    in the Sound area, and plays_in already set where they play. The sounds stay; the sprigs and their places in
+    blooms go (2026-11-21: removing them by hand later would have deleted the sounds with them)."""
+    kinds = {c.id: c.kind for c in col.sources}
+    dropped = []
+    for part in col.parts():
+        items = [i for layout in [part, *col.shapes(part)] for i in layout.items]
+        if items and all(kinds.get(i.source) in SOUND_KINDS for i in items):
+            col.remove_sprig(part)
+            dropped.append(part.name)
+    if not dropped:
+        return
+    for folder in [f for f in col.folders if f.holds == "part"]:
+        if not any(s.folder == folder.id for s in col.scenes):
+            col.folders.remove(folder)
+    notes.append(f"{len(dropped)} audio scene{'s' if len(dropped) != 1 else ''} ({', '.join(dropped)}) became "
+                 "sounds in the Sound area, playing in the same blooms.")
 
 
 _OBS_KEYS = {"SPACE": "Space", "RETURN": "Return", "ENTER": "Enter", "ESCAPE": "Esc", "TAB": "Tab",

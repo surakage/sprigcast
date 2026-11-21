@@ -88,6 +88,147 @@ def test_a_stream_steers_the_writers_bitrate(native, tmp_path):
         assert sum(1 for _ in f.decode(video=0)) > 10
 
 
+def test_the_engine_sends_a_stream_itself_and_python_only_reads_its_numbers(native, tmp_path, monkeypatch):
+    """With the writer encoding, a link's connection is the engine's too (sc_link): no packet is queued or sent
+    in Python. A connection that can't be made is tried again as before, with the reason and never the key."""
+    enc = SharedStreamEncoder(stream_tests._Canvas(), 30, 800, "libx264", stream_tests.time.perf_counter())
+    link = stream_tests.StreamLink("a", str(tmp_path), "sent.flv", enc)
+    lost = stream_tests.StreamLink("lost", str(tmp_path / "no-such-folder"), "live_SECRET", enc)
+    monkeypatch.setattr(stream_mod, "RETRY_FIRST", 0.05)
+    enc.links += [link, lost]
+    enc.start()
+    link.start()
+    lost.start()
+    try:
+        stream_tests._feed(enc, 1.0)
+        assert link.connected and link.status == "live" and link._sender is not None
+        assert link._q.empty() and link.frames > 10 and link.bytes_out > 0 and link.dropped == 0
+        assert link.stats()["frames"] == link.frames
+        assert not lost.connected and lost.reconnects >= 1 and "disconnected: couldn't connect" in lost.status
+        assert "SECRET" not in lost.status
+    finally:
+        lost.stop()
+        link.stop()
+        enc.stop()
+    assert enc.error is None and link.status == "stopped" and link._sender is None
+    with av.open(str(tmp_path / "sent.flv")) as f:
+        packets = [p for p in f.demux(video=0) if p.size]
+        assert packets[0].is_keyframe and packets[0].pts == 0 and 0 <= len(packets) - link.frames <= 1
+
+
+def test_the_engines_sender_can_be_turned_off(native, tmp_path, monkeypatch):
+    monkeypatch.setenv("SPRIGCAST_NO_NATIVE_LINK", "1")
+    enc = SharedStreamEncoder(stream_tests._Canvas(), 30, 800, "libx264", stream_tests.time.perf_counter())
+    link = stream_tests.StreamLink("a", str(tmp_path), "sent.flv", enc)
+    enc.links.append(link)
+    enc.start()
+    link.start()
+    try:
+        stream_tests._feed(enc, 1.0)
+        assert link.connected and link._sender is None and link.frames > 0
+    finally:
+        link.stop()
+        enc.stop()
+
+
+def test_a_stream_delay_is_kept_by_the_engine_and_sent_out_at_the_end(native, tmp_path):
+    enc = SharedStreamEncoder(stream_tests._Canvas(), 30, 800, "libx264", stream_tests.time.perf_counter())
+    link = stream_tests.StreamLink("a", str(tmp_path), "sent.flv", enc)
+    link.delay_s = 1.0
+    enc.links.append(link)
+    enc.start()
+    link.start()
+    try:
+        stream_tests._feed(enc, 0.7)
+        assert link._ready and link.frames == 0  # held back
+        link.stop()
+        assert link.status.startswith("ending: sending the last 1 s")
+        stream_tests._feed(enc, 0.2)  # nothing new is taken while it ends
+        link._thread.join(8)
+        assert not link._thread.is_alive() and link.status == "stopped" and link.frames > 3
+    finally:
+        link._stop.set()
+        enc.stop()
+    with av.open(str(tmp_path / "sent.flv")) as f:
+        assert 0 <= sum(1 for _ in f.decode(video=0)) - link.frames <= 1
+
+
+def _engine_wrote(caplog, monkeypatch):
+    """Watches for "written by the engine" said about a recording's file (output/shared.py FileTap)."""
+    caplog.set_level(logging.INFO, logger="sprigcast.output.shared")
+    return lambda: [r.getMessage() for r in caplog.records if r.name == "sprigcast.output.shared"
+                    and "written by the engine" in r.getMessage()]
+
+
+def test_the_engine_writes_the_recording_file_itself(native, tmp_path, monkeypatch):
+    """A recording from a shared encoder is written by the engine (sc_file): Python packs and writes nothing."""
+    from sprigcast.output import replay as replay_mod
+
+    said = _engine_wrote(native, monkeypatch)
+    made = []
+    real = replay_mod.PacketFile.__init__
+    monkeypatch.setattr(replay_mod.PacketFile, "__init__", lambda self, *a, **k: (made.append(a), real(self, *a, **k))[1])
+    shared_tests.test_recording_alone_then_again(tmp_path)
+    assert said() and not [a for a in made if "replay" not in str(a[0]).lower() and "clip" not in str(a[0]).lower()]
+
+
+def test_the_engines_recording_file_can_be_turned_off(native, tmp_path, monkeypatch):
+    monkeypatch.setenv("SPRIGCAST_NO_NATIVE_FILE", "1")
+    said = _engine_wrote(native, monkeypatch)
+    shared_tests.test_recording_alone_then_again(tmp_path)
+    assert not said()
+
+
+def test_recordings_written_by_the_engine_split_pause_and_keep_chapters(native, tmp_path, monkeypatch):
+    import test_obs_lessons_3 as lessons
+
+    said = _engine_wrote(native, monkeypatch)
+    for i, test in enumerate((lessons.test_a_long_recording_splits_at_keyframes_with_nothing_lost,
+                              lessons.test_chapter_marks_land_in_the_file,
+                              lessons.test_an_mp4_keeps_its_chapters_when_made_plain,
+                              shared_tests.test_stopping_a_recording_can_leave_the_wait_to_another_thread,
+                              shared_tests.test_recording_can_be_saved_smaller_than_the_canvas,
+                              shared_tests.test_without_the_voice_track_a_recording_has_one_sound)):
+        folder = tmp_path / str(i)
+        folder.mkdir()
+        test(folder)
+    assert len(said()) >= 6
+
+
+def test_the_engine_keeps_clips_and_python_takes_no_packets(native, tmp_path, monkeypatch):
+    """Clips' seconds are kept by the writer (sc_writer_keep) and a clip is written by the engine; with the
+    recording written there too, no packet comes back to Python at all."""
+    from sprigcast.output.shared import CanvasEncoder
+
+    taken = []
+    real = CanvasEncoder._take
+    monkeypatch.setattr(CanvasEncoder, "_take", lambda self, p: (taken.append(p.kind), real(self, p))[1])
+    kept = []
+    real_snapshot = CanvasEncoder.clip_snapshot
+
+    def snapshot(self, *a, **k):
+        kept.append((self._engine_keeps, len(self._packets), self._engine_hands_out, self.buffered_seconds))
+        return real_snapshot(self, *a, **k)
+
+    monkeypatch.setattr(CanvasEncoder, "clip_snapshot", snapshot)
+    shared_tests.test_a_clip_is_saved_without_waiting_for_its_file(tmp_path)
+    assert kept and all(k[0] and k[1] == 0 and not k[2] and k[3] > 0 for k in kept)
+    assert len(taken) < 20  # only what came before the writer was told nobody takes them
+
+
+def test_clips_kept_by_the_engine_can_be_turned_off(native, tmp_path, monkeypatch):
+    from sprigcast.output.shared import CanvasEncoder
+
+    monkeypatch.setenv("SPRIGCAST_NO_NATIVE_CLIPS", "1")
+    kept = []
+    real_snapshot = CanvasEncoder.clip_snapshot
+    monkeypatch.setattr(CanvasEncoder, "clip_snapshot",
+                        lambda self, *a, **k: (kept.append((self._engine_keeps, len(self._packets))),
+                                               real_snapshot(self, *a, **k))[1])
+    shared_tests.test_a_clip_is_saved_without_waiting_for_its_file(tmp_path)
+    assert kept and all(not k[0] and k[1] > 0 for k in kept)
+
+
 def test_a_lone_stream_gets_a_shared_encoder_on_the_writer(native):
     engine = stream_tests._Engine()
     target = stream_mod.StreamTarget("Alone", stream_tests._Canvas(), "rtmp://127.0.0.1:1/app", "secretkey", 800,

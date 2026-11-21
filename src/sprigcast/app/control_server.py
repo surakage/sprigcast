@@ -386,6 +386,11 @@ class WindowHost:
         source = self.w.media_source(source_id)
         return source.info() if source is not None else None
 
+    def media_state(self, source_id: str) -> str | None:
+        """A media source's state for the half-second watch: as the render thread last read it, when that is recent."""
+        source = self.w.media_source(source_id)
+        return source.recent_state() if source is not None else None
+
     def source_now(self, source_id: str) -> dict[str, Any] | None:
         """What a loaded source is doing: its state as the Sources list words it ("capturing 1920x1080", "camera
         not found, retrying"), the size of its picture, and whether it rests. None: not loaded yet."""

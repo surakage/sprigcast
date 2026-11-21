@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 38
+#define SC_INTERFACE_VERSION 41
 
 enum {
     SC_OK = 0,
@@ -753,6 +753,120 @@ SC_API int sc_writer_set_bitrate(sc_writer *writer, int kbps, int max_kbps, int 
 /* The next picture is a keyframe (a recording starting from these packets, a viewer joining). */
 SC_API int sc_writer_keyframe(sc_writer *writer);
 SC_API void sc_writer_destroy(sc_writer *writer);
+
+/* ---- A stream sent by the engine (interface 39, writer.cpp) ------------------------------------------------
+ * One connection fed by a packets-mode writer: a thread of the engine's own connects to `url` (an RTMP(S) ingest;
+ * anything FFmpeg's `format` muxer can write to, a file in tests), and every packet the writer encodes (its video
+ * and its first sound track) is packed and sent there without passing through the caller. The packets still wait
+ * for sc_writer_packet_take as well (clips, a recording from the same packets).
+ * It starts at the first keyframe after it connected (it asks the writer for one), with times counted from that
+ * keyframe. With more than max_backlog_s of packets waiting to be sent (counted at `kbps`) it skips packets until
+ * fewer than resume_backlog_s wait and a keyframe comes; alone on its writer it asks for that keyframe at once.
+ * delay_s holds every packet that long before it may be sent (a stream delay).
+ * One connection only: when it drops, the state is FAILED and `error` says why (never the url); the caller
+ * destroys it and opens another. A writer that closes ends its links the same way. */
+typedef struct sc_link_config {
+    const char *url;       /* UTF-8 */
+    const char *format;    /* muxer, NULL = "flv" */
+    int kbps;              /* the bitrate set, for counting the backlog in seconds */
+    double delay_s;
+    double max_backlog_s, resume_backlog_s;   /* 0 = 4 and 2 */
+    int connect_timeout_ms, send_timeout_ms;  /* 0 = 10000 and 20000 */
+    double behind_s;       /* a backlog of this much counts as waiting on the network (0 = 0.25) */
+} sc_link_config;
+enum { SC_LINK_CONNECTING = 0, SC_LINK_READY = 1, SC_LINK_LIVE = 2, SC_LINK_FINISHED = 3, SC_LINK_FAILED = 4 };
+typedef struct sc_link_stats {
+    int state;                 /* READY: connected, waiting for its keyframe; LIVE: its first packet went out */
+    int congested;             /* skipping packets until it has caught up */
+    uint64_t frames, dropped, bytes;          /* video packets sent and skipped, bytes sent */
+    uint64_t backlog_bytes;                   /* waiting to be sent (delayed ones not counted) */
+    int delayed;                              /* packets held by the delay */
+    double send_seconds, longest_send;        /* time inside the muxer and the network */
+    double behind_seconds;                    /* time sending with behind_s or more waiting */
+    double first_seconds;                     /* the writer's time of the keyframe it started at */
+    char error[256];
+} sc_link_stats;
+typedef struct sc_link sc_link;
+SC_API int sc_link_open(sc_writer *writer, const sc_link_config *cfg, sc_link **out);
+SC_API int sc_link_stats_get(sc_link *link, sc_link_stats *out);
+/* Takes nothing new; what waits (a stream delay's packets too, each at its time) is still sent, then the
+ * connection is closed properly and the state is FINISHED. */
+SC_API int sc_link_finish(sc_link *link);
+/* Closes the connection at once (what waits is given up) and frees it. Waits up to 5 s for its thread; one still
+ * stuck in the network after that is left to end by itself. */
+SC_API void sc_link_destroy(sc_link *link);
+
+/* ---- A recording written by the engine from a packets-mode writer's packets (interface 40, writer.cpp) ------
+ * A thread of the engine's own writes every packet the writer encodes into a file, starting at the next keyframe
+ * (it asks the writer for one) with times counted from it: the video and the sound tracks in `tracks` (bit 0 =
+ * the first sound track), in that order, a track's title kept when there are several. The packets still wait for
+ * sc_writer_packet_take as well.
+ * Pause leaves the file open and writes nothing; resume carries on from a keyframe it asks for, as if no time had
+ * passed. With split_seconds or split_bytes the recording goes on in "<name> part 2<.ext>", "part 3"... from the
+ * first keyframe past either. sc_file_chapter marks a chapter at the newest picture written; a part's chapters
+ * are put in the file as it closes (containers that hold them). sc_file_finish asks for a keyframe and ends the
+ * file just before it, so nothing still inside the encoder is lost; sc_file_destroy closes what there is at once.
+ * A file that can't be written (disk full, drive gone) fails by itself: the writer goes on. */
+typedef struct sc_file_config {
+    const char *path;            /* UTF-8; its folder exists */
+    const char *format;          /* muxer ("matroska", "mp4", ...), NULL = by the path's name */
+    const char *format_options;  /* "key=value" lines, or NULL */
+    unsigned tracks;             /* sound tracks kept, bit i = track i (0 = the first one only) */
+    double split_seconds;        /* 0 = never */
+    uint64_t split_bytes;        /* 0 = never */
+} sc_file_config;
+enum { SC_FILE_WAITING = 0, SC_FILE_WRITING = 1, SC_FILE_PAUSED = 2, SC_FILE_FINISHED = 3, SC_FILE_FAILED = 4 };
+typedef struct sc_file_stats {
+    int state;                 /* WAITING: no keyframe came yet (nothing written) */
+    int parts;                 /* files started so far */
+    uint64_t bytes;            /* packet bytes written, all parts */
+    uint64_t queued_bytes;     /* waiting for the disk */
+    double seconds;            /* into the part being written, of its newest picture */
+    double write_seconds, longest_write;
+    char error[256];
+} sc_file_stats;
+typedef struct sc_file sc_file;
+SC_API int sc_file_open(sc_writer *writer, const sc_file_config *cfg, sc_file **out);
+SC_API int sc_file_pause(sc_file *file);   /* 1 paused, 0 it already was (or the file has ended) */
+SC_API int sc_file_resume(sc_file *file);  /* 1 resumed, 0 it wasn't paused */
+/* 1 and *seconds (may be NULL) = where in the part being written the mark is; 0 when nothing is being written. */
+SC_API int sc_file_chapter(sc_file *file, const char *name, double *seconds);
+SC_API int sc_file_finish(sc_file *file);
+SC_API int sc_file_stats_get(sc_file *file, sc_file_stats *out);
+/* Part `index` (0 ..): its path copied to `path` (UTF-8), its length in seconds and how many chapters it got.
+ * SC_ERR_ARGUMENT when there is no such part. */
+SC_API int sc_file_part(sc_file *file, int index, char *path, int capacity, double *seconds, int *chapters);
+/* Chapter `chapter` of a finished part: its start and end in milliseconds and its title. */
+SC_API int sc_file_part_chapter(sc_file *file, int index, int chapter, int64_t *start_ms, int64_t *end_ms,
+                                char *title, int capacity);
+/* Closes what there is at once (no waiting for a keyframe) and waits up to 10 s for that: 1 closed, 0 still busy
+ * on the disk. The numbers and parts can still be read afterwards. */
+SC_API int sc_file_stop(sc_file *file);
+/* sc_file_stop, then frees it. */
+SC_API void sc_file_destroy(sc_file *file);
+
+/* ---- Clips kept by the engine (interface 41, writer.cpp) ----------------------------------------------------
+ * A packets-mode writer keeps its last `seconds` of encoded packets itself (0 = none), starting at a video
+ * keyframe so a clip plays from its first picture: up to one keyframe interval more than asked, never less
+ * (unless less was encoded). The bytes wait in a ring file at `spool_path` (UTF-8; made, and removed when the
+ * writer closes; a longer time asked later makes a bigger one beside it) and in memory when that can't be
+ * written or spool_path is NULL. */
+SC_API int sc_writer_keep(sc_writer *writer, double seconds, const char *spool_path);
+/* Seconds of video kept now, and how many packets. */
+SC_API int sc_writer_kept(sc_writer *writer, double *seconds, int *packets);
+/* 0: packets are no longer queued for sc_writer_packet_take (nobody takes them: the engine sends, writes and
+ * keeps them itself) and those waiting are dropped; 1 (as a writer starts): queued again from the next one. */
+SC_API int sc_writer_hand_out(sc_writer *writer, int on);
+/* What a clip saved now would hold: taken at once (no bytes are read or copied), written later by sc_clip_write
+ * on the caller's thread: the video and the sound tracks in `tracks` (bit 0 = the first), with times from the
+ * clip's first keyframe. The bytes are read from the ring as it writes; if the ring has gone over them by then
+ * (as many seconds again have passed), or the writer closed, it fails. SC_ERR_ARGUMENT from the snapshot: nothing
+ * kept yet. */
+typedef struct sc_clip sc_clip;
+SC_API int sc_clip_snapshot(sc_writer *writer, sc_clip **out);
+SC_API int sc_clip_write(sc_clip *clip, const char *path, const char *format, const char *format_options,
+                         unsigned tracks);
+SC_API void sc_clip_destroy(sc_clip *clip);
 
 /* A player with no file. `playing` = 0 makes it wait for play (a sound file), 1 plays as soon as it has one. */
 SC_API int sc_media_create(int playing, sc_media **out);

@@ -50,3 +50,26 @@ def test_a_pinned_cpu_is_logged_with_who_had_it():
                     "Streamfog 9%")
     used = busy_pc.heavy_apps(wait=0.05, with_use=True)
     assert isinstance(used, list) and all(isinstance(pct, float) for _, pct in used)
+
+
+def test_who_has_the_cpu_comes_from_two_looks_at_everything(monkeypatch):
+    """PC 2026-11-21, a Defender scan: naming the heaviest apps asked psutil about each process in turn, and for
+    the ones it may not open (MsMpEng itself) psutil walked every process with Python's lock held. The window
+    waited up to 3.4 s. Two looks at everything, one call each, name them the same."""
+    import os
+
+    from sprigcast.core import processes
+
+    R = processes.Running
+    looks = [[R(1, 0, "MsMpEng.exe", 10.0), R(2, 0, "obs64.exe", 5.0), R(3, 0, "gone.exe", 1.0),
+              R(os.getpid(), 0, "SprigCast.exe", 1.0), R(9, 0, "reused.exe", 100.0)],
+             [R(1, 0, "MsMpEng.exe", 10.6), R(2, 0, "obs64.exe", 5.1), R(os.getpid(), 0, "SprigCast.exe", 9.0),
+              R(9, 0, "new.exe", 0.2), R(0, 0, "", 99.0)]]
+    monkeypatch.setattr(processes, "snapshot", lambda: looks.pop(0))
+    from types import SimpleNamespace
+
+    clock = iter([0.0, 1.0])
+    monkeypatch.setattr(busy_pc, "time", SimpleNamespace(monotonic=lambda: next(clock), sleep=lambda s: None))
+    use = busy_pc.cpu_by_app(1.0)
+    assert set(use) == {"MsMpEng", "OBS"}  # not SprigCast, not a process id used again by another app
+    assert round(use["MsMpEng"]) == 60 and round(use["OBS"]) == 10  # % of one core

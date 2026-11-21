@@ -74,8 +74,10 @@ FEATURES = (
     "layout.get",          # layout.get: every item's place, crop, bounds, source size and canvas box; flat, overlaps
     "source.state",        # source.get loaded, state ("capturing 1920x1080"), size, cameraSize, asleep
     "places.size",         # places.list size [w, h], fps, and enhanced where the service has it
+    "screenshot.skipped",  # screenshot.take {bloom}: every shape it's in, skipped names a shape left out; canvas pictures are on black
     "places.ready",        # places.list name, ready, problem ("Needs a stream key"): why a place can't go live yet
     "app_audio.pids",      # app_audio settings pids: [process id, ...] catches those processes' trees instead of apps
+    "sprig.remove",        # sprig.remove: a sprig in every shape; sounds always stay
 )
 
 
@@ -92,7 +94,7 @@ def features() -> list[str]:
 # can be taken back together.
 BATCH_ACTIONS = frozenset({
     "item.add", "item.place", "item.order", "item.show", "item.hide", "item.toggle", "item.lock", "item.remove",
-    "item.duplicate", "source.new", "source.set", "source.rename", "source.rotate", "source.remove",
+    "item.duplicate", "source.new", "source.set", "source.rename", "source.rotate", "source.remove", "sprig.remove",
     "filter.add", "filter.set", "filter.remove", "filter.move", "items.list", "layout.get",
     "sound.mute", "sound.volume", "sound.balance"})  # a sound's own settings: saved in the garden like the rest
 PREVIEW = API_VERSION == 0
@@ -934,6 +936,14 @@ class NativeApi:
         return {"sprigs": [{"id": p.id, "name": p.name, "state": p.state, "states": [s.name for s in p.states],
                             "shapes": [s.canvas for s in self.col.shapes(p)]} for p in self.col.parts()]}
 
+    @action("sprig.remove", "Remove a sprig in every shape, and take it out of every bloom. Sources only it used "
+            "go too, except sounds (mics, desktop and app sounds), which always stay.", sprig="name or id")
+    def sprig_remove(self, data):
+        part = self._sprig(data)
+        removed = self.col.remove_sprig(part)
+        self.host.commit("scenes")
+        return {"removed": part.name, "sources_removed": removed}
+
     @action("sprig.state", "Switch a sprig to one of its Live states (null: as built).", sprig="name or id",
             state="state name or null")
     def sprig_state(self, data):
@@ -1732,12 +1742,23 @@ class NativeApi:
         else:
             bloom = self._bloom(data)
             family = self.col.linked_with(bloom.id)
+            # A shape this bloom has no layout for is said, not quietly left out: a bloom made for one canvas (its
+            # vertical look being another bloom) answered "both" with one picture and no word why (PC, 2026-11-21).
+            asked = self._shapes() if shape == "both" else [shape]
+            skipped = [{"shape": c, "why": f"{bloom.name!r} has no {c} layout."}
+                       for c in asked if all(s.canvas != c for s in family)]
             if shape != "both":
                 family = [s for s in family if s.canvas == shape] or family
+            def noted(out):
+                return {**out, "skipped": skipped} if skipped else out
+
             on_air = [s.canvas for s in family if self.col.active_scenes.get(s.canvas) == s.id]
-            if on_air:
-                return self._canvas_shots(on_air[:1], width, save, as_data,
-                                          lambda shots: {"shots": [{**shot, "bloom": bloom.name} for shot in shots]})
+            if on_air and shape == "both":
+                skipped += [{"shape": s.canvas, "why": f"{bloom.name!r} isn't on air there."}
+                            for s in family if s.canvas not in on_air]
+            if on_air:  # each shape it's on air in ("both" gave only the first)
+                return self._canvas_shots(on_air if shape == "both" else on_air[:1], width, save, as_data,
+                                          lambda shots: noted({"shots": [{**shot, "bloom": bloom.name} for shot in shots]}))
             off_air = getattr(self.host, "bloom_screenshot", None)
             if off_air is not None:  # drawn on its own canvas, nothing on air changes; its sources wake for it
                 if self.host.stream_status() is not None or self.host.record_status() is not None:
@@ -1751,7 +1772,7 @@ class NativeApi:
                                  for layout, shot in zip(layouts, got) if shot is not None]
                         if not shots:
                             raise ApiError("not_allowed", "Nothing is drawing right now, so there's nothing to picture.")
-                        return {"shots": shots}
+                        return noted({"shots": shots})
 
                     return _saving(later([layout.id for layout in layouts], bloom.name, width, save,
                                          as_data)).map(collected)
@@ -1765,7 +1786,7 @@ class NativeApi:
                         shots.append({"shape": layout.canvas, **shot, "bloom": bloom.name, "on_air": False})
                 if not shots:
                     raise ApiError("not_allowed", "Nothing is drawing right now, so there's nothing to picture.")
-                return {"shots": shots}
+                return noted({"shots": shots})
             placed = [i.source for i in family[0].items]
             if len(placed) != 1:
                 raise ApiError("not_allowed", f"{bloom.name!r} isn't on air, so there's nothing to picture.")
@@ -1877,9 +1898,15 @@ class NativeApi:
             "camera": bool(getattr(self.host, "camera_on", lambda: False)()),
             "transition": (col.transition.kind, col.transition.duration_ms),
             "states": {p.id: p.state for p in col.parts()},
-            "media": {s.id: (self.host.media_info(s.id) or {}).get("state") for s in col.sources if s.kind == "media"},
+            "media": {s.id: self._media_state(s.id) for s in col.sources if s.kind == "media"},
             "shelf": self._shelf(),
         }
+
+    def _media_state(self, source_id: str) -> str | None:
+        recent = getattr(self.host, "media_state", None)
+        if recent is not None:
+            return recent(source_id)
+        return (self.host.media_info(source_id) or {}).get("state")
 
     @staticmethod
     def _plugin_ids() -> tuple[str, ...]:

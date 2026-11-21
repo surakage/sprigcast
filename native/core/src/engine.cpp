@@ -130,6 +130,8 @@ struct SharedPictures {
     bool said = false;  // a block that won't open is said once
     sc::PageTexture page;  // the page's texture, when the helper draws it on the card (slot 2)
     bool page_said = false;
+    int page_gone = 0;  // pictures in a row whose texture was closed: one after a page is shown again is expected
+    static constexpr int PAGE_GONE_SAID = 3;
 
     SharedPictures() = default;
     SharedPictures(const SharedPictures &) = delete;
@@ -1405,6 +1407,19 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         if (!data) {  // drawn on the card by the helper: copied there, never through memory
             const int code = source_page(*e.dev, id, block.page, texture, how.width, how.height, !held, flags);
             if (code == SC_NOT_YET) continue;
+            if (code == SC_GONE) {  // its texture is closed: the page's next picture comes in a new one
+                block.seen = seq;
+                if (++block.page_gone == SharedPictures::PAGE_GONE_SAID && !block.page_said) {
+                    block.page_said = true;
+                    char hex[16];
+                    std::snprintf(hex, sizeof hex, "0x%08lX", static_cast<unsigned long>(block.page.gone));
+                    log_line(SC_LOG_WARNING, std::string("engine: a browser page's texture can't be opened (") + hex +
+                                                 "), " + std::to_string(SharedPictures::PAGE_GONE_SAID) +
+                                                 " pictures in a row");
+                }
+                continue;
+            }
+            block.page_gone = 0;
             if (code != SC_OK) {
                 if (!block.page_said) {
                     block.page_said = true;
