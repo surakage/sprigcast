@@ -253,6 +253,22 @@ def listed_modes(name: str) -> list:
     return _listed.get(name, [])
 
 
+def modes_line(modes) -> str:
+    """Every size a camera offers with its formats and fastest rate, smallest first, for the log:
+    "1920x1080 mjpeg/nv12 up to 60 fps; 2560x1440 nv12 up to 60 fps". A capture card may offer only the size of
+    the signal it is fed (the PC's HD60 X fed 1440p, 2026-11-21): the log then shows there was no smaller mode to
+    ask for."""
+    by_size: dict[tuple[int, int], tuple[set, float]] = {}
+    for m in modes:
+        formats, fastest = by_size.setdefault((m[2], m[3]), (set(), 0.0))
+        formats.add(str(m[1]))
+        by_size[(m[2], m[3])] = (formats, max(fastest, float(m[5])))
+    if not by_size:
+        return "no list of modes"
+    return "; ".join(f"{w}x{h} {'/'.join(sorted(formats))} up to {fastest:.4g} fps"
+                     for (w, h), (formats, fastest) in sorted(by_size.items(), key=lambda kv: kv[0][0] * kv[0][1]))
+
+
 def _rate(value: float) -> str:
     """A frame rate for FFmpeg's dshow, which matches a mode by its frame interval (100 ns units).
 
@@ -550,6 +566,7 @@ class _Feed:
         self.backend = "Engine (FFmpeg)"
         self.opened_with = None
         log.info("%s: the engine reads %r", self.id, device.name)
+        log.info("%s: asked for %dx%d at %d fps; the camera offers %s", self.id, w, h, fps, modes_line(self.modes_seen))
         self.player = player
         lost = None  # what the engine said when the camera went (the log says when it comes back)
         try:

@@ -624,3 +624,14 @@ def test_the_camera_lister_is_never_left_in_sys_modules(monkeypatch, tmp_path):
         assert name not in sys.modules
     finally:
         sys.modules.pop(name, None)
+
+
+def test_the_log_says_every_size_a_camera_offers():
+    """PC 2026-11-21: the HD60 X opened at 2560x1440 for sources saved as 1080p and 720p, and the log couldn't say
+    whether the card offered anything smaller. Each open now lists the sizes with their formats and fastest rate."""
+    from sprigcast.sources.camera import modes_line
+
+    modes = [("pixel_format", "nv12", 2560, 1440, 30.0, 60.0), ("pixel_format", "yuyv422", 1920, 1080, 30.0, 59.94),
+             ("vcodec", "mjpeg", 1920, 1080, 30.0, 60.0), ("pixel_format", "nv12", 2560, 1440, 30.0, 30.0)]
+    assert modes_line(modes) == "1920x1080 mjpeg/yuyv422 up to 60 fps; 2560x1440 nv12 up to 60 fps"
+    assert modes_line([]) == "no list of modes"
