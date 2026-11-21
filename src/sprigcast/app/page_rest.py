@@ -20,6 +20,7 @@ LOG_EVERY = 3  # the first time and every third after it is written to the log (
 AUDIBLE_RETRY_S = 60.0  # a page still making sound isn't put to rest: looked at again after this
 GREW_TIMES, GREW_BY = 1.5, 300  # elements: this many times its first count and this many more is "growing"
 GREW_MEDIA = 5  # videos and sounds on the page: this many more than at first
+SAME_HEAP = 0.03  # script memory figures this close are one page process's, asked a moment apart
 ACTIVE, FROZEN = 0, 1  # QWebEnginePage.LifecycleState / WebEngineView.LifecycleState
 
 # Elements on the page, the script memory of its page process (shared with the other pages in it), videos and
@@ -90,14 +91,18 @@ class PageSizes:
             parts.append(said)
         if not ranked:
             parts.append("none growing")
-        # Script memory is one figure for each page process: pages that say the same share it.
-        shared: dict[int, list[str]] = {}
-        for page_id, seen in self.last.items():
-            if seen[2] > 0:
-                shared.setdefault(seen[2], []).append(page_id)
-        for heap, pages in sorted(shared.items(), reverse=True)[:3]:
+        # Script memory is one figure for each page process: pages that say about the same share it. (Each page is
+        # asked a moment apart, so the figures of one process differ by a little: told apart by the exact number,
+        # the PC's line said "script memory 150 MB for 1 page" three times, 2026-11-21.)
+        groups: list[tuple[int, list[str]]] = []  # (the biggest figure, its pages), biggest first
+        for heap, page_id in sorted(((seen[2], p) for p, seen in self.last.items() if seen[2] > 0), reverse=True):
+            if groups and heap >= groups[-1][0] * (1 - SAME_HEAP):
+                groups[-1][1].append(page_id)
+            else:
+                groups.append((heap, [page_id]))
+        for heap, pages in groups[:3]:
             began = min(self.first[p] for p in pages)  # the earliest look of any page in it
-            minutes = max(1, round((self.last[pages[0]][0] - began[0]) / 60))
+            minutes = max(1, round((max(self.last[p][0] for p in pages) - began[0]) / 60))
             more = heap - began[2]
             parts.append(f"script memory {heap / 1e6:.0f} MB for {len(pages)} page{'s' * (len(pages) != 1)}"
                          + (f" ({more / 1e6:+.0f} MB in {minutes} min)" if abs(more) >= 1e6 else ""))

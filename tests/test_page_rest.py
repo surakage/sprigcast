@@ -221,3 +221,13 @@ def test_a_real_page_says_what_it_holds_stops_while_resting_and_goes_on_after():
     # 1.9 s passed between the two counts, 1.5 s of it at rest: the page's timer (20 a second) hardly ran...
     assert int(after) - int(before) <= 16, got
     assert int(later) - int(after) >= 10, got  # ...and runs on afterwards
+
+
+def test_pages_of_one_process_are_one_script_memory_figure():
+    """PC 2026-11-21: "script memory 150 MB for 1 page; script memory 150 MB for 1 page; script memory 150 MB for
+    1 page". Pages of one process are asked a moment apart, so their figures differ by a little."""
+    sizes = PageSizes()
+    for i, heap in enumerate((150_100_000, 150_400_000, 149_800_000, 31_000_000)):
+        sizes.feed(f"browser-{i}", f"100,{heap},0,0", 0.0)
+    assert sizes.line() == ("pages: 4 asked; none growing; script memory 150 MB for 3 pages; "
+                            "script memory 31 MB for 1 page")

@@ -6,6 +6,8 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- The log's "pages:" line no longer repeats "script memory 150 MB for 1 page" for pages that share one page
+  process.
 - Twitch Enhanced Broadcasting uses less memory. Its two NVIDIA encoders (and any NVENC stream or recording
   with B-frames or look-ahead) now open on the graphics device SprigCast already draws with, instead of each
   making a CUDA context of its own (about 490 MB together when going live on the test PC). If an encoder
