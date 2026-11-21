@@ -2,6 +2,7 @@
 // way render/compositor.py draws them (same shader, same order, same maths). See docs/native-engine.md.
 #include "internal.h"
 #include "move.h"
+#include "segmenter.h"
 #include "shader_compositor.h"
 
 #include <algorithm>
@@ -36,6 +37,9 @@ struct DrawConstants {
     float uv_rect[4];
     float sil_radius4[4];
     float sil_color[4];
+    float p7[4];
+    float seg_map[4];
+    float back_map[4];
 };
 static_assert(sizeof(DrawConstants) % 16 == 0, "constant buffers come in 16-byte steps");
 
@@ -155,6 +159,9 @@ struct Renderer {
     double time;
     ID3D11DeviceContext *c;
     bool in_drawn = false;  // drawing a list: its pictures are plain sources, never another list
+    // The target being drawn into, set again after the Background filter draws a picture small for its model.
+    ID3D11RenderTargetView *target = nullptr;
+    int target_w = 0, target_h = 0;
     std::vector<uint64_t> through;  // the sprigs being drawn straight onto the target right now (see laid_over)
 
     // The sprig this item shows, when it only lays that sprig over the whole target as it is: the same size, at
@@ -294,6 +301,30 @@ struct Renderer {
         draw_piece(it.source, it.fade, p, q, fx, canvas_w, canvas_h);
     }
 
+    // The person in this picture (the Background filter), the model run again when a mask is due: the picture is
+    // drawn small, untouched, into the finder's own target, then this renderer's target is set again.
+    bool find_person(uint64_t source, const Piece &p, bool room, float blur, SegmentViews &out) {
+        int pic_w = p.detail > 0 ? p.size_w : (p.planar ? p.pic_w : p.tex_w);
+        int pic_h = p.detail > 0 ? p.size_h : (p.planar ? p.pic_h : p.tex_h);
+        ID3D11RenderTargetView *was = target;
+        const int was_w = target_w, was_h = target_h;
+        const uint64_t key = source ^ (room ? 0x9E3779B97F4A7C15ull : 0);
+        bool ok = segment(dev, key, pic_w, pic_h, room, blur,
+                          [&](ID3D11RenderTargetView *prep, int w, int h, const float (&map)[4]) {
+                              bind_target(prep, w, h);
+                              Corner q[4] = {{map[2] * w, map[3] * h, 0, 0},
+                                             {(map[2] + map[0]) * w, map[3] * h, 1, 0},
+                                             {map[2] * w, (map[3] + map[1]) * h, 0, 1},
+                                             {(map[2] + map[0]) * w, (map[3] + map[1]) * h, 1, 1}};
+                              draw_piece(0, 1.0, p, q, no_effects(), w, h);
+                              ID3D11ShaderResourceView *none[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+                              c->PSSetShaderResources(0, 5, none);
+                          }, out);
+        if (was) bind_target(was, was_w, was_h);
+        else target = nullptr;
+        return ok;
+    }
+
     // A picture drawn into the quad `q` (canvas pixels and its u, v) with its filters: a scene's item, or a piece of
     // a Move.
     void draw_piece(uint64_t source, double fade, const Piece &p, Corner (&q)[4], const sc_effects &fx,
@@ -373,8 +404,33 @@ struct Renderer {
         set4(k.border4, fx.border_color[0], fx.border_color[1], fx.border_color[2], fx.border);
         set4(k.p5, mask_luma ? 1 : 0, blur, pixelate, fx.blackout);
 
-        ID3D11ShaderResourceView *views[3] = {p.view, look, mask};
-        c->PSSetShaderResources(0, 3, views);
+        // The Background filter: the person found on the card (segmenter.h), the room blurred or a picture.
+        ID3D11ShaderResourceView *person = nullptr, *behind = nullptr;
+        set4(k.seg_map, 1, 1, 0, 0);
+        set4(k.back_map, 1, 1, 0, 0);
+        if (fx.bg_mode >= SC_BACKGROUND_REMOVE && fx.bg_mode <= SC_BACKGROUND_PICTURE) {
+            const Mask *picture = nullptr;
+            if (fx.bg_mode == SC_BACKGROUND_PICTURE && fx.bg_picture) {
+                auto found = comp.masks.find(fx.bg_picture);
+                if (found != comp.masks.end()) picture = &found->second;
+            }
+            SegmentViews seg;
+            if (find_person(source, p, fx.bg_mode == SC_BACKGROUND_BLUR, fx.bg_blur, seg)) {
+                person = seg.mask;
+                behind = fx.bg_mode == SC_BACKGROUND_BLUR ? seg.room : (picture ? picture->view.Get() : nullptr);
+                set4(k.seg_map, seg.map[0], seg.map[1], seg.map[2], seg.map[3]);
+                if (picture && picture->width > 0 && picture->height > 0) {  // the picture fills the quad, cut to fit
+                    const double qa = std::max(1e-3, quad_w) / std::max(1e-3, quad_h);
+                    const double pa = double(picture->width) / picture->height;
+                    const double sx = qa < pa ? qa / pa : 1.0, sy = qa < pa ? 1.0 : pa / qa;
+                    set4(k.back_map, sx, sy, (1.0 - sx) / 2, (1.0 - sy) / 2);
+                }
+                set4(k.p7, fx.bg_mode, std::clamp(fx.bg_edge, 0.0f, 1.0f), behind ? 1 : 0, 0);
+            }
+        }
+
+        ID3D11ShaderResourceView *views[5] = {p.view, look, mask, person, behind};
+        c->PSSetShaderResources(0, 5, views);
 
         // Shadow, glow and stroke: one quad each behind the source, grown by their size, in its shape.
         const int halos = std::clamp(fx.halo_count, 0, SC_MAX_HALOS);
@@ -406,21 +462,33 @@ struct Renderer {
         draw(k);
     }
 
-    void draw_items(const sc_item *items, int count, ID3D11RenderTargetView *target, int width, int height) {
-        const float clear[4] = {0, 0, 0, 0};
-        c->ClearRenderTargetView(target, clear);
-        ID3D11RenderTargetView *targets[] = {target};
+    void bind_target(ID3D11RenderTargetView *to, int width, int height) {
+        target = to;
+        target_w = width;
+        target_h = height;
+        ID3D11RenderTargetView *targets[] = {to};
         c->OMSetRenderTargets(1, targets, nullptr);
         D3D11_VIEWPORT vp = {0, 0, static_cast<float>(width), static_cast<float>(height), 0, 1};
         c->RSSetViewports(1, &vp);
-        for (int i = 0; i < count; ++i) draw_item(items[i], width, height);
-        c->OMSetRenderTargets(0, nullptr, nullptr);  // the target may be sampled next (a sprig)
-        ID3D11ShaderResourceView *none[3] = {nullptr, nullptr, nullptr};
-        c->PSSetShaderResources(0, 3, none);
     }
 
-    void draw_scene(const sc_scene &scene, ID3D11RenderTargetView *target, int width, int height) {
-        draw_items(snap.items.data() + scene.first_item, scene.item_count, target, width, height);
+    void unbind() {
+        c->OMSetRenderTargets(0, nullptr, nullptr);  // the target may be sampled next (a sprig)
+        ID3D11ShaderResourceView *none[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+        c->PSSetShaderResources(0, 5, none);
+        target = nullptr;
+    }
+
+    void draw_items(const sc_item *items, int count, ID3D11RenderTargetView *to, int width, int height) {
+        const float clear[4] = {0, 0, 0, 0};
+        c->ClearRenderTargetView(to, clear);
+        bind_target(to, width, height);
+        for (int i = 0; i < count; ++i) draw_item(items[i], width, height);
+        unbind();
+    }
+
+    void draw_scene(const sc_scene &scene, ID3D11RenderTargetView *to, int width, int height) {
+        draw_items(snap.items.data() + scene.first_item, scene.item_count, to, width, height);
     }
 
     // Sources drawn from a list whose list changed: drawn again, once, before any canvas uses them.
@@ -483,14 +551,11 @@ struct Renderer {
     }
 
     // One frame of a Move: its pieces straight onto the target, bottom first (render/compositor.py _draw_move).
-    void draw_move(const MovePlan &plan, const std::vector<MoveDraw> &draws, ID3D11RenderTargetView *target,
+    void draw_move(const MovePlan &plan, const std::vector<MoveDraw> &draws, ID3D11RenderTargetView *to,
                    int width, int height) {
         const float clear[4] = {0, 0, 0, 0};
-        c->ClearRenderTargetView(target, clear);
-        ID3D11RenderTargetView *targets[] = {target};
-        c->OMSetRenderTargets(1, targets, nullptr);
-        D3D11_VIEWPORT vp = {0, 0, static_cast<float>(width), static_cast<float>(height), 0, 1};
-        c->RSSetViewports(1, &vp);
+        c->ClearRenderTargetView(to, clear);
+        bind_target(to, width, height);
         for (const MoveDraw &d : draws) {
             sc_item it = {};
             it.source = d.source;
@@ -503,9 +568,7 @@ struct Renderer {
                                        ? plan.effects[static_cast<size_t>(d.effects)] : no_effects();
             draw_piece(d.source, d.opacity, p, q, fx, width, height);
         }
-        c->OMSetRenderTargets(0, nullptr, nullptr);
-        ID3D11ShaderResourceView *none[3] = {nullptr, nullptr, nullptr};
-        c->PSSetShaderResources(0, 3, none);
+        unbind();
     }
 };
 
@@ -895,6 +958,8 @@ SC_API int sc_mask_set(sc_device *device, uint64_t id, const uint8_t *rgba, int 
         hr = device->device->CreateShaderResourceView(texture.Get(), nullptr, &mask.view);
         if (FAILED(hr)) return fail_hr(SC_ERR_DEVICE, "CreateShaderResourceView (shape)", hr);
         mask.luma = luma != 0;
+        mask.width = width;
+        mask.height = height;
         device->comp.masks[id] = mask;
         return SC_OK;
     });

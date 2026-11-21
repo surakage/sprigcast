@@ -8,12 +8,15 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "shader_compositor.h"
 #include "shader_draw.h"
 #include "shader_nv12.h"
 #include "shader_repack.h"
 #include "shader_transition.h"
+#include "shader_segmenter.h"
 #include "shader_hash.h"
 
 namespace {
@@ -22,7 +25,11 @@ struct Job {
     const char *name;
     const char *source;
     size_t size;
+    bool compute = false;  // compute shaders (cs_5_0), else a vertex and a pixel shader
 };
+
+const char *const COMPUTE[] = {"cs_conv", "cs_dwconv", "cs_gap", "cs_scale", "cs_add", "cs_resize", "cs_convt",
+                               "cs_input", "cs_mask", "cs_blur_across", "cs_blur_down"};  // segmenter.cpp ENTRIES
 
 }  // namespace
 
@@ -37,12 +44,16 @@ int main(int argc, char **argv) {
         {"nv12", NV12_HLSL, sizeof NV12_HLSL - 1},
         {"repack", REPACK_HLSL, sizeof REPACK_HLSL - 1},
         {"transition", TRANSITION_HLSL, sizeof TRANSITION_HLSL - 1},
+        {"segmenter", SEGMENTER_HLSL, sizeof SEGMENTER_HLSL - 1, true},
     };
-    const char *stages[][2] = {{"vs_main", "vs_4_0"}, {"ps_main", "ps_4_0"}};
+    std::vector<std::pair<const char *, const char *>> drawing = {{"vs_main", "vs_4_0"}, {"ps_main", "ps_4_0"}};
+    std::vector<std::pair<const char *, const char *>> compute;
+    for (const char *entry : COMPUTE) compute.emplace_back(entry, "cs_5_0");
     std::string arrays, table;
     int n = 0;
     for (const Job &job : jobs) {
-        for (const auto &stage : stages) {
+        for (const auto &[entry, profile] : job.compute ? compute : drawing) {
+            const char *stage[2] = {entry, profile};
             ID3DBlob *code = nullptr, *errors = nullptr;
             HRESULT hr = D3DCompile(job.source, job.size, "sprigcore", nullptr, nullptr, stage[0], stage[1],
                                     D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors);

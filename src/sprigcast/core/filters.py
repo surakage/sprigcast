@@ -1,8 +1,8 @@
 """Filters: effects added to a source, like OBS filters.
 
 Video filters run on the GPU, inside the compositor's shader, so they cost almost nothing.
-They always apply in a fixed order whatever their place in the list: scroll, blur or pixelate, sharpen,
-chroma/color/luma key, color correction, color look (LUT), then shape. Shadow, glow and stroke are drawn
+They always apply in a fixed order whatever their place in the list: scroll, blur or pixelate, background,
+sharpen, chroma/color/luma key, color correction, color look (LUT), then shape. Shadow, glow and stroke are drawn
 behind the source in one extra pass each, following its shape and transparency. A source has at most one
 filter of each video kind.
 
@@ -248,6 +248,39 @@ _video("shape", "Frame", [
 ])
 
 
+BACKGROUND = "background_effect"  # not "background": that was the old store plugin's, dropped as gardens load
+BACKGROUND_MODES = {"remove": 1, "blur": 2, "picture": 3}  # include/sprigcore.h SC_BACKGROUND_*
+
+
+def _background_status(_source_id: str) -> str:
+    """The Backdrop filter's note in the Filters window: how the person finder runs on this PC."""
+    from sprigcast import sprigcore
+
+    if not sprigcore.use_native():
+        return "Not on the old engine"
+    status = sprigcore.background_status()
+    if status is None:
+        return ""
+    if status["state"] == "no_card":
+        return "This graphics card can't run it"
+    if status["state"] == "too_slow":
+        return "Too slow on this graphics card"
+    if status["state"] == "running" and status["gpu_ms"] is not None:
+        return f"{status['gpu_ms']:.1f} ms on the graphics card"
+    return ""
+
+
+# The person found by a small model on the graphics card (native/core/src/segmenter.h): the room behind them
+# blurred, swapped for a picture, or taken out.
+_KINDS[BACKGROUND] = FilterKind(BACKGROUND, "Backdrop", "video", [
+    Field("mode", "Mode", "blur", choices=(("blur", "Blur"), ("picture", "Picture"), ("remove", "Remove"))),
+    Field("blur", "Blur", 60, 1, 100, 1, "%", show_when=("mode", ("blur",))),
+    Field("picture_file", "Picture", "", file_types="Images (*.png *.webp *.jpg *.jpeg)",
+          show_when=("mode", ("picture",))),
+    Field("edge", "Soft Edges", 30, 0, 100, 1, "%"),
+], status=_background_status)
+
+
 PLUGIN_VIDEO_KINDS = ("pixelate", "blackout", "barrel_roll", "freeze")  # drawn by the GPU, offered by plugins
 
 
@@ -305,6 +338,10 @@ class VideoEffects:
     halos: tuple[Halo, ...] = ()  # shadow, glow and stroke, drawn behind in this order
     blackout: float = 0.0  # 0 .. 1 toward black (Hide it plugin)
     spin: tuple[float, float, int] = (0.0, 0.0, 0)  # (turns, seconds, run): a barrel roll (Barrel Roll plugin)
+    bg_mode: int = 0  # the Background filter: BACKGROUND_MODES, 0 off
+    bg_blur: float = 0.6  # 0 .. 1
+    bg_edge: float = 0.3  # 0 .. 1, how soft the person's edge is
+    bg_picture: str = ""  # mode "picture": the picture's path ("" = see-through behind the person)
     active: bool = field(default=False, compare=False)
 
 
@@ -420,6 +457,12 @@ def video_effects(filters) -> VideoEffects:
             else:
                 turns = float(s.get("turns", 1)) * (-1.0 if s.get("direction") == "anticlockwise" else 1.0)
                 fx.spin = (turns, max(0.1, float(s.get("seconds", 2.0))), int(flt.settings.get("run", 0)))  # run isn't a field: each trigger bumps it
+        elif flt.kind == BACKGROUND:
+            mode = str(s["mode"])
+            fx.bg_mode = BACKGROUND_MODES.get(mode, BACKGROUND_MODES["blur"])
+            fx.bg_blur = max(0.0, min(1.0, float(s["blur"]) / 100))
+            fx.bg_edge = max(0.0, min(1.0, float(s["edge"]) / 100))
+            fx.bg_picture = str(s["picture_file"]).strip() if mode == "picture" else ""
         elif flt.kind == "shape":
             shape = str(s["shape"])
             if shape not in SHAPE_IDS or (shape == "image" and not str(s["mask_file"]).strip()):
