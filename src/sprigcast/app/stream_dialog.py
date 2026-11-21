@@ -29,7 +29,7 @@ from sprigcast.app.live_stage import Switch
 from sprigcast.core.scene import Output, SceneCollection
 from sprigcast.output import service_signin, twitch_auth
 from sprigcast.output.keys import get_key, set_key
-from sprigcast.output.stream import SERVICES, preset_size, sizes_for
+from sprigcast.output.stream import SERVICES, SHOW_ALL, TOP_SERVICES, preset_size, sizes_for
 
 
 def output_label(output: Output) -> str:
@@ -150,6 +150,7 @@ log = logging.getLogger(__name__)
 
 NEW_PLACE = "New place"
 PICK_SERVICE = "Pick a service"
+ALL_PLACES = "__all__"  # the Service box's last line: opens the list of every place
 
 
 def place_card_text(output: Output) -> str:
@@ -259,9 +260,12 @@ class StreamPage(QWidget):
         destination, form = _section("Account")
         self.service = QComboBox()
         self.service.addItem(PICK_SERVICE, "")  # a new place starts here: you choose, nothing is assumed
-        for key, service in SERVICES.items():
-            self.service.addItem(service.label, key)
-        self.service.currentIndexChanged.connect(self._service_changed)
+        # The five everyday places and Custom RTMP; the rest are behind "Show all…" (a searchable A to Z list).
+        for key in (*TOP_SERVICES, "custom"):
+            self.service.addItem(SERVICES[key].label, key)
+        self.service.addItem(SHOW_ALL, ALL_PLACES)
+        self._service_was = 0
+        self.service.currentIndexChanged.connect(self._service_picked)
         form.addRow("Service", self.service)
         self._account_form = form
         self.server = QLineEdit()
@@ -525,7 +529,8 @@ class StreamPage(QWidget):
             return
         self._show_unpicked(False)
         self.hero.setText(SERVICES.get(output.service or "custom", SERVICES["custom"]).label)
-        self.service.setCurrentIndex(max(1, self.service.findData(output.service or "custom")))
+        self.service.setCurrentIndex(self._service_row(output.service or "custom"))
+        self._service_was = self.service.currentIndex()
         self.canvas.setCurrentIndex(max(0, self.canvas.findData(output.canvas)))
         self._fill_size_and_fps(output.size, output.fps)
         self.bitrate.setValue(output.bitrate_kbps)
@@ -633,6 +638,34 @@ class StreamPage(QWidget):
             self.enhanced_box.setVisible(False)
             self.bandwidth_test.setVisible(False)
             self.bandwidth_label.setVisible(False)
+
+    def _service_row(self, key: str) -> int:
+        """The Service box's row for a place; one from "Show all…" gets a row of its own, above Custom RTMP."""
+        row = self.service.findData(key)
+        if row < 0 and key in SERVICES:
+            row = self.service.findData("custom")
+            self.service.insertItem(row, SERVICES[key].label, key)
+        return row if row >= 0 else self.service.findData("custom")
+
+    def _service_picked(self) -> None:
+        """The Service box changed: "Show all…" opens the list first (closed without a pick, it goes back)."""
+        if self.service.currentData() != ALL_PLACES:
+            self._service_was = self.service.currentIndex()
+            self._service_changed()
+            return
+        if self._loading:
+            return
+        from sprigcast.app.place_picker import pick_place
+
+        was_key = self.service.itemData(self._service_was)
+        key = pick_place(self.window())
+        self.service.blockSignals(True)
+        row = self._service_row(key) if key else self.service.findData(was_key)
+        self.service.setCurrentIndex(max(0, row))
+        self.service.blockSignals(False)
+        self._service_was = self.service.currentIndex()
+        if key:
+            self._service_changed()
 
     def _service_changed(self) -> None:
         output = self._current()

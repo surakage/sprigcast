@@ -59,9 +59,44 @@ SERVICES: dict[str, Service] = {
                       1280, 30, 4000),
     "x": Service("X", "", 9000, "horizontal",
                  "Server and key: X Media Studio → Producer → Sources → Create source.", 1920, 30, 6000),
+    # Places beyond the everyday ones (the "Show all" list). Each was checked to still take streams from
+    # streaming software in 2026, and each gives its own server address and key to paste, so none is guessed
+    # here. Left out on purpose: sites for adults, services that have closed (Trovo and KakaoTV in June 2026,
+    # Nimo TV's global site in 2022) and video hosting sold to companies. Starting quality is a safe one where
+    # the site's own numbers weren't found; the limit is then left open (50000) rather than made up.
+    "facebook": Service("Facebook", "", 50000, "horizontal",
+                        "Server and key: Facebook Live Producer → Go live → Streaming software.", 1920, 60, 6000),
+    "chzzk": Service("CHZZK", "", 50000, "horizontal",
+                     "Server and key: CHZZK Creator Dashboard → Broadcasting settings → Stream key.", 1920, 60, 6000),
+    "mixcloud": Service("Mixcloud", "", 50000, "horizontal",
+                        "Server and key: Mixcloud → Go live → Streaming software (needs Mixcloud Pro).",
+                        1920, 30, 3500),
+    "niconico": Service("Niconico", "", 50000, "horizontal",
+                        "Server and key: Niconico Live → Broadcast → Start broadcast, copy URL and Stream key.",
+                        1280, 30, 3000),
+    "restream": Service("Restream", "", 50000, "horizontal",
+                        "Server and key: Restream → New stream → Encoder | RTMP.", 1920, 60, 6000),
+    "showroom": Service("SHOWROOM", "", 50000, "horizontal",
+                        "Server and key: SHOWROOM → Go live → External encoder settings.", 1280, 30, 2500),
+    "soop": Service("SOOP", "", 50000, "horizontal",
+                    "Server and key: SOOP BJ Center → Broadcasting settings → Stream key.", 1920, 60, 6000),
+    "vimeo": Service("Vimeo", "", 50000, "horizontal",
+                     "Server and key: Vimeo event → Use an external encoder (needs a paid plan).", 1920, 30, 6000),
+    "whowatch": Service("Whowatch", "", 50000, "horizontal",
+                        "Server and key: Whowatch → Go live → Use an external encoder.", 1280, 30, 2500),
     "custom": Service("Custom RTMP", "", 50000, "horizontal", "Any RTMP or RTMPS server URL plus its stream key.",
                       1920, 60, 6000),
 }
+
+# The five shown first wherever a place is picked; the rest sit behind "Show all…" (user, 2026-11-20).
+TOP_SERVICES = ("twitch", "youtube", "kick", "tiktok", "facebook")
+SHOW_ALL = "Show all…"
+
+
+def all_services() -> list[tuple[str, str]]:
+    """Every place by name, A to Z, Custom RTMP last: (key, label)."""
+    named = sorted(((k, s.label) for k, s in SERVICES.items() if k != "custom"), key=lambda item: item[1].lower())
+    return [*named, ("custom", SERVICES["custom"].label)]
 
 # Encoded sizes offered for each canvas shape.
 HORIZONTAL_SIZES = [(1920, 1080), (1600, 900), (1280, 720), (854, 480)]
