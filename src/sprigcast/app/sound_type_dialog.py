@@ -27,7 +27,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -60,45 +59,41 @@ class _Swatch(QAbstractButton):
         p.drawEllipse(QRectF(5, 5, 18, 18))
 
 
-class _SoundPill(QPushButton):
-    """A sound to put in the type: tap to pick. Its dot is the type it's in now; picked, it fills."""
-
-    def __init__(self, name: str, kind: str):
-        super().__init__()
-        self.full_name = name
-        self.setCheckable(True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        metrics = QFontMetrics(self.font())
-        shown = metrics.elidedText(name, Qt.TextElideMode.ElideRight, 136)
-        self.setText(literal(shown))
-        self.setToolTip(f"{name} (now in {kind})" if shown != name else f"Now in {kind}")
-        self.setAccessibleName(name)  # screen readers and UI Automation read the whole name
-        self.setAccessibleDescription(f"Now in {kind}")
-        self.setIcon(_dot(GROUP_COLOURS.get(kind, theme.MUTED)))
-        self.setObjectName("soundPill")  # styled once on the dialog (pill_style), not a style sheet per pill
-        self.setFixedHeight(30)
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)  # the column sets the width  # (the min-height above too: the app style sheet sets a smaller one on show)
+PILL_TEXT_PX = 150  # a pill's room for its name: two pills side by side fit the 580 px window
 
 
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        """Cut a long name short to the pill's width (the columns set it), never more than needed."""
-        super().resizeEvent(event)
-        room = max(40, self.width() - 44)  # the dot, the padding and the edges
-        shown = QFontMetrics(self.font()).elidedText(self.full_name, Qt.TextElideMode.ElideRight, room)
-        if self.text() != literal(shown):
-            self.setText(literal(shown))
+def _sound_pill(name: str, kind: str, parent: QWidget, metrics: QFontMetrics) -> QPushButton:
+    """A sound to put in the type: tap to pick. Its dot is the type it's in now; picked, it fills. As few calls
+    into Qt as it can: while live each one can wait for Python's lock, and 60 pills of 16 calls each made Edit
+    type take 530-600 ms to open (PC 2026-11-21). Look, height and cursor come from the holder (pill_style)."""
+    shown = metrics.elidedText(name, Qt.TextElideMode.ElideRight, PILL_TEXT_PX)
+    pill = QPushButton(_dot(GROUP_COLOURS.get(kind, theme.MUTED)), literal(shown), parent)
+    pill.full_name = name
+    pill.setCheckable(True)
+    if shown != name:  # screen readers and UI Automation read the whole name
+        pill.setAccessibleName(name)
+        pill.setToolTip(name)
+    pill.setAccessibleDescription(f"Now in {kind}")
+    return pill
 
 
 # The sound pills' look (theme colors as they are now), set once on their holder: a style sheet on each of 60 pills cost a polish each when the
 # window opened (PC 2026-11-21: Edit type took 600 ms to open with UI Automation listening).
 def pill_style() -> str:
-    return (theme.button_style(14, "0px 12px", "QPushButton#soundPill",
-                               extra="font-size: 12px; min-height: 28px; text-align: left;")
-            + f"QPushButton#soundPill:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT};"
+    sel = "#pillRows QPushButton"
+    return (theme.button_style(14, "0px 12px", sel, extra="font-size: 12px; min-height: 28px; max-height: 28px;"
+                                                          " text-align: left;")
+            + f"{sel}:checked {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT};"
               f" border: 1px solid {theme.ACCENT}; }}")
 
 
+_DOTS: dict[str, QIcon] = {}
+
+
 def _dot(colour: str) -> QIcon:
+    """A small colored dot (one per color, kept: 60 pills used to paint 60)."""
+    if colour in _DOTS:
+        return _DOTS[colour]
     pix = QPixmap(20, 20)
     pix.fill(Qt.GlobalColor.transparent)
     p = QPainter(pix)
@@ -107,7 +102,8 @@ def _dot(colour: str) -> QIcon:
     p.setBrush(QColor(colour))
     p.drawEllipse(QRectF(5, 5, 10, 10))
     p.end()
-    return QIcon(pix)
+    _DOTS[colour] = QIcon(pix)
+    return _DOTS[colour]
 
 
 class SoundTypeDialog(CardDialog):
@@ -172,13 +168,14 @@ class SoundTypeDialog(CardDialog):
         box.addLayout(top)
         holder = QWidget()
         holder.setObjectName("pillHolder")
-        holder.setStyleSheet("#pillHolder { background: transparent; }" + pill_style())
+        holder.setStyleSheet("#pillHolder { background: transparent; }")
         # Two even columns (user 2026-11-20): every pill as wide as the other, rows lined up.
         stack = QVBoxLayout(holder)  # the rows at the top, the room under them empty when Find shows a few
         stack.setContentsMargins(0, 0, 0, 0)
         rows_box = QWidget()
         rows_box.setObjectName("pillRows")
-        rows_box.setStyleSheet("#pillRows { background: transparent; }")
+        rows_box.setStyleSheet("#pillRows { background: transparent; }" + pill_style())
+        rows_box.setCursor(Qt.CursorShape.PointingHandCursor)  # the pills take it from here
         stack.addWidget(rows_box)
         stack.addStretch(1)
         self.grid = QGridLayout(rows_box)
@@ -188,14 +185,6 @@ class SoundTypeDialog(CardDialog):
         self.grid.setColumnStretch(0, 1)
         self.grid.setColumnStretch(1, 1)
         self.ticks: dict[str, QPushButton] = {}
-        # The type's own sounds first (when editing), so what's in it shows without scrolling.
-        for sid, name, kind in sorted(sounds, key=lambda s: bool(editing) and s[2] != editing):
-            pill = _SoundPill(name, kind)
-            pill.setChecked(bool(editing) and kind == editing)
-            pill.toggled.connect(lambda _on: self._count())
-            self.ticks[sid] = pill
-        self._order = list(self.ticks.values())
-        self._lay_out()
         self.none_found = QLabel("No sound matches.")
         self.none_found.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
         self.none_found.hide()
@@ -210,6 +199,17 @@ class SoundTypeDialog(CardDialog):
         box.addWidget(scroll)
         box.addWidget(self.none_found)
         self.body.addWidget(sounds_card)
+        # The pills last, inside a holder that's already in this window: each is styled once, where it ends up
+        # (PC 2026-11-21: made loose and put in the grid after, Edit type took 530-600 ms to open while live).
+        # The type's own sounds first (when editing), so what's in it shows without scrolling.
+        metrics = QFontMetrics(rows_box.font())
+        for sid, name, kind in sorted(sounds, key=lambda s: bool(editing) and s[2] != editing):
+            pill = _sound_pill(name, kind, rows_box, metrics)
+            pill.setChecked(bool(editing) and kind == editing)
+            pill.toggled.connect(lambda _on: self._count())
+            self.ticks[sid] = pill
+        self._order = list(self.ticks.values())
+        self._lay_out()
         self._count()
 
         self.ok = self.add_buttons("Save" if editing else "Add")
@@ -230,12 +230,13 @@ class SoundTypeDialog(CardDialog):
     def _lay_out(self) -> None:
         """The pills Find lets through, two to a row with no gaps."""
         text = self.find.text().strip().casefold() if hasattr(self, "find") else ""
-        for pill in self._order:
-            self.grid.removeWidget(pill)
+        if self.grid.count():
+            for pill in self._order:
+                self.grid.removeWidget(pill)
         shown = 0
         for pill in self._order:
             keep = not text or text in pill.full_name.casefold()
-            if pill.isHidden() == keep:  # only a real change: each one is an event Windows' UI Automation hears
+            if (not keep or text) and pill.isHidden() == keep:  # only a real change: each one is an event Windows' UI Automation hears
                 pill.setVisible(keep)
             if keep:
                 self.grid.addWidget(pill, shown // 2, shown % 2)
