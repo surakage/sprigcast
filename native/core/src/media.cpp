@@ -310,6 +310,8 @@ struct Core : std::enable_shared_from_this<Core> {
     std::string device_format;
     std::vector<std::pair<std::string, std::string>> device_choices;  // (input name, "key=value:..." options)
     double live_gap = 0;           // packets closer than this are skipped (a camera faster than wanted)
+    std::string refusal_said;      // the modes a camera refused, as last logged (said again only when it changes)
+    bool opening_said = false;     // "opening a camera" is in the log for this run of tries (until it opens)
     std::atomic<bool> mirror{false};
     bool loop = false, clear_on_end = false, restart_on_show = true;
     float speed_setting = 1.0f;
@@ -756,6 +758,7 @@ void Core::probe(const std::string &file) {
 void Core::open(Held &held, const std::string &file) {
     int r = 0;
     bool camera;
+    std::string refused;  // a camera: the modes it refused and why
     std::string format;
     std::vector<std::pair<std::string, std::string>> choices;
     {
@@ -768,7 +771,16 @@ void Core::open(Held &held, const std::string &file) {
         const AVInputFormat *input = ff.av_find_input_format(format.c_str());
         if (!input) throw Error("this FFmpeg can't open " + format + " devices");
         r = AVERROR(ENODEV);
-        std::string refused;
+        // Said before the first try: a card with no signal can hold an open for a long time, and the log had
+        // nothing at all about a camera whose open never came back (PC, 2026-11-21).
+        bool first_try;
+        {
+            std::lock_guard<std::mutex> hold(lock);
+            first_try = !opening_said;
+            opening_said = true;
+        }
+        if (first_try)
+            sc::log_line(SC_LOG_INFO, "media: opening a camera, " + std::to_string(choices.size()) + " modes to try");
         for (const auto &[name, options] : choices) {
             AVDictionary *opts = nullptr;
             if (!options.empty()) ff.av_dict_parse_string(&opts, options.c_str(), "=", ":", 0);
@@ -786,6 +798,8 @@ void Core::open(Held &held, const std::string &file) {
                 if (!refused.empty()) sc::log_line(SC_LOG_INFO, "media: the camera refused " + refused);
                 std::lock_guard<std::mutex> hold(lock);
                 status = "ok";
+                opening_said = false;
+                refusal_said.clear();
                 break;
             }
             held.fmt = nullptr;
@@ -795,8 +809,19 @@ void Core::open(Held &held, const std::string &file) {
     }
     if (r < 0) {
         held.fmt = nullptr;
+        if (camera) {  // none opened: say which modes it refused and why, once (it is tried again every 2 s)
+            const std::string refused_all = refused.empty() ? av_text(r) : refused;
+            bool news;
+            {
+                std::lock_guard<std::mutex> hold(lock);
+                news = refusal_said != refused_all;
+                refusal_said = refused_all;
+            }
+            if (news) sc::log_line(SC_LOG_WARNING, "media: the camera opened in no mode: " + refused_all);
+        }
         throw Error(av_text(r));
     }
+    if (camera) sc::log_line(SC_LOG_INFO, "media: reading what the camera gives");
     r = ff.avformat_find_stream_info(held.fmt, nullptr);
     if (r < 0) throw Error(av_text(r));
     held.vi = held.ai = -1;

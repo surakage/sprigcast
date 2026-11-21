@@ -386,6 +386,24 @@ class WindowHost:
         source = self.w.media_source(source_id)
         return source.info() if source is not None else None
 
+    def source_now(self, source_id: str) -> dict[str, Any] | None:
+        """What a loaded source is doing: its state as the Sources list words it ("capturing 1920x1080", "camera
+        not found, retrying"), the size of its picture, and whether it rests. None: not loaded yet."""
+        source = self.w.engine._sources.get(source_id)
+        if source is None:
+            return None
+        out: dict[str, Any] = {"state": str(getattr(source, "status", "") or ""), "asleep": bool(source.asleep)}
+        size = getattr(source, "_size", None)  # (never `size`: a text would be drawn on the window's thread for it)
+        if isinstance(size, tuple) and len(size) == 2 and min(size) > 0:
+            out["size"] = [int(size[0]), int(size[1])]
+        feed = getattr(source, "_feed", None)
+        picture = getattr(feed, "picture", None)
+        if picture:
+            out["cameraSize"] = [int(picture[0]), int(picture[1])]  # what the device gives, before it is fitted
+        if feed is not None and getattr(feed, "status", ""):
+            out["state"] = str(feed.status)
+        return out
+
     def media_control(self, source_id: str, what: str, seconds: float | None = None) -> dict[str, Any] | None:
         return self.w.media_control(source_id, what, seconds)
 

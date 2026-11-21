@@ -679,6 +679,7 @@ class MainWindow(QMainWindow):
             self._fill_add_sound_menu(menu)
         else:
             self._fill_sound_menu(menu, source_id)
+        theme.ui_burst()  # (as modal() does: a menu coming up builds its window)
         menu.exec(at)
         menu.deleteLater()  # a new menu each time: kept, each held a window handle for good
 
@@ -696,6 +697,7 @@ class MainWindow(QMainWindow):
             menu.addSeparator()
             # After the menu has closed: a window opened from inside a closing menu could swallow the click.
             menu.addAction("Starter kit…").triggered.connect(lambda: QTimer.singleShot(0, self, self.open_starter))
+        theme.ui_burst()  # (as modal() does: a menu coming up builds its window)
         menu.exec(QCursor.pos())
         menu.deleteLater()  # a new menu each time: kept, each held a window handle for good
 
@@ -987,11 +989,13 @@ class MainWindow(QMainWindow):
     def _source_context_menu(self, pos) -> None:
         on_item = self.source_list.itemAt(pos) is not None
         menu = self._source_menu(on_item)
+        theme.ui_burst()  # (as modal() does: a menu coming up builds its window)
         menu.exec(self.source_list.viewport().mapToGlobal(pos))
         menu.deleteLater()  # a new menu each right-click: kept, each one held a window handle for good
 
     def _on_preview_menu(self, canvas_id: str, index: int, where) -> None:
         menu = self._preview_menu(canvas_id, index)
+        theme.ui_burst()  # (as modal() does: a menu coming up builds its window)
         menu.exec(where)
         menu.deleteLater()
 
@@ -1372,11 +1376,13 @@ class MainWindow(QMainWindow):
         folder_id = under.data(0, ROLE_FOLDER) if under is not None else None
         if folder_id:
             self._folder_menu(menu, self.collection.folder(folder_id))
+            theme.ui_burst()  # (as modal() does: a menu coming up builds its window)
             menu.exec(self.scene_tree.viewport().mapToGlobal(pos))
             menu.deleteLater()
             return
         if under is not None and under.data(0, ROLE_ROW) == "sound":
             self._fill_sound_menu(menu, under.data(0, ROLE_ID))
+            theme.ui_burst()  # (as modal() does: a menu coming up builds its window)
             menu.exec(self.scene_tree.viewport().mapToGlobal(pos))
             menu.deleteLater()
             return
@@ -1415,6 +1421,7 @@ class MainWindow(QMainWindow):
         new.addSeparator()
         new.addAction(cap(PART)).triggered.connect(lambda: self._add_part())
         new.addAction(f"{cap(PART)} folder").triggered.connect(lambda: self._add_folder(holds="part"))
+        theme.ui_burst()  # (as modal() does: a menu coming up builds its window)
         menu.exec(self.scene_tree.viewport().mapToGlobal(pos))
         menu.deleteLater()
 
@@ -1651,6 +1658,7 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         menu.addAction(colour_row(menu, self.collection.folder(folder_id).colour,
                                   lambda c: self._recolour_folder(folder_id, c)))
+        theme.ui_burst()  # (as modal() does: a menu coming up builds its window)
         menu.exec(at)
         menu.deleteLater()  # a new menu each time: kept, each held a window handle for good
 
@@ -4180,6 +4188,7 @@ class MainWindow(QMainWindow):
                 source_id, apps=[p for p in picked if p.lower() != a.lower()] + ([a] if on else [])))
         if not apps and not picked:
             menu.addAction("Open the app, then come back here").setEnabled(False)
+        theme.ui_burst()  # (as modal() does: a menu coming up builds its window)
         menu.exec(QCursor.pos())
         menu.deleteLater()  # a new menu each time: kept, each held a window handle for good
 
@@ -4603,6 +4612,7 @@ class MainWindow(QMainWindow):
             return
         menu = QMenu(self)
         self._fill_plays_in_menu(menu, self.selected_sound_id)
+        theme.ui_burst()  # (as modal() does: a menu coming up builds its window)
         menu.exec(QCursor.pos())
         menu.deleteLater()  # a new menu each time: kept, each held a window handle for good
 

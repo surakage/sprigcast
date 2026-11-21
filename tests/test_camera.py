@@ -244,7 +244,7 @@ def test_lists_cameras_on_windows_without_loading_opencv(monkeypatch):
 
     backend = types.ModuleType("cv2_enumerate_cameras._windows_backend")
     backend.DSHOW_enumerate_cameras = lambda: [("Cam A", "\\\\?\\usb#a"), ("Cam B", "")]
-    monkeypatch.setitem(sys.modules, "cv2_enumerate_cameras._windows_backend", backend)
+    monkeypatch.setattr(camera, "_lister", backend)
     monkeypatch.delitem(sys.modules, "cv2", raising=False)
     monkeypatch.delitem(sys.modules, "cv2_enumerate_cameras", raising=False)
     monkeypatch.setattr(camera.sys, "platform", "win32")
@@ -584,3 +584,43 @@ def test_other_sizes_are_tried_before_the_cameras_own_mode():
     assert more[0] == {"video_size": "2560x1440", "framerate": "60", "pixel_format": "nv12"}
     assert [m for m in more if m["video_size"] == "3840x2160"][0]["pixel_format"] == "nv12"  # least data first
     assert camera.other_modes([], 1920, 1080, 60, []) == []
+
+
+def test_the_camera_lister_is_never_left_in_sys_modules(monkeypatch, tmp_path):
+    """PC 2026-11-21: PySide imports again, by name, every compiled module in sys.modules the first time a new Qt
+    class is used. The lister sat there as "cv2_enumerate_cameras._windows_backend", so that import loaded its
+    package and OpenCV with it (83 MB, a 318-407 ms stall when the first Control API app connected)."""
+    import importlib.machinery
+    import importlib.util
+
+    from sprigcast.sources import camera
+
+    package = tmp_path / "cv2_enumerate_cameras"
+    package.mkdir()
+    (package / "_windows_backend.pyd").write_bytes(b"")
+    name = "cv2_enumerate_cameras._windows_backend"
+    made = types.ModuleType(name)
+
+    class Loader:
+        def __init__(self, name, path):
+            pass
+
+        def create_module(self, spec):
+            sys.modules[name] = made  # as Python does for a compiled module made this way
+            return made
+
+        def exec_module(self, module):
+            pass
+
+    monkeypatch.setattr(camera, "_lister", None)
+    monkeypatch.setattr(camera.sys, "platform", "win32")
+    monkeypatch.setattr(importlib.util, "find_spec", lambda _name: types.SimpleNamespace(
+        submodule_search_locations=[str(package)]))
+    monkeypatch.setattr(importlib.machinery, "ExtensionFileLoader", Loader)
+    monkeypatch.setattr(camera.os if hasattr(camera, "os") else __import__("os"), "add_dll_directory",
+                        lambda path: None, raising=False)
+    try:
+        assert camera._dshow_backend() is made and camera._dshow_backend() is made
+        assert name not in sys.modules
+    finally:
+        sys.modules.pop(name, None)

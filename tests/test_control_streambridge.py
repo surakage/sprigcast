@@ -548,3 +548,25 @@ def test_places_list_says_which_places_are_ready():
     second = _ok(api, "places.list")["places"][1]
     assert second["ready"] is False and second["problem"] == "Needs a stream key" and second["service"] == "facebook"
     assert "places.ready" in _ok(api, "app.info")["features"]
+
+
+def test_source_get_says_what_a_loaded_source_is_doing():
+    """PC 2026-11-21: nothing but the log said whether a capture card had opened, or at what size. source.get
+    says: loaded, state, size, and for a camera the size the device gives."""
+    from types import SimpleNamespace
+
+    from sprigcast.app.control_server import WindowHost
+    from sprigcast.control.native import FEATURES
+
+    api, host = _native()
+    source = _ok(api, "source.new", name="Card", kind="camera", settings={})
+    got = _ok(api, "source.get", source="Card")
+    assert got["loaded"] is False and "state" not in got  # its bloom hasn't been on screen
+    feed = SimpleNamespace(picture=(2560, 1440), status="capturing 2560x1440")
+    live = SimpleNamespace(status="starting", asleep=False, _size=(1920, 1080), _feed=feed)
+    window = SimpleNamespace(engine=SimpleNamespace(_sources={source["id"]: live}))
+    host.source_now = lambda source_id: WindowHost.source_now(SimpleNamespace(w=window), source_id)
+    got = _ok(api, "source.get", source="Card")
+    assert (got["loaded"], got["state"], got["size"], got["cameraSize"], got["asleep"]) == (
+        True, "capturing 2560x1440", [1920, 1080], [2560, 1440], False)
+    assert "source.state" in FEATURES
