@@ -159,3 +159,33 @@ def test_places_drag_into_a_new_order_in_settings(fake_keyring):
     d.list.setCurrentRow(0)
     d.move_place(1)
     assert d.apply_to(col) and [o.id for o in col.outputs] == ["youtube", "twitch", "kick"]
+
+
+def test_the_stream_page_can_be_made_a_part_at_a_time(fake_keyring):
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    from sprigcast.app.stream_dialog import StreamPage
+
+    col = _collection(*(Output(id=k, type="stream", service=k, canvas="horizontal", key_ref=f"sprigcast/{k}")
+                        for k in ("twitch", "youtube", "kick")))
+    d = StreamPage(col, later=True)
+    # The list is there at once; the form isn't made yet, and what's asked meanwhile is kept for it.
+    assert d.list.count() == 3 and not hasattr(d, "service") and not d._built
+    d.set_expert(True)
+    d.set_live({"youtube"})
+    assert d.list.item(1).text().endswith("· Live")
+    for _ in range(StreamPage.PARTS):
+        d.take_part()
+    assert d._built and d.list.currentRow() == 0 and d.service.currentData() == "twitch" and d._expert
+    d.take_part()  # nothing left: harmless
+    d.select_output("youtube")
+    assert not d.remove_button.isEnabled() and not d.live_note.isHidden()
+    # Anything that needs the form makes what's left first: a card clicked early, Save pressed early.
+    early = StreamPage(col, later=True)
+    early.take_part()
+    early.list.setCurrentRow(2)
+    assert early._built and early.service.currentData() == "kick" and early.list.currentRow() == 2
+    saved = StreamPage(col, later=True)
+    assert saved.apply_to(col) and [o.id for o in col.outputs] == ["twitch", "youtube", "kick"]
+    # Made all at once (the default), it is the same page.
+    whole = StreamPage(col)
+    assert whole._built and whole.service.currentData() == "twitch"

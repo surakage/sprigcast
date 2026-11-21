@@ -174,7 +174,10 @@ def place_card_text(output: Output) -> str:
 class StreamPage(QWidget):
     """Edits copies of the collection's stream outputs; apply_to() writes them back and saves keys."""
 
-    def __init__(self, collection: SceneCollection, parent: QWidget | None = None):
+    def __init__(self, collection: SceneCollection, parent: QWidget | None = None, later: bool = False):
+        """later: only the list of places is made now; the caller makes the rest with take_part(), PARTS times,
+        a tick apart (Settings: the whole page at once held the window 399 ms on the PC while live,
+        2026-11-21). Anything that needs the form makes what's left first (finish)."""
         super().__init__(parent)
         self.setStyleSheet(PAGE_STYLE)
         self.collection = collection
@@ -187,6 +190,9 @@ class StreamPage(QWidget):
         self._loading = False
         self._unpicked: set[str] = set()  # places just added: no service chosen yet, nothing filled in
         self._error_for = ""  # the place the last sign-in error belongs to
+        self.live_ids: set[str] = set()  # the places sending right now (set_live)
+        self._expert = False
+        self._in_part = self._built = False
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -237,6 +243,44 @@ class StreamPage(QWidget):
         root.addWidget(divider)
         root.addSpacing(6)
 
+        self._building = self._build(root)
+        if later:
+            self._loading = True  # the cards now, so the list is there at once; the first is picked at the end
+            for output in self.outputs:
+                item = QListWidgetItem(self._card_text(output))
+                item.setData(Qt.ItemDataRole.UserRole, output.id)
+                self.list.addItem(item)
+            self._loading = False
+        else:
+            self.finish()
+
+    PARTS = 5  # take_part() this many times makes the whole form
+
+    def take_part(self) -> None:
+        """Make the next part of the form (nothing once it's all made)."""
+        if self._in_part:
+            return
+        self._in_part = True
+        try:
+            next(self._building, None)
+        finally:
+            self._in_part = False
+
+    def finish(self) -> None:
+        """Make whatever of the form is still to come, now."""
+        if self._in_part:
+            return
+        self._in_part = True
+        try:
+            for _ in self._building:
+                pass
+        finally:
+            self._in_part = False
+
+    def _build(self, root):
+        """The form on the right, a part at each step: the heading and Account; Server and key and Picture;
+        Twitch Enhanced Broadcasting and Extras; all of it put on the page; then the first place shown."""
+        collection = self.collection
         # Right: the chosen place, scrolling on its own.
         self.form_widget = QWidget()
         groups = QVBoxLayout(self.form_widget)
@@ -270,7 +314,6 @@ class StreamPage(QWidget):
         hero.addWidget(self.remove_button)
         groups.addLayout(hero)
         # A place that is sending right now can't be changed: its switch on the Live screen ends just that one.
-        self.live_ids: set[str] = set()
         self.live_note = QLabel("Live now. Switch it off in Destinations to change it.")
         self.live_note.setObjectName("streamWarn")
         self.live_note.hide()
@@ -347,6 +390,7 @@ class StreamPage(QWidget):
         form.addRow("", self.signin_error)
         groups.addWidget(destination)
 
+        yield
         # Server and key: where the stream goes.
         self._key_section, form = _section("Server and key")
         self._key_form = form
@@ -393,6 +437,7 @@ class StreamPage(QWidget):
         groups.addWidget(video)
         self._picture_section = video
 
+        yield
         # Twitch Enhanced Broadcasting: Twitch picks several qualities for this PC, all sent at once.
         self.enhanced_box, form = _section("Twitch Enhanced Broadcasting")
         intro = QLabel(
@@ -441,6 +486,7 @@ class StreamPage(QWidget):
         groups.addWidget(advanced)
         self._extras_section = advanced
 
+        yield
         groups.addStretch(1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -453,12 +499,17 @@ class StreamPage(QWidget):
         _line_up_labels(_FORMS)
         _FORMS.clear()
 
-        self._expert = False
-        self._refresh_list(0)
+        self._built = True
+        yield
+        self._refresh_list(max(0, self.list.currentRow()))
+        if self._expert:  # asked for while the form was still being made
+            self.set_expert(True)
 
     def set_expert(self, on: bool) -> None:
         """Extras (bandwidth test, ignoring the service's recommendations) are expert rows."""
         self._expert = on
+        if not self._built:
+            return  # shown as asked once the form is made
         output = self._current()
         unpicked = output is not None and output.id in self._unpicked
         self._show_unpicked(unpicked)
@@ -512,6 +563,7 @@ class StreamPage(QWidget):
 
     def move_place(self, step: int) -> None:
         """The picked place one spot up (-1) or down (1)."""
+        self.finish()
         row = self.list.currentRow()
         to = row + step
         if not (0 <= row < len(self.outputs) and 0 <= to < len(self.outputs)):
@@ -524,6 +576,7 @@ class StreamPage(QWidget):
         return self.outputs[row] if 0 <= row < len(self.outputs) else None
 
     def select_output(self, output_id: str) -> None:
+        self.finish()
         row = next((i for i, o in enumerate(self.outputs) if o.id == output_id), None)
         if row is not None:
             self.list.setCurrentRow(row)
@@ -532,6 +585,7 @@ class StreamPage(QWidget):
         self._add()
 
     def _add(self) -> None:
+        self.finish()
         taken = {o.id for o in self.outputs} | {o.id for o in self.collection.outputs} | self.other_paths_ids
         n = 1
         while f"out-{n}" in taken:
@@ -559,8 +613,10 @@ class StreamPage(QWidget):
         """The places sending right now (while live): shown, but locked until they're ended."""
         self.live_ids = set(ids)
         for row, output in enumerate(self.outputs):
-            self.list.item(row).setText(self._card_text(output))
-        self._lock_live()
+            if self.list.item(row) is not None:
+                self.list.item(row).setText(self._card_text(output))
+        if self._built:  # (else the place shown is locked as it's loaded)
+            self._lock_live()
 
     def _lock_live(self) -> None:
         output = self._current()
@@ -573,8 +629,11 @@ class StreamPage(QWidget):
             widget.setEnabled(not live)
 
     def _load(self, row: int) -> None:
+        if self._loading:
+            return
+        self.finish()  # a card clicked while the form was still being made
         output = self._current()
-        if output is None or self._loading:
+        if output is None:
             return
         self._lock_live()
         self._loading = True
@@ -964,6 +1023,7 @@ class StreamPage(QWidget):
 
     def apply_to(self, collection: SceneCollection) -> bool:
         """Write outputs back and save keys. Returns False (and says why) if a key could not be saved."""
+        self.finish()
         try:
             for key_ref, key in self.keys.items():
                 if key != self._saved_keys.get(key_ref, ""):
