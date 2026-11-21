@@ -201,12 +201,24 @@ def inside_package() -> str:
 AV_MODULES = ("av", "av.logging", "av.audio.frame", "av.video.frame", "av.video.reformatter", "av.codec.hwaccel")
 
 
+def say_libav_lines_when_they_happen() -> None:
+    """PyAV holds back a line FFmpeg says twice in a row and writes "(repeated N more times)" only when a
+    different line comes, even when the line was below the level being logged. So a camera's refused modes from
+    going live ("Could not set video options", which SprigCast reports itself) showed up as errors minutes later,
+    in the millisecond a place stopped and FFmpeg said something else (live 2026-11-21). With this off, each
+    line is written when it is said, or not at all."""
+    import av.logging
+
+    av.logging.set_skip_repeated(False)
+
+
 def import_av() -> bool:
     import importlib
 
     try:
         for name in AV_MODULES:
             importlib.import_module(name)
+        say_libav_lines_when_they_happen()
     except Exception as exc:  # noqa: BLE001 - a broken PyAV: each user of it says so in its own words
         logging.error("PyAV could not be loaded (%s): videos, cameras, recording and streaming won't work", exc)
         return False

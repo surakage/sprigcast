@@ -72,3 +72,18 @@ def test_a_live_flvs_header_note_is_information_not_a_warning(caplog):
     assert levels[0] == ("INFO", "Failed to update header with correct duration. (normal when a live stream ends)")
     assert levels[1][0] == "INFO" and levels[2] == ("WARNING", "Something else")
     assert sum(1 for f in flv.filters if type(f).__name__ == "LiveFlvQuiet") == 1
+
+
+def test_libav_lines_arent_held_back_to_be_written_later():
+    """PyAV tallied a line FFmpeg repeated and wrote it when the next different line came: a camera's refused
+    modes appeared as errors when a place stopped, minutes later (live 2026-11-21)."""
+    import av.logging
+
+    from sprigcast.app import main
+
+    before = av.logging.get_skip_repeated()
+    try:
+        av.logging.set_skip_repeated(True)
+        assert main.import_av() and av.logging.get_skip_repeated() is False
+    finally:
+        av.logging.set_skip_repeated(before)
