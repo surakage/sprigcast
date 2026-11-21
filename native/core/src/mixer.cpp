@@ -932,8 +932,9 @@ SC_API int sc_mixer_tap_pause(sc_mixer *mixer, int id, int paused) {
         if (!mixer) return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_tap_pause: no mixer");
         std::lock_guard<std::mutex> hold(mixer->lock);
         auto found = mixer->taps.find(id);
-        if (found == mixer->taps.end()) return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_tap_pause: no such tap");
-        found->second.paused = paused != 0;
+        // (A tap already taken away has nothing left to leave out: an output stopping after its tap went, as
+        // clips switched off do, is no mistake. It logged "no such tap" on the PC, 2026-11-21.)
+        if (found != mixer->taps.end()) found->second.paused = paused != 0;
         return SC_OK;
     });
 }
