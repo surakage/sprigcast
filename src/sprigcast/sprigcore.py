@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 41  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 42  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 PUSH_OFF, PUSH_TALK, PUSH_MUTE = 0, 1, 2  # sc_mixer_push_set modes
 DLL_NAME = "sprigcore.dll"
 
@@ -1492,6 +1492,9 @@ def _media_sigs() -> dict:
         "sc_mixer_tap_remove": (c_int, [vp, c_int]),
         "sc_mixer_tap_take": (c_int, [vp, c_int, vp, c_int, ctypes.POINTER(ctypes.c_int64),
                                       ctypes.POINTER(ctypes.c_uint64)]),
+        "sc_mixer_tap_writer": (c_int, [vp, c_int, vp]),
+        "sc_mixer_tap_go": (c_int, [vp, c_int]),
+        "sc_mixer_tap_pause": (c_int, [vp, c_int, c_int]),
         "sc_mixer_tick": (c_int, [vp, c_int]),
         "sc_mixer_wait": (c_int, [vp, ctypes.c_int64, c_int, ctypes.POINTER(ctypes.c_int64)]),
         "sc_mixer_levels": (c_int, [vp, c_int, ctypes.POINTER(MixerLevel)]),
@@ -2397,6 +2400,23 @@ class SoundMixer:
 
     def remove_tap(self, tap: int) -> None:
         _check(self._call(self._lib.sc_mixer_tap_remove, int(tap)))
+
+    def tap_writer(self, tap: int, writer) -> None:
+        """A tap's blocks go straight into a Writer's sound on the mixer's thread (None: taken with take() again).
+        They wait until tap_go(): first write what take() gave before."""
+        if writer is None:
+            _check(self._call(self._lib.sc_mixer_tap_writer, int(tap), None))
+            return
+        with writer._lock:  # not closed under the call
+            if not writer._handle:
+                raise NativeError(-1, "the writer is closed")
+            _check(self._call(self._lib.sc_mixer_tap_writer, int(tap), writer._handle))
+
+    def tap_go(self, tap: int) -> None:
+        _check(self._call(self._lib.sc_mixer_tap_go, int(tap)))
+
+    def tap_pause(self, tap: int, paused: bool) -> None:
+        _check(self._call(self._lib.sc_mixer_tap_pause, int(tap), int(bool(paused))))
 
     def take(self, tap: int, entries: int):
         """The oldest waiting block of a tap: (index, float32 array (entries, BLOCK, 2), dropped so far) or None."""

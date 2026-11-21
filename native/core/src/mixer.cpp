@@ -320,6 +320,24 @@ struct Tap {
     std::vector<int> what;  // tracks (0..), MONITOR, or SOURCE_TAP + id
     std::deque<std::pair<int64_t, std::vector<float>>> blocks;
     uint64_t dropped = 0;
+    // Straight into a writer (sc_mixer_tap_writer), with no thread of Python's between: `held` until the caller
+    // has written what it took before (sc_mixer_tap_go), so no block changes places.
+    sc::WriterSound sink;
+    int sink_tracks = 0;
+    bool held = false, paused = false, over = false;
+
+    void send(const std::vector<float> &out) {
+        if (paused || over) return;
+        const int entries = static_cast<int>(what.size());
+        for (int t = 0; t < sink_tracks; ++t) {
+            const int from = entries == 1 ? 0 : t;  // one mix for every track of the writer, or one each
+            if (from >= entries) break;
+            if (sink(t, out.data() + static_cast<size_t>(from) * BLOCK * 2, BLOCK) != SC_OK) {
+                over = true;  // the writer is finishing or failed: nothing more goes to it
+                return;
+            }
+        }
+    }
 };
 
 }  // namespace
@@ -541,6 +559,10 @@ struct sc_mixer {
                         for (int i = 0; i < BLOCK * 2; ++i) out[at + i] = found->second.block[i] * gain;
                     }
                 }
+            }
+            if (tap.sink && !tap.held) {
+                tap.send(out);
+                continue;
             }
             if (tap.blocks.size() >= TAP_QUEUE) {  // nobody took them: the oldest goes
                 tap.blocks.pop_front();
@@ -838,7 +860,7 @@ SC_API int sc_mixer_tap_take(sc_mixer *mixer, int id, float *out, int capacity, 
         if (found == mixer->taps.end()) return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_tap_take: no such tap");
         Tap &tap = found->second;
         if (dropped) *dropped = tap.dropped;
-        if (tap.blocks.empty()) return 0;
+        if (tap.blocks.empty() || tap.sink) return 0;  // into a writer: what waits is the writer's
         auto &front = tap.blocks.front();
         if (capacity < static_cast<int>(front.second.size()))
             return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_tap_take: too little room");
@@ -846,6 +868,49 @@ SC_API int sc_mixer_tap_take(sc_mixer *mixer, int id, float *out, int capacity, 
         if (index) *index = front.first;
         tap.blocks.pop_front();
         return 1;
+    });
+}
+
+SC_API int sc_mixer_tap_writer(sc_mixer *mixer, int id, sc_writer *writer) {
+    return sc::guarded("sc_mixer_tap_writer", [&]() -> int {
+        if (!mixer) return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_tap_writer: no mixer");
+        int tracks = 0;
+        sc::WriterSound sink = writer ? sc::writer_sound(writer, &tracks) : sc::WriterSound();
+        std::lock_guard<std::mutex> hold(mixer->lock);
+        auto found = mixer->taps.find(id);
+        if (found == mixer->taps.end()) return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_tap_writer: no such tap");
+        Tap &tap = found->second;
+        tap.sink = std::move(sink);
+        tap.sink_tracks = tracks;
+        tap.held = writer != nullptr;
+        tap.paused = tap.over = false;
+        return SC_OK;
+    });
+}
+
+SC_API int sc_mixer_tap_go(sc_mixer *mixer, int id) {
+    return sc::guarded("sc_mixer_tap_go", [&]() -> int {
+        if (!mixer) return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_tap_go: no mixer");
+        std::lock_guard<std::mutex> hold(mixer->lock);
+        auto found = mixer->taps.find(id);
+        if (found == mixer->taps.end() || !found->second.sink)
+            return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_tap_go: no such tap into a writer");
+        Tap &tap = found->second;
+        for (auto &block : tap.blocks) tap.send(block.second);
+        tap.blocks.clear();
+        tap.held = false;
+        return SC_OK;
+    });
+}
+
+SC_API int sc_mixer_tap_pause(sc_mixer *mixer, int id, int paused) {
+    return sc::guarded("sc_mixer_tap_pause", [&]() -> int {
+        if (!mixer) return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_tap_pause: no mixer");
+        std::lock_guard<std::mutex> hold(mixer->lock);
+        auto found = mixer->taps.find(id);
+        if (found == mixer->taps.end()) return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_tap_pause: no such tap");
+        found->second.paused = paused != 0;
+        return SC_OK;
     });
 }
 
