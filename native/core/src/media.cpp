@@ -179,6 +179,71 @@ struct Picture {
 };
 using PicturePtr = std::shared_ptr<const Picture>;
 
+// The memory of pictures let go of, taken again for the next ones. A new 3-8 MB picture each frame was fresh
+// memory from Windows each time, zeroed page by page: live with three cameras and a clip the PC took ~420,000
+// page faults a second (2026-11-21), kernel time ~30%. Kept: at most SPARE_PICTURES of them, SPARE_BYTES in all.
+constexpr size_t SPARE_PICTURES = 16;
+constexpr size_t SPARE_BYTES = size_t(96) << 20;
+constexpr size_t SPARE_AT_LEAST = size_t(256) << 10;  // smaller ones the heap reuses well by itself
+
+struct Spares {
+    std::mutex lock;
+    std::deque<std::vector<uint8_t>> kept;  // oldest first
+    size_t bytes = 0;
+};
+
+Spares &spares() {
+    static Spares *all = new Spares();  // never destroyed: a picture may be let go of after statics are gone
+    return *all;
+}
+
+// Memory for n bytes of picture: one let go of of about that size (not one far bigger), else none (empty).
+std::vector<uint8_t> spare_bytes(size_t n) {
+    if (n < SPARE_AT_LEAST) return {};
+    Spares &s = spares();
+    std::lock_guard<std::mutex> hold(s.lock);
+    for (auto it = s.kept.rbegin(); it != s.kept.rend(); ++it) {  // newest first: still in the CPU's caches
+        if (it->capacity() >= n && it->capacity() <= n + n / 2) {
+            std::vector<uint8_t> found = std::move(*it);
+            s.kept.erase(std::next(it).base());
+            s.bytes -= found.capacity();
+            return found;
+        }
+    }
+    return {};
+}
+
+void keep_bytes(std::vector<uint8_t> &&bytes) {
+    if (bytes.capacity() < SPARE_AT_LEAST || bytes.capacity() > SPARE_BYTES) return;
+    std::vector<std::vector<uint8_t>> dropped;  // freed after the lock
+    Spares &s = spares();
+    std::lock_guard<std::mutex> hold(s.lock);
+    while (!s.kept.empty() && (s.kept.size() >= SPARE_PICTURES || s.bytes + bytes.capacity() > SPARE_BYTES)) {
+        s.bytes -= s.kept.front().capacity();
+        dropped.push_back(std::move(s.kept.front()));
+        s.kept.pop_front();
+    }
+    s.bytes += bytes.capacity();
+    s.kept.push_back(std::move(bytes));
+}
+
+// A new picture whose memory is kept for the next one when it is let go of.
+std::shared_ptr<Picture> new_picture() {
+    return std::shared_ptr<Picture>(new Picture(), [](Picture *p) {
+        keep_bytes(std::move(p->data));
+        delete p;
+    });
+}
+
+// The picture's memory, n bytes: a spare one when there is one (already that size: nothing is zeroed again).
+void size_data(Picture &pic, size_t n) {
+    if (pic.data.capacity() < n) {
+        std::vector<uint8_t> spare = spare_bytes(n);
+        if (spare.capacity() >= n) pic.data = std::move(spare);
+    }
+    pic.data.resize(n);
+}
+
 struct Chunk {
     double start = 0;                              // timeline time of the sample at `at`
     std::shared_ptr<std::vector<float>> samples;   // stereo, interleaved
@@ -740,9 +805,14 @@ void Core::open(Held &held, const std::string &file) {
     auto decoder = [&](int index, bool video) -> AVCodecContext * {
         const AVStream *s = held.fmt->streams[index];
         const AVCodec *codec = nullptr;
-        // FFmpeg's own VP8 and VP9 decoders drop the see-through part of a WebM; libvpx keeps it.
-        if (s->codecpar->codec_id == AV_CODEC_ID_VP9) codec = ff.avcodec_find_decoder_by_name("libvpx-vp9");
-        if (s->codecpar->codec_id == AV_CODEC_ID_VP8) codec = ff.avcodec_find_decoder_by_name("libvpx");
+        // FFmpeg's own VP8 and VP9 decoders drop the see-through part of a WebM; libvpx keeps it. Only for a WebM
+        // that has one (Matroska's AlphaMode): libvpx decodes on the CPU alone, and a plain VP9 clip (the in-app
+        // MP4 to WebM converter's) cost the PC a dropped camera frame and half of YouTube's bitrate as it started
+        // (2026-11-21). FFmpeg's own decoder can decode it on the graphics card.
+        const AVDictionaryEntry *alpha = ff.av_dict_get(s->metadata, "alpha_mode", nullptr, 0);
+        const bool see_through = video && alpha && alpha->value && std::strcmp(alpha->value, "0") != 0;
+        if (see_through && s->codecpar->codec_id == AV_CODEC_ID_VP9) codec = ff.avcodec_find_decoder_by_name("libvpx-vp9");
+        if (see_through && s->codecpar->codec_id == AV_CODEC_ID_VP8) codec = ff.avcodec_find_decoder_by_name("libvpx");
         if (!codec) codec = ff.avcodec_find_decoder(s->codecpar->codec_id);
         if (!codec) return nullptr;
         AVCodecContext *ctx = ff.avcodec_alloc_context3(codec);
@@ -753,6 +823,10 @@ void Core::open(Held &held, const std::string &file) {
             if (video) {
                 // A camera's MJPEG: one thread decodes 1080p60 in a few ms, and each more holds its own frames.
                 ctx->thread_count = camera ? 1 : decode_threads(s->codecpar->width, s->codecpar->height);
+                if (see_through) {  // libvpx (a stinger's see-through clip): picture and alpha, all on the CPU
+                    const int cores = static_cast<int>(std::thread::hardware_concurrency());
+                    ctx->thread_count = std::max(ctx->thread_count, std::min(4, std::max(1, cores)));
+                }
                 ctx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
                 AVHWDeviceType type = AV_HWDEVICE_TYPE_NONE;
                 AVBufferRef *device = hardware.load() && !camera ? hw_device_ref(type) : nullptr;
@@ -927,7 +1001,7 @@ PicturePtr Core::card_picture(const AVFrame *f) const {
     if (!on || on != card_now.load()) return nullptr;  // decoded on a device the engine no longer has
     AVFrame *held_frame = ff.av_frame_clone(f);
     if (!held_frame) return nullptr;
-    auto pic = std::make_shared<Picture>();
+    auto pic = new_picture();
     pic->card = std::shared_ptr<AVFrame>(held_frame, [](AVFrame *g) { ff.av_frame_free(&g); });
     pic->format = SC_FMT_NV12;
     pic->width = pic->stride = f->width;
@@ -948,13 +1022,13 @@ PicturePtr card_to_memory(const Picture &on_card) {
     std::shared_ptr<AVFrame> hold_cpu(cpu, [](AVFrame *g) { ff.av_frame_free(&g); });
     if (ff.av_hwframe_transfer_data(cpu, on_card.card.get(), 0) < 0 || cpu->format != AV_PIX_FMT_NV12) return nullptr;
     const int w = on_card.width, h = on_card.height, cw = w / 2, ch = h / 2;
-    auto pic = std::make_shared<Picture>();
+    auto pic = new_picture();
     pic->format = SC_FMT_I420;
     pic->width = pic->stride = w;
     pic->height = h + ch;
     pic->matrix = on_card.matrix;
     pic->full = on_card.full;
-    pic->data.resize(static_cast<size_t>(w) * pic->height);
+    size_data(*pic, static_cast<size_t>(w) * pic->height);
     uint8_t *y = pic->data.data();
     uint8_t *uv = y + static_cast<size_t>(w) * h;
     copy_rows(y, w, cpu->data[0], cpu->linesize[0], w, h);
@@ -992,7 +1066,7 @@ void mirror_rows(Picture &pic) {
 
 PicturePtr make_picture(Held &held, const AVFrame *f, int ow, int oh, bool smaller, int as, bool camera = false,
                         bool mirrored = false) {
-    auto pic = std::make_shared<Picture>();
+    auto pic = new_picture();
     int kind = 0;
     AVPixelFormat to = AV_PIX_FMT_RGBA;
     switch (f->format) {
@@ -1025,7 +1099,7 @@ PicturePtr make_picture(Held &held, const AVFrame *f, int ow, int oh, bool small
         pic->width = ow;
         pic->height = oh;
         pic->stride = ow * 4;
-        pic->data.resize(static_cast<size_t>(ow) * 4 * oh);
+        size_data(*pic, static_cast<size_t>(ow) * 4 * oh);
         copy_rows(pic->data.data(), ow * 4, held.planes[0].data(), strides[0], ow * 4, oh);
         if (mirrored) mirror_rows(*pic);
         return pic;
@@ -1034,7 +1108,7 @@ PicturePtr make_picture(Held &held, const AVFrame *f, int ow, int oh, bool small
     pic->format = kind == 2 ? SC_FMT_I420A : SC_FMT_I420;
     pic->width = pic->stride = ow;
     pic->height = oh + ch + (kind == 2 ? oh : 0);
-    pic->data.resize(static_cast<size_t>(ow) * pic->height);
+    size_data(*pic, static_cast<size_t>(ow) * pic->height);
     uint8_t *y = pic->data.data();
     uint8_t *uv = y + static_cast<size_t>(ow) * oh;
     uint8_t *a = uv + static_cast<size_t>(ow) * ch;

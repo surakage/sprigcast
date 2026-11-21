@@ -231,6 +231,29 @@ def test_engine_plays_a_stinger_over_the_switch(compositor, tmp_path):
     assert not running.stinger._thread.is_alive()
 
 
+def test_a_stinger_clip_is_opened_ahead_of_the_switch(compositor, tmp_path):
+    """User 2026-11-21: the stinger was "a bit spotty, a slight slow down". Opened at the switch, the clip's file,
+    decoder and first pictures came all at once with the bloom's cameras waking; now it waits, opened ahead."""
+    clip = make_clip(tmp_path / "s.webm", alpha=255)
+    t = Transition(kind="stinger", stinger=Stinger(path=clip, cut_ms=200))
+    engine = Engine(collection("a", t))
+    engine._warm_stingers(engine._collection)
+    assert len(engine._warm) == 1
+    ahead = next(iter(engine._warm.values()))
+    assert ahead.ready.wait(5)
+    engine._start_transitions(collection("a", t), collection("b", t))
+    running = engine._transitions["h"]
+    assert running.stinger is ahead and engine._warm == {}  # the switch takes the one waiting
+    now = time.perf_counter()
+    assert engine._transition_step(compositor, "h", now)["overlay"] == ahead.id
+    assert engine._transition_step(compositor, "h", now + 1.0) is None
+    assert not ahead._thread.is_alive()
+    again = next(iter(engine._warm.values()))  # opened again for the next switch
+    assert again is not ahead
+    engine._warm_stingers(collection("a"))  # no stinger any more: let go of
+    assert engine._warm == {} and not again._thread.is_alive()
+
+
 def test_engine_falls_back_to_a_fade_when_the_clip_will_not_open(compositor, tmp_path):
     bad = tmp_path / "bad.webm"
     bad.write_bytes(b"nope")
