@@ -112,3 +112,21 @@ def test_settings_drop_downs_carry_the_drawn_chevron():
     assert "::down-arrow" in rule and "chevron" in rule
     assert "#settingsWindow QComboBox::down-arrow { image: url(" in window_style()
     assert "#streamCard QComboBox::down-arrow { image: url(" in stream_dialog.PAGE_STYLE
+
+
+def test_settings_logs_each_place_added_or_removed(fake_keyring, caplog):
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    import logging
+
+    from sprigcast.app.stream_dialog import StreamPage
+
+    col = _collection(Output(id="o1", type="stream", service="twitch", canvas="horizontal", key_ref="sprigcast/o1"))
+    d = StreamPage(col)
+    d._add()
+    d.service.setCurrentIndex(d.service.findData("kick"))
+    d.list.setCurrentRow(0)
+    d._remove()
+    with caplog.at_level(logging.INFO, logger="sprigcast.app.stream_dialog"):
+        assert d.apply_to(col)
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("places:")]
+    assert sorted(lines) == ["places: o1 (twitch) removed in Settings", "places: out-1 (kick) added in Settings"]
