@@ -27,6 +27,7 @@ from sprigcast.core.events import (
     Shutdown,
     SourceInfo,
     Stats,
+    SwitchBlooms,
     UpdateSourceSettings,
 )
 from sprigcast.core.filters import SOUND_LEVELS, AudioChain, video_effects, with_item
@@ -191,6 +192,7 @@ class Engine:
         # Build: canvas id -> the bloom being edited there when it isn't on air. Rendered to "next:<canvas>"
         # for the preview only. The UI replaces the whole dict, so the render thread sees a consistent one.
         self.staged: dict[str, str] = {}
+        self.peek: frozenset[str] = frozenset()  # blooms pointed at in Live: their sources wake ahead, nothing drawn
         # Which previews the UI is showing ("horizontal", "next:horizontal", "part"); None = all of them.
         # A canvas nobody watches and nothing records is not drawn or copied back at all; a watched one
         # is copied back at most PREVIEW_FPS times a second. The UI replaces the whole set.
@@ -798,6 +800,9 @@ class Engine:
             if isinstance(command, UpdateSourceSettings):
                 self._update_settings(command.settings)
                 continue
+            if isinstance(command, SwitchBlooms):
+                self._switch_blooms(command.active_scenes)
+                continue
             if isinstance(command, ReplaceCollection):
                 # A drag sends a new collection on every mouse move: only the newest one matters, so
                 # skip straight to it instead of rebuilding sources for each (that backlog was the lag).
@@ -813,6 +818,9 @@ class Engine:
                         command, settings_after = newer, []
                     elif isinstance(newer, UpdateSourceSettings):
                         settings_after.append(newer.settings)
+                    elif isinstance(newer, SwitchBlooms):  # a switch after it: the newest collection, switched
+                        command = ReplaceCollection(command.collection.model_copy(
+                            update={"active_scenes": dict(newer.active_scenes)}))
                 went_on_air = self._went_on_air(self._collection, command.collection)
                 self._start_transitions(self._collection, command.collection)
                 self._start_state_fades(self._collection, command.collection)
@@ -824,6 +832,18 @@ class Engine:
                 self._reload_on_air(went_on_air)
                 for settings in settings_after:
                     self._update_settings(settings)
+
+    def _switch_blooms(self, active_scenes: dict[str, str]) -> None:
+        """SwitchBlooms: what a collection replace does for a switch, less comparing every source (none changed)."""
+        old = self._collection
+        new = old.model_copy(update={"active_scenes": dict(active_scenes)})
+        went_on_air = self._went_on_air(old, new)
+        self._start_transitions(old, new)
+        self._start_state_fades(old, new)
+        self._collection = new
+        self._warm_stingers(new)
+        self.mixer.bloom_out = new.sounds_off_here()  # sound per bloom, as blooms switch
+        self._reload_on_air(went_on_air)
 
     def _update_settings(self, settings: dict[str, dict]) -> None:
         """UpdateSourceSettings: these sources' settings in the engine's copy of the collection, and to the sources."""
@@ -1395,6 +1415,9 @@ class Engine:
         stack = self._drawn_scenes(collection)
         if self.editing_part:
             stack += [p for p in collection.part_scenes() if p.id == self.editing_part]
+        peek = self.peek
+        if peek:  # pointed at in Live: woken (a page loads) before the click, not drawn
+            stack += [s for s in collection.scenes if s.id in peek and s not in stack]
         seen = {scene.id for scene in stack}
         shown: set[str] = set()
         while stack:

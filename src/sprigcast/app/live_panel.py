@@ -130,6 +130,7 @@ class BloomTile(QPushButton):
         self.colour = colour
         self.thumb: QImage | None = None
         self.key = ""  # its hotkey (or 1-9 while SprigCast has focus), shown in a little chip on the right
+        self.on_hover: Callable[[bool], None] | None = None  # pointed at (True) or left (False): its pages open ahead
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
@@ -225,9 +226,13 @@ class BloomTile(QPushButton):
         super().enterEvent(event)
         if self.thumb is not None and not self.thumb.isNull():
             ThumbPop.show_for(self, self.thumb)
+        if self.on_hover is not None:
+            self.on_hover(True)
 
     def leaveEvent(self, event) -> None:  # noqa: N802
         ThumbPop.hide_now()
+        if self.on_hover is not None:
+            self.on_hover(False)
         super().leaveEvent(event)
 
     def hideEvent(self, event) -> None:  # noqa: N802
@@ -335,6 +340,7 @@ class LivePanel(QWidget):
                  on_edit: Callable[[str], None] | None = None):
         super().__init__()
         self.on_scene = on_scene
+        self.on_peek: Callable[[str | None], None] = lambda _scene_id: None  # a bloom pointed at (None: none)
         self.on_edit = on_edit  # open a scene in Build mode (right-click menu)
         self.on_project: Callable | None = None  # (menu, scene id): adds the Live options for a bloom
         self.on_state = on_state or (lambda part_id, name: None)
@@ -584,6 +590,7 @@ class LivePanel(QWidget):
             if combo:
                 button.setToolTip(button.toolTip() + f"\nKey: {combo}")
             button.clicked.connect(lambda _=False, sid=scene.id: self.on_scene(sid))
+            button.on_hover = lambda on, sid=scene.id: self.on_peek(sid if on else None)
             button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             button.customContextMenuRequested.connect(
                 lambda pos, sid=scene.id, b=button: self._run_menu(self.scene_menu(sid), b.mapToGlobal(pos)))

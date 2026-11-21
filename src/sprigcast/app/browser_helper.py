@@ -547,6 +547,29 @@ class RemoteHost:
         browser.set_host(None)
 
 
+class SharedPageDevice:
+    """The graphics device all web pages draw with: one, made once by a 2x2 target never shown that keeps it. Each
+    page made its own before: ~50 graphics driver threads and its share of the card's memory each (PC 2026-11-21:
+    162 driver threads, 61 pages). SPRIGCAST_PAGE_DEVICE_EACH=1 goes back to one each."""
+
+    def __init__(self, card, make_target):
+        self.card, self.make_target = card, make_target
+        self.holder = None
+        self.tried = False
+
+    def __call__(self) -> int | None:
+        if os.environ.get("SPRIGCAST_PAGE_DEVICE_EACH"):
+            return None
+        if not self.tried:
+            self.tried = True
+            try:
+                self.holder = self.make_target(self.card, 2, 2, f"sprigcast-pages-{os.getpid()}-holder")
+                log.info("web pages share one graphics device")
+            except Exception as exc:  # noqa: BLE001 - each page makes its own, as before
+                log.warning("web pages: one shared graphics device couldn't be made (%s): one each", exc)
+        return self.holder.device if self.holder is not None else None
+
+
 # The helper process -----------------------------------------------------------------------------
 
 
@@ -663,9 +686,13 @@ def serve() -> None:
     if card is not None:
         from sprigcast import sprigcore
 
+        one_device = SharedPageDevice(card, sprigcore.PageTarget)
+
         def target_for(source_id: str, w: int, h: int, device: int | None = None):
             """A page's texture on the engine's card, named after its block (the engine opens it by that)."""
             slot = slot_for(source_id, w * h)  # room for its pictures in memory too (want_memory)
+            if device is None:
+                device = one_device()
             textures[0] += 1
             target = sprigcore.PageTarget(card, w, h, f"{slot.shm.name}-tex{textures[0]}", device)
             target.number, target.block = textures[0], slot.shm.name

@@ -25,6 +25,14 @@ class UpdateSourceSettings:
 
 
 @dataclass
+class SwitchBlooms:
+    """Only the blooms on air changed (a switch): the engine's own copy takes them. A whole collection for a switch
+    had the engine compare every source's settings in the switch frame ("commands 31.4 ms", PC live 2026-11-21)."""
+
+    active_scenes: dict[str, str]  # canvas id -> the bloom on air there
+
+
+@dataclass
 class Shutdown:
     pass
 

@@ -138,6 +138,7 @@ from sprigcast.core.events import (
     ReplaceCollection,
     SourceInfo,
     Stats,
+    SwitchBlooms,
 )
 from sprigcast.core import awake
 from sprigcast.core.capture_sound import CAPTURE_KINDS
@@ -2162,6 +2163,7 @@ class MainWindow(QMainWindow):
     def _build_live_stage(self) -> None:
         """Live mode's own screen (app/live_stage.py): no docks, the stage, bloom tiles and a side column."""
         self.live_panel = LivePanel(self._switch_to_scene, self._set_sprig_state, on_edit=self._edit_in_build)
+        self.live_panel.on_peek = self._peek_bloom
         self.live_panel.on_project = self._live_bloom_menu
         self.live_panel.on_reorder = self._reorder_blooms
         self._build_transition_menu()
@@ -2414,6 +2416,32 @@ class MainWindow(QMainWindow):
             self.engine.staged = staged  # a fresh dict: the render thread reads it without a lock
             for canvas_id in staged:
                 self.previews[canvas_id]._image = None  # don't show the on-air picture as if it were this bloom
+
+    PEEK_AFTER_MS = 250  # pointed at this long (not just passed over) before its pages open
+    PEEK_KEEP_MS = 4000  # and kept open this long after the pointer leaves
+
+    def _peek_bloom(self, scene_id: str | None) -> None:
+        """A bloom pointed at in Live: its sources (web pages, cameras) open ahead, so a click switches to pages
+        already loaded. Its linked twins too, since they switch with it."""
+        timer = getattr(self, "_peek_timer", None)
+        if timer is None:
+            timer = self._peek_timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(lambda: self._set_peek(self._peek_next))
+        self._peek_next = scene_id
+        timer.start(self.PEEK_AFTER_MS if scene_id is not None else self.PEEK_KEEP_MS)
+
+    def _set_peek(self, scene_id: str | None) -> None:
+        ids = set()
+        if scene_id is not None:
+            ids.add(scene_id)
+            ids |= {s.id for s in self.collection.scenes if s.linked_to == scene_id}
+            scene = next((s for s in self.collection.scenes if s.id == scene_id), None)
+            if scene is not None and scene.linked_to:
+                ids.add(scene.linked_to)
+        engine = getattr(self, "engine", None)
+        if engine is not None:
+            engine.peek = frozenset(ids)  # a fresh object: the render thread reads it without a lock
 
     def _switch_to_scene(self, scene_id: str) -> None:
         self.selected_scene_id = scene_id
@@ -3309,6 +3337,26 @@ class MainWindow(QMainWindow):
         awake.hold(self.recording is not None or self.streaming is not None)
         self._grab_thumbs()
 
+    def _send_whole(self) -> None:
+        self._engine_dump = None  # the next send is whole too: the engine's copy isn't the last one compared
+        self.engine.send(ReplaceCollection(self.collection.snapshot()))
+
+    def _send_to_engine(self) -> None:
+        """The collection to the engine: only the blooms on air when nothing else changed since the last send (a
+        switch: the engine skips comparing every source in the switch frame), else a whole copy."""
+        dump = self.collection.model_dump()
+        last = getattr(self, "_engine_dump", None)
+        if last is not None and dump["active_scenes"] != last["active_scenes"]:
+            from sprigcast.core import pacing
+
+            pacing.bloom_switched()  # no Python clean-up in the switch's frames
+        if last is not None and dump["active_scenes"] != last["active_scenes"] \
+                and {**dump, "active_scenes": None} == {**last, "active_scenes": None}:
+            self.engine.send(SwitchBlooms(dict(dump["active_scenes"])))
+        else:
+            self.engine.send(ReplaceCollection(type(self.collection).model_validate(dump)))
+        self._engine_dump = dump
+
     def _changed(self, save: bool = True) -> None:
         """Hand a copy of the collection to the engine after every edit, and save it unless mid-drag."""
         if not save:  # mid-drag: at most one copy per frame, the newest (copying on every mouse move lagged)
@@ -3317,7 +3365,7 @@ class MainWindow(QMainWindow):
                 timer = self._drag_send = QTimer(self)
                 timer.setSingleShot(True)
                 timer.setInterval(16)
-                timer.timeout.connect(lambda: self.engine.send(ReplaceCollection(self.collection.snapshot())))
+                timer.timeout.connect(self._send_whole)
             if not timer.isActive():
                 timer.start()
             return
@@ -3326,7 +3374,7 @@ class MainWindow(QMainWindow):
             timer.stop()  # this full send carries the drag's end
         self._save_soon()
         self._remember_for_undo()
-        self.engine.send(ReplaceCollection(self.collection.snapshot()))
+        self._send_to_engine()
         self._sync_push_key()
         if getattr(self, "_audio_on_air", None) != self.collection.active_scenes:
             self._audio_shown = None  # another bloom on air: Live's Sound card lists its sounds
@@ -3429,7 +3477,7 @@ class MainWindow(QMainWindow):
         self._undo_current = text
         self._undo_at = 0.0
         self.collection.save(self.scenes_path)
-        self.engine.send(ReplaceCollection(self.collection.snapshot()))
+        self._send_whole()
         ids = {s.id for s in self.collection.scenes}
         if self.selected_scene_id not in ids:
             self.selected_scene_id = self.collection.active_scenes.get(self.build_canvas)
@@ -6127,7 +6175,7 @@ class MainWindow(QMainWindow):
                 log.warning("plugin store: held update of %s failed: %s", plugin.id, error)
         if held:
             self._fill_more_menu()
-            self.engine.send(ReplaceCollection(self.collection.snapshot()))
+            self._send_whole()
         note = plugin_store.update_note(done)
         if note is not None:
             self._saved_note(note[0], detail=note[1], link="Plugins", on_click=lambda: self.open_plugin_store(),
@@ -7251,8 +7299,7 @@ class MainWindow(QMainWindow):
                                    parent=self, fill_after_show=True)
         window.changed.connect(self._fill_more_menu)
         # A removed plugin's sources stop now (and an added one's start), not at the next restart.
-        window.changed.connect(
-            lambda: self.engine.send(ReplaceCollection(self.collection.snapshot())))
+        window.changed.connect(self._send_whole)
         modal(window)
         self._plugin_updates()  # an Update pressed while on air waits until the stream and recording stop
 

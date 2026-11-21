@@ -24,6 +24,61 @@ def usable_cpus() -> int:
         return os.cpu_count() or 1
 
 
+POOL_LABEL = "threads started in Windows' thread pool"
+
+
+def sample_modules(tids: list[int], samples: int = 25, gap_s: float = 0.04) -> list[tuple[str, float]]:
+    """Windows: where these threads are running, by library, in % of the looks: each is paused for the length of one
+    GetThreadContext (its instruction pointer read, nothing else done while it waits), then the address is named.
+    For the thread pool, whose start says nothing about whose work it runs (46-58% of a core on the PC,
+    2026-11-21). Waiting threads count as where they wait (ntdll.dll, win32u.dll): only threads that used the CPU
+    are given."""
+    if sys.platform != "win32" or not tids:
+        return []
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenThread.restype = wintypes.HANDLE
+    kernel32.SuspendThread.argtypes = kernel32.ResumeThread.argtypes = [wintypes.HANDLE]
+    kernel32.SuspendThread.restype = kernel32.ResumeThread.restype = wintypes.DWORD
+    kernel32.GetThreadContext.argtypes = [wintypes.HANDLE, ctypes.c_void_p]
+    kernel32.GetModuleHandleExW.argtypes = [wintypes.DWORD, ctypes.c_void_p, ctypes.POINTER(wintypes.HMODULE)]
+    kernel32.GetModuleFileNameW.argtypes = [wintypes.HMODULE, wintypes.LPWSTR, wintypes.DWORD]
+    raw = (ctypes.c_ubyte * (1232 + 16))()  # an x64 CONTEXT, 16-byte aligned
+    base = (ctypes.addressof(raw) + 15) & ~15
+    ctypes.c_uint32.from_address(base + 0x30).value = 0x00100001  # ContextFlags = CONTEXT_CONTROL
+    rip = ctypes.c_uint64.from_address(base + 0xF8)
+    handles = [h for h in (kernel32.OpenThread(0x0002 | 0x0008 | 0x0040, False, t) for t in tids[:4]) if h]
+    found: list[int] = []  # SUSPEND_RESUME | GET_CONTEXT | QUERY_INFORMATION
+    try:
+        for _ in range(samples):
+            for h in handles:
+                if kernel32.SuspendThread(h) == 0xFFFFFFFF:
+                    continue
+                try:
+                    ok = kernel32.GetThreadContext(h, base)
+                finally:
+                    kernel32.ResumeThread(h)
+                if ok:
+                    found.append(rip.value)
+            time.sleep(gap_s)
+    finally:
+        for h in handles:
+            kernel32.CloseHandle(h)
+    counts: dict[str, int] = {}
+    module = wintypes.HMODULE()
+    path = ctypes.create_unicode_buffer(512)
+    for address in found:
+        name = "unknown"
+        if address and kernel32.GetModuleHandleExW(0x4 | 0x2, ctypes.c_void_p(address), ctypes.byref(module)) \
+                and kernel32.GetModuleFileNameW(module, path, 512):
+            name = path.value.rsplit("\\", 1)[-1]
+        counts[name] = counts.get(name, 0) + 1
+    total = max(1, len(found))
+    return sorted(((name, 100.0 * n / total) for name, n in counts.items()), key=lambda c: -c[1])
+
+
 class CpuWatch:
     def __init__(self) -> None:
         self._at = 0.0
@@ -61,11 +116,15 @@ class CpuWatch:
                     names[tid] = labels[tid]
         self._labels = {tid: label for tid, label in labels.items() if tid in after}  # thread ids get reused
         used: dict[str, float] = {}
+        pool: list[tuple[float, int]] = []
         for tid, total in after.items():
             spent = total - self._before.get(tid, 0.0)
             if spent > 0:
                 name = names.get(tid, "other library threads")
                 used[name] = used.get(name, 0.0) + spent
+                if name.startswith(POOL_LABEL):
+                    pool.append((spent, tid))
+        self.pool_busiest = [tid for _spent, tid in sorted(pool, reverse=True)]  # sample_modules looks inside
         whole = 100.0 * sum(used.values()) / seconds / usable_cpus()
         return whole, sorted(((name, 100.0 * spent / seconds) for name, spent in used.items()), key=lambda u: -u[1])
 
@@ -176,7 +235,7 @@ def native_thread_label(tid: int) -> str | None:
         if module.lower() == "ntdll.dll":
             # Started by Windows itself: its thread pool, which Windows' own parts (sound devices, screen capture,
             # graphics, networking) run their work on. "threads started in ntdll.dll" named nothing (2026-11-21).
-            return "threads started in Windows' thread pool (ntdll.dll: Windows sound, capture, graphics, network)"
+            return POOL_LABEL + " (ntdll.dll: Windows sound, capture, graphics, network)"
         return "threads started in " + module
     finally:
         kernel32.CloseHandle(handle)

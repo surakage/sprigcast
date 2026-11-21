@@ -185,3 +185,14 @@ def test_a_page_video_that_cant_play_is_a_warning_without_plugged_in():
     assert short_status("Sound plays on desktop audio") == "" and short_status(check.statuses["c"]) == "no video"
     text, fix = plain_problem(check.statuses["c"], "browser")
     assert "H.264" in text and fix == "" and plain_problem("Sound plays on desktop audio", "browser") is None
+
+
+def test_a_place_set_lower_than_the_one_it_shares_an_encoder_with_is_pointed_out():
+    """PC live 2026-11-21: 4500 was wanted everywhere, but a place sharing an encoder goes out at the group's rate."""
+    col = _collection()
+    col.outputs.append(Output(id="yt", type="stream", service="youtube", canvas="horizontal", enabled=True,
+                              key_ref="yt", bitrate_kbps=4500))
+    found = [f for f in examine(_checkup(collection=col)) if "share" in f.text]
+    assert len(found) == 1 and "YouTube (4500 kbps)" in found[0].text and "6000 kbps" in found[0].text
+    col.outputs[0].bitrate_kbps = 4500
+    assert not [f for f in examine(_checkup(collection=col)) if "share" in f.text]
