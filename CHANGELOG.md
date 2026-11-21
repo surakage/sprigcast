@@ -6,6 +6,9 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- Going live first checks that every place's server can be reached (2 seconds at most, nothing is sent and the
+  stream key isn't used). A place that would not connect is named in the Stream doctor's card before you are
+  live, and in the warnings an app gets. Not tried on a PC yet.
 - FFmpeg's log lines are written when they are said. Camera lines like "Could not set video options" no longer
   show up as errors minutes later when a place stops.
 - The log line about frames the engine had ready but that were taken too late now names the picture (canvas
