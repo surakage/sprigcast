@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 37
+#define SC_INTERFACE_VERSION 38
 
 enum {
     SC_OK = 0,
@@ -167,7 +167,14 @@ typedef struct sc_effects {
     int spin_run;
     int halo_count;
     sc_halo halos[SC_MAX_HALOS];
+    int bg_mode;           /* the Background filter: SC_BACKGROUND_*, 0 = off */
+    float bg_blur;         /* blur: 0..1 */
+    float bg_edge;         /* how soft the person's edge is: 0..1 */
+    uint64_t bg_picture;   /* picture: set with sc_mask_set; 0 = see-through behind the person */
 } sc_effects;
+
+/* The Background filter (segmenter.h): the room behind a person found by a small model on the graphics card. */
+enum { SC_BACKGROUND_REMOVE = 1, SC_BACKGROUND_BLUR = 2, SC_BACKGROUND_PICTURE = 3 };
 
 /* core/scene.py SceneItem, as drawn: a source (or a sprig's picture) placed on a canvas. */
 typedef struct sc_item {
@@ -198,6 +205,20 @@ typedef struct sc_snapshot {
     const sc_effects *effects;
     int effects_count;
 } sc_snapshot;
+
+/* How the Background filter's person finder is doing, on whichever device drew one last (sc_background_info). */
+enum {
+    SC_BACKGROUND_IDLE = 0,      /* no picture used it in the last 3 seconds */
+    SC_BACKGROUND_RUNNING = 1,
+    SC_BACKGROUND_NO_CARD = 2,   /* the graphics card has no compute shaders (older than Direct3D 11) */
+    SC_BACKGROUND_TOO_SLOW = 3,  /* it took over 40 ms a mask: pictures are drawn as they are */
+};
+typedef struct sc_background_status {
+    int state;               /* SC_BACKGROUND_IDLE ... */
+    float gpu_ms;            /* graphics card time a mask, smoothed; < 0 not measured yet */
+    float masks_per_second;
+} sc_background_status;
+SC_API int sc_background_info(sc_background_status *out);
 
 SC_API int sc_source_upload(sc_device *device, uint64_t id, const uint8_t *data, const sc_upload *how);
 SC_API int sc_source_forget(sc_device *device, uint64_t id);

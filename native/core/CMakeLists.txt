@@ -20,8 +20,20 @@ endif()
 add_library(sprigcore SHARED src/base.cpp src/sprigcore.cpp src/compositor.cpp src/engine.cpp src/transition.cpp
             src/nv12.cpp src/nv12_source.cpp src/ffmpeg.cpp src/media.cpp src/writer.cpp src/page_texture.cpp
             src/mixer.cpp src/capture.cpp src/playback.cpp src/visual.cpp src/capture_wgc.cpp src/move.cpp
-            src/capture_feed.cpp)
+            src/capture_feed.cpp src/segmenter.cpp)
 target_include_directories(sprigcore PUBLIC include)
+
+# The Background filter's model (models/README.md), built into the DLL: nothing to download or find at run time.
+set(SEG_MODEL ${CMAKE_CURRENT_SOURCE_DIR}/models/selfie-wide.scseg)
+set(SEG_HEADER ${CMAKE_BINARY_DIR}/generated/segmenter_model.h)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${SEG_MODEL})
+file(READ ${SEG_MODEL} SEG_HEX HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," SEG_BYTES "${SEG_HEX}")
+string(REGEX REPLACE "((0x..,){32})" "\\1\n" SEG_BYTES "${SEG_BYTES}")
+file(WRITE ${SEG_HEADER}.tmp "// Made from models/selfie-wide.scseg when the engine is configured. Don't edit.\n#pragma once\n"
+     "static const unsigned char SEGMENTER_MODEL[] = {\n${SEG_BYTES}\n};\n")
+configure_file(${SEG_HEADER}.tmp ${SEG_HEADER} COPYONLY)
+target_include_directories(sprigcore PRIVATE ${CMAKE_BINARY_DIR}/generated)
 # FFmpeg headers only (the libraries are loaded at run time from PyAV: native/third_party/ffmpeg/README.md).
 target_include_directories(sprigcore SYSTEM PRIVATE ../third_party/ffmpeg/include)
 target_compile_definitions(sprigcore PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)

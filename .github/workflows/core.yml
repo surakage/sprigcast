@@ -20,7 +20,7 @@ on:
             "src/sprigcast/store/pngtuber.py", "tests/test_native_pngtuber.py",
             "src/sprigcast/sources/capture.py", "tests/test_native_screen_capture.py",
             "src/sprigcast/sources/camera.py", "tests/test_native_camera.py",
-            "src/sprigcast/render/move.py", "tests/test_native_move.py"]
+            "src/sprigcast/render/move.py", "tests/test_native_move.py", "tests/test_native_background.py"]
   pull_request:
     paths: ["native/core/**", ".github/workflows/core.yml", "src/sprigcast/sprigcore.py", "src/sprigcast/render/**",
             "src/sprigcast/core/filters.py", "src/sprigcast/core/scene.py", "tests/test_sprigcore.py",
@@ -36,7 +36,7 @@ on:
             "src/sprigcast/store/pngtuber.py", "tests/test_native_pngtuber.py",
             "src/sprigcast/sources/capture.py", "tests/test_native_screen_capture.py",
             "src/sprigcast/sources/camera.py", "tests/test_native_camera.py",
-            "src/sprigcast/render/move.py", "tests/test_native_move.py"]
+            "src/sprigcast/render/move.py", "tests/test_native_move.py", "tests/test_native_background.py"]
 
 jobs:
   build:
@@ -73,7 +73,7 @@ jobs:
           $env:SPRIGCAST_CORE_DLL = (Resolve-Path "build/core/Release/sprigcore.dll").Path
           $env:PYTHONPATH = "src"
           uv run --frozen python -c "from sprigcast import sprigcore; assert sprigcore.available(), 'not loaded'; print(sprigcore.adapters())"
-          uv run --frozen pytest -q tests/test_sprigcore.py tests/test_native_compositor.py tests/test_native_bridge.py tests/test_native_shared.py tests/test_native_page_texture.py tests/test_native_drawn.py tests/test_native_now_playing.py tests/test_native_pngtuber.py tests/test_native_screen_capture.py tests/test_native_move.py -rs 2>&1 | Tee-Object -FilePath pytest.txt
+          uv run --frozen pytest -q tests/test_sprigcore.py tests/test_native_compositor.py tests/test_native_bridge.py tests/test_native_shared.py tests/test_native_page_texture.py tests/test_native_drawn.py tests/test_native_now_playing.py tests/test_native_pngtuber.py tests/test_native_screen_capture.py tests/test_native_move.py tests/test_native_background.py -rs 2>&1 | Tee-Object -FilePath pytest.txt
           if ($LASTEXITCODE -ne 0) { throw "pixel checks failed" }
           if (Select-String -Path pytest.txt -Pattern "isn't built here" -Quiet) { throw "engine checks were skipped though the DLL is built" }
       - name: Video, GIF and sound files played by the engine
