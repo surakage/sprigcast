@@ -6837,7 +6837,7 @@ class MainWindow(QMainWindow):
         from sprigcast.output.stream import same_key_warnings
 
         warnings: list[str] = []
-        same_key = same_key_warnings(targets)
+        same_key = same_key_warnings(targets) + self._places_unreachable(targets)
         if remote:
             warnings = same_key + self._doctor_warnings()
             if warnings and not force:
@@ -7051,6 +7051,24 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 log.warning("could not save the fetched Twitch key: %s", exc)
         return key
+
+    def _places_unreachable(self, targets) -> list[str]:
+        """Going live: a line for each place whose server can't be reached right now (output/preflight.py; a
+        connection is opened and closed, the key is never used). At most 2 s, with the window still answering.
+        They show in the Stream doctor's card, or in the warnings an app gets, before anything is sent."""
+        from sprigcast.output import preflight
+
+        self._say("Checking your places…")
+        try:
+            from sprigcast.core.workers import wait_answering
+
+            found = wait_answering(preflight.check_places, targets)
+        except Exception as exc:  # noqa: BLE001 (the check failing never stops a stream)
+            log.warning("could not check the places before going live: %s", exc)
+            return []
+        for line in found:
+            log.warning("before going live: %s", line)
+        return found
 
     def _fresh_youtube_key(self, output, saved: str) -> str:
         """A YouTube place whose key came from signing in: before going live, ask YouTube which key its stream

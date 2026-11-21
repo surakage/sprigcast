@@ -343,7 +343,7 @@ def test_main_window_remote_start_asks_nothing(monkeypatch):
     col = _host().collection
     window = types.SimpleNamespace(collection=col, _stream_target=lambda o, ask=True, quiet=False: (object(), None),
                                    _doctor_warnings=lambda: ["Your PC is busy (CPU 95%)."],
-                                   _doctor_says_go=no_popups)
+                                   _doctor_says_go=no_popups, _places_unreachable=lambda targets: [])
     start = pytest_mw.MainWindow._start_streaming
     assert start(window, remote=True) == {"warnings": ["Your PC is busy (CPU 95%)."]}
     twin = lambda name: types.SimpleNamespace(name=name, server="rtmp://y/live2", key="one-key")  # noqa: E731
@@ -353,6 +353,9 @@ def test_main_window_remote_start_asks_nothing(monkeypatch):
     col.outputs[1].enabled = True  # two places on one stream key: said before going live, with no pop-up
     said = start(window, remote=True)["warnings"]
     assert len(said) == 1 and said[0].startswith("YouTube (horizontal) and YouTube (vertical) use the same")
+    window._places_unreachable = lambda targets: ["YouTube (vertical) would not connect: y didn't answer."]
+    places = iter([twin("YouTube (horizontal)"), twin("YouTube (vertical)")])
+    assert start(window, remote=True)["warnings"][1] == "YouTube (vertical) would not connect: y didn't answer."
     col.outputs[1].enabled = False
     window._stream_target = lambda o, ask=True, quiet=False: (None, "Twitch: add your stream key in Stream…")
     assert start(window, remote=True) == {"problem": "Not ready to go live: Twitch: add your stream key in Stream…"}
