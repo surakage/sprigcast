@@ -566,3 +566,21 @@ def test_the_camera_lister_is_loaded_ahead(monkeypatch):
     assert camera.warm_lister() == "opencv" and loaded == ["cv2"]
     monkeypatch.setattr(camera, "_cv2", lambda: (_ for _ in ()).throw(RuntimeError("no OpenCV")))
     assert camera.warm_lister() == ""
+
+
+def test_other_sizes_are_tried_before_the_cameras_own_mode():
+    """PC 2026-11-21: the HD60 X with no signal refused the size asked and came up in its own mode, 32 MB a
+    picture. Its other sizes come first: the next bigger one, then the biggest below."""
+    from sprigcast.sources import camera
+
+    modes = [("pixel_format", "nv12", 1920, 1080, 30.0, 60.0), ("pixel_format", "nv12", 2560, 1440, 30.0, 60.0),
+             ("pixel_format", "bgr0", 3840, 2160, 30.0, 60.0), ("pixel_format", "nv12", 3840, 2160, 30.0, 60.0),
+             ("pixel_format", "nv12", 1280, 720, 30.0, 60.0), ("pixel_format", "nv12", 640, 480, 30.0, 60.0)]
+    first = camera.choose_modes(modes, 1920, 1080, 60)
+    assert {m["video_size"] for m in first} == {"1920x1080"}
+    more = camera.other_modes(modes, 1920, 1080, 60, first)
+    sizes = list(dict.fromkeys(m["video_size"] for m in more))
+    assert sizes == ["2560x1440", "1280x720", "3840x2160"]  # OTHER_SIZES of them: next above, biggest below
+    assert more[0] == {"video_size": "2560x1440", "framerate": "60", "pixel_format": "nv12"}
+    assert [m for m in more if m["video_size"] == "3840x2160"][0]["pixel_format"] == "nv12"  # least data first
+    assert camera.other_modes([], 1920, 1080, 60, []) == []

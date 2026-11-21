@@ -296,6 +296,28 @@ def choose_modes(modes, w: int, h: int, fps: int) -> list[dict[str, str]]:
     return out
 
 
+OTHER_SIZES = 3  # sizes tried after the best one is refused, before the camera's own mode
+
+
+def other_modes(modes, w: int, h: int, fps: int, tried: list[dict[str, str]]) -> list[dict[str, str]]:
+    """What to try when every mode of choose_modes is refused, before the camera's own mode: its other sizes, the
+    next bigger one first, then the biggest below, then the rest. The PC's HD60 X with no signal (2026-11-21) refused the size
+    asked and came up in its own mode, 32 MB a picture: SprigCast held 1.1 GB more and a fifth of a core just
+    took the pictures in."""
+    usable = [m for m in modes if m[0] == "pixel_format" or m[1] == "mjpeg"]
+    sizes = sorted({(m[2], m[3]) for m in usable}, key=lambda s: s[0] * s[1])
+    done = {option.get("video_size") for option in tried}
+    left = [s for s in sizes if f"{s[0]}x{s[1]}" not in done]
+    above = [s for s in left if s[0] >= w and s[1] >= h]
+    below = [s for s in reversed(left) if s not in above]
+    order = above[:1] + below[:1] + above[1:] + below[1:]  # (a far bigger one is a lot of data to take in)
+    out: list[dict[str, str]] = []
+    for size in order[:OTHER_SIZES]:
+        out += [option for option in choose_modes([m for m in usable if (m[2], m[3]) == size], *size, fps)
+                if option not in out]
+    return out
+
+
 _BYTES_PER_PIXEL = {"nv12": 1.5, "yuyv422": 2.0, "mjpeg": 0.3}  # mjpeg: compressed, roughly
 
 
@@ -576,6 +598,7 @@ class _Feed:
                  {"video_size": f"{w}x{h}", "framerate": str(fps), "vcodec": "mjpeg"},
                  {"video_size": f"{w}x{h}", "framerate": str(fps)},
                  {"video_size": f"{w}x{h}"},  # e.g. a camera whose 60 is really 59.94: its own rate, paced below
+                 *other_modes(self.modes_seen, w, h, fps, listed),
                  {}]
         for name in names:
             for mode in modes:
@@ -696,6 +719,7 @@ def _engine_choices(feed: _Feed, device: CameraDevice) -> tuple[str, list[tuple[
              {"video_size": f"{w}x{h}", "framerate": str(fps), "vcodec": "mjpeg"},
              {"video_size": f"{w}x{h}", "framerate": str(fps)},
              {"video_size": f"{w}x{h}"},
+             *other_modes(feed.modes_seen, w, h, fps, listed),
              {}]
     return "dshow", [(name, mode) for name in names for mode in modes]
 
