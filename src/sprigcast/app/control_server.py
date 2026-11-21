@@ -472,6 +472,9 @@ class WindowHost:
         return getattr(self.w, "_last_hotkey_note", None)
 
 
+NAMELESS = "an app that doesn't say its name"
+
+
 def _client_label(socket) -> str:
     """Who an app says it is, from its connection request: its User-Agent and the page origin it came from (an
     origin has no path, so nothing personal), cut short."""
@@ -488,7 +491,7 @@ def _client_label(socket) -> str:
         parts.append(f"says it is {agent[:60]!r}")
     if origin and origin != "null":
         parts.append(f"from the page {origin[:60]}")
-    return ", ".join(parts) or "an app that doesn't say its name"
+    return ", ".join(parts) or NAMELESS
 
 
 class ControlServer(QObject):
@@ -809,6 +812,14 @@ class ControlServer(QObject):
         if gone is not None:
             self._mark_seen(gone, leaving=True)
         label, since = self._labels.pop(socket, ("an unnamed app", time.monotonic()))
+        if gone is not None and getattr(gone, "key", ""):
+            # Signed in with a key: its paired name says more than what it sent as it connected (Streamer.bot
+            # sends no name: it was "an app that doesn't say its name" all through the PC's log, 2026-11-21).
+            try:
+                who = self._who(socket)
+                label = who if label == NAMELESS else f"{who}, {label}"
+            except Exception:  # noqa: BLE001 - only for the log
+                pass
         if self.sessions.pop(socket, None) is not None:
             if _CONNECT_LOG.allow("gone"):
                 # Which app and after how long: one came and went every ~20 s all night, unnamed (PC 2026-11-21)
