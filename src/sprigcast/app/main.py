@@ -147,7 +147,9 @@ def _quiet_start_log() -> None:
         folder = config_dir()
         folder.mkdir(parents=True, exist_ok=True)
         log = open(folder / "sprigcast.log", "w", encoding="utf-8", buffering=1)  # noqa: SIM115
-        sys.stdout = sys.stderr = log
+        from sprigcast.core.privacy import ScrubbingStream
+
+        sys.stdout = sys.stderr = ScrubbingStream(log)  # nothing personal in it either (core/privacy.py)
     except OSError:
         pass
 

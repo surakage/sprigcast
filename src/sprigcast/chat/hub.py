@@ -15,6 +15,7 @@ from PySide6.QtCore import QObject, Signal
 
 from sprigcast.chat import PLATFORMS, ChatMessage, hidden, make_reader
 from sprigcast.chat.feed import FEED
+from sprigcast.core import privacy
 from sprigcast.core.quiet import Every
 
 log = logging.getLogger(__name__)
@@ -54,7 +55,7 @@ class ChatHub(QObject):
             if platform not in wanted:
                 reader = self.readers.pop(platform)
                 reader.stop()
-                log.info("chat %s %s: stopped", platform, reader.channel)  # in the logbook
+                log.info("chat %s: stopped", platform)  # in the logbook, no names
                 self.states.pop(platform, None)
         for platform, name in wanted.items():
             if platform not in PLATFORMS:
@@ -68,6 +69,7 @@ class ChatHub(QObject):
                 reader.status.connect(lambda state, p=platform: self._state(p, state))
             if reader.channel != name or platform not in self.states:
                 self.states[platform] = "connecting"
+            privacy.remember_name(name)  # never in the log
             reader.start(name)
         self.changed.emit()
 
@@ -121,7 +123,7 @@ class ChatHub(QObject):
             # on 2026-11-15): those are written every 30 minutes; going live, offline or an error every time.
             routine = state == "connecting" or state.startswith("waiting")
             if not routine or _CHAT_LOG.allow((platform, state)):
-                log.info("chat %s %s: %s%s", platform, self.readers[platform].channel, state,
-                         _CHAT_LOG.skipped((platform, state)) if routine else "")  # in the logbook
+                log.info("chat %s: %s%s", platform, state,
+                         _CHAT_LOG.skipped((platform, state)) if routine else "")  # in the logbook, no names
         self.states[platform] = state
         self.changed.emit()

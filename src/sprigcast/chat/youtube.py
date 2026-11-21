@@ -330,7 +330,7 @@ class YouTubeChat(QObject):
     def _failed(self, why: str) -> None:
         wait = BACKOFF[min(self._tries, len(BACKOFF) - 1)]
         self._tries += 1
-        log.info("youtube chat %s: %s; retrying in %d s", self.channel, why, wait)
+        log.info("youtube chat: %s; retrying in %d s", why, wait)  # no names
         if self._tries > 3 and self._stage == "poll":
             self._stage = "open"  # the token may have gone stale: start chat over
         self.status.emit(f"offline: {why}")

@@ -113,7 +113,8 @@ def send(path: Path, kind: str, cause: str = "", url: str | None = None, opener=
         "User-Agent": f"SprigCast/{_version()}",
         "X-SprigCast-Version": _version(),
         "X-SprigCast-Kind": kind,
-        "X-SprigCast-Cause": cause.encode("ascii", "ignore").decode()[:160],
+        "X-SprigCast-Cause": tester_report.Scrubber.for_this_pc()(cause)
+        .encode("ascii", "ignore").decode()[:160],
     })
     try:
         with opener(request, timeout=TIMEOUT_S) as response:

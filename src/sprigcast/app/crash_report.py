@@ -156,8 +156,10 @@ def check(folder: Path, crash_log: Path | None, events=_windows_events) -> Crash
         log.warning(line)
         if crash_log is not None:
             try:
+                from sprigcast.core import privacy
+
                 with crash_log.open("a", encoding="utf-8") as f:
-                    f.write(line + "\n")
+                    f.write(privacy.scrub(line) + "\n")
             except OSError:
                 pass
     try:

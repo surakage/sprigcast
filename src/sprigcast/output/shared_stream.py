@@ -19,6 +19,7 @@ import queue
 import threading
 import time
 
+from sprigcast.core import privacy
 from sprigcast.output.autopilot import Autopilot
 from sprigcast.output.recorder import measured_kbps, rate_limits
 from sprigcast.output.replay import ReplayBuffer, _Packet
@@ -261,6 +262,7 @@ class StreamLink:
         self.bandwidth_test = bandwidth_test
         self._url = stream_url(server, key, bandwidth_test)
         self._key = key
+        privacy.remember_secret(key, self._url)  # never in a log line
         self._open_container = open_container or self._default_open
         self.output_id: str | None = None
         self.connected = False
@@ -363,7 +365,7 @@ class StreamLink:
         return self._backlog_bytes * 8 / (max(1, self.current_kbps) * 1000)
 
     def redact(self, text: str) -> str:
-        return text.replace(self._key, "****") if self._key else text
+        return privacy.mask(text, [self._key])
 
     def measure_kbps(self) -> float:
         """Output bitrate over about the last few seconds (call it about once a second)."""
