@@ -43,6 +43,22 @@ def test_build_shows_sound_strips_under_the_canvas(tmp_path, monkeypatch):
         assert col.source("mic").settings["muted"] is True and strips["mic"].mute.isChecked()
         w.sound_strips.set_levels({"desk": (-6.0, -6.0)})
         assert w.sound_strips.strips["desk"].fader.level > 0.8
+        # Double-click the name: renamed right there (Enter keeps it, Esc doesn't).
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        QTest.mouseDClick(w.sound_strips.strips["mic"].name, Qt.MouseButton.LeftButton)
+        editor = w.sound_strips.strips["mic"].editor
+        assert editor is not None and editor.text() == "Mic" and editor.selectedText() == "Mic"
+        editor.setText("Voice")
+        QTest.keyClick(editor, Qt.Key.Key_Escape)
+        assert col.source("mic").name == "Mic" and w.sound_strips.strips["mic"].editor is None
+        w.sound_strips.strips["mic"].start_rename()
+        w.sound_strips.strips["mic"].editor.setText("  Voice  ")
+        QTest.keyClick(w.sound_strips.strips["mic"].editor, Qt.Key.Key_Return)
+        assert col.source("mic").name == "Voice" and col.source("mic").id == "mic"
+        w._refresh_audio()
+        assert w.sound_strips.strips["mic"].full_name == "Voice"
         strips = w.sound_strips.strips
         strips["desk"].name.click()
         assert w.selected_sound_id == "desk" and w.build_stage.right_stack.currentIndex() == 1

@@ -77,6 +77,7 @@ FEATURES = (
     "screenshot.skipped",  # screenshot.take {bloom}: every shape it's in, skipped names a shape left out; canvas pictures are on black
     "places.ready",        # places.list name, ready, problem ("Needs a stream key"): why a place can't go live yet
     "app_audio.pids",      # app_audio settings pids: [process id, ...] catches those processes' trees instead of apps
+    "sprig.remove",        # sprig.remove: a sprig in every shape; sounds always stay
 )
 
 
@@ -93,7 +94,7 @@ def features() -> list[str]:
 # can be taken back together.
 BATCH_ACTIONS = frozenset({
     "item.add", "item.place", "item.order", "item.show", "item.hide", "item.toggle", "item.lock", "item.remove",
-    "item.duplicate", "source.new", "source.set", "source.rename", "source.rotate", "source.remove",
+    "item.duplicate", "source.new", "source.set", "source.rename", "source.rotate", "source.remove", "sprig.remove",
     "filter.add", "filter.set", "filter.remove", "filter.move", "items.list", "layout.get",
     "sound.mute", "sound.volume", "sound.balance"})  # a sound's own settings: saved in the garden like the rest
 PREVIEW = API_VERSION == 0
@@ -929,6 +930,14 @@ class NativeApi:
     def sprigs_list(self, data):
         return {"sprigs": [{"id": p.id, "name": p.name, "state": p.state, "states": [s.name for s in p.states],
                             "shapes": [s.canvas for s in self.col.shapes(p)]} for p in self.col.parts()]}
+
+    @action("sprig.remove", "Remove a sprig in every shape, and take it out of every bloom. Sources only it used "
+            "go too, except sounds (mics, desktop and app sounds), which always stay.", sprig="name or id")
+    def sprig_remove(self, data):
+        part = self._sprig(data)
+        removed = self.col.remove_sprig(part)
+        self.host.commit("scenes")
+        return {"removed": part.name, "sources_removed": removed}
 
     @action("sprig.state", "Switch a sprig to one of its Live states (null: as built).", sprig="name or id",
             state="state name or null")

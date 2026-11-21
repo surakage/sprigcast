@@ -398,6 +398,7 @@ A Text source's settings (`source.get` shows them all, `source.set` changes the 
 
 | Action | What it does | Fields |
 | --- | --- | --- |
+| `sprig.remove` | Remove a sprig in every shape, and take it out of every bloom. Sources only it used go too, except sounds (mics, desktop and app sounds), which always stay. | `sprig`: name or id |
 | `sprig.state` | Switch a sprig to one of its Live states (null: as built). | `sprig`: name or id, `state`: state name or null |
 | `sprigs.list` | Every sprig, its Live states and the state showing. | none |
 

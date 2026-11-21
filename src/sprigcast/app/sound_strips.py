@@ -10,7 +10,8 @@
     ╰────────╯ ╰────────╯ ╰────────╯
 
 Sound plays in every bloom, so it sits with the canvas rather than in the list of a bloom's leaves.
-The name or the gear opens the sound's full controls on the right; right-click a strip to rename it, pick
+The name or the gear opens the sound's full controls on the right; double-click the name (or right-click the
+strip) to rename it. Right-click also picks
 the blooms it plays in, open its filters or remove it. + beside the heading adds a sound. Fold the row away
 with the heading.
 """
@@ -130,13 +131,49 @@ class Fader(QWidget):
         p.end()
 
 
+class _NameButton(QPushButton):
+    """A strip's name: a click opens its controls, a double-click renames it there and then."""
+
+    rename_wanted = Signal()
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.rename_wanted.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+
+class _NameEdit(QLineEdit):
+    """The name being renamed in place: Enter or clicking away keeps it, Esc puts the old name back."""
+
+    def __init__(self, parent: QWidget, done: Callable[[str | None], None]):
+        super().__init__(parent)
+        self._done = done
+        self.editingFinished.connect(lambda: self.finish(self.text()))
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() == Qt.Key.Key_Escape:
+            self.finish(None)
+            return
+        super().keyPressEvent(event)
+
+    def finish(self, text: str | None) -> None:
+        done, self._done = self._done, None
+        if done is not None:
+            done(text)
+
+
 class Strip(QFrame):
     """One sound: its name, fader, volume and mute, on a rounded card."""
 
     def __init__(self, sound, kind: str, on_change: Callable[[str, dict], None], on_open: Callable[[str], None],
-                 on_menu: Callable[[str | None, object], None] | None = None):
+                 on_menu: Callable[[str | None, object], None] | None = None,
+                 on_rename: Callable[[str, str], None] | None = None):
         super().__init__()
         self.sound_id = sound.id
+        self.on_rename = on_rename
+        self.editor: _NameEdit | None = None
         self.group = getattr(sound, "group", "Other") or "Other"
         self.on_change, self.on_open = on_change, on_open
         self.on_menu = on_menu or (lambda _sid, _at: None)
@@ -148,8 +185,9 @@ class Strip(QFrame):
         col = QVBoxLayout(self)
         col.setContentsMargins(8, 10, 8, 10)
         col.setSpacing(4)
-        self.name = QPushButton()
+        self.name = _NameButton()
         self.name.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.name.rename_wanted.connect(self.start_rename)
         self.name.setIcon(icons.icon(_kind_icon(kind), group_colour(self.group), 14))  # coloured by its group
         self.name.setStyleSheet(f"QPushButton {{ background: transparent; border: none; color: {theme.TEXT};"
                                 " font-weight: 600; font-size: 12px; padding: 0; text-align: center; }"
@@ -225,6 +263,32 @@ class Strip(QFrame):
         name, db = (getattr(self, "_shown", None) or (self.full_name, self.fader.db))[:2]
         self.show_sound(SimpleNamespace(name=name, volume_db=db, muted=on, group=self.group))
         self.on_change(self.sound_id, {"muted": on})
+
+    def start_rename(self) -> None:
+        """Rename the sound right on its strip (user 2026-11-21): the name turns into a text box."""
+        if self.on_rename is None or self.editor is not None:
+            return
+        self.editor = editor = _NameEdit(self, self._renamed)
+        editor.setText(getattr(self, "full_name", ""))
+        editor.setAccessibleName("Sound name")
+        editor.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        editor.setStyleSheet(f"QLineEdit {{ background: {theme.RAISED}; border: 1px solid {theme.ACCENT}; border-radius: 8px;"
+                             f" color: {theme.TEXT_BRIGHT}; font-weight: 600; font-size: 12px; padding: 2px 6px; }}")
+        editor.setGeometry(self.name.geometry().adjusted(-2, -2, 2, 2))
+        self.name.hide()
+        editor.show()
+        editor.selectAll()
+        editor.setFocus()
+
+    def _renamed(self, text: str | None) -> None:
+        editor, self.editor = self.editor, None
+        self.name.show()
+        if editor is not None:
+            editor.hide()
+            editor.deleteLater()
+        name = (text or "").strip()
+        if text is not None and name and name != getattr(self, "full_name", "") and self.on_rename is not None:
+            self.on_rename(self.sound_id, name)
 
     def _volume(self, db: float) -> None:
         self.db.setText(f"{db:+.0f} dB" if db else "0 dB")
@@ -302,8 +366,10 @@ class SoundStrips(QFrame):
 
     def __init__(self, on_change: Callable[[str, dict], None], on_open: Callable[[str], None],
                  on_menu: Callable[[str | None, object], None] | None = None,
-                 on_types: Callable[[str | None], None] | None = None):
+                 on_types: Callable[[str | None], None] | None = None,
+                 on_rename: Callable[[str, str], None] | None = None):
         super().__init__()
+        self.on_rename = on_rename  # (sound id, new name): double-clicking a strip's name
         self.on_types = on_types or (lambda _name: None)  # None: New type; a name: Edit that type
         self.setObjectName("soundCard")
         self.setStyleSheet(f"#soundCard {{ background: {theme.PANEL}; border-radius: 24px; }}")
@@ -514,7 +580,8 @@ class SoundStrips(QFrame):
             for at, sound in enumerate(sounds):
                 strip = kept.get(sound.id)
                 if strip is None:
-                    strip = Strip(sound, kinds.get(sound.id, ""), self.on_change, self.on_open, self.on_menu)
+                    strip = Strip(sound, kinds.get(sound.id, ""), self.on_change, self.on_open, self.on_menu,
+                                  self.on_rename)
                 else:
                     self.row.removeWidget(strip)
                 self.row.insertWidget(at, strip)
