@@ -146,8 +146,15 @@ output, a hold, a screenshot, a recording pausing or going on (`engine.stir()`).
 that changed, a plugin's drawing), a frame that passes through Python, a transition, a fade, a waking bloom or
 anything Python's compositor draws keeps every tick working. `SPRIGCAST_NO_REST=1`: every tick works, as before.
 
-Python's compositor still draws Build's edited bloom, the Part editor, screenshots,
-source record, full-size RGBA taps (a projector showing a view) and a canvas's outputs while it draws one of those (a frame older than one already handed on is never sent). If the native engine stops
+Source record's copy of the bloom on air without the left-out sources is a view of the engine's too
+(`CLEAN_VIEW`, `Engine._native_views` / `_render_clean`): drawn in a canvas slot of its own, with its frames
+handed straight to its writer. The bloom without those sources is kept as one object until the bloom or the list
+changes, so no new snapshot is made each frame. With no slot free, or with `SPRIGCAST_NO_NATIVE_CLEAN=1`, Python's
+compositor draws it as before. Build's edited bloom and the sprig open in Build are views of the engine's as well
+(`STAGED_VIEW`, `PART_VIEW`) while a slot is free.
+
+Python's compositor still draws screenshots that leave something out, pictures of one source or of a bloom off
+air, full-size RGBA taps (a projector showing a view) and a canvas's outputs while it draws one of those (a frame older than one already handed on is never sent). If the native engine stops
 (faulted), Python's compositor draws the previews and outputs again by itself.
 
 ## Video, GIF and sound files (`sc_media_*`)

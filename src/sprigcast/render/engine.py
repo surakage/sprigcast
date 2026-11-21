@@ -83,6 +83,7 @@ BUDGET_MARGIN = 0.8  # ...and drawn more often again only under this share of th
 WAKE_WAIT_S = 2.0  # a switch to a bloom whose camera is closed shows the old bloom until it opens, at most this
 STAGED_VIEW = "~next:"  # + canvas id: the engine's view of the bloom Build edits there (Engine._native_views)
 PART_VIEW = "~part"  # the engine's view of the sprig open in Build
+CLEAN_VIEW = "~clean:"  # + canvas id: the engine's view of the bloom on air without Source record's left-out sources
 PREVIEW_FPS = 30  # the UI draws previews about 30 times a second; copying more is wasted
 # Resting ticks (Engine._rests): while the native engine draws and hands on every frame by itself and nothing of
 # Python's changes, the render thread's tick has nothing to do each frame. It then works only as often as a
@@ -199,6 +200,7 @@ class Engine:
         self._sprigs_held: frozenset = frozenset()  # canvases whose new bloom's sprigs weren't drawn this tick
         self._woke = 0  # sources woken this tick (the waking-frame log line)
         self._tick_now = 0.0
+        self._clean_scenes: dict[str, tuple] = {}  # canvas id -> (bloom on air, left out, the bloom without them)
         self._stirred = True  # something was asked of the render thread since its last working tick: no rest
         self._busy_at = float("-inf")  # the last tick that did something only Python does
         self._worked_at = float("-inf")  # the last working tick
@@ -484,6 +486,16 @@ class Engine:
             scene = next((s for s in collection.scenes if s.id == scene_id), None)
             if scene is not None:
                 views[STAGED_VIEW + canvas.id] = (canvas, scene)
+        # Source record's copy of the bloom on air without the left-out sources: a view like any other, so its
+        # frames go from the engine straight to its writer. Python's compositor drew the whole bloom a second
+        # time for it every frame and copied it back, for as long as Source record ran.
+        clean = self.clean_hidden
+        for canvas in collection.canvases if clean and not os.environ.get("SPRIGCAST_NO_NATIVE_CLEAN") else ():
+            hidden = clean.get(canvas.id)
+            outputs = taps.get(f"clean:{canvas.id}", ())
+            scene = collection.active_scene(canvas.id) if canvas.enabled and hidden is not None else None
+            if scene is not None and outputs and all(size is not None for _cb, size in outputs):
+                views[CLEAN_VIEW + canvas.id] = (canvas, self._clean_scene(canvas.id, scene, hidden))
         editing = self.editing_part
         if editing:
             part = next((p for p in collection.part_scenes() if p.id == editing), None)
@@ -491,6 +503,24 @@ class Engine:
             if canvas is not None:
                 views[PART_VIEW] = (canvas, part)  # the sprig itself: every item, whatever its Live state
         return views, riders
+
+    def _clean_scene(self, canvas_id: str, scene, hidden):
+        """The bloom on air without Source record's left-out sources: the same object until either changes (the
+        engine takes a new snapshot when a view's scene is another object)."""
+        kept = self._clean_scenes.get(canvas_id)
+        if kept is None or kept[0] is not scene or kept[1] != hidden:
+            kept = self._clean_scenes[canvas_id] = (scene, hidden, self._collection.hide_items(scene, set(hidden)))
+        return kept[2]
+
+    def _engine_cleans(self, native, canvas_id: str, outputs) -> str | None:
+        """The engine's canvas slot that makes Source record's frames for this canvas, or None (Python draws)."""
+        from sprigcast.render.native_bridge import view_key
+
+        name = CLEAN_VIEW + canvas_id
+        if native is None or not outputs or not self._engine_shows(native, name):
+            return None
+        key = view_key(name)
+        return key if native.serves(key, self._output_keys(native, outputs)) else None
 
     def _engine_shows(self, native, name: str) -> bool:
         """Whether the native engine draws this view of Build's (STAGED_VIEW + canvas id, PART_VIEW) this tick:
@@ -1839,13 +1869,19 @@ class Engine:
         if frame is not None:
             mailbox.put(frame)
 
-    def _render_clean(self, compositor, canvas, sizes, now: float, outputs) -> None:
+    def _render_clean(self, compositor, canvas, sizes, now: float, outputs, native=None) -> None:
         """Source record: draw the bloom on air without the left-out sources, for taps on "clean:<id>".
 
         Only items placed in the bloom itself are left out (a whole sprig can be); it cuts between blooms
         instead of running the transition."""
         hidden = self.clean_hidden.get(canvas.id)
         if hidden is None or not outputs:
+            self._clean_scenes.pop(canvas.id, None)
+            return
+        key = self._engine_cleans(native, canvas.id, outputs)
+        if key is not None:  # the engine draws it in a slot of its own and hands its frames on
+            native.set_outputs(key, self._output_keys(native, outputs), canvas.downscale)
+            self._native_outputs(native, SimpleNamespace(id=key), outputs)
             return
         target = canvas.model_copy(update={"id": f"clean:{canvas.id}"})
         scene = self._collection.active_scene(canvas.id)
@@ -2092,6 +2128,8 @@ class Engine:
             if key in riding:
                 continue  # served with its canvas
             outputs = [*taps.get(key, ()), *self._rider_outputs(key, taps)]
+            if key.startswith("clean:") and self._engine_cleans(native, key[6:], outputs) is not None:
+                continue  # Source record's copy, drawn by the engine
             if not key.startswith("view:") and key not in canvases:
                 return True  # a screenshot, source record, or the like
             if not native.serves(key, self._output_keys(native, outputs)):
@@ -2585,7 +2623,7 @@ class Engine:
                     outputs = ()
             if not self._engine_staged(native, canvas, now):
                 self._render_staged(compositor, canvas, sizes, now)
-            self._render_clean(compositor, canvas, sizes, now, taps.get(f"clean:{canvas.id}", ()))
+            self._render_clean(compositor, canvas, sizes, now, taps.get(f"clean:{canvas.id}", ()), native)
             if not outputs and not preview:
                 continue  # nobody is watching or recording this canvas right now
             self._mark("canvases")  # the late-frame line splits the canvases into these steps

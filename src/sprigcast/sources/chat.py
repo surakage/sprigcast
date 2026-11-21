@@ -23,7 +23,7 @@ import numpy as np
 
 from sprigcast.chat import PLATFORMS, ChatMessage, readable_colour
 from sprigcast.chat.feed import FEED, Line
-from sprigcast.core import style
+from sprigcast.core import painted, style
 from sprigcast.core.source import Source, register
 from sprigcast.sources.color import parse_color
 
@@ -303,6 +303,7 @@ class ChatSource(Source):
         self._frame: np.ndarray | None = None
         self._seen: tuple | None = None
         self._next = 0.0
+        self._aside: tuple | None = None  # (a drawing running on the pictures lane, its box, what it shows)
         self.status = "waiting for chat"
 
     def update(self, settings: dict[str, Any]) -> None:
@@ -313,7 +314,7 @@ class ChatSource(Source):
         self._seen, self._next = None, 0.0
 
     def sleep(self) -> None:
-        self._frame = None
+        self._frame = self._aside = None
 
     @property
     def size(self) -> tuple[int, int]:
@@ -326,6 +327,8 @@ class ChatSource(Source):
 
     def video_frame(self) -> np.ndarray | None:
         now = time.monotonic()
+        if self._aside is not None:
+            return self._landed()
         if now < self._next:
             return None
         self._next = now + CHECK_EVERY
@@ -343,7 +346,28 @@ class ChatSource(Source):
             return None
         if self._box is None:
             self._box = ChatBox(self.settings)
+        self.status = "ok" if lines else "waiting for chat"
+        if self._frame is not None and painted.DRAW_ASIDE:
+            # Drawn on the pictures lane, not here: wrapping and drawing a full box of messages with emotes on
+            # the render thread held its tick each time a message arrived. The box shows the one before until
+            # this one lands, a frame or two later.
+            from sprigcast.core import workers
+
+            self._aside = (workers.picture(self._box.draw, shown, name="chat drawing"), self._box, key, visible_key)
+            return None
         self._frame = self._box.draw(shown)
         self._seen, self._drawn = key, visible_key
-        self.status = "ok" if lines else "waiting for chat"
+        return self._frame
+
+    def _landed(self) -> np.ndarray | None:
+        """The picture a worker drew, once it is done (None: still drawing, or it was for an older look)."""
+        job, box, key, visible_key = self._aside
+        if not job.done():
+            return None
+        self._aside = None
+        if box is not self._box or job.exception() is not None:
+            self._next = 0.0  # the settings changed meanwhile, or it failed (logged there): drawn again
+            return None
+        self._frame = job.result()
+        self._seen, self._drawn = key, visible_key
         return self._frame
