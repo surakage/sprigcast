@@ -6,6 +6,10 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- Twitch Enhanced Broadcasting uses less memory. Its two NVIDIA encoders (and any NVENC stream or recording
+  with B-frames or look-ahead) now open on the graphics device SprigCast already draws with, instead of each
+  making a CUDA context of its own (about 490 MB together when going live on the test PC). If an encoder
+  can't start that way it starts as before. `SPRIGCAST_NO_CARD_UPLOAD=1` turns it off. Not tried on a PC yet.
 - Help improve SprigCast: after each stream of a minute or more, SprigCast can send that stream's report and
   today's log to the developer, with stream keys, passwords, names and addresses removed first. Off unless
   you turn it on: asked once after your first stream, and in Settings → General → Logs. Summaries go to the
