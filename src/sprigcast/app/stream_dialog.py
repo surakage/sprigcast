@@ -911,5 +911,11 @@ class StreamPage(QWidget):
             return False
         others = [o for o in collection.outputs if o.type != "stream"]
         picked = [o for o in self.outputs if o.id not in self._unpicked]  # a place left blank isn't kept
+        before = {o.id: o.service for o in collection.outputs if o.type == "stream"}
+        after = {o.id: o.service for o in picked}
+        for output_id in before.keys() - after.keys():  # one line each, so a log shows where a place went
+            log.info("places: %s (%s) removed in Settings", output_id, before[output_id] or "custom")
+        for output_id in after.keys() - before.keys():
+            log.info("places: %s (%s) added in Settings", output_id, after[output_id] or "custom")
         collection.outputs = others + [o.model_copy() for o in picked]  # copies: later edits wait for Apply
         return True
