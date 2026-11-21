@@ -44,11 +44,17 @@ class Built:
     arrays: list = field(default_factory=list)
     looks: set[str] = field(default_factory=set)   # looks and shape pictures its effects use
     masks: set[str] = field(default_factory=set)
+    backdrops: set[str] = field(default_factory=set)  # the Background filter's pictures
 
 
 def _floats(target, values) -> None:
     for i, v in enumerate(values):
         target[i] = float(v)
+
+
+def backdrop_name(path: str) -> str:
+    """The id a Background filter's picture is loaded under (apart from the same file used as a shape)."""
+    return "backdrop:" + path
 
 
 def effects_struct(fx: VideoEffects) -> sprigcore.Effects:
@@ -70,6 +76,8 @@ def effects_struct(fx: VideoEffects) -> sprigcore.Effects:
     e.mask = sprigcore.key(fx.mask) if fx.mask else 0
     e.blur, e.pixelate, e.blackout = fx.blur, fx.pixelate, fx.blackout
     e.spin_turns, e.spin_seconds, e.spin_run = float(fx.spin[0]), float(fx.spin[1]), int(fx.spin[2])
+    e.bg_mode, e.bg_blur, e.bg_edge = int(fx.bg_mode), fx.bg_blur, fx.bg_edge
+    e.bg_picture = sprigcore.key(backdrop_name(fx.bg_picture)) if fx.bg_mode and fx.bg_picture else 0
     halos = fx.halos[: sprigcore.MAX_HALOS]
     e.halo_count = len(halos)
     for i, h in enumerate(halos):
@@ -107,7 +115,7 @@ def build(scenes: list[SceneDraw], effects: dict[str, VideoEffects],
     parts = parts or {}
     holds = holds or {}
     entries, items, fx_list, fx_index = [], [], [], {}
-    used_looks, used_masks = set(), set()
+    used_looks, used_masks, used_backdrops = set(), set(), set()
     for draw in scenes:
         first = len(items)
         for item in draw.scene.items:
@@ -125,6 +133,8 @@ def build(scenes: list[SceneDraw], effects: dict[str, VideoEffects],
                         used_looks.add(fx.lut)
                     if fx.mask:
                         used_masks.add(fx.mask)
+                    if fx.bg_mode and fx.bg_picture:
+                        used_backdrops.add(fx.bg_picture)
             fade = draw.fades.get(item.source, 1.0) if draw.fades else 1.0
             held = holds.get(item_key(draw.scene.id, item.source)) if holds else None
             if held is not None:
@@ -139,7 +149,7 @@ def build(scenes: list[SceneDraw], effects: dict[str, VideoEffects],
     item_arr = (sprigcore.Item * max(1, len(items)))(*items)
     fx_arr = (sprigcore.Effects * max(1, len(fx_list)))(*fx_list)
     struct = sprigcore.Snapshot(scene_arr, len(entries), item_arr, len(items), fx_arr, len(fx_list))
-    return Built(struct, [scene_arr, item_arr, fx_arr], used_looks, used_masks)
+    return Built(struct, [scene_arr, item_arr, fx_arr], used_looks, used_masks, used_backdrops)
 
 
 class Resources:
@@ -172,6 +182,21 @@ class Resources:
             rgba.thumbnail((1024, 1024))
             data = np.asarray(rgba, dtype=np.uint8)
             device.set_mask(path, data, bool(data[..., 3].min() == 255))
+        for path in built.backdrops:
+            name = backdrop_name(path)
+            if name in self.loaded:
+                continue
+            self.loaded.add(name)
+            try:
+                from PIL import Image
+
+                with Image.open(path) as img:
+                    rgba = img.convert("RGBA")
+            except Exception as exc:  # noqa: BLE001 (an unreadable picture: the room is just taken out)
+                self.load_errors[path] = f"Can't open that picture: {exc}"
+                continue
+            rgba.thumbnail((1920, 1920))
+            device.set_mask(name, np.asarray(rgba, dtype=np.uint8), False)
 
     def forget(self) -> None:
         self.loaded.clear()

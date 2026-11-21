@@ -35,6 +35,8 @@ struct sc_device;
 
 namespace sc {
 
+struct Segmenter;  // segmenter.cpp: the Background filter's person finder
+
 struct Source {
     ComPtr<ID3D11Texture2D> texture;
     ComPtr<ID3D11ShaderResourceView> view;
@@ -71,6 +73,7 @@ struct Look {
 struct Mask {
     ComPtr<ID3D11ShaderResourceView> view;
     bool luma = false;
+    int width = 0, height = 0;
 };
 
 struct Target {
@@ -186,6 +189,9 @@ struct sc_device {
     ComPtr<ID3D11PixelShader> repack_ps;
     ComPtr<ID3D11Buffer> repack_constants;
     int prepare_repack();
+
+    // The Background filter's person finder (segmenter.h), made the first time a picture asks for it.
+    std::shared_ptr<sc::Segmenter> segmenter;
 };
 
 struct sc_canvas {

@@ -41,6 +41,9 @@ the git history named in its entry, but rebuild it to today's rules rather than 
 - **To come back:** a graphics card path proven on real PCs (NVIDIA, AMD, Intel) that stays off the
   processor, plus a clear "your PC can't run this" message on PCs without DirectML. The onnxruntime
   library was taken out with Live captions, so it would need to be added back.
+- **Came back (2026-11-21)** as the built-in Background filter (`background_effect`), the way above but without
+  onnxruntime or DirectML: the same model runs as the engine's own compute shaders (`native/core/src/segmenter.h`),
+  so it never touches the processor. Old gardens' `background` filters stay dropped.
 
 ### Live captions (store plugin)
 - **Removed:** 2026-11-17, along with the onnxruntime-directml library, which was about 25 MB of the
