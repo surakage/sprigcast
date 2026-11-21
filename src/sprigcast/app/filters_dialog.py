@@ -6,24 +6,48 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import (
+    QEvent,
+    QObject,
+    QPoint,
+    QPointF,
+    QRect,
+    QRectF,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+)
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetrics,
+    QIcon,
+    QImage,
+    QPainter,
+    QPainterPath,
+    QPen,
+)
 from PySide6.QtWidgets import (
     QCheckBox,
     QColorDialog,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
-    QGroupBox,
+    QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QMenu,
     QPushButton,
     QScrollArea,
     QSlider,
     QSpinBox,
+    QStyle,
+    QStyledItemDelegate,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -31,8 +55,16 @@ from PySide6.QtWidgets import (
 from sprigcast.app import theme
 from sprigcast.app.card import CardWindow
 from sprigcast.core import looks
-from sprigcast.core.filters import Field, filter_kind, filter_kinds, settings_for, switch
+from sprigcast.core.filters import (
+    Field,
+    filter_kind,
+    filter_kinds,
+    settings_for,
+    shown_name,
+    switch,
+)
 from sprigcast.core.scene import Filter, SourceConfig
+
 
 def _unshown(flt: Filter) -> dict:
     """What a filter keeps that isn't a field in its form (a barrel roll's count of runs): editing keeps it."""
@@ -256,13 +288,397 @@ NUMBER_STYLE = (
     " { subcontrol-origin: margin; width: 0px; height: 0px; border: none; }")
 
 
+# Each filter's icon (app/icons.py), drawn sharp at every Windows scale.
+KIND_ICONS = {
+    "barrel_roll": "spin", "blackout": "curtain", "blur": "mist", "chroma_key": "greenscreen",
+    "color_correction": "tone", "color_key": "colorcut", "lut": "mood", "freeze": "freeze", "glow": "glow",
+    "luma_key": "lightcut", "pixelate": "mosaic", "scroll": "drift", "shadow": "shadow", "shape": "frame",
+    "sharpen": "crisp", "stroke": "outline", "background": "backdrop",
+}
+
+
+def icon_name(kind: str) -> str:
+    return KIND_ICONS.get(kind, "sliders")
+
+
+class FilterRow(QStyledItemDelegate):
+    """One filter in the list: its icon, its name and an on/off switch, all painted (crisp at any scale).
+    A click on the switch turns the filter on or off; a click anywhere else picks it."""
+
+    HEIGHT = 44
+    SWITCH = QSize(34, 20)
+
+    def sizeHint(self, option, index) -> QSize:  # noqa: N802
+        return QSize(option.rect.width(), self.HEIGHT)
+
+    def _switch_rect(self, rect: QRect) -> QRect:
+        return QRect(rect.right() - 10 - self.SWITCH.width(), rect.center().y() - self.SWITCH.height() // 2 + 1,
+                     self.SWITCH.width(), self.SWITCH.height())
+
+    def paint(self, p: QPainter, option, index) -> None:
+        from sprigcast.app import icons
+
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = option.rect.adjusted(0, 2, 0, -2)
+        picked = bool(option.state & QStyle.StateFlag.State_Selected)
+        hover = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        on = index.data(Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Checked.value or \
+            index.data(Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Checked
+        if picked or hover:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(theme.SELECT_BG if picked else theme.RAISED_HOVER))
+            p.drawRoundedRect(QRectF(r), 12, 12)
+        tile = QRectF(r.left() + 8, r.center().y() - 14, 28, 28)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(theme.SELECT_BG if on and not picked else theme.RAISED))
+        p.drawRoundedRect(tile, 8, 8)
+        kind = index.data(Qt.ItemDataRole.UserRole + 1) or ""
+        icons.paint_icon(p, tile.adjusted(6, 6, -6, -6), icon_name(kind), theme.ACCENT if on else theme.MUTED, 1.6)
+        sw = self._switch_rect(r)
+        text = QRect(int(tile.right()) + 10, r.top(), sw.left() - int(tile.right()) - 18, r.height())
+        font = QFont(option.font)
+        font.setWeight(QFont.Weight.DemiBold if picked else QFont.Weight.Medium)
+        p.setFont(font)
+        p.setPen(QColor(theme.SELECT_TEXT if picked else (theme.TEXT if on else theme.MUTED)))
+        name = QFontMetrics(font).elidedText(index.data(Qt.ItemDataRole.DisplayRole) or "", Qt.TextElideMode.ElideRight,
+                                             text.width())
+        p.drawText(text, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, name)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(theme.ACCENT if on else theme.BUTTON_EDGE))
+        p.drawRoundedRect(QRectF(sw), sw.height() / 2, sw.height() / 2)
+        knob = sw.height() - 6
+        x = sw.right() - 2 - knob if on else sw.left() + 3
+        p.setBrush(QColor(theme.ACCENT_TEXT if on else theme.TEXT))
+        p.drawEllipse(QRectF(x, sw.top() + 3, knob, knob))
+        p.restore()
+
+    def editorEvent(self, event, model, option, index) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.MouseButtonRelease and \
+                self._switch_rect(option.rect.adjusted(0, 2, 0, -2)).adjusted(-6, -6, 6, 6).contains(event.position().toPoint()):
+            now = index.data(Qt.ItemDataRole.CheckStateRole)
+            on = now == Qt.CheckState.Checked or now == Qt.CheckState.Checked.value
+            model.setData(index, Qt.CheckState.Unchecked if on else Qt.CheckState.Checked, Qt.ItemDataRole.CheckStateRole)
+            return True
+        return super().editorEvent(event, model, option, index)
+
+
+# Where each filter sits in the Add filter picker (A to Z inside each group; a plugin's lands in More).
+KIND_GROUPS = {
+    "color_correction": "Color", "lut": "Color",
+    "background": "Cut out", "chroma_key": "Cut out", "color_key": "Cut out", "luma_key": "Cut out",
+    "sharpen": "Look", "shape": "Look", "glow": "Look", "blur": "Look", "pixelate": "Look", "stroke": "Look",
+    "shadow": "Look",
+    "blackout": "Motion", "scroll": "Motion", "freeze": "Motion", "barrel_roll": "Motion",
+}
+GROUP_ORDER = ("Color", "Cut out", "Look", "Motion", "More")
+
+
+class AddPicker(QFrame):
+    """Add filter: a search box over every filter as an icon tile, grouped (Color, Cut out, Look, Motion).
+    Type to narrow it, Enter adds the first match. A filter the source already has is greyed out."""
+
+    picked = Signal(str)  # kind
+    TILE = QSize(104, 78)
+
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setObjectName("addPicker")
+        self.tiles: dict[str, QToolButton] = {}  # label -> tile
+        self._groups: list[tuple[QLabel, list[QToolButton]]] = []
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.box = QFrame()
+        self.box.setObjectName("addPickerBox")
+        edge = QColor(theme.ACCENT)
+        edge.setAlpha(90)
+        self.box.setStyleSheet(
+            f"#addPickerBox {{ background: {theme.PANEL}; border: 1px solid {edge.name(QColor.NameFormat.HexArgb)};"
+            " border-radius: 18px; }"
+            f"QToolButton {{ background: {theme.CARD}; color: {theme.TEXT}; border: 1px solid {theme.EDGE_STRONG};"
+            " border-radius: 14px; padding: 8px 4px 6px; font-weight: 550; }"
+            f"QToolButton:hover, QToolButton:focus {{ background: {theme.SELECT_BG}; border-color: {theme.ACCENT_DARK};"
+            f" color: {theme.SELECT_TEXT}; }}"
+            f"QToolButton:disabled {{ color: {theme.MUTED}; background: transparent; }}"
+            f"QLineEdit {{ background: {theme.CHROME}; color: {theme.TEXT}; border: 1px solid {theme.FIELD_EDGE};"
+            " border-radius: 12px; padding: 7px 10px; }"
+            f"QLineEdit:focus {{ border-color: {theme.ACCENT}; }}"
+            f"QLabel {{ color: {theme.MUTED}; font-weight: 600; background: transparent; }}"
+            "QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; border: none; }")
+        outer.addWidget(self.box)
+        lay = QVBoxLayout(self.box)
+        lay.setContentsMargins(16, 16, 16, 16)
+        lay.setSpacing(10)
+        from sprigcast.app import icons
+
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search")
+        self.search.addAction(icons.icon("search", theme.MUTED, 16), QLineEdit.ActionPosition.LeadingPosition)
+        self.search.textChanged.connect(self._narrow)
+        self.search.returnPressed.connect(self._first)
+        lay.addWidget(self.search)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        lay.addWidget(self.scroll, 1)
+        self.setFixedWidth(4 * self.TILE.width() + 3 * 8 + 32 + 4 + 24)  # 4 tiles, margins, the scroll bar
+
+    def fill(self, kinds: list, used: set[str], media: str) -> None:
+        """Tiles for these filter kinds; `used` kinds are greyed (one of each effect per source)."""
+        from sprigcast.app import icons
+        from sprigcast.core.filters import OLD_LABELS
+
+        self.tiles.clear()
+        self._groups.clear()
+        inner = QWidget()
+        col = QVBoxLayout(inner)
+        col.setContentsMargins(0, 0, 4, 0)
+        col.setSpacing(8)
+        grouped: dict[str, list] = {}
+        for info in kinds:
+            group = KIND_GROUPS.get(info.kind, "More") if media == "video" else "Sound"
+            grouped.setdefault(group, []).append(info)
+        for group in [g for g in (*GROUP_ORDER, "Sound") if g in grouped]:
+            heading = QLabel(group)
+            col.addWidget(heading)
+            grid = QGridLayout()
+            grid.setSpacing(8)
+            buttons = []
+            for n, info in enumerate(sorted(grouped[group], key=lambda k: k.label.lower())):
+                tile = QToolButton()
+                tile.setText(info.label)
+                picture = QIcon(icons.icon(icon_name(info.kind), theme.ACCENT, 22))
+                for ratio in (1.0, 1.25, 1.5, 2.0, 3.0):  # greyed when already added, sharp at every scale
+                    picture.addPixmap(icons.pixmap(icon_name(info.kind), theme.MUTED, 22, ratio), QIcon.Mode.Disabled)
+                tile.setIcon(picture)
+                tile.setIconSize(QSize(22, 22))
+                tile.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+                tile.setFixedSize(self.TILE)
+                tile.setCursor(Qt.CursorShape.PointingHandCursor)
+                tile.setProperty("kind", info.kind)
+                tile.setProperty("words", f"{info.label} {OLD_LABELS.get(info.kind, '')} {group}".lower())
+                if media == "video" and info.kind in used:
+                    tile.setEnabled(False)
+                    tile.setToolTip("Already added")
+                tile.clicked.connect(lambda _=False, kind=info.kind: self._pick(kind))
+                grid.addWidget(tile, n // 4, n % 4)
+                buttons.append(tile)
+                self.tiles[info.label] = tile
+            grid.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            col.addLayout(grid)
+            self._groups.append((heading, buttons))
+        col.addStretch(1)
+        self.scroll.setWidget(inner)
+        self.search.clear()
+        rows = sum((len(b) + 3) // 4 for _, b in self._groups)
+        self.setFixedHeight(min(560, 16 * 2 + 40 + 10 + len(self._groups) * 30 + rows * (self.TILE.height() + 8) + 8))
+
+    def _narrow(self, text: str) -> None:
+        wanted = text.strip().lower()
+        for heading, buttons in self._groups:
+            any_shown = False
+            for tile in buttons:
+                show = not wanted or wanted in str(tile.property("words"))
+                tile.setVisible(show)
+                any_shown |= show
+            heading.setVisible(any_shown)
+
+    def _first(self) -> None:
+        tile = next((t for _, b in self._groups for t in b if not t.isHidden() and t.isEnabled()), None)
+        if tile is not None:
+            self._pick(str(tile.property("kind")))
+
+    def _pick(self, kind: str) -> None:
+        self.hide()
+        self.picked.emit(kind)
+
+    def open_below(self, anchor: QWidget) -> None:
+        from PySide6.QtGui import QGuiApplication
+
+        spot = anchor.mapToGlobal(QPoint(0, anchor.height() + 6))
+        screen = QGuiApplication.screenAt(spot) or QGuiApplication.primaryScreen()
+        room = screen.availableGeometry()
+        x = min(max(room.left(), spot.x()), room.right() - self.width())
+        y = spot.y() if spot.y() + self.height() <= room.bottom() else anchor.mapToGlobal(QPoint(0, 0)).y() - self.height() - 6
+        self.move(x, max(room.top(), y))
+        self.show()
+        self.search.setFocus()
+
+
+class _Grabbed(QObject):
+    """Carries a picture from the render thread to the window (queued). No parent: a grab that lands after the
+    window closed reaches no one instead of a deleted widget."""
+
+    got = Signal(object, bool)  # QImage or None, raw (Before)
+
+
+class BeforeAfter(QWidget):
+    """The source live, with its filters off on the left of the split and on to the right. Drag the split.
+    Fixed height (a height that follows the width loops in a scroll area: the Transitions crash, #688)."""
+
+    HEIGHT = 240
+    EVERY_MS = 200  # 5 pictures a second of each side, small (LIMIT), only while the window shows
+
+    LIMIT = 480
+
+    def __init__(self, source_id: str, grab: Callable, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.source_id, self.fetch = source_id, grab
+        self.before: QImage | None = None
+        self.after: QImage | None = None
+        self.split = 0.5
+        self._waiting = 0
+        self._dragging = False
+        self.setFixedHeight(self.HEIGHT)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.SizeHorCursor)
+        self.setAccessibleName("Before and after")
+        self.bridge = _Grabbed()
+        self.bridge.got.connect(self._take)
+        self.timer = QTimer(self)
+        self.timer.setInterval(self.EVERY_MS)
+        self.timer.timeout.connect(self.ask)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self.ask()
+        self.timer.start()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self.timer.stop()
+        super().hideEvent(event)
+
+    def ask(self) -> None:
+        """Ask for the next pair, unless the last pair hasn't come back yet (a busy PC isn't asked for more)."""
+        if self._waiting or not self.isVisible():
+            return
+        bridge = self.bridge
+        for raw in (True, False):
+            def back(picture, raw=raw):
+                image = None
+                if picture is not None and getattr(picture, "ndim", 0) == 3 and picture.shape[0] and picture.shape[1]:
+                    h, w = picture.shape[:2]
+                    image = QImage(picture.tobytes(), w, h, w * 4, QImage.Format.Format_RGBA8888_Premultiplied).copy()
+                bridge.got.emit(image, raw)
+
+            self._waiting += 1
+            try:
+                self.fetch(self.source_id, back, raw, self.LIMIT)
+            except Exception:
+                self._waiting = 0
+                return
+
+    def _take(self, image, raw: bool) -> None:
+        self._waiting = max(0, self._waiting - 1)
+        if raw:
+            self.before = image
+        else:
+            self.after = image
+        self.update()
+
+    def _picture_rect(self, inner: QRectF) -> QRectF:
+        image = self.after or self.before
+        if image is None or image.isNull():
+            return inner
+        scale = min(inner.width() / image.width(), inner.height() / image.height())
+        w, h = image.width() * scale, image.height() * scale
+        return QRectF(inner.center().x() - w / 2, inner.center().y() - h / 2, w, h)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        from sprigcast.app import icons
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        box = QRectF(self.rect())
+        clip = QPainterPath()
+        clip.addRoundedRect(box, 14, 14)
+        p.setClipPath(clip)
+        p.fillRect(box, QColor(theme.CHROME))
+        split_x = box.left() + box.width() * self.split
+        # the After side on a soft checkerboard, so a key or cut-out shows what's see-through
+        cell = 12
+        light, dark = QColor(theme.CARD), QColor(theme.PANEL)
+        right = QRectF(split_x, box.top(), box.right() - split_x, box.height())
+        p.save()
+        p.setClipRect(right, Qt.ClipOperation.IntersectClip)
+        for y in range(0, int(box.height()) + cell, cell):
+            for x in range(int(split_x) // cell * cell, int(box.right()) + cell, cell):
+                p.fillRect(QRectF(x, y, cell, cell), light if (x // cell + y // cell) % 2 else dark)
+        p.restore()
+        picture = self._picture_rect(box.adjusted(10, 10, -10, -10))
+        for image, side in ((self.before, QRectF(box.left(), box.top(), split_x - box.left(), box.height())),
+                            (self.after, right)):
+            if image is not None and not image.isNull():
+                p.save()
+                p.setClipRect(side, Qt.ClipOperation.IntersectClip)
+                p.drawImage(picture, image)
+                p.restore()
+        if self.before is None and self.after is None:
+            p.setPen(QColor(theme.MUTED))
+            p.drawText(box, Qt.AlignmentFlag.AlignCenter, "No picture yet")
+        # the split, its round handle, and the two chips
+        p.setPen(QPen(QColor(theme.TEXT_BRIGHT), 2))
+        p.drawLine(QPointF(split_x, box.top()), QPointF(split_x, box.bottom()))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(theme.TEXT_BRIGHT))
+        p.drawEllipse(QPointF(split_x, box.center().y()), 15, 15)
+        icons.paint_icon(p, QRectF(split_x - 8, box.center().y() - 8, 16, 16), "drift", theme.ACCENT_TEXT, 2.0)
+        font = QFont(self.font())
+        font.setWeight(QFont.Weight.DemiBold)
+        p.setFont(font)
+        metrics = QFontMetrics(font)
+        for text, left in (("Before", True), ("After", False)):
+            w = metrics.horizontalAdvance(text) + 22
+            chip = QRectF(box.left() + 12 if left else box.right() - 12 - w, box.top() + 12, w, 26)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(0, 0, 0, 150))
+            p.drawRoundedRect(chip, 13, 13)
+            p.setPen(QColor(theme.TEXT_BRIGHT))
+            p.drawText(chip, Qt.AlignmentFlag.AlignCenter, text)
+        p.end()
+
+    def _move_split(self, x: float) -> None:
+        self.split = min(1.0, max(0.0, x / max(1, self.width())))
+        self.update()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+            self._move_split(event.position().x())
+            event.accept()
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._dragging:
+            self._move_split(event.position().x())
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self._dragging = False
+        event.accept()
+
+
 class FiltersDialog(CardWindow):
     """Edits `source.filters` in place and calls on_change(save=False) after every edit, so the
-    preview updates live. Closing calls on_change(save=True)."""
+    preview updates live. Closing calls on_change(save=True).
+
+    The Before and after design (user 2026-11-21): the filters with their icons and switches on the left, the
+    source live with its filters off and on (drag the split) above the picked filter's settings on the right.
+    grab(source_id, callback, raw, limit) is Engine.grab_source; without it (sound filters, tests) there's no
+    picture."""
 
     def __init__(self, source: SourceConfig, on_change: Callable[..., None], parent: QWidget | None = None,
-                 media: str | None = None, sounds: list[tuple[str, str]] | None = None, collection=None):
-        super().__init__(f"Filters for “{source.name}”", parent, (820, 520))
+                 media: str | None = None, sounds: list[tuple[str, str]] | None = None, collection=None,
+                 grab: Callable | None = None):
+        self.media = media or media_of(source)  # a browser page has both: the Sound card asks for "audio"
+        picture = grab is not None and self.media == "video"
+        super().__init__(f"Filters for “{source.name}”", parent, (920, 640) if picture else (820, 540))
+        edge = QColor(theme.ACCENT)
+        edge.setAlpha(80)  # a soft green edge, so the window stands off whatever is behind it
+        self.card.setStyleSheet(f"#windowCard {{ background: {theme.PANEL}; border: 1px solid {edge.name(QColor.NameFormat.HexArgb)};"
+                                " border-radius: 22px; }")
         self.source = source
         self.sounds = [(sid, name) for sid, name in (sounds or []) if sid != source.id]
         # A placed sprig has a placement on each canvas: its filters follow there, unless it keeps its own.
@@ -272,70 +688,74 @@ class FiltersDialog(CardWindow):
             if self.collection is not None:
                 self.collection.share_filters(source)
             on_change(save=save)
+            if self.preview is not None:
+                self.preview.ask()  # show the change now, not on the next tick
 
+        self.preview: BeforeAfter | None = None
         self.on_change = changed
-        self.media = media or media_of(source)  # a browser page has both: the Sound card asks for "audio"
         self.form: FilterForm | None = None
-
-        # On brand like the sound page (user 2026-11-21): two titled section cards, the filters on the left (drag
-        # one to reorder it, tick to switch it off) and the picked filter's settings on the right. No helper text.
+        from sprigcast.app import icons
         from sprigcast.app.audio_page import _pick_style
 
+        # Header: what this is, whose filters, and a close button (a frameless window has no title bar ×).
+        heading = QLabel("Filters")
+        heading.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-size: 17px; font-weight: 650; background: transparent;")
+        whose = QLabel(source.name)
+        whose.setStyleSheet(f"color: {theme.MUTED}; font-size: 15px; background: transparent;")
+        close = QPushButton()
+        close.setIcon(icons.icon("close", theme.MUTED, 18))
+        close.setToolTip("Close")
+        close.setAccessibleName("Close")
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setStyleSheet(
+            f"QPushButton {{ background: transparent; border: none; border-radius: 15px; min-width: 30px;"
+            f" max-width: 30px; min-height: 30px; max-height: 30px; padding: 0; }}"
+            f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}")
+        close.clicked.connect(self.reject)
+        header = QHBoxLayout()
+        header.setSpacing(10)
+        header.addWidget(heading)
+        header.addWidget(whose)
+        header.addStretch(1)
+        header.addWidget(close)
+
         self.list = QListWidget()
-        self.list.setMinimumWidth(240)
-        self.list.setSpacing(3)
-        self.list.setStyleSheet(
-            f"QListWidget {{ background: transparent; border: none; outline: none; }}"
-            f"QListWidget::item {{ background: {theme.RAISED}; color: {theme.TEXT}; border-radius: 12px;"
-            f" padding: 9px 10px; }}"
-            f"QListWidget::item:hover {{ background: {theme.RAISED_HOVER}; }}"
-            f"QListWidget::item:selected {{ background: {theme.SELECT_BG}; color: {theme.SELECT_TEXT}; }}")
+        self.list.setFixedWidth(236)
+        self.list.setItemDelegate(FilterRow(self.list))
+        self.list.setMouseTracking(True)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.list.setStyleSheet("QListWidget { background: transparent; border: none; outline: none; }")
         if self.media == "audio":  # sound filters run top to bottom; effects run in a fixed order on the GPU
             self.list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
             self.list.setDefaultDropAction(Qt.DropAction.MoveAction)
             self.list.model().rowsMoved.connect(self._dragged)
         self.list.currentRowChanged.connect(self._show_selected)
         self.list.itemChanged.connect(self._toggled)
-        self.add_menu = QMenu(self)
-        self.add_menu.aboutToShow.connect(self._fill_add_menu)
-        add = QPushButton("+ Add filter")
+        self.picker = AddPicker(self)
+        self.picker.picked.connect(self.add)
+        self.add_button = add = QPushButton("Add filter")
+        add.setIcon(icons.icon("plus", theme.TEXT, 16))
         add.setStyleSheet(RAISED_PILL)
-        add.setMenu(self.add_menu)
         add.setCursor(Qt.CursorShape.PointingHandCursor)
-        bar = QHBoxLayout()
-        bar.setSpacing(8)
-        bar.addWidget(add, 1)
-        for text, tip, target in (
-            ("↑", "Move up", lambda: self._move(-1)),
-            ("↓", "Move down", lambda: self._move(+1)),
-            ("Remove", "Remove the selected filter", self._remove),
-        ):
-            b = QPushButton(text)
-            b.setToolTip(tip)
-            b.setAccessibleName(tip)
-            b.setStyleSheet(RAISED_PILL)
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.clicked.connect(target)
-            bar.addWidget(b)
-        filters_box = QGroupBox("Sound filters" if self.media == "audio" else "Effects")
-        left = QVBoxLayout(filters_box)
-        left.setContentsMargins(6, 10, 6, 6)
-        left.setSpacing(12)
-        self.empty = QLabel("No filters yet" if self.media == "audio" else "No effects yet")
+        add.clicked.connect(self._open_picker)
+        self.empty = QLabel("No filters yet")
         self.empty.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        left.addWidget(self.empty, 1)
-        left.addWidget(self.list, 1)
-        left.addLayout(bar)
         self.same = QCheckBox("Same on both canvases")
         self.same.setCursor(Qt.CursorShape.PointingHandCursor)
         self.same.setVisible(self.collection is not None)
         self.same.setChecked(self.collection is None or self.collection.shares_filters(source))
         self.same.toggled.connect(self._same_toggled)
+        left = QVBoxLayout()
+        left.setSpacing(10)
+        left.addWidget(self.list, 1)
+        left.addWidget(self.empty, 1)
+        left.addWidget(add)
         left.addWidget(self.same)
 
-        self.title = QLabel("")  # the picked filter's name; also the settings card's title
-        self.title.hide()
+        # The picked filter's name (and a plugin's note), over its settings.
+        self.title = QLabel("")
+        self.title.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-size: 15px; font-weight: 650; background: transparent;")
         # A plugin filter that reports how it's doing ("Downloading 40%"): its note beside the name, kept fresh.
         self._status_timer = QTimer(self)
         self._status_timer.setInterval(500)
@@ -350,37 +770,44 @@ class FiltersDialog(CardWindow):
         self.reset_button.setToolTip("Put this filter's settings back to their defaults")
         self.reset_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.reset_button.clicked.connect(self._reset)
-        self.settings_box = card = QGroupBox("Settings")
-        card.setObjectName("filterSettings")
-        card.setStyleSheet(NUMBER_STYLE + _pick_style("filterPick"))
-        right = QVBoxLayout(card)
-        right.setContentsMargins(10, 12, 10, 10)
-        right.setSpacing(14)
+        self.remove_button = QPushButton("Remove")
+        self.remove_button.setIcon(icons.icon("trash", theme.TEXT, 15))
+        self.remove_button.setStyleSheet(RAISED_PILL)
+        self.remove_button.setToolTip("Remove this filter")
+        self.remove_button.setAccessibleName("Remove the selected filter")
+        self.remove_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.remove_button.clicked.connect(self._remove)
         self.save_look_button = QPushButton("Save as look…")
         self.save_look_button.setStyleSheet(RAISED_PILL)
         self.save_look_button.setToolTip("Save these color settings as a .cube LUT you can use anywhere")
         self.save_look_button.clicked.connect(self._save_look)
         self.save_look_button.hide()
+        self.settings_box = card = QWidget()  # the right side: picture, name, settings, buttons
+        card.setObjectName("filterSettings")
+        card.setStyleSheet(NUMBER_STYLE + _pick_style("filterPick"))
+        right = QVBoxLayout(card)
+        right.setContentsMargins(0, 0, 0, 0)
+        right.setSpacing(14)
+        if picture:
+            self.preview = BeforeAfter(source.id, grab)
+            right.addWidget(self.preview)
+        title_row = QHBoxLayout()
+        title_row.addWidget(self.title, 1)
+        title_row.addWidget(self.save_look_button)
+        title_row.addWidget(self.reset_button)
+        title_row.addWidget(self.remove_button)
+        right.addLayout(title_row)
         right.addWidget(self.form_area, 1)
-        top = QHBoxLayout()
-        top.addStretch(1)
-        top.addWidget(self.save_look_button)
-        top.addWidget(self.reset_button)
-        right.addLayout(top)
 
         body = QHBoxLayout()
-        body.setSpacing(20)
-        body.addWidget(filters_box, 0)
+        body.setSpacing(22)
+        body.addLayout(left, 0)
         body.addWidget(card, 1)
-        done = QPushButton("Done")
-        done.setStyleSheet(theme.PRIMARY_STYLE)
-        done.setCursor(Qt.CursorShape.PointingHandCursor)
-        done.clicked.connect(self.reject)
         root = QVBoxLayout(self.card)
-        root.setContentsMargins(24, 24, 24, 24)
-        root.setSpacing(20)
+        root.setContentsMargins(24, 20, 24, 22)
+        root.setSpacing(16)
+        root.addLayout(header)
         root.addLayout(body, 1)
-        root.addWidget(done, 0, Qt.AlignmentFlag.AlignRight)
         self._refresh(0)
 
     # List ---------------------------------------------------------------------
@@ -400,12 +827,12 @@ class FiltersDialog(CardWindow):
         self.list.clear()
         shown = self._shown()
         for flt in shown:
-            item = QListWidgetItem(flt.name)
+            item = QListWidgetItem(shown_name(flt.kind, flt.name))
             item.setData(Qt.ItemDataRole.UserRole, flt.id)
+            item.setData(Qt.ItemDataRole.UserRole + 1, flt.kind)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Checked if flt.enabled else Qt.CheckState.Unchecked)
-            item.setToolTip("Drag to reorder. Untick to switch it off." if self.media == "audio"
-                            else "Untick to switch it off")
+            item.setToolTip("Drag to reorder" if self.media == "audio" else "")
             self.list.addItem(item)
         self.list.blockSignals(False)
         self.empty.setVisible(not shown)
@@ -415,14 +842,12 @@ class FiltersDialog(CardWindow):
         self._show_selected(self.list.currentRow())
 
     def _fill_add_menu(self) -> None:
-        self.add_menu.clear()
-        used = {f.kind for f in self.source.filters}
-        for info in sorted(filter_kinds(self.media), key=lambda k: k.label.lower()):  # A to Z, plugins too
-            action = self.add_menu.addAction(info.label)
-            if self.media == "video" and info.kind in used:
-                action.setEnabled(False)  # one of each effect per source
-                action.setToolTip("Already added")
-            action.triggered.connect(lambda _=False, kind=info.kind: self.add(kind))
+        """The Add filter picker's tiles: this window's kind of filter, plugins too."""
+        self.picker.fill(filter_kinds(self.media), {f.kind for f in self.source.filters}, self.media)
+
+    def _open_picker(self) -> None:
+        self._fill_add_menu()
+        self.picker.open_below(self.add_button)
 
     def add(self, kind: str) -> Filter:
         info = filter_kind(kind)
@@ -461,9 +886,8 @@ class FiltersDialog(CardWindow):
         self.on_change(save=False)
 
     def _set_title(self, text: str) -> None:
-        """The picked filter's name (and a plugin's note), as the settings card's title."""
+        """The picked filter's name (and a plugin's note), over its settings."""
         self.title.setText(text)
-        self.settings_box.setTitle(text or "Settings")
 
     def _dragged(self, *_args) -> None:
         """A filter was dragged to a new place: the list's order is the new order (the other kind keeps its
@@ -495,6 +919,7 @@ class FiltersDialog(CardWindow):
     def _show_selected(self, row: int) -> None:
         flt = self._current()
         self.reset_button.setVisible(flt is not None)
+        self.remove_button.setVisible(flt is not None)
         if flt is None:
             self.save_look_button.hide()
             self._set_title("")
@@ -557,7 +982,7 @@ class FiltersDialog(CardWindow):
             path += ".cube"
         table = looks.bake_color_correction(settings_for(flt.kind, flt.settings))
         saved = looks.write_cube(path, table, title=Path(path).stem)
-        self._set_title(f"Color Correction  ·  saved {saved.name}")
+        self._set_title(f"{filter_kind(flt.kind).label}  ·  saved {saved.name}")
         return saved
 
     def _reset(self) -> None:

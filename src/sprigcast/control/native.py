@@ -484,6 +484,11 @@ class NativeApi:
         found = next((f for f in source.filters if f.id == wanted), None) \
             or next((f for f in source.filters if f.name == wanted), None) \
             or next((f for f in source.filters if f.kind == wanted), None)
+        if found is None:  # a filter's name today or before the one-word names ("Greenscreen" or "Chroma Key")
+            from sprigcast.core.filters import kind_for_label
+
+            kind = kind_for_label(wanted)
+            found = next((f for f in source.filters if kind and f.kind == kind), None)
         if found is None:
             raise _missing(f"{source.name!r} has no filter {wanted!r}.", "filter", wanted)
         return found

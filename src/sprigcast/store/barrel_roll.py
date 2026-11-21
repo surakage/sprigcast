@@ -24,7 +24,7 @@ PLUGIN = {"id": "barrel_roll", "name": "Barrel Roll", "version": 5, "adds": "Eff
 TURNS_PER_SECOND = 1.0  # when a trigger gives seconds but no turns
 ITEM_RUNS = 1_000_000  # an item's own rolls count from here
 
-register_filter("barrel_roll", "Barrel roll", "video", [
+register_filter("barrel_roll", "Spin", "video", [
     Field("seconds", "Spin for", 3.0, 0.5, 120.0, 0.5, " s"),
     Field("turns", "Turns", 3, 1, 200, 1),
     Field("direction", "Direction", "clockwise", choices=(("clockwise", "Clockwise"), ("anticlockwise", "Anticlockwise"))),
@@ -68,7 +68,7 @@ def spin(api, sources, seconds: float | None = None, turns: int | None = None, d
         settings = {"seconds": secs, "turns": n, "run": run}
         if direction in ("clockwise", "anticlockwise"):
             settings["direction"] = direction
-        filter_on(api, source, "barrel_roll", "Barrel roll", settings, secs + 0.25)  # off just after it lands
+        filter_on(api, source, "barrel_roll", "Spin", settings, secs + 0.25)  # off just after it lands
         done.append(source.name)
     return {"spinning": done, "seconds": secs, "turns": n}
 

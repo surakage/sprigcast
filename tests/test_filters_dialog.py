@@ -22,15 +22,14 @@ def test_add_edit_toggle_reorder_remove(app):
     calls = []
     d = FiltersDialog(source, lambda save=True: calls.append(save))
     d._fill_add_menu()
-    labels = [a.text() for a in d.add_menu.actions()]
-    assert "Chroma Key" in labels and "Noise Gate" not in labels  # video source: video filters only
+    labels = list(d.picker.tiles)
+    assert "Greenscreen" in labels and "Noise Gate" not in labels  # video source: video filters only
 
     d.add("chroma_key")
     d.add("color_correction")
     assert [f.kind for f in source.filters] == ["chroma_key", "color_correction"]
     d._fill_add_menu()
-    chroma = next(a for a in d.add_menu.actions() if a.text() == "Chroma Key")
-    assert not chroma.isEnabled()  # one of each effect
+    assert not d.picker.tiles["Greenscreen"].isEnabled()  # one of each effect
 
     d.form.set_values({"opacity": 40})
     assert source.filters[1].settings["opacity"] == 40
@@ -55,8 +54,8 @@ def test_audio_sources_get_audio_filters(app):
     source = SourceConfig(id="mic", kind="audio_input", name="Mic")
     d = FiltersDialog(source, lambda save=True: None)
     d._fill_add_menu()
-    labels = [a.text() for a in d.add_menu.actions()]
-    assert {"Noise Gate", "Compressor", "Gain", "Limiter"} <= set(labels) and "Chroma Key" not in labels
+    labels = list(d.picker.tiles)
+    assert {"Noise Gate", "Compressor", "Gain", "Limiter"} <= set(labels) and "Greenscreen" not in labels
     d.add("noise_gate")
     d.form.set_values({"close_db": -40.0})
     assert source.filters[0].settings["close_db"] == -40.0
@@ -69,8 +68,8 @@ def test_look_and_shape_filters(app, tmp_path):
     source = SourceConfig(id="cam", kind="camera", name="Cam")
     d = FiltersDialog(source, lambda save=True: None)
     d._fill_add_menu()
-    labels = [a.text() for a in d.add_menu.actions()]
-    assert "Color look (LUT)" in labels and "Shape" in labels
+    labels = list(d.picker.tiles)
+    assert "Mood" in labels and "Frame" in labels
 
     d.add("lut")
     form = d.form
@@ -112,8 +111,8 @@ def test_sound_filters_stay_apart_from_effects_and_are_a_to_z(app):
                           sounds=[("web", "Alerts"), ("mic", "Mic"), ("music", "Music")])
     assert [sound.list.item(i).text() for i in range(sound.list.count())] == ["Gain", "Compressor"]
     sound._fill_add_menu()
-    labels = [a.text() for a in sound.add_menu.actions()]
-    assert labels == sorted(labels, key=str.lower) and "Chroma Key" not in labels
+    labels = list(sound.picker.tiles)
+    assert labels == sorted(labels, key=str.lower) and "Greenscreen" not in labels
     assert {"Ducking", "De-esser", "Equalizer", "Low Cut"} <= set(labels)
     sound.list.setCurrentRow(1)
     sound._move(-1)  # swaps with the sound filter above, the effects keep their places
@@ -121,7 +120,9 @@ def test_sound_filters_stay_apart_from_effects_and_are_a_to_z(app):
     sound._remove()
     assert [f.id for f in page.filters] == ["a", "c", "b"]
     effects = FiltersDialog(page, lambda save=True: None)
-    assert [effects.list.item(i).text() for i in range(effects.list.count())] == ["Chroma Key", "Color Correction"]
+    # filters added before the one-word names keep their saved names, shown by today's
+    assert [effects.list.item(i).text() for i in range(effects.list.count())] == ["Greenscreen", "Tone"]
+    assert [f.name for f in page.filters if f.kind in ("chroma_key", "color_correction")] == ["Chroma Key", "Color Correction"]
     ducking = sound.add("ducking")
     from PySide6.QtWidgets import QComboBox
 
@@ -161,7 +162,7 @@ def test_sound_filters_drag_to_reorder(app):
     d.list.model().moveRow(QModelIndex(), 2, QModelIndex(), 0)  # what a drop does: Noise Suppression to the top
     assert [f.kind for f in source.filters] == ["noise_suppression", "compressor", "limiter"]
     assert calls == [False]
-    assert d.settings_box.title() == d.title.text()  # the picked filter names its settings card
+    assert d.title.text() == "Noise Suppression"  # the picked filter's name over its settings
 
 
 def test_noise_suppression_methods(monkeypatch):

@@ -4289,8 +4289,10 @@ class MainWindow(QMainWindow):
     def _open_filters(self, source_id: str, media: str | None = None) -> None:
         sounds = sorted(((c.id, c.name) for c in self.collection.sources if self._has_sound(c)),
                         key=lambda pair: pair[1].lower())
+        engine = getattr(self, "engine", None)
+        grab = None if engine is None else (lambda sid, back, raw, limit: engine.grab_source(sid, back, raw, limit))
         modal(FiltersDialog(self.collection.source(source_id), self._changed, self, media, sounds=sounds,
-                            collection=self.collection))
+                            collection=self.collection, grab=grab))
         if self._has_sound(self.collection.source(source_id)):
             self._refresh_audio_soon()  # the Sound card lists filter names
         self._refresh_sources(keep_row=self.source_list.currentRow())
