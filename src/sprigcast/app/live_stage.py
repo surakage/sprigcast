@@ -709,7 +709,10 @@ class LiveSide(QWidget):
         self.add_place.setToolTip("Add another place to stream")
         self.add_menu = QMenu(self)
         for key, label in SERVICE_CHOICES:
-            self.add_menu.addAction(label).triggered.connect(lambda _=False, k=key: on_destination(f"new:{k}"))
+            # A turn later, once the menu has closed: Settings opened from inside the menu's click came up with
+            # nothing for screen readers to read (no controls listed at all; PC, 2026-11-20). Sound's menus: #784.
+            self.add_menu.addAction(label).triggered.connect(
+                lambda _=False, k=key: QTimer.singleShot(0, self, lambda: on_destination(f"new:{k}")))
         self.add_menu.addSeparator()
 
         def show_all() -> None:  # after the menu has closed: a pop-up opened from inside a menu's click fights it
