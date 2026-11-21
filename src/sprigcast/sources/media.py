@@ -213,9 +213,14 @@ def is_sound_file(path: str) -> bool:
     return Path(str(path)).suffix.lower() in AUDIO_EXTS
 
 
-def file_filter() -> str:
+def file_filter(only: str | None = None) -> str:
+    """The file picker's types: both kinds, or only "video" or only "sound" (+ Add → Video file / Sound file)."""
     video = " ".join(f"*{e}" for e in sorted(VIDEO_EXTS))
     audio = " ".join(f"*{e}" for e in sorted(AUDIO_EXTS))
+    if only == "video":
+        return f"Video ({video})"
+    if only == "sound":
+        return f"Sound ({audio})"
     return f"Video and sound ({video} {audio});;Video ({video});;Sound ({audio});;All files (*)"
 
 
