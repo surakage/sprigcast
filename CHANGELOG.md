@@ -6,6 +6,8 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- The log's "page helper memory" line says how much the page helper itself grew or shrank since its last
+  line. It used to repeat SprigCast's own "(grew N MB in 60 s)", which read as the helper's growth.
 - The log's "pages:" line (what each web page holds) is first written a minute after pages start, then every
   15 minutes. It used to come first after 15 minutes, so a short run never showed it.
 - The memory line's count of Python objects is named "python objects since the last tidy", which is what it

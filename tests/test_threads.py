@@ -392,3 +392,14 @@ def test_a_helper_programs_memory_goes_in_the_log():
     line = pacing.helper_memory_line("page helper", 4242, process=lambda pid: tree)
     assert line == "page helper memory: committed 1,450 MB in 3 processes (biggest 900, 300, 250 MB), in use 1,050 MB"
     assert pacing.helper_memory_line("page helper", 4242, process=lambda pid: gone()) is None
+    # Its own change, not SprigCast's: "(grew 834 MB in 60 s)" after this line read as the helper's (PC 2026-11-21).
+    total: list = []
+    pacing.helper_memory_line("page helper", 4242, process=lambda pid: tree, total=total)
+    assert total == [1450.0]
+    pacing._helper_was.pop("page helper", None)
+    assert pacing.helper_change("page helper", 1929.0, "grew 786 MB in 120 s") == ""
+    assert pacing.helper_change("page helper", 2257.0, "grew 834 MB in 60 s") == " (+328 MB since its last line)"
+    assert pacing.helper_change("page helper", 1993.0, "after a bloom switch") == \
+        " (-264 MB since its last line, after a bloom switch)"
+    assert pacing.helper_change("page helper", 1993.2) == ""
+    pacing._helper_was.pop("page helper", None)
