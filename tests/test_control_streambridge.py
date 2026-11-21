@@ -517,3 +517,20 @@ def test_place_set_switches_twitch_test_mode():
     host.start_stream()
     assert _fails(api, "place.set", place=out.id, bandwidth_test=False) == "busy"
     assert "place.bandwidth_test" in FEATURES
+
+
+def test_places_list_says_which_places_are_ready():
+    """A place added from + Add stays off until it has its key (#795): an app sees why (`problem`), not just off."""
+    from sprigcast.control.native import NativeApi
+
+    col = _collection()
+    col.outputs = [Output(id="o1", type="stream", canvas="horizontal", service="twitch", enabled=True),
+                   Output(id="o2", type="stream", canvas="horizontal", service="facebook", enabled=False)]
+    host = FakeHost(col)
+    api = NativeApi(host)
+    first = _ok(api, "places.list")["places"]
+    assert [(p["name"], p["ready"], p["problem"]) for p in first] == [("Twitch", True, None), ("Facebook", True, None)]
+    host.place_problem = lambda output_id: "Needs a stream key" if output_id == "o2" else None
+    second = _ok(api, "places.list")["places"][1]
+    assert second["ready"] is False and second["problem"] == "Needs a stream key" and second["service"] == "facebook"
+    assert "places.ready" in _ok(api, "app.info")["features"]
