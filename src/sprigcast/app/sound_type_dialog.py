@@ -107,10 +107,11 @@ class SoundTypeDialog(CardDialog):
     """`types`: the garden's types ({"name", "color"}); `sounds`: (id, name, type) of every sound, A-Z."""
 
     def __init__(self, types: list[dict], sounds: list[tuple[str, str, str]], editing: str | None = None,
-                 parent: QWidget | None = None):
+                 parent: QWidget | None = None, homes: dict[str, str] | None = None):
         super().__init__(f"Edit {editing}" if editing else "New type", parent, width=580)
         self.types = [dict(t) for t in types]
         self.sounds = sounds
+        self.homes = homes or {}  # {sound id: the type it would have on its own (a mic: Voice)}
         self.editing = editing
         self.removed = False
         mine = next((t for t in self.types if t["name"] == editing), None)
@@ -256,10 +257,16 @@ class SoundTypeDialog(CardDialog):
         names = [t["name"] for t in others]
         fallback = "Other" if "Other" in names else (names[-1] if names else "")
         moves: dict[str, str] = {}
+
+        def home(sid: str) -> str:
+            """Where a sound goes when it leaves a type: its own type (a mic to Voice) if that's still there."""
+            own = self.homes.get(sid, "")
+            return own if own in names else fallback
+
         if self.removed:
             for sid, _name, kind in self.sounds:
                 if kind == self.editing:
-                    moves[sid] = fallback
+                    moves[sid] = home(sid)
             return others, moves
         name = self.chosen_name()
         picked = self.colors.checkedButton()
@@ -275,5 +282,5 @@ class SoundTypeDialog(CardDialog):
             if ticked and kind != name:
                 moves[sid] = name
             elif not ticked and self.editing and kind == self.editing:
-                moves[sid] = fallback  # taken out: to the last other type
+                moves[sid] = home(sid)  # taken out: to its own type, else Other
         return types, moves
