@@ -6,7 +6,7 @@ Nothing has been sent to Elgato. These are the steps and the listing, ready for 
 
 - [ ] Try every key on a real Stream Deck with SprigCast running (see the checklist below).
 - [ ] Decide the plugin UUID for good: `com.sprigcast.sprigcast`. It can't change after publishing.
-- [ ] Set `Author` in the manifest to the name the listing should show, and bump `Version` (four numbers; now `0.2.0.0`).
+- [ ] Set `Author` in the manifest to the name the listing should show, and bump `Version` (four numbers; now `0.3.0.0`).
 - [ ] Sign in to the Elgato Maker Console (https://maker.elgato.com) with the account that will own the listing.
 - [ ] Have a support link: the GitHub repository's issues page works.
 - [ ] Confirm the licence for the plugin's files (the repository's LICENSE covers them).
@@ -18,6 +18,9 @@ Nothing has been sent to Elgato. These are the steps and the listing, ready for 
 - [ ] Mute sound: toggles; muting in SprigCast changes the key.
 - [ ] Show or hide, Garden, Path, Go live, Record, Clips, Save clip, Virtual camera, Screenshot, Media, Filter,
       Transition, Sprig state, Death count, PNGtuber, Run action.
+- [ ] Place: while live with two places, the key stops and starts one of them and the other carries on; pull the
+      network for a moment and the key says "Retrying", then goes back to pink.
+- [ ] Save clip with clips off shows "Clips starting"; a clip that couldn't be saved shows an alert, not a tick.
 - [ ] Sound volume on a key, and on a Stream Deck + dial (turn, press to mute, the level shows on the screen).
 - [ ] Close SprigCast: keys go dark and show "Not connected" when pressed; open it again: they work again within a few seconds.
 - [ ] A wrong password typed under Connection: the Connection line says "Wrong password"; clear it and it connects by itself.

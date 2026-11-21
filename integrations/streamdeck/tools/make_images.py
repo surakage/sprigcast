@@ -50,6 +50,9 @@ GLYPHS = {
     # Go live: a broadcast dot with waves.
     "live": f'<circle cx="50" cy="50" r="11" fill="{{c}}"/><path d="M34 34a22 22 0 0 0 0 32M66 34a22 22 0 0 1 0 32'
             f'M22 22a40 40 0 0 0 0 56M78 22a40 40 0 0 1 0 56" {SW}/>',
+    # Place: a broadcast tower (one of the places the stream goes to).
+    "place": f'<circle cx="50" cy="34" r="8" fill="{{c}}"/><path d="M50 44L33 86M50 44l17 42M40 70h20" {SW}/>'
+             f'<path d="M30 18a24 24 0 0 0 0 32M70 18a24 24 0 0 1 0 32" {SW}/>',
     # Record: the record ring and dot.
     "record": f'<circle cx="50" cy="50" r="32" {SW}/><circle cx="50" cy="50" r="18" fill="{{c}}"/>',
     # Clips: a rewind arrow round a dot (the last seconds kept ready).
@@ -119,6 +122,7 @@ KEYS = {
     "item": (("eye", MINT), ("eye-off", DIM)),
     "live": (("live", DIM), ("live", PINK)),
     "record": (("record", DIM), ("record", PINK)),
+    "place": (("place", DIM), ("place", PINK)),
     "clip": (("clip", MINT), None),
     "volume": (("volume", MINT), None),
     "clips": (("clips", DIM), ("clips", MINT)),
@@ -146,7 +150,7 @@ KEYS = {
 # Groups for the Colour style (each kind of key its own colour; pink stays for live and recording).
 GROUP = {"bloom": "scene", "item": "scene", "garden": "scene", "path": "scene", "transition": "scene", "sprig-state": "scene",
          "mute": "sound", "volume": "sound", "media": "sound",
-         "live": "live", "record": "live",
+         "live": "live", "record": "live", "place": "live",
          "clips": "capture", "clip": "capture", "screenshot": "capture", "camera": "capture",
          "filter": "fx", "deaths": "fx", "pngtuber": "fx", "run": "fx",
          "timer": "fx", "timer-reset": "fx", "timer-add": "fx", "replay": "capture", "freeze": "fx",

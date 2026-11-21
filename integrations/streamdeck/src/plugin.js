@@ -3,7 +3,7 @@
 
 import streamDeck, { SingletonAction } from "@elgato/streamdeck";
 
-import { SprigCast, addSeconds, clockText, timerText } from "./sprigcast.js";
+import { SprigCast, addSeconds, clockText, placeTitle, timerText } from "./sprigcast.js";
 
 const ID = "com.sprigcast.sprigcast";
 const sprigcast = new SprigCast();
@@ -54,13 +54,20 @@ async function listFor(event, payload = {}) {
 		getSources: async () => (await sprigcast.run("sources.list")).sources.map((s) => s.name),
 		getActions: async () => (await sprigcast.run("app.actions")).actions.map((a) => a.do),
 		getExpressions: async () => (await sprigcast.run("pngtuber.expressions")).expressions,
+		// A place's key keeps its id; the list shows its name ("Twitch (horizontal)").
+		getPlaces: async () => (await sprigcast.run("places.list")).places
+			.map((p) => ({ label: p.fullName ?? `${p.name ?? p.service ?? p.id} (${p.shape})`, value: p.id })),
 		getFreezable: async () => [...await sprigNames(), // sprigs, then the things in blooms that aren't sprigs
 			...(await sprigcast.run("sources.list")).sources.filter((s) => s.kind !== "scene").map((s) => s.name)],
 	};
 	const fill = lists[event];
 	if (!fill) return null;
 	try {
-		const names = [...new Set(await fill())].sort((a, b) => String(a).localeCompare(String(b)));
+		const found = await fill();
+		if (found.some((item) => item && typeof item === "object")) { // already label and value
+			return found.sort((a, b) => String(a.label).localeCompare(String(b.label)));
+		}
+		const names = [...new Set(found)].sort((a, b) => String(a).localeCompare(String(b)));
 		const label = TITLED.has(event) ? (n) => n.charAt(0).toUpperCase() + n.slice(1) : (n) => n;
 		return names.map((name) => ({ label: label(String(name)), value: String(name) }));
 	} catch {
@@ -304,6 +311,25 @@ class GoLive extends SprigCastAction {
 	paint(action) { return action.setState(sprigcast.state.stream ? 1 : 0); }
 }
 
+class PlaceKey extends SprigCastAction {
+	// One of the places the stream goes to: start or stop it while live, the others carry on.
+	constructor() { super("place"); }
+	async press(s) {
+		if (!s.place) throw new Error("Pick a place in the key's settings");
+		const sending = sprigcast.state.places[s.place] !== undefined;
+		const start = s.mode === "start" || (s.mode !== "stop" && !sending);
+		if (start === sending) return; // already as asked
+		const result = await sprigcast.run(start ? "place.start" : "place.stop", { place: s.place });
+		sprigcast.setPlaces(result?.places);
+		sprigcast.emit("changed");
+	}
+	async paint(action, s) {
+		const state = sprigcast.state.places[s.place];
+		await action.setState(state === undefined ? 0 : 1);
+		return action.setTitle(placeTitle(state)); // "Retrying" while it's lost its connection
+	}
+}
+
 class Record extends SprigCastAction {
 	constructor() { super("record"); }
 	press() { return sprigcast.run("record.toggle"); }
@@ -330,7 +356,11 @@ class RecordChapter extends SprigCastAction {
 
 class SaveClip extends SprigCastAction {
 	constructor() { super("clip", 1); this.okAfterPress = true; }
-	press() { return sprigcast.run("clip.save"); }
+	async press() {
+		const result = await sprigcast.run("clip.save");
+		if (result?.clip === false && !result.started) throw new Error(result.note ?? "No clip was saved"); // an alert, not a tick
+		return result;
+	}
 	said(result) { return result?.started ? "Clips\nstarting" : "Clip\nsaved"; } // clips were off: this press turned them on
 }
 
@@ -439,7 +469,7 @@ class RunAction extends SprigCastAction {
 	}
 }
 
-const actions = [new ShowBloom(), new MuteSound(), new SoundVolume(), new ToggleItem(), new GoLive(), new Record(), new RecordPause(), new RecordChapter(),
+const actions = [new ShowBloom(), new MuteSound(), new SoundVolume(), new ToggleItem(), new GoLive(), new PlaceKey(), new Record(), new RecordPause(), new RecordChapter(),
 	new ClipsKey(), new SaveClip(), new CameraKey(), new Screenshot(), new MediaKey(), new FilterKey(),
 	new TransitionKey(), new GardenKey(), new PathKey(), new SprigStateAction(), new DeathCount(), new Pngtuber(),
 	new TimerKey(), new TimerReset(), new TimerAdd(), new ReplayKey(), new FreezeKey(),

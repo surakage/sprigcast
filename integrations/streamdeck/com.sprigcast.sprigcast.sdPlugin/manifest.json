@@ -1,6 +1,6 @@
 {
   "Name": "SprigCast",
-  "Version": "0.2.0.0",
+  "Version": "0.3.0.0",
   "Author": "SprigCast",
   "Actions": [
     {
@@ -159,6 +159,29 @@
         },
         {
           "Image": "imgs/actions/live/key1",
+          "Name": "Live",
+          "TitleAlignment": "bottom"
+        }
+      ],
+      "DisableAutomaticStates": true
+    },
+    {
+      "Name": "Place",
+      "UUID": "com.sprigcast.sprigcast.place",
+      "Icon": "imgs/actions/place/icon",
+      "Tooltip": "While live: start or stop sending to one place. Pink while it's live; says when it's reconnecting.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/place/key0",
+          "Name": "Off",
+          "TitleAlignment": "bottom"
+        },
+        {
+          "Image": "imgs/actions/place/key1",
           "Name": "Live",
           "TitleAlignment": "bottom"
         }
