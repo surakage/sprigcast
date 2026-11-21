@@ -166,6 +166,17 @@ def test_each_kind_opens_to_new_and_what_you_have(tmp_path, monkeypatch):
         added = next(c for c in col.sources if c.kind == "display_capture")
         assert opened == [1] and added.name == "Monitor 2" and "blank" not in added.settings
         assert isinstance(display, QMenu)
+
+        # Cancel in New…'s pop-up leaves nothing behind (PC test of #796)
+        monkeypatch.setattr(w, "_window_dialog", lambda settings, had_sound: None)
+        count = len(col.sources), len(col.scene("p").items)
+        w._add_new("window_capture", "Window Capture")
+        QApplication.processEvents()
+        assert (len(col.sources), len(col.scene("p").items)) == count
+        from sprigcast.app.capture_dialog import DisplayCaptureDialog
+
+        dialog = DisplayCaptureDialog({"monitor": 1}, [])
+        assert dialog.screen.accessibleName() == "Screen" and dialog.cursor.accessibleName() == "Mouse pointer"
     finally:
         w.close()
 
