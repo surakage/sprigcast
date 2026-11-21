@@ -204,3 +204,51 @@ def test_clocked_a_file_plays_straight_from_its_player_and_closing_the_player_is
         time.sleep(0.2)
     finally:
         mixer.stop()
+
+
+def test_a_player_closing_after_its_sound_left_the_mixer_asks_nothing(player_lib, tmp_path, caplog):  # noqa: F811
+    """Adding or editing a media leaf makes its sound again: the old sound leaves the mixer, and its player closes
+    a little later. That close asked the mixer to let go of a sound it no longer had, and the engine logged
+    "sc_mixer_source_media: no such sound" (PC, 2026-11-20). A sound that moved on to another player is left alone
+    too; the one still reading the player is let go of."""
+    import logging
+
+    from sprigcast import sprigcore
+
+    class FileSound:
+        kind, name, gain, settings, asleep, audio_chain = "media", "Tone", 1.0, {}, False, None
+
+        def __init__(self, sid):
+            self.id = sid
+            self.player = sprigcore.MediaPlayer(playing=False)
+
+        def native_sound(self):
+            return self.player
+
+        def read_block(self, n):
+            return np.zeros((n, 2), np.float32)
+
+    mixer = NativeMixer(lambda levels: None, clocked=False)
+    calls = []
+    real = mixer._engine.link_media
+    mixer._engine.link_media = lambda sid, player, asleep=False: (calls.append((sid, player)), real(sid, player, asleep))
+    try:
+        gone, moved, kept = FileSound("gone"), FileSound("moved"), FileSound("kept")
+        mixer.set_sources([gone, moved, kept])
+        mixer.tick()
+        ids = {s.obj.id: s.id for s in mixer._known.values()}
+        old_player = moved.player
+        moved.player = sprigcore.MediaPlayer(playing=False)
+        mixer.set_sources([moved, kept])  # "gone" leaves the mixer; "moved" reads its new player
+        mixer.tick()
+        calls.clear()
+        with caplog.at_level(logging.WARNING):
+            gone.player.close()
+            old_player.close()
+            assert calls == []  # nothing asked for sounds that no longer read those players
+            kept.player.close()
+            assert calls == [(ids["kept"], None)]  # the one still reading it is let go of first
+        assert "no such sound" not in caplog.text
+        moved.player.close()
+    finally:
+        mixer._engine.close()

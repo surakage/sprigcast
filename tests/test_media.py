@@ -287,6 +287,10 @@ def test_main_window_adds_and_controls_media(tmp_path, monkeypatch):
         assert any(i.source == video.id for i in w._scene().items)  # the video is placed in the bloom
         assert not any(i.source == sound.id for s in col.scenes for i in s.items)  # the sound file is in Sound
         assert w._has_sound(video) and w._has_sound(sound)
+        # The Sound strips catch up on the next turns (doing it in the click held the window ~0.3 s on the PC)
+        assert sound.id not in w.sound_strips.strips
+        assert _until(lambda: (app.processEvents(), sound.id in w.sound_strips.strips)[1], 5)
+        assert video.id in w.sound_strips.strips
         assert (f"media:{sound.id}:toggle", "ding: play / pause") in actions(col)
         assert _until(lambda: w.media_source(sound.id) is not None, 5)
         assert _until(lambda: w.media_source(sound.id).info()["duration"] is not None, 5)

@@ -474,6 +474,7 @@ class NativeMixer:
             self._end_capture(sound, hand_back=True)
             if sound.media is not None:
                 self._engine.link_media(sound.id, None)
+                sound.media = None  # its player closing later has nothing left to let go of
             self._engine.remove_source(sound.id)
             SOUND_LEVELS.pop(getattr(sound.obj, "id", None), None)
         return out
@@ -539,15 +540,15 @@ class NativeMixer:
         asleep = bool(getattr(source, "asleep", False))
         if player is sound.media and (player is None or sound.asleep == asleep):
             return
+        new = player is not None and player is not sound.media
+        sound.media, sound.asleep = player, asleep  # before linking: a close from now on finds it linked
         try:
             self._engine.link_media(sound.id, player, asleep)
         except sprigcore.NativeError:  # closed meanwhile: pushed from Python until it has another
-            player = None
+            sound.media, new = None, False
             self._engine.link_media(sound.id, None)
-        if player is not None and player is not sound.media:
-            player.before_close(lambda engine=self._engine, sid=sound.id: _unlink(engine, sid))
-        sound.media = player
-        sound.asleep = asleep
+        if new:
+            player.before_close(lambda engine=self._engine, s=sound, p=player: _unlink(engine, s, p))
 
     def _capture(self, source, sound: _Sound, heard: dict) -> None:
         """A microphone or desktop sound with no Python-only filters and no plugin listening: the engine reads its
@@ -749,11 +750,15 @@ class NativeMixer:
                 sound.media = None
 
 
-def _unlink(engine, sound_id: int) -> None:
-    """A player is about to be freed: the mixer stops reading it (MediaPlayer.before_close)."""
+def _unlink(engine, sound: _Sound, player) -> None:
+    """A player is about to be freed: the mixer stops reading it (MediaPlayer.before_close). Only while this sound
+    still reads that player: once the sound is gone from the mixer (a media leaf added or edited makes its sound
+    again) or reads another player, asking logged "sc_mixer_source_media: no such sound" (PC, 2026-11-20)."""
+    if sound.media is not player:
+        return
     try:
-        engine.link_media(sound_id, None)
-    except Exception:  # noqa: BLE001, S110 - the mixer or the sound is gone already
+        engine.link_media(sound.id, None)
+    except Exception:  # noqa: BLE001, S110 - the mixer is gone already
         pass
 
 

@@ -5209,8 +5209,10 @@ class MainWindow(QMainWindow):
             self._say(f"{config.name!r} is in Sound. Right-click it to play.")
         else:
             self._add_item(config)
-        self._refresh_audio()
-        self._refresh_scenes()
+        # The Sound strip and Build's list catch up on the next turns, so the click that added it answers at once:
+        # doing both here held the window ~0.3 s on the PC (2026-11-20) with a garden of 89 blooms.
+        self._refresh_audio_soon()
+        QTimer.singleShot(1, self, self._refresh_scenes)
 
     def media_source(self, source_id: str):
         """The playing media source (from the engine), or None."""
