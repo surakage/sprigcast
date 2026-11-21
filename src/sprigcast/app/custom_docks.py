@@ -16,7 +16,7 @@ import re
 import uuid
 from dataclasses import asdict, dataclass
 
-from PySide6.QtCore import QSettings, QStandardPaths, Qt, QUrl
+from PySide6.QtCore import QSettings, QStandardPaths, Qt, QTimer, QUrl
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -110,13 +110,50 @@ def _shared_profile():
     return _profile
 
 
+def own_window() -> bool:
+    """Web views get a window of their own inside the panel (below) unless SPRIGCAST_WEB_IN_WINDOW=1."""
+    import os
+
+    return os.environ.get("SPRIGCAST_WEB_IN_WINDOW") != "1"
+
+
+def warm_engine() -> bool:
+    """Start the browser engine now (the shared profile starts it): at start-up, before the window is shown, when
+    there are web panels, so the first one opened mid-stream doesn't stop the window while it starts."""
+    import time
+
+    if _profile is not None or not web_engine_available():
+        return False
+    began = time.perf_counter()
+    try:
+        _shared_profile()
+    except Exception:  # only a head start
+        log.warning("web panels: couldn't start the browser engine ahead", exc_info=True)
+        return False
+    log.info("web panels: the browser engine was started ahead (%d ms)", (time.perf_counter() - began) * 1000)
+    return True
+
+
 class WebDockBody(QWidget):
-    """Holds the page. The browser is made the first time the panel is shown, never before."""
+    """Holds the page. The browser is made the first time the panel is shown, never before.
+
+    The browser is a window of its own, set inside the panel, and never a widget of SprigCast's window: the first
+    web view put into a window as a widget makes Qt destroy that whole window and build it again for the graphics
+    card, so SprigCast vanished and came back (and stopped for 1.3 s) the moment a chat link or web panel was
+    first shown (PC, live, 2026-11-21). In its own window only that small window is drawn by the graphics card,
+    and SprigCast's window is left as it is, so a PC that shows no web page pays nothing.
+
+    How: an empty QWindow sits in the panel through Qt's window container, which keeps it in place, shown and
+    hidden with the panel and moved along when the panel is popped out; the web view is a frameless window put
+    inside that one and kept its size."""
 
     def __init__(self, url: str):
         super().__init__()
         self.url = url
         self.view = None
+        self._host = None  # the empty window in the panel that the web view's window sits in
+        self._holder = None  # the widget that keeps _host in place
+        self._attached_to = None  # the top window the view was last set into
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self.placeholder = QLabel("Loading…")
@@ -133,13 +170,68 @@ class WebDockBody(QWidget):
         except ImportError:
             self.placeholder.setText("Web docks need Qt WebEngine, which isn't installed.")
             return
-        self.view = QWebEngineView()
+        if own_window():
+            from PySide6.QtGui import QWindow
+
+            # No parent widget: a web view anywhere under SprigCast's window, even as a window of its own, marks
+            # that window for rebuilding. It's deleted with this panel body instead.
+            self.view = view = QWebEngineView()
+            self.view.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.FramelessWindowHint)
+            self.destroyed.connect(view.deleteLater)
+            # Its own native window now, still hidden, before it gets a page: a page added to a view that has
+            # none yet makes Qt look further up for a window to rebuild, and finds SprigCast's.
+            self.view.create()
+            self._host = QWindow()
+            self._holder = QWidget.createWindowContainer(self._host, self)
+            self._host.widthChanged.connect(self._fit)
+            self._host.heightChanged.connect(self._fit)
+        else:
+            self.view = QWebEngineView()
         self.view.setPage(QWebEnginePage(_shared_profile(), self.view))
         if self.url and self.url != "about:blank":  # made ahead (the Chat panel's link): no page yet
             self.view.setUrl(QUrl(self.url))
         self._layout.removeWidget(self.placeholder)
         self.placeholder.hide()
-        self._layout.addWidget(self.view)
+        self._layout.addWidget(self._holder if self._holder is not None else self.view)
+        if self._holder is not None:
+            self._holder.installEventFilter(self)
+            if self._holder.isVisible():
+                self._attach()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 (Qt naming)
+        from PySide6.QtCore import QEvent
+
+        if watched is self._holder and event.type() == QEvent.Type.Show:
+            self._attach()
+        return False
+
+    def _attach(self) -> None:
+        """Put the web view's window inside the panel's (the first time it shows, and again after the panel moved
+        to another window). It's shown out of sight first: until it is inside, it's a window on the desktop."""
+        top = self.window()
+        if self.view is None or self._host is None or self._attached_to is top:
+            return
+        self._attached_to = top
+        self._host.create()
+        self.view.windowHandle().setParent(self._host)
+        self.view.setGeometry(-32000, -32000, max(1, self._host.width()), max(1, self._host.height()))
+        self.view.show()
+        self._settled = False
+        QTimer.singleShot(0, self, self._settle)
+
+    def _settle(self) -> None:
+        # Showing a widget's window sets it back on the desktop on some systems: set inside again once shown.
+        if self.view is None or self._host is None:
+            return
+        handle = self.view.windowHandle()
+        handle.setParent(None)
+        handle.setParent(self._host)
+        self._settled = True
+        self._fit()
+
+    def _fit(self, *_) -> None:
+        if self.view is not None and self._host is not None and getattr(self, "_settled", False):
+            self.view.setGeometry(0, 0, max(1, self._host.width()), max(1, self._host.height()))
 
     def set_url(self, url: str) -> None:
         self.url = url
@@ -284,6 +376,8 @@ def apply(window, docks: list[CustomDock]) -> None:
     from sprigcast.app.panels import Panel
 
     panels = window.panels
+    if docks and not window.isVisible():  # start-up: the engine starts now, not when a panel is first opened live
+        warm_engine()
     current = {key[len(PREFIX):]: panel for key, panel in panels.panels.items() if key.startswith(PREFIX)}
     wanted = {d.id: d for d in docks}
     for dock_id in current:

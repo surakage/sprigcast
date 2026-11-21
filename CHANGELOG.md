@@ -667,9 +667,11 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
   message box picks Twitch or Kick, and Reply picks the line's own chat. Sign-ins made before this need one more
   sign-in to allow it; Kick is asked for chat and moderation only after you choose to use them. YouTube waits for
   Google's review.
-- Fixed: switching the Chat panel to your chat link made the whole window vanish and come back, stopped it for
-  1.3 s and hitched the stream. With a link saved, its browser is now made while SprigCast starts, before the
-  window is shown, so the switch is instant. (The first link ever pasted in a run still starts the browser then.)
+- Fixed: showing a chat link or a web panel for the first time made the whole window vanish and come back, stopped
+  it for 1.3 s and hitched the stream. The page's browser is now a small window of its own inside the panel, so
+  SprigCast's window is never rebuilt, and PCs that show no web page pay nothing. With a chat link or web panels
+  saved, the browser engine also starts while SprigCast starts, so opening one live is instant.
+  (`SPRIGCAST_WEB_IN_WINDOW=1` goes back to the old way.)
 
 ### Gardens and paths
 
