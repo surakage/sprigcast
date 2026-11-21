@@ -32,7 +32,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from sprigcast.audio import listen
+from sprigcast.audio import listen, peek
 from sprigcast.core.filters import SOUND_LEVELS
 from sprigcast.sources.audio import SAMPLE_RATE
 
@@ -360,6 +360,9 @@ class Mixer:
         voice_db = FLOOR_DB
         for source in sources:
             block = self._read(source)
+            watchers = peek.WATCHERS.get(source.id) if peek.WATCHERS else None
+            if watchers:  # the Filters window hears it before its filters
+                peek.hand(watchers, block)
             chain = getattr(source, "audio_chain", None)
             if chain is not None:
                 try:

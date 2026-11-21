@@ -239,3 +239,21 @@ def test_a_canvas_picture_has_nothing_see_through():
 
     got = screenshot.grab(Engine(), ["horizontal"])
     assert got and not got["horizontal"].hasAlphaChannel()
+
+
+def test_a_bloom_named_by_its_own_canvas_is_pictured_on_that_canvas():
+    """PC 2026-11-21: {"bloom": "bloom-8"} (the vertical Gameplay, no shape) answered with the horizontal picture."""
+    host = Host(_collection())
+    api = NativeApi(host)
+    ask = {"save": False, "data": True}
+    assert [s["shape"] for s in api.run("screenshot.take", {"bloom": "chat-v", **ask})["shots"]] == ["vertical"]
+    assert [s["shape"] for s in api.run("screenshot.take", {"bloom": "brb-v", **ask})["shots"]] == ["vertical"]  # off air
+    assert host.asked[-1][0] == "brb-v"
+    host.collection.scene("brb-v").name = "BRB (Vertical)"  # a name only the vertical one has
+    out = api.run("screenshot.take", {"bloom": "BRB (Vertical)", **ask})
+    assert [s["shape"] for s in out["shots"]] == ["vertical"] and "skipped" not in out
+    # The main bloom, a name both share, or shape given: as before.
+    for asked in ({"bloom": "chat-h"}, {"bloom": "Chatting"}, {"bloom": "chat-v", "shape": "both"}):
+        assert [s["shape"] for s in api.run("screenshot.take", {**asked, **ask})["shots"]] == ["horizontal", "vertical"]
+    assert [s["shape"] for s in api.run("screenshot.take", {"bloom": "chat-v", "shape": "horizontal", **ask})["shots"]] \
+        == ["horizontal"]

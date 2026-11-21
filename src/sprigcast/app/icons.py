@@ -335,14 +335,146 @@ def _draw(p: QPainter, name: str) -> None:
             p.setBrush(p.pen().color())
             p.drawEllipse(P(x, knob), 2, 2)
             p.restore()
+    elif name == "close":
+        p.drawLine(P(6.5, 6.5), P(17.5, 17.5))
+        p.drawLine(P(17.5, 6.5), P(6.5, 17.5))
+    elif name in FILTER_ICONS:
+        _filter_icon(p, name)
     else:  # anything unknown: a small dot
         p.drawEllipse(P(12, 12), 2, 2)
 
 
+def _filter_icon(p: QPainter, name: str) -> None:
+    """One icon per video filter (the Filters window's list and Add filter menu)."""
+    P = QPointF
+    if name == "spin":  # an arrow going round
+        p.drawArc(QRectF(3.5, 3.5, 17, 17), 40 * 16, 290 * 16)
+        p.drawLine(P(19.6, 3.8), P(19.6, 8.6))
+        p.drawLine(P(19.6, 8.6), P(14.8, 8.6))
+    elif name == "curtain":  # a filled block
+        p.save()
+        p.setBrush(p.pen().color())
+        p.drawRoundedRect(QRectF(4.5, 4.5, 15, 15), 3, 3)
+        p.restore()
+    elif name == "mist":  # drifting haze
+        for y, x0, x1 in ((8, 3.5, 16), (13, 6, 20.5), (18, 3.5, 13)):
+            p.drawLine(P(x0, y), P(x1, y))
+        p.drawArc(QRectF(14, 4.5, 5, 5), -90 * 16, 270 * 16)
+    elif name in ("greenscreen", "backdrop"):  # a person in a frame; dashed frame for a removed background
+        if name == "backdrop":
+            pen = p.pen()
+            pen.setDashPattern([1.6, 1.4])
+            p.save()
+            p.setPen(pen)
+            p.drawRoundedRect(QRectF(3, 4, 18, 16), 3, 3)
+            p.restore()
+        else:
+            p.drawRoundedRect(QRectF(3, 4, 18, 16), 3, 3)
+        p.drawEllipse(P(12, 10), 2.6, 2.6)
+        p.drawArc(QRectF(7.5, 15.5, 9, 9), 0, 180 * 16)
+    elif name == "tone":  # sliders lying down
+        for y, knob in ((6, 15.5), (12, 9), (18, 17)):
+            p.drawLine(P(4, y), P(20, y))
+            p.save()
+            p.setBrush(QColor(theme.PANEL))
+            p.drawEllipse(P(knob, y), 2.2, 2.2)
+            p.restore()
+    elif name == "colorcut":  # an eyedropper
+        p.drawLine(P(13.5, 4.5), P(19.5, 10.5))  # its collar
+        tube = QPainterPath(P(15, 6))
+        tube.lineTo(P(6.5, 14.5))
+        tube.lineTo(P(4.5, 19.5))
+        tube.lineTo(P(9.5, 17.5))
+        tube.lineTo(P(18, 9))
+        p.drawPath(tube)
+    elif name == "lightcut":  # half a sun
+        p.drawEllipse(P(12, 12), 4.3, 4.3)
+        p.save()
+        p.setBrush(p.pen().color())
+        p.drawPie(QRectF(7.7, 7.7, 8.6, 8.6), 90 * 16, 180 * 16)
+        p.restore()
+        for i in range(8):
+            a = math.pi * 2 * i / 8
+            p.drawLine(P(12 + math.cos(a) * 7.2, 12 + math.sin(a) * 7.2), P(12 + math.cos(a) * 9, 12 + math.sin(a) * 9))
+    elif name == "mood":  # a painter's palette
+        path = QPainterPath(P(12, 3.5))
+        path.cubicTo(P(6.5, 3.5), P(3.5, 7.5), P(3.5, 12))
+        path.cubicTo(P(3.5, 17), P(7.5, 20.5), P(12, 20.5))
+        path.cubicTo(P(13.5, 20.5), P(14, 19), P(13.2, 17.8))
+        path.cubicTo(P(12.2, 16.3), P(13, 14.5), P(15, 14.5))
+        path.lineTo(P(17, 14.5))
+        path.cubicTo(P(19.2, 14.5), P(20.5, 12.8), P(20.5, 10.5))
+        path.cubicTo(P(20.5, 6.5), P(16.5, 3.5), P(12, 3.5))
+        p.drawPath(path)
+        p.save()
+        c = p.pen().color()
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(c)
+        for x, y in ((8, 11.5), (10, 7.5), (14.5, 7.5)):
+            p.drawEllipse(P(x, y), 1.3, 1.3)
+        p.restore()
+    elif name == "freeze":  # a snowflake
+        for i in range(3):
+            a = math.pi / 2 + math.pi * i / 3
+            dx, dy = math.cos(a) * 9, math.sin(a) * 9
+            p.drawLine(P(12 - dx, 12 - dy), P(12 + dx, 12 + dy))
+        for sign in (-1, 1):
+            y = 12 + sign * 9
+            p.drawLine(P(9.5, y - sign * 2.2), P(12, y - sign * 0.3))
+            p.drawLine(P(14.5, y - sign * 2.2), P(12, y - sign * 0.3))
+    elif name == "glow":  # a four-point sparkle and a small one
+        star = QPainterPath(P(11, 3))
+        for x, y in ((12.8, 8.4), (18.5, 10.5), (12.8, 12.6), (11, 18), (9.2, 12.6), (3.5, 10.5), (9.2, 8.4)):
+            star.lineTo(P(x, y))
+        star.closeSubpath()
+        p.drawPath(star)
+        small = QPainterPath(P(18.5, 14.5))
+        for x, y in ((19.4, 17.1), (21.5, 18), (19.4, 18.9), (18.5, 21.5), (17.6, 18.9), (15.5, 18), (17.6, 17.1)):
+            small.lineTo(P(x, y))
+        small.closeSubpath()
+        p.drawPath(small)
+    elif name == "mosaic":  # four blocks
+        for x, y in ((3.5, 3.5), (13.5, 3.5), (3.5, 13.5), (13.5, 13.5)):
+            p.drawRoundedRect(QRectF(x, y, 7, 7), 1.5, 1.5)
+    elif name == "drift":  # arrows passing each other
+        p.drawLine(P(3.5, 8), P(18, 8))
+        p.drawLine(P(18, 8), P(14.5, 4.5))
+        p.drawLine(P(20.5, 16), P(6, 16))
+        p.drawLine(P(6, 16), P(9.5, 19.5))
+    elif name == "shadow":  # a square with its shadow
+        p.drawRoundedRect(QRectF(3.5, 3.5, 12.5, 12.5), 3, 3)
+        path = QPainterPath(P(20, 8))
+        path.lineTo(P(20, 17))
+        path.cubicTo(P(20, 18.8), P(18.8, 20), P(17, 20))
+        path.lineTo(P(8, 20))
+        p.drawPath(path)
+    elif name == "frame":  # a round cut-out in a frame
+        p.drawRoundedRect(QRectF(3.5, 3.5, 17, 17), 4, 4)
+        p.drawEllipse(P(12, 12), 4.8, 4.8)
+    elif name == "crisp":  # a cut gem
+        path = QPainterPath(P(12, 3))
+        for x, y in ((20, 11.5), (12, 21), (4, 11.5)):
+            path.lineTo(P(x, y))
+        path.closeSubpath()
+        p.drawPath(path)
+        p.drawLine(P(4, 11.5), P(20, 11.5))
+    elif name == "outline":  # a dashed ring
+        pen = p.pen()
+        pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+        pen.setDashPattern([1.7, 1.5])
+        p.save()
+        p.setPen(pen)
+        p.drawEllipse(P(12, 12), 8, 8)
+        p.restore()
+
+
+FILTER_ICONS = ("spin", "curtain", "mist", "greenscreen", "backdrop", "tone", "colorcut", "lightcut", "mood", "freeze",
+                "glow", "mosaic", "drift", "shadow", "frame", "crisp", "outline")
+
 NAMES = ("sprig", "bloom", "leaf", "gear", "search", "lock", "unlock", "link", "key", "upload", "monitor", "mic",
          "camera", "disk", "bolt", "panel", "plus", "compass", "folder", "trash", "speaker", "speaker-off",
          "gamepad", "keyboard", "shutter", "chat", "note", "trophy", "ball", "broadcast", "record", "landscape",
-         "portrait", "dual", "clip", "heart", "tree", "paw", "chevron-down", "chevron-up", "chevron-left", "minus", "swap", "warning", "clock", "moon", "plug", "eye-off", "sliders")
+         "portrait", "dual", "clip", "heart", "tree", "paw", "chevron-down", "chevron-up", "chevron-left", "minus", "swap", "warning", "clock", "moon", "plug", "eye-off", "sliders", "close") + FILTER_ICONS
 
 
 def paint_icon(p: QPainter, r: QRectF, name: str, colour: str | QColor | None = None, width: float = 1.9) -> None:

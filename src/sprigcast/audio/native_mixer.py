@@ -33,7 +33,7 @@ from collections.abc import Callable
 import numpy as np
 
 from sprigcast import sprigcore
-from sprigcast.audio import listen
+from sprigcast.audio import listen, peek
 from sprigcast.audio.mixer import (
     BLOCK,
     FLOOR_DB,
@@ -312,6 +312,7 @@ class NativeMixer:
         self._known: dict[int, _Sound] = {}  # id(source object) -> its sound in the engine
         self._native_taps: dict[tuple, int] = {}  # (callback, tracks) -> the engine's tap
         self._listen_taps: dict[str, int] = {}  # a sound (or listen.MIX) heard by a plugin -> the engine's tap
+        self._peek_taps: dict[str, tuple[int, int]] = {}  # a sound the Filters window hears -> (tap, its engine id)
         self._ducking_sent: Ducking | None = None
         self._push_wanted: tuple[str, str, int] = ("", "off", 0)  # push to talk: (source id, mode, release ms)
         self._push_sent: tuple | None = None
@@ -567,10 +568,13 @@ class NativeMixer:
                 pass
         sound.filters = wanted
 
-    def _engine_ids(self) -> dict:
-        """Source id -> its sound in the engine (a ducking filter follows it there)."""
+    def _engine_ids(self, pushed: bool = True) -> dict:
+        """Source id -> its sound in the engine (a ducking filter follows it there). pushed=False: only the
+        sounds the engine reads itself (its own capture or player), not those Python pushes."""
         ids = {}
         for sound in self._known.values():
+            if not pushed and sound.capture is None and sound.media is None:
+                continue
             sid = getattr(sound.obj, "id", None)
             if sid is not None:
                 ids[str(sid)] = sound.id
@@ -695,13 +699,16 @@ class NativeMixer:
             self._problem(f"source {getattr(source, 'id', '?')}", exc)
             block = np.zeros((BLOCK, 2), np.float32)
         chain = _python_chain(source, sound)
+        sid = getattr(source, "id", None)
+        watchers = peek.WATCHERS.get(sid) if peek.WATCHERS else None
+        if watchers:  # the Filters window hears it before its filters (Python pushes it, so no engine tap)
+            peek.hand(watchers, block)
         if chain is not None:
             try:
                 block = chain.process(block)
             except Exception:
                 log.exception("audio filters on %s failed; turning them off", getattr(source, "id", "?"))
                 source.audio_chain = None
-        sid = getattr(source, "id", None)
         if heard and sid in heard:
             gain = dict(sound.settings or ()).get("gain", 1.0)
             listen.hand(heard[sid], block * np.float32(gain) if gain != 1.0 else block)
@@ -743,6 +750,7 @@ class NativeMixer:
                 except Exception as exc:  # noqa: BLE001 - closed meanwhile, or the engine refused: it hears nothing
                     if not visual.closed:
                         self._problem("audio visualizer", exc)
+        self._sync_peeks()
         mix_heard = bool(listen.LISTENERS.get(listen.MIX))
         tap = self._listen_taps.get(listen.MIX)
         if mix_heard and tap is None:
@@ -750,7 +758,27 @@ class NativeMixer:
         elif not mix_heard and tap is not None:
             self._engine.remove_tap(self._listen_taps.pop(listen.MIX))
 
+    def _sync_peeks(self) -> None:
+        """A tap of each sound the engine reads itself, before its filters (peek.py), while the window is open. A
+        sound Python pushes is handed over in _push instead (one block earlier, the same sound)."""
+        watched = peek.WATCHERS
+        ids = self._engine_ids(pushed=False) if watched or self._peek_taps else {}
+        for sid, (tap, native) in list(self._peek_taps.items()):
+            if sid not in watched or ids.get(sid) != native:
+                self._engine.remove_tap(tap)
+                del self._peek_taps[sid]
+        for sid in watched:
+            if sid not in self._peek_taps and sid in ids:
+                native = ids[sid]
+                self._peek_taps[sid] = (self._engine.add_tap([sprigcore.MIXER_SOURCE_RAW_TAP + native]), native)
+
     def _hand_out(self, heard: dict) -> None:
+        watched = peek.WATCHERS
+        for sid, (tap, _native) in list(self._peek_taps.items()):
+            while (got := self._engine.take(tap, 1)) is not None:
+                fns = watched.get(sid)
+                if fns:
+                    peek.hand(fns, got[1][0])
         for key, (tap, count) in list(self._native_taps.items()):
             while (got := self._engine.take(tap, count)) is not None:
                 _index, data, _dropped = got

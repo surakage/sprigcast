@@ -28,14 +28,14 @@ PLUGIN = {"id": "hide_it", "name": "Hide it", "version": 4, "adds": "Effect",
           "about": "Pixelate a camera, game or screen, or black it out, for a set time. Great for redeems.",
           "new": "Hides only the one you right-click, not the same camera everywhere."}
 
-KINDS = {"pixelate": "Pixelate", "blackout": "Blackout"}
+KINDS = {"pixelate": "Mosaic", "blackout": "Curtain"}  # the names a filter gets when one is added
 VIDEO = ("camera", "display_capture", "window_capture", "game_capture", "media", "browser", "image", "scene")
 
-register_filter("pixelate", "Pixelate", "video", [
+register_filter("pixelate", "Mosaic", "video", [
     Field("size", "Block size", 24, 2, 200, 1, " px"),
     Field("seconds", "Usual time", 15.0, 0.0, 600.0, 1.0, " s"),
 ])(None)
-register_filter("blackout", "Blackout", "video", [
+register_filter("blackout", "Curtain", "video", [
     Field("amount", "How dark", 100, 0, 100, 1, "%"),
     Field("seconds", "Usual time", 15.0, 0.0, 600.0, 1.0, " s"),
 ])(None)

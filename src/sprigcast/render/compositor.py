@@ -1411,8 +1411,9 @@ class Compositor:
         return [(cx + (x - cx) * ca - (y - cy) * sa, cy + (x - cx) * sa + (y - cy) * ca, u, v) for x, y, u, v in quad]
 
     def render_source(self, source_id: str, source_sizes: dict[str, tuple[int, int]], canvas_id: str,
-                      limit: int = 1920) -> np.ndarray | None:
-        """One source drawn on its own (with its filters), as an H x W x 4 RGBA array. For Snap."""
+                      limit: int = 1920, raw: bool = False, fx: VideoEffects | None = None) -> np.ndarray | None:
+        """One source drawn on its own (with its filters, without them when raw: the Filters window's Before,
+        or with `fx` instead: its unapplied changes), as an H x W x 4 RGBA array. For Snap and the Filters window."""
         from sprigcast.core.scene import SceneItem
 
         part = self.parts.get((source_id, canvas_id))
@@ -1423,10 +1424,19 @@ class Compositor:
         out = (max(1, round(size[0] * scale)), max(1, round(size[1] * scale)))
         scene = Scene(id="grab", name="grab", canvas=canvas_id, items=[SceneItem(source=source_id, scale=scale)])
         target = self._target_sized("grab", out)
+        swap = raw or fx is not None
+        own = self.effects.pop(source_id, None) if swap else None  # back right after, on this thread
+        if fx is not None and not raw and fx.active:
+            self.effects[source_id] = fx
         try:
             self._draw_scene(target.fbo, out, scene, source_sizes)
             data = self._read_now(target.fbo)
         finally:
+            if swap:
+                self.effects.pop(source_id, None)
+                if own is not None:
+                    self.effects[source_id] = own
+                self._applied = None
             target.release()
             self.targets.pop("grab", None)
         return np.frombuffer(data, dtype=np.uint8).reshape(out[1], out[0], 4).copy()

@@ -819,7 +819,7 @@ class ControlServer(QObject):
         if gone is not None:
             self._mark_seen(gone, leaving=True)
         label, since = self._labels.pop(socket, ("an unnamed app", time.monotonic()))
-        if gone is not None and getattr(gone, "key", ""):
+        if gone is not None and (getattr(gone, "key", "") or getattr(gone, "name", "")):
             # Signed in with a key: its paired name says more than what it sent as it connected (Streamer.bot
             # sends no name: it was "an app that doesn't say its name" all through the PC's log, 2026-11-21).
             try:
@@ -917,9 +917,11 @@ class ControlServer(QObject):
         device = next((d for d in (pairing.devices if pairing else ()) if key and d.key == key), None)
         if device is not None:
             return f"{device.name} ({what})"
+        said = getattr(session, "name", "")  # "name" in its greeting: its own word, so it's quoted as that
         if key and key == getattr(self, "local_key", ""):
-            return f"{what} with this PC's key"  # api.json: Streamer.bot and other local tools read it
-        return what
+            # api.json: Streamer.bot and other local tools read it
+            return f"{said!r} ({what} with this PC's key)" if said else f"{what} with this PC's key"
+        return f"{said!r} ({what}, by its own word)" if said else what
 
     def _pump(self, socket: QWebSocket, steps: Iterator[Step]) -> None:
         with asking(self._who(socket)):
