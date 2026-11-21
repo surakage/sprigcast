@@ -320,9 +320,9 @@ def catch_unhandled() -> None:
 
 def _version() -> str:
     try:
-        from sprigcast import __version__
+        from sprigcast import build_label
 
-        return __version__
+        return build_label()
     except Exception:
         return "?"
 

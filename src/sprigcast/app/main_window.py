@@ -7013,7 +7013,10 @@ class MainWindow(QMainWindow):
         from sprigcast.output import enhanced
 
         canvases = [target.canvas]
-        if output.enhanced_vertical:
+        if output.enhanced_vertical and not enhanced.vertical_allowed():
+            log.info("Enhanced Broadcasting: the vertical canvas isn't sent to Twitch for now (%s=1 tries it)",
+                     enhanced.VERTICAL_ENV)
+        if enhanced.sends_vertical(output):
             vertical = next((c for c in self.collection.canvases if c.enabled and c.height > c.width
                              and c.id != target.canvas.id), None)
             if vertical is not None:
@@ -7053,7 +7056,7 @@ class MainWindow(QMainWindow):
         log.info("Enhanced Broadcasting: %s", config.describe())
         log.info("Enhanced Broadcasting: Twitch asked for %s", enhanced.answer_summary(answer))
         vertical = any(t.canvas_index > 0 for t in config.tracks)
-        if output.enhanced_vertical and not vertical:
+        if enhanced.sends_vertical(output) and not vertical:
             # Twitch decides per channel and PC: a channel not yet allowed Dual Format, or a PC Twitch thinks can't
             # encode both, gets horizontal qualities only.
             why = ("Turn on a vertical canvas to send it to Twitch too." if len(canvases) < 2 else
@@ -7252,11 +7255,29 @@ class MainWindow(QMainWindow):
         report, self._stream_report = getattr(self, "_stream_report", None), None
         if report is not None:
             report.finish(lines)
+        # Help improve SprigCast (only when turned on): this stream's report and today's log, scrubbed, sent on a
+        # worker. Asked once, after the first stream of a minute or more.
+        from sprigcast.app import share_reports
+
+        share_reports.send_after_stream(getattr(report, "path", None), seconds, collection=self.collection)
+        if seconds >= share_reports.MIN_SECONDS and not share_reports.asked():
+            QTimer.singleShot(2500, self, lambda: self._ask_to_share(seconds))
         health, self._health = getattr(self, "_health", None), None
         self.live_stage.card.set_notice("", "")
         if health is not None and seconds >= 10:  # not for a start that never got going
             health.finish(QSettings())
         self._show_last_stream()
+
+    def _ask_to_share(self, seconds: float) -> None:
+        """The one-time "Help improve SprigCast?" card, when nothing else is open and we're still offline."""
+        from PySide6.QtWidgets import QApplication
+
+        from sprigcast.app import share_reports
+
+        if self.streaming is not None or QApplication.activeModalWidget() is not None:
+            return  # asked after a later stream instead
+        if share_reports.maybe_ask(self, seconds):
+            self.statusBar().showMessage("Thank you! A summary goes to the developer after each stream.", 8000)
 
     def _refresh_stream_status(self) -> None:
         now = time.monotonic()

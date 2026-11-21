@@ -41,7 +41,9 @@ def _output_label(output: Output) -> str:
     service = SERVICES.get(output.service or "custom", SERVICES["custom"])
     label = f"{service.label}  ·  {output.canvas}"
     if output.enhanced and output.service == "twitch":
-        return label + ("  ·  Enhanced + vertical" if output.enhanced_vertical else "  ·  Enhanced")
+        from sprigcast.output.enhanced import sends_vertical
+
+        return label + ("  ·  Enhanced + vertical" if sends_vertical(output) else "  ·  Enhanced")
     if output.size:
         label += f" {output.size[0]}×{output.size[1]}"
     if output.fps:
@@ -466,6 +468,10 @@ class StreamPage(QWidget):
                 self.extra_canvas.addItem(f"{canvas.id.capitalize()} ({canvas.width}×{canvas.height})", canvas.id)
         self.extra_canvas.currentIndexChanged.connect(self._edited)
         form.addRow("Additional canvas", self.extra_canvas)
+        # Twitch's vertical (dual format) doesn't work yet, so the row only shows when it's switched on to try.
+        from sprigcast.output.enhanced import vertical_allowed
+
+        form.setRowVisible(self.extra_canvas, vertical_allowed())
         self.enhanced_note = QLabel(
             "Twitch sets sizes and bitrates; the Video settings above are the fallback. Needs an NVIDIA or Intel Arc GPU."
         )
@@ -857,7 +863,10 @@ class StreamPage(QWidget):
         output.bandwidth_test = service.bandwidth_test and self.bandwidth_test.isChecked()
         output.twitch_account = output.service == "twitch" and self.use_account.isChecked()
         output.enhanced = output.service == "twitch" and self.enhanced.isChecked()
-        output.enhanced_vertical = output.enhanced and bool(self.extra_canvas.currentData())
+        from sprigcast.output.enhanced import vertical_allowed
+
+        if vertical_allowed():  # while the row is hidden, a saved choice stays as it was
+            output.enhanced_vertical = output.enhanced and bool(self.extra_canvas.currentData())
         output.enhanced_max_tracks = 0 if self.enhanced_tracks_auto.isChecked() else self.enhanced_tracks.value()
         output.enhanced_max_kbps = 0 if self.enhanced_kbps_auto.isChecked() else self.enhanced_kbps.value()
         output.ignore_recommendations = self.ignore_recommendations.isChecked()

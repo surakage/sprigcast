@@ -69,6 +69,12 @@ jobs:
           # The bundled font (#428) is in the installed copy.
           & $py -c "import sprigcast, pathlib; f = pathlib.Path(sprigcast.__file__).parent / 'data' / 'fonts' / 'Nunito.ttf'; assert f.is_file(), f; print('font OK')"
           if ($LASTEXITCODE -ne 0) { throw "Nunito.ttf is missing from the installed copy" }
+          # The licenses ship with it (notices.py): SprigCast's own and every bundled part's.
+          foreach ($f in "LICENSE.txt", "THIRD-PARTY-NOTICES.txt") {
+            $p = Join-Path "packaging\build\python" $f
+            if (-not (Test-Path $p) -or (Get-Item $p).Length -lt 1000) { throw "$f is missing from the installed copy" }
+          }
+          & $py -c "import sprigcast; print('version shown:', sprigcast.build_label())"
       - name: Start SprigCast for 30 seconds with a video playing
         shell: pwsh
         timeout-minutes: 16  # four runs; smoke.py fails itself after 180 s each with the log tail; this only backs it up

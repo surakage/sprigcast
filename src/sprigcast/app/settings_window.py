@@ -821,7 +821,7 @@ class SettingsWindow(QDialog):
 
             if not shiboken6.isValid(page):
                 return
-            from sprigcast import __version__
+            from sprigcast import build_label
             from sprigcast.app.updates import auto_check_enabled
 
             updates = QGroupBox("Updates")
@@ -839,7 +839,7 @@ class SettingsWindow(QDialog):
             self.check_updates_button.setEnabled(self.check_updates is not None)
             self.check_updates_button.clicked.connect(lambda: self.check_updates and self.check_updates())
             up_row.addWidget(self.check_updates_button)
-            up_row.addWidget(_hint(f"Version {__version__}"), 1)
+            up_row.addWidget(_hint(f"Version {build_label()}"), 1)
             up_box.addLayout(up_row)
 
             safety = QGroupBox("Going live")
@@ -970,6 +970,13 @@ class SettingsWindow(QDialog):
                 self.keep_logs.addItem(f"{days} days" if days else "Forever", days)
             self.keep_logs.setCurrentIndex(max(0, self.keep_logs.findData(logbook.keep_days())))
             lform.addRow("Keep logs for", self.keep_logs)
+            from sprigcast.app import share_reports
+
+            self.share_streams = QCheckBox("Send stream summaries to the developer")
+            self.share_streams.setChecked(share_reports.enabled())
+            self.share_streams.setToolTip("How each place did, your PC's details and the log. Stream keys, passwords,"
+                                          " names and addresses are removed first")
+            lform.addRow(self.share_streams)
 
             from sprigcast.app import features
 
@@ -1508,6 +1515,10 @@ class SettingsWindow(QDialog):
         from sprigcast.app import logbook
 
         settings.setValue(logbook.KEEP_SETTING, self.keep_logs.currentData())
+        from sprigcast.app import share_reports
+
+        if self.share_streams.isChecked() != share_reports.enabled(settings):  # untouched: still asked after a stream
+            share_reports.set_enabled(self.share_streams.isChecked(), settings)
         level = self.priority.currentData()
         if level != priority.chosen():
             priority.remember(level, settings)

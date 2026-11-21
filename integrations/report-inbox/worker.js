@@ -2,7 +2,8 @@
 // (Help → Report a problem, and the card after a crash) and keeps them in an R2 bucket for 30 days.
 //
 //   POST /v1/report   body: the report .zip (application/zip, at most 8 MB)
-//                     headers: X-SprigCast-Version, X-SprigCast-Kind (crash | problem), X-SprigCast-Cause
+//                     headers: X-SprigCast-Version, X-SprigCast-Kind (crash | problem | stream), X-SprigCast-Cause
+//                     ("stream": the summary a tester chose to send after each stream, app/share_reports.py)
 //                     reply 201 {"id": "SC-7F3K"}: the number the tester can quote
 //   GET  /v1/health   {"ok": true}
 //
@@ -11,6 +12,7 @@
 // Optional: a Discord webhook (secret DISCORD_WEBHOOK) gets one line per new report.
 
 export const MAX_BYTES = 8 * 1024 * 1024;
+const KINDS = ["crash", "problem", "stream"];
 const ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"; // no 0/O or 1/I: easy to read out loud
 
 export function reportId(random = crypto.getRandomValues(new Uint8Array(6))) {
@@ -45,8 +47,10 @@ async function upload(request, env, ctx) {
   if (!(head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04)) {
     return reply({ error: "not a zip" }, 415);
   }
-  const version = clean(request.headers.get("x-sprigcast-version"), 20) || "?";
-  const kind = clean(request.headers.get("x-sprigcast-kind"), 10) === "crash" ? "crash" : "problem";
+  // Room for a test build's label: "0.2.0 test build 44932007527 (eafa358)".
+  const version = clean(request.headers.get("x-sprigcast-version"), 60) || "?";
+  const asked = clean(request.headers.get("x-sprigcast-kind"), 10);
+  const kind = KINDS.includes(asked) ? asked : "problem";
   const cause = clean(request.headers.get("x-sprigcast-cause"), 160);
   const id = reportId();
   const day = new Date().toISOString().slice(0, 10);

@@ -17,7 +17,9 @@ HEALTH_COLORS = {"good": theme.ACCENT, "warning": theme.WARN, "bad": theme.BAD, 
 def what_goes(output: Output, collection: SceneCollection) -> str:
     """"horizontal 1920×1080 · 60 fps" or "Enhanced · horizontal + vertical"."""
     if output.service == "twitch" and output.enhanced:
-        return "Enhanced · " + ("horizontal + vertical" if output.enhanced_vertical else output.canvas)
+        from sprigcast.output.enhanced import sends_vertical
+
+        return "Enhanced · " + ("horizontal + vertical" if sends_vertical(output) else output.canvas)
     canvas = next((c for c in collection.canvases if c.id == output.canvas), None)
     w, h = output.size or ((canvas.width, canvas.height) if canvas else (0, 0))
     fps = output.fps or (canvas.fps if canvas else 0)
