@@ -424,3 +424,131 @@ def test_twitch_switched_off_while_live_leaves_its_quality_to_the_places_sending
         session.stop()
     assert engine.frame_taps == [] and engine.mixer.taps == []
     assert not lent.running
+
+
+def _flv_tags(path):
+    """(kind, time in ms, body) of each tag of an FLV file."""
+    with open(path, "rb") as f:
+        data = f.read()
+    at, tags = 13, []
+    while at + 11 <= len(data):
+        size = int.from_bytes(data[at + 1:at + 4], "big")
+        stamp = int.from_bytes(data[at + 4:at + 7], "big") | data[at + 7] << 24
+        tags.append((data[at] & 0x1F, stamp, data[at + 11:at + 11 + size]))
+        assert int.from_bytes(data[at + 11 + size:at + 15 + size], "big") == 11 + size
+        at += 15 + size
+    assert at == len(data)
+    return tags
+
+
+def _enhanced(tmp_path, name):
+    from test_enhanced import ANSWER
+
+    from sprigcast.core.scene import Canvas
+    from sprigcast.output import enhanced as e
+    from sprigcast.output.enhanced_stream import EnhancedStreamer
+
+    cfg = e.parse_config(ANSWER, "live_user", "libx264")
+    h = Canvas(id="horizontal", width=640, height=360, fps=30)
+    v = Canvas(id="vertical", width=360, height=640, fps=30)
+    start = stream_tests.time.perf_counter()
+    st = EnhancedStreamer("Twitch", cfg, [h, v], start, user_key="live_user")
+    st._url = str(tmp_path / name)
+    return st, (h, v), start
+
+
+def _feed_enhanced(st, canvases, start, frames=60):
+    import time
+
+    import numpy as np
+
+    from sprigcast.render.engine import Frame
+
+    taps = st.frame_taps()
+    for i in range(frames):
+        when = start + 0.01 + i / 30
+        while time.perf_counter() < when:
+            time.sleep(0.002)
+        for c in canvases:
+            data = np.full((c.height, c.width, 4), i * 3 % 255, np.uint8).tobytes()
+            for canvas_id, callback, _size in taps:
+                if canvas_id == c.id:
+                    callback(Frame(c.id, c.width, c.height, data, when))
+        st.push_audio(np.zeros((1600, 2), np.float32))
+
+
+def test_the_engine_packs_and_sends_enhanced_broadcasting_as_python_did(native, tmp_path):
+    """Twitch Enhanced Broadcasting's connection is the engine's (sc_esend): no sender thread of Python's packs or
+    sends a packet. What goes out is what output/eflv.py made of the same packets, tag for tag: the main quality
+    in Enhanced RTMP's own form, the others as multitrack packets, then the sound."""
+    import threading
+
+    from sprigcast.output.eflv import EnhancedIngest
+
+    st, canvases, start = _enhanced(tmp_path, "engine.flv")
+    handed, senders = [], []
+    real = st._to_engine
+
+    def to_engine(packet):
+        handed.append(packet)
+        senders.append(st._esend)
+        real(packet)
+    st._to_engine = to_engine
+    st.start()
+    for t in st.tracks:
+        assert t.encoder.wait_open()
+    python = EnhancedIngest(str(tmp_path / "python.flv"))
+    streams = [python.add_stream_from_template(t.encoder._templates[0]) for t in st.tracks]
+    sound = python.add_stream("aac", rate=48000)
+    sound.layout, sound.bit_rate = "stereo", st.config.audio_kbps * 1000
+    _feed_enhanced(st, canvases, start)
+    assert st.connected and st.status == "live" and st.bytes_out > 0
+    assert not any(t.name.startswith("sprigcast-send-") for t in threading.enumerate())
+    st.stop()
+    assert st.error is None, st.error
+    assert st._esend is None and all(s is not None for s in senders)
+    assert st.frames > 30 and len(handed) > 100 and {p.stream for p in handed} == {0, 1, 2, 3}
+
+    for p in handed:  # the same packets through Python's packing
+        packet = av.Packet(p.data)
+        packet.pts, packet.dts, packet.time_base, packet.is_keyframe = p.pts, p.dts, p.time_base, p.key
+        packet.stream = sound if p.stream == 3 else streams[p.stream]
+        python.mux(packet)
+    python.close()
+    engine, ours = _flv_tags(tmp_path / "engine.flv"), _flv_tags(tmp_path / "python.flv")
+    assert [t for t in engine if t[0] != 18] == [t for t in ours if t[0] != 18]
+    main = [body for kind, _stamp, body in engine if kind == 9 and body[1:5] == b"avc1" and body[0] & 0x0F < 4]
+    assert len(main) > 30 and main[0][0] == 0x90  # keyframe, Enhanced RTMP, SequenceStart
+    assert not any(kind == 9 and not body[0] & 0x80 for kind, _stamp, body in engine)  # no classic H.264 tag left
+
+
+def test_enhanced_broadcasting_can_stay_on_pythons_sender(native, tmp_path, monkeypatch):
+    monkeypatch.setenv("SPRIGCAST_NO_NATIVE_ESEND", "1")
+    st, canvases, start = _enhanced(tmp_path, "python.flv")
+    st.start()
+    for t in st.tracks:
+        assert t.encoder.wait_open()
+    _feed_enhanced(st, canvases, start, 45)
+    assert st.connected and st._esend is None and st._sender is not None
+    st.stop()
+    assert st.error is None, st.error
+    with av.open(str(tmp_path / "python.flv")) as f:
+        assert len(f.streams.video) == 3 and sum(1 for _ in f.decode(video=0)) > 20
+
+
+def test_an_enhanced_connection_the_engine_cant_make_is_tried_again_and_keeps_the_key_out(native, tmp_path,
+                                                                                         monkeypatch):
+    monkeypatch.setattr(stream_mod, "RETRY_FIRST", 0.05)
+    st, canvases, start = _enhanced(tmp_path, "sent.flv")
+    st._url = str(tmp_path / "no-such-folder" / "live_SECRET")
+    st._secrets.append("live_SECRET")
+    st.start()
+    try:
+        for t in st.tracks:
+            assert t.encoder.wait_open()
+        _feed_enhanced(st, canvases, start, 20)
+        assert not st.connected and st.reconnects >= 1 and "disconnected: couldn't connect" in st.status
+        assert "SECRET" not in st.status
+        assert all(t.encoder.running and t.encoder.error is None for t in st.tracks)  # the qualities go on
+    finally:
+        st.stop()

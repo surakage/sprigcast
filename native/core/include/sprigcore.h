@@ -797,6 +797,38 @@ SC_API int sc_link_finish(sc_link *link);
  * stuck in the network after that is left to end by itself. */
 SC_API void sc_link_destroy(sc_link *link);
 
+/* Twitch Enhanced Broadcasting's connection, packed and sent by a thread of the engine's own (interface 43): every
+ * quality and the sound in one FLV stream, the main quality's H.264 tags in their Enhanced RTMP form, sent through
+ * FFmpeg's RTMP protocol (a file path writes the same bytes to a file, for checks). The caller still chooses the
+ * packets: sc_esend_packet queues one (copied) and returns at once; stream 0.. are the qualities in order, the
+ * last stream is the sound (AAC). Times are the connection's own. States are sc_link's: CONNECTING, READY
+ * (connected), LIVE (a packet went out), FINISHED, FAILED (see error). */
+typedef struct sc_esend_config {
+    const char *url;
+    sc_writer *const *videos;    /* a packets-mode writer a quality, open: its codec headers are copied */
+    int video_count;
+    const uint8_t *audio_header; /* the AAC encoder's own header (AudioSpecificConfig) */
+    int audio_header_size, audio_rate, audio_channels, audio_kbps;
+    int connect_timeout_ms, send_timeout_ms;  /* 0: 10 s and 20 s */
+} sc_esend_config;
+typedef struct sc_esend_stats {
+    int state;
+    uint64_t packets, bytes;    /* sent */
+    uint64_t backlog_bytes;     /* queued, not sent yet */
+    double send_seconds, longest_send;
+    char error[256];
+} sc_esend_stats;
+typedef struct sc_esend sc_esend;
+SC_API int sc_esend_open(const sc_esend_config *cfg, sc_esend **out);
+/* SC_OK, or SC_WRITER_REFUSED once it failed, finished or is finishing. */
+SC_API int sc_esend_packet(sc_esend *send, int stream, const uint8_t *data, int size, int64_t pts, int64_t dts,
+                           int tb_num, int tb_den, int key);
+SC_API int sc_esend_stats_get(sc_esend *send, sc_esend_stats *out);
+/* Takes nothing new; what waits is sent, the stream is ended properly and the state is FINISHED. */
+SC_API int sc_esend_finish(sc_esend *send);
+/* Closes at once and frees it (waits up to 5 s for its thread, as sc_link_destroy). */
+SC_API void sc_esend_destroy(sc_esend *send);
+
 /* ---- A recording written by the engine from a packets-mode writer's packets (interface 40, writer.cpp) ------
  * A thread of the engine's own writes every packet the writer encodes into a file, starting at the next keyframe
  * (it asks the writer for one) with times counted from it: the video and the sound tracks in `tracks` (bit 0 =

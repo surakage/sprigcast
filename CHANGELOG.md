@@ -6,6 +6,10 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- Twitch Enhanced Broadcasting's connection is packed and sent by the C++ engine, like every other place
+  already was, instead of by a busy Python thread beside the window. `SPRIGCAST_NO_NATIVE_ESEND=1` turns it
+  off. Not tried on a PC yet.
+- Switching clips off no longer writes an "sc_mixer_tap_pause: no such tap" warning to the log.
 - A chat box on the canvas draws new messages on a background worker instead of on the drawing thread.
 - Source record's picture (the bloom without the sources you leave out) is drawn by the C++ engine and goes
   straight to its file, instead of Python drawing the whole bloom a second time every frame.

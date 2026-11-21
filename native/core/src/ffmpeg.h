@@ -54,7 +54,8 @@ namespace sc::ffm {
     X(1, av_packet_rescale_ts) X(2, avformat_alloc_output_context2) X(2, avformat_new_stream)                      \
     X(2, avio_open2) X(2, avio_closep) X(2, avformat_write_header) X(2, av_interleaved_write_frame)                \
     X(2, av_write_trailer) X(2, avformat_free_context) X(2, avformat_network_init)                                     \
-    X(0, av_hwframe_ctx_alloc) X(0, av_hwframe_ctx_init) X(0, av_hwframe_get_buffer) X(0, av_buffer_create) X(0, av_mallocz) X(0, av_realloc)
+    X(0, av_hwframe_ctx_alloc) X(0, av_hwframe_ctx_init) X(0, av_hwframe_get_buffer) X(0, av_buffer_create) X(0, av_mallocz) X(0, av_realloc)            \
+    X(2, avio_alloc_context) X(2, avio_context_free) X(2, avio_write) X(2, avio_flush) X(0, av_malloc) X(0, av_free) X(1, avcodec_parameters_alloc) X(1, avcodec_parameters_free)
 
 struct FFmpeg {
 #define X(lib, name) decltype(&::name) name = nullptr;
