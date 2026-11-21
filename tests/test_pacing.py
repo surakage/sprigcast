@@ -295,3 +295,26 @@ def test_a_bloom_switch_holds_collection_and_housekeeping_a_moment(monkeypatch):
     finally:
         gc.enable()
         pacing._quiet_until, pacing._gc_held = 0.0, False
+
+
+def test_the_late_frame_line_says_when_the_render_thread_waited_instead_of_worked(monkeypatch):
+    """PC 2026-11-21, on a stream: "late frame (24 missed) ... vertical streams and recordings 406.0" while a web
+    panel's browser was made on the window's thread. The step did no work for 406 ms: the thread waited. The line
+    says so, so the step named isn't taken for the slow one."""
+    from sprigcast.render import engine as engine_mod
+    from sprigcast.render.engine import Engine
+
+    engine = Engine.__new__(Engine)
+    cpu = [10.0]
+    monkeypatch.setattr(engine_mod.time, "thread_time", lambda: cpu[0])
+    engine._ran_from = 10.0
+    engine._marks = [("start", 0.0), ("sprigs", 0.002), ("vertical streams and recordings", 0.408)]
+    cpu[0] = 10.004  # it ran 4 ms of the 408
+    line = engine._where()
+    assert "vertical streams and recordings 406.0" in line
+    assert "this thread ran 4 ms of the 408 and waited the rest" in line
+    cpu[0] = 10.400  # a frame that really worked that long says nothing more
+    assert "waited" not in engine._where()
+    engine._marks = [("start", 0.0), ("sprigs", 0.012)]  # a short frame: nothing
+    cpu[0] = 10.0
+    assert "waited" not in engine._where()

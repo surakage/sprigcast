@@ -84,6 +84,7 @@ WAKE_WAIT_S = 2.0  # a switch to a bloom whose camera is closed shows the old bl
 STAGED_VIEW = "~next:"  # + canvas id: the engine's view of the bloom Build edits there (Engine._native_views)
 PART_VIEW = "~part"  # the engine's view of the sprig open in Build
 CLEAN_VIEW = "~clean:"  # + canvas id: the engine's view of the bloom on air without Source record's left-out sources
+WAITED_S = 0.05  # a frame this long in which the render thread ran under half the time: it waited (_waited)
 PREVIEW_FPS = 30  # the UI draws previews about 30 times a second; copying more is wasted
 # Resting ticks (Engine._rests): while the native engine draws and hands on every frame by itself and nothing of
 # Python's changes, the render thread's tick has nothing to do each frame. It then works only as often as a
@@ -2370,10 +2371,25 @@ class Engine:
         pruned = getattr(self, "_pruned", 0)
         if pruned and any(name == "letting go of idle copies" for name, _t in marks):
             text += f"; let go of {pruned} idle copies"
+        text += self._waited(marks)
         window = getattr(self, "_window_at", "")
         if window:  # a step held up by Python's lock: what the window's thread was doing then
             text += f"; window at {window}"
         return f" ({text})" if text else ""
+
+    def _waited(self, marks) -> str:
+        """For the late-frame line: a long frame in which this thread hardly ran. Its slowest step is then only
+        where it stood while it waited (for Python's lock, held by the window's thread, or for a turn on a busy
+        PC), not work of that step: "vertical streams and recordings 406.0" on the PC was a web panel's browser
+        being made on the window's thread, with every processor busy (2026-11-21, on a stream)."""
+        started = getattr(self, "_ran_from", None)
+        if started is None or len(marks) < 2:
+            return ""
+        took = marks[-1][1] - marks[0][1]
+        worked = max(0.0, time.thread_time() - started)
+        if took < WAITED_S or worked > took / 2:
+            return ""
+        return f"; this thread ran {1000 * worked:.0f} ms of the {1000 * took:.0f} and waited the rest"
 
     def _rests(self, now: float) -> bool:
         """This tick has nothing to do: the native engine draws, scales and hands every frame to the encoders by
@@ -2391,6 +2407,7 @@ class Engine:
 
     def _tick(self, compositor, now: float) -> None:
         self._marks = [("start", time.perf_counter())]
+        self._ran_from = time.thread_time()  # this thread's own processor time, for _waited
         self._window_at = ""
         self._tick_now = now
         if self._rests(now):
