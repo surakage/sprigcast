@@ -318,3 +318,32 @@ def test_the_late_frame_line_says_when_the_render_thread_waited_instead_of_worke
     engine._marks = [("start", 0.0), ("sprigs", 0.012)]  # a short frame: nothing
     cpu[0] = 10.0
     assert "waited" not in engine._where()
+
+
+def test_the_frame_rate_shown_is_the_engines_while_it_carries_the_picture():
+    """Live 2026-11-21: "an app asked to go live; the Stream doctor said wait: The preview runs at 42 of 60 fps",
+    and the stream report said 54 fps and 86 late ticks at every bloom switch. Those counted the render thread's
+    ticks, which only waited for Python's lock while the native engine drew and handed on all 60 frames. While the
+    engine carries every picture, the rate shown is its own; with anything through Python, the ticks count."""
+    from types import SimpleNamespace
+
+    from sprigcast.render.engine import LATE_CARRIED, Engine, engine_rate
+
+    engine = Engine.__new__(Engine)
+    engine._native = SimpleNamespace(failed=False, pace=(10.0, 600, 2, 3.5))
+    engine._python_drew, engine._handed = False, False
+    assert engine._engine_pace() == (10.0, 600, 2, 3.5)
+    engine._handed = True  # a stream's frames pass through Python: a late tick can cost it frames
+    assert engine._engine_pace() is None
+    engine._handed, engine._python_drew = False, True  # Python's compositor draws (a projector, a Move)
+    assert engine._engine_pace() is None
+    engine._python_drew, engine._native.failed = False, True
+    assert engine._engine_pace() is None
+    engine._native = None
+    assert engine._engine_pace() is None
+
+    assert engine_rate((11.0, 660, 3, 4.0), (10.0, 600, 2, 3.5)) == (60.0, 4.0, 1)
+    assert engine_rate((10.0, 600, 2, 3.5), (10.0, 600, 2, 3.5)) is None  # no check in between
+    assert engine_rate((11.0, 660, 3, 4.0), None) is None and engine_rate(None, (10.0, 600, 2, 3.5)) is None
+    assert engine_rate((1.0, 60, 0, 4.0), (10.0, 600, 2, 3.5)) is None  # a new engine: its clock started over
+    assert "no frame lost" in LATE_CARRIED

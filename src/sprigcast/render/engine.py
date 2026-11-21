@@ -84,6 +84,7 @@ WAKE_WAIT_S = 2.0  # a switch to a bloom whose camera is closed shows the old bl
 STAGED_VIEW = "~next:"  # + canvas id: the engine's view of the bloom Build edits there (Engine._native_views)
 PART_VIEW = "~part"  # the engine's view of the sprig open in Build
 CLEAN_VIEW = "~clean:"  # + canvas id: the engine's view of the bloom on air without Source record's left-out sources
+LATE_CARRIED = "late tick, no frame lost: the engine drew and handed on every frame itself"
 WAITED_S = 0.05  # a frame this long in which the render thread ran under half the time: it waited (_waited)
 PREVIEW_FPS = 30  # the UI draws previews about 30 times a second; copying more is wasted
 # Resting ticks (Engine._rests): while the native engine draws and hands on every frame by itself and nothing of
@@ -93,6 +94,14 @@ REST_CALM_S = 0.5  # nothing of Python's needed a frame for this long before tic
 REST_MAX_S = 0.07  # the longest stretch between two working ticks
 FAIL_RETRY_S = 1.0  # a source whose picture keeps failing is asked again about once a second, not every frame
 CLOSE_ALL_S = 4.0  # quitting: sources close side by side for at most this long
+
+
+def engine_rate(pace: tuple | None, before: tuple | None) -> tuple[float, float, int] | None:
+    """(frames a second, ms a frame, frame times missed) of the native engine between two of its health checks
+    (Engine._engine_pace), or None when there aren't two different ones to tell from."""
+    if pace is None or before is None or pace[0] <= before[0] or pace[1] < before[1]:
+        return None
+    return (pace[1] - before[1]) / (pace[0] - before[0]), float(pace[3]), max(0, int(pace[2] - before[2]))
 
 
 class Frame:
@@ -208,6 +217,7 @@ class Engine:
         self._next_preview = float("inf")  # when the next preview copy is due
         self._interval = 1.0 / 60  # seconds a tick (set by the loop)
         self.rested_ticks = 0  # ticks that had nothing to do and did nothing
+        self._handed = False  # this tick took an output's frames from the native engine through Python
         self._rest_said = False
         global _LIVE
         _LIVE = weakref.ref(self)
@@ -698,6 +708,7 @@ class Engine:
         readbacks_at = 0
 
         late_logged, late_held = float("-inf"), 0
+        pace_before, engine_fps, engine_ms = None, None, None  # the native engine's own pace (_engine_pace)
         failed_run, reset_checked, rebuild_after = 0, 0.0, 0.0
         restarted_at, restarts = float("-inf"), 0  # graphics starts close together (GRAPHICS_RESTART_CALM_S)
         gpu = self._gpu_wait(compositor)
@@ -774,7 +785,9 @@ class Engine:
                     # missed ticks (no burst to catch up) and count them, still keeping the grid's phase.
                     missed = int((now - next_tick) / interval)
                     if missed:
-                        dropped += missed
+                        carried = self._engine_pace() is not None  # the engine's frames went on without this tick
+                        if not carried:
+                            dropped += missed
                         late_held += 1
                         # Say where the time went: the first late frame, then at most one every 10 s
                         # (878 lines on 2026-11-15), with how many were let go since.
@@ -784,7 +797,8 @@ class Engine:
                             log_gpu_users_later(1000 * gpu_waited)
                         if now - late_logged >= LATE_LOG_EVERY_S:
                             late_logged = now
-                            log.info("late frame (%d missed): woke %.1f ms late, %scommands %.1f ms, frame %.1f ms%s%s%s%s",
+                            log.info("%s (%d missed): woke %.1f ms late, %scommands %.1f ms, frame %.1f ms%s%s%s%s",
+                                     LATE_CARRIED if carried else "late frame",
                                      missed, 1000 * max(0.0, woke - (next_tick - interval)),
                                      f"graphics card behind {1000 * gpu_waited:.1f} ms, " if gpu_waited >= 0.001
                                      else "",
@@ -807,7 +821,18 @@ class Engine:
                         render_times = deque(render_times, maxlen=fps)
                         self._follow_rate(fps)
                     avg_ms = 1000 * sum(render_times) / max(1, len(render_times))
-                    self.events.put(Stats(fps=ticks / (now - stats_at), render_ms=avg_ms, dropped_ticks=dropped,
+                    shown_fps = ticks / (now - stats_at)
+                    pace = self._engine_pace()
+                    rate = engine_rate(pace, pace_before)
+                    if pace is None:
+                        engine_fps = engine_ms = None
+                    elif rate is not None:
+                        engine_fps, engine_ms = rate[0], rate[1]
+                        dropped += rate[2]
+                    pace_before = pace
+                    if engine_fps is not None:  # the frames the stream gets: the engine's, not this thread's ticks
+                        shown_fps, avg_ms = engine_fps, engine_ms
+                    self.events.put(Stats(fps=shown_fps, render_ms=avg_ms, dropped_ticks=dropped,
                                            readbacks=(self.readbacks - readbacks_at) / (now - stats_at)))
                     readbacks_at = self.readbacks
                     self.events.put(
@@ -2098,6 +2123,7 @@ class Engine:
             if id(getattr(callback, "__self__", None)) in linked:
                 continue
             self._busy_at = self._tick_now  # its frames pass through here: every tick has work
+            self._handed = True
             if key not in made:
                 made[key] = [frame if key[1] else Frame(canvas.id, key[0][0], key[0][1], frame[0], frame[1], "nv12")
                              for frame in native.take_outputs(canvas.id, key)]
@@ -2391,6 +2417,18 @@ class Engine:
             return ""
         return f"; this thread ran {1000 * worked:.0f} ms of the {1000 * took:.0f} and waited the rest"
 
+    def _engine_pace(self) -> tuple | None:
+        """The native engine's own (clock, frames drawn, frame times missed, ms a frame) while it draws every
+        picture and hands every recording and stream its frames itself; None while anything is drawn by, or
+        passes through, Python. Then a tick of this thread that comes late costs the stream nothing, and the frame
+        rate SprigCast shows (Stats: the status bar, the Stream doctor, the stream report) is the engine's. Live
+        2026-11-21: "The preview runs at 42 of 60 fps" stopped an app's go-live, and the report said 54 fps at
+        every bloom switch, from this thread's ticks while the engine drew all 60."""
+        native = self._native
+        if native is None or native.failed or self._python_drew or getattr(self, "_handed", False):
+            return None
+        return getattr(native, "pace", None)
+
     def _rests(self, now: float) -> bool:
         """This tick has nothing to do: the native engine draws, scales and hands every frame to the encoders by
         itself, no source of Python's made a picture lately, nothing was asked since the last working tick and
@@ -2417,6 +2455,7 @@ class Engine:
                 log.info("the render thread rests between previews while the native engine carries the picture")
             return
         self._stirred = False
+        self._handed = False
         self._worked_at = now
         if self._busy_at == float("-inf"):
             self._busy_at = now  # the first tick: calm is counted from here

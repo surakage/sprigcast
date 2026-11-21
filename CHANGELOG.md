@@ -6,6 +6,12 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- The frame rate SprigCast shows (status bar, Stream doctor, stream report, apps) is the C++ engine's own
+  while it draws every picture and hands every stream its frames itself. It used to count the Python drawing
+  thread's ticks, which can come late without costing the stream a frame: the Stream doctor said "The preview
+  runs at 42 of 60 fps" and stopped an app's go-live, and the report showed 54 fps at every bloom switch.
+  Such a tick is logged as "late tick, no frame lost". Not tried on a PC yet.
+- The Stream doctor no longer writes an error to the log when its window is closed while it still listens.
 - Going live first checks that every place's server can be reached (2 seconds at most, nothing is sent and the
   stream key isn't used). A place that would not connect is named in the Stream doctor's card before you are
   live, and in the warnings an app gets. Not tried on a PC yet.
