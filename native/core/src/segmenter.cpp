@@ -456,6 +456,15 @@ bool segment(sc_device &dev, uint64_t key, int pic_w, int pic_h, bool room, floa
     return true;
 }
 
+void segment_rest(sc_device &dev) {
+    constexpr double REST_S = 10.0;
+    if (!dev.segmenter || now_seconds() - g_last_used.load() < REST_S) return;
+    dev.segmenter.reset();
+    dev.context->Flush();  // the card frees what was let go now, not with some later frame
+    g_state.store(0);
+    log_line(SC_LOG_INFO, "background: no picture uses the filter, the person finder let go of the card");
+}
+
 }  // namespace sc
 
 extern "C" SC_API int sc_background_info(sc_background_status *out) {
