@@ -525,7 +525,10 @@ def drain_log() -> int:
             return moved
         for line in buf.raw[:n].decode("utf-8", "replace").splitlines():
             level, _, message = line.partition(" ")
-            log.log(_LEVELS.get(int(level) if level.isdigit() else 20, logging.INFO), "engine: %s", message)
+            # The whole line as the message, not "engine: %s" with it: the log holds back a message written more
+            # than ten times a minute (app/logbook.py Floods), and every engine line was that one message. The
+            # PC's camera lines never reached the log after a start with ten engine lines before them (2026-11-21).
+            log.log(_LEVELS.get(int(level) if level.isdigit() else 20, logging.INFO), "engine: " + message)
             moved += 1
 
 

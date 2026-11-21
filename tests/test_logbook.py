@@ -101,3 +101,29 @@ def test_crash_notes_on_windows_read_only_the_crashing_threads_stack():
 
     assert crash_dumps_all_threads("win32") is False
     assert crash_dumps_all_threads("linux") is True
+
+
+def test_engine_lines_are_not_held_back_as_one_repeated_message(monkeypatch, caplog):
+    """PC 2026-11-21: the engine's camera lines never reached the log. Every engine line was logged as the one
+    message "engine: %s", and the log holds back a message written more than ten times a minute."""
+    import logging
+
+    from sprigcast import sprigcore
+    from sprigcast.app.logbook import Floods
+
+    lines = [f"20 media: line {i}".encode() for i in range(30)]
+
+    class Lib:
+        def sc_log_drain(self, buf, size):
+            if not lines:
+                return 0
+            data = lines.pop(0) + b"\n"
+            buf.raw = data + buf.raw[len(data):]
+            return len(data)
+
+    monkeypatch.setattr(sprigcore, "_lib", lambda: Lib())
+    floods = Floods()
+    with caplog.at_level(logging.INFO, logger=sprigcore.log.name):
+        assert sprigcore.drain_log() == 30
+    kept = [r for r in caplog.records if floods.filter(r)]
+    assert len(kept) == 30 and kept[-1].getMessage() == "engine: media: line 29" and not kept[-1].args
