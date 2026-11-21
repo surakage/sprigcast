@@ -6,6 +6,10 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- FFmpeg's log lines are written when they are said. Camera lines like "Could not set video options" no longer
+  show up as errors minutes later when a place stops.
+- The log line about frames the engine had ready but that were taken too late now names the picture (canvas
+  and size) and says they were dropped.
 - YouTube: a place signed in to YouTube checks its stream key when you go live and sends to the key your
   stream is waiting on. It used to keep the channel's first key, which could be an old one that YouTube
   refuses. Not tried on a PC yet.

@@ -241,6 +241,7 @@ class NativeCanvases:
         self._paused: dict[tuple[int, int], tuple] = {}  # (owner, writer) unlinked for a transition Python draws
         self._link_refused = weakref.WeakSet()  # recordings whose writer an output wouldn't link to
         self.output_drops = 0
+        self._late: dict[str, int] = {}  # output ("horizontal 1280x720 on the card") -> frames not taken, since said
         self.lost = 0  # frames of the output take_outputs last looked at that the engine let go of
         self._wipe_maps: set[str] = set()
         self._signature = None
@@ -753,7 +754,7 @@ class NativeCanvases:
                     log.warning("native engine: this graphics card can't keep frames on it for the encoder; "
                                 "they go through memory")
                 if taken is None:
-                    self._count_drops(slot, out, dropped)
+                    self._count_drops(slot, out, dropped, canvas_id, key)
                     break
                 texture, pool_id, entry, drawn = taken
                 frame = CardFrame(canvas_id, size, drawn, self._pool(pool_id), texture, entry,
@@ -764,7 +765,7 @@ class NativeCanvases:
                     break
                 data, drawn, dropped = got
                 frame = (data, drawn)
-            self._count_drops(slot, out, dropped)
+            self._count_drops(slot, out, dropped, canvas_id, key)
             if drawn > last:
                 frames.append(frame)
                 last = drawn
@@ -943,11 +944,15 @@ class NativeCanvases:
             if isinstance(had, sprigcore.CaptureTarget) or (isinstance(had, str) and hasattr(had, "link")):
                 had.link(None)
 
-    def _count_drops(self, slot: int, out: int, dropped: int) -> None:
+    def _count_drops(self, slot: int, out: int, dropped: int, canvas_id: str = "", key: tuple = ()) -> None:
         gone = dropped - self._dropped.get((slot, out), 0)
         if gone > 0:
             self._dropped[(slot, out)] = dropped
             self.output_drops += gone
+            size = key[0] if key else None
+            name = f"{canvas_id} {size[0]}x{size[1]}" if size else (canvas_id or "an output")
+            name += " on the card" if len(key) > 1 and key[1] else ""
+            self._late[name] = self._late.get(name, 0) + gone
 
     def _pool(self, pool_id: int) -> CardPool:
         pool = self._pools.get(pool_id)
@@ -999,8 +1004,16 @@ class NativeCanvases:
             self._rebuilds = stats["rebuilds"]
             log.warning("native engine: rebuilt its device (%d so far)", self._rebuilds)
         if self.output_drops:
-            log.warning("native engine: %d recording or stream frames weren't taken in time", self.output_drops)
+            # Which picture, and what became of the frames: "N recording or stream frames weren't taken in time"
+            # named neither (live 2026-11-21). The engine had them ready and let them go because Python's drawing
+            # thread came for them late; the recordings and streams fed from that picture count them as dropped.
+            which = ", ".join(f"{count} of {name}" for name, count in sorted(self._late.items())) or \
+                f"{self.output_drops}"
+            log.warning("native engine: dropped %d frame%s that Python took too late (%s); the recordings and "
+                        "streams of that picture skip them", self.output_drops,
+                        "" if self.output_drops == 1 else "s", which)
             self.output_drops = 0
+            self._late.clear()
         if stats["faulted"]:
             self.fail("it stopped after repeated faults")
         elif stats["hung"] and stats.get("ticks", 0) == self._hung_ticks:

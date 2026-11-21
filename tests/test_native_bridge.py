@@ -1140,6 +1140,7 @@ def test_an_output_keeps_its_slot_and_its_frames_never_go_backwards(monkeypatch)
     assert bridge.take_outputs("h", big) == [(b"b", 6.0), (b"c", 7.0)]
     assert bridge.output_drops == 3 and bridge.lost == 3 and bridge.take_outputs("h", big) == []
     assert bridge.lost == 0
+    assert bridge._late == {"h 64x36": 3}  # the log names the picture ("3 of h 64x36"), not just a count
     assert bridge.take_outputs("h", ((2, 2), False)) == []  # not an output it makes
     bridge.set_outputs("h", [big], "lanczos")  # scaled another way: every output starts over
     assert bridge.engine.set[-3:] == [(0, 1, 0, 0), (0, 0, 0, 0), (0, 0, 64, 36)]
