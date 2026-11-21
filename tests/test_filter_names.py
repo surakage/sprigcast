@@ -158,3 +158,62 @@ def test_before_and_after_asks_for_both_pictures():
     assert not d.preview.timer.isActive()  # stops asking once closed
     sound = FiltersDialog(SourceConfig(id="mic", kind="audio_input", name="Mic"), lambda save=True: None, grab=grab)
     assert sound.preview is None  # sound filters have no picture
+
+
+def test_after_comes_from_the_native_engine_for_native_only_filters():
+    _app()
+    import numpy as np
+
+    from sprigcast.app.filters_dialog import EngineGrab, nv12_to_rgba
+    from sprigcast.core import filters
+    from sprigcast.core.scene import Canvas, SceneCollection, SourceConfig
+    from sprigcast.render.engine import Frame
+
+    grey = np.full(64 * 36 * 3 // 2, 128, np.uint8)
+    grey[: 64 * 36] = 126  # limited-range mid grey
+    rgba = nv12_to_rgba(grey.tobytes(), 64, 36)
+    assert rgba.shape == (36, 64, 4) and abs(int(rgba[0, 0, 0]) - 128) <= 2 and rgba[0, 0, 3] == 255
+
+    class FakeEngine:
+        def __init__(self):
+            self.views, self.taps, self.grabs = {}, {}, []
+
+        def grab_source(self, sid, back, raw, limit):
+            self.grabs.append((sid, raw))
+            back(None)
+
+        def set_view(self, name, canvas_id=None, kind="bloom", ref=None):
+            if canvas_id is None:
+                self.views.pop(name, None)
+            else:
+                self.views[name] = (canvas_id, kind, ref)
+
+        def add_frame_tap(self, key, cb, nv12_size=None):
+            self.taps[key] = (cb, nv12_size)
+
+        def remove_frame_tap(self, key, cb):
+            self.taps.pop(key, None)
+
+    col = SceneCollection(canvases=[Canvas(id="horizontal", name="Horizontal", width=1920, height=1080)],
+                          sources=[SourceConfig(id="cam", kind="camera", name="Cam",
+                                                filters=[Filter(id="b", kind="native_test", name="Backdrop")])])
+    engine = FakeEngine()
+    grab = EngineGrab(engine, col)
+    got = []
+    grab("cam", got.append, False, 480)
+    assert engine.grabs == [("cam", False)]  # not native-only yet: Python's compositor as usual
+    filters.NATIVE_DRAWN.add("native_test")
+    try:
+        grab("cam", got.append, False, 480)
+        assert engine.views["filters-window"] == ("horizontal", "source", "cam")
+        cb, size = engine.taps["view:filters-window"]
+        assert size == (480, 270)
+        cb(Frame("view:filters-window", 480, 270, bytes(480 * 270 * 3 // 2), fmt="nv12"))
+        grab("cam", got.append, False, 480)
+        assert got[-1].shape == (270, 480, 4)
+        grab("cam", got.append, True, 480)  # Before: always without filters, from Python's compositor
+        assert engine.grabs[-1] == ("cam", True)
+        grab.stop()
+        assert not engine.taps and not engine.views
+    finally:
+        filters.NATIVE_DRAWN.discard("native_test")

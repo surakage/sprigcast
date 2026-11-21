@@ -142,6 +142,11 @@ OLD_LABELS = {
 }
 
 
+# Filter kinds only the native engine draws (the Background filter's Backdrop). The Filters window's After
+# picture for a source with one of these comes from the native engine, not Python's compositor.
+NATIVE_DRAWN: set[str] = set()
+
+
 def kind_for_label(text: str) -> str | None:
     """The filter kind a name means, today's or the old one, any case ("chroma key" -> "chroma_key")."""
     wanted = text.strip().lower()

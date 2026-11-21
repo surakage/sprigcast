@@ -507,6 +507,74 @@ class AddPicker(QFrame):
         self.search.setFocus()
 
 
+def nv12_to_rgba(data: bytes, width: int, height: int):
+    """An NV12 picture (BT.709, limited range, as the engine makes for encoders) as H x W x 4 RGBA."""
+    import numpy as np
+
+    y = np.frombuffer(data, np.uint8, width * height).reshape(height, width).astype(np.float32)
+    uv = np.frombuffer(data, np.uint8, width * height // 2, width * height).reshape(height // 2, width // 2, 2)
+    uv = uv.astype(np.float32).repeat(2, 0).repeat(2, 1) - 128.0
+    luma = (y - 16.0) * (255.0 / 219.0)
+    u, v = uv[..., 0] * (255.0 / 224.0), uv[..., 1] * (255.0 / 224.0)
+    r = luma + 1.5748 * v
+    g = luma - 0.1873 * u - 0.4681 * v
+    b = luma + 1.8556 * u
+    out = np.empty((height, width, 4), np.uint8)
+    out[..., 0], out[..., 1], out[..., 2] = (np.clip(c, 0, 255) for c in (r, g, b))
+    out[..., 3] = 255
+    return out
+
+
+class EngineGrab:
+    """The Filters window's pictures from the engine: Before is the source drawn without its filters (Python's
+    compositor). After is the source with them; when it has a filter only the native engine draws
+    (filters.NATIVE_DRAWN, like Backdrop), After comes from a small native view of the source alone instead.
+    stop() lets go of that view when the window closes."""
+
+    VIEW = "filters-window"
+
+    def __init__(self, engine, collection):
+        self.engine, self.collection = engine, collection
+        self.latest = None  # (bytes, w, h) of the native view, from the render thread
+        self._tapped: str | None = None  # the source the native view shows
+
+    def __call__(self, source_id: str, back: Callable, raw: bool, limit: int) -> None:
+        from sprigcast.core.filters import NATIVE_DRAWN
+
+        source = self.collection.source(source_id)
+        native = not raw and source is not None and any(f.enabled and f.kind in NATIVE_DRAWN for f in source.filters)
+        if not native:
+            self.stop()
+            self.engine.grab_source(source_id, back, raw, limit)
+            return
+        if self._tapped != source_id:
+            self._tap(source_id, limit)
+        got = self.latest
+        back(None if got is None else nv12_to_rgba(*got))
+
+    def _tap(self, source_id: str, limit: int) -> None:
+        self.stop()
+        canvases = [c for c in self.collection.canvases if c.enabled] or self.collection.canvases
+        if not canvases:
+            return
+        canvas = max(canvases, key=lambda c: c.width / max(1, c.height))  # the widest: the window's picture is wide
+        k = min(1.0, limit / max(canvas.width, canvas.height))
+        size = (max(2, round(canvas.width * k) // 2 * 2), max(2, round(canvas.height * k) // 2 * 2))
+        self.engine.set_view(self.VIEW, canvas.id, "source", source_id)
+        self.engine.add_frame_tap(f"view:{self.VIEW}", self._frame, nv12_size=size)
+        self._tapped = source_id
+
+    def _frame(self, frame) -> None:  # render thread: keep the newest, nothing more
+        self.latest = (bytes(frame.data), frame.width, frame.height)
+
+    def stop(self) -> None:
+        if self._tapped is None:
+            return
+        self.engine.remove_frame_tap(f"view:{self.VIEW}", self._frame)
+        self.engine.set_view(self.VIEW, None)
+        self._tapped, self.latest = None, None
+
+
 class _Grabbed(QObject):
     """Carries a picture from the render thread to the window (queued). No parent: a grab that lands after the
     window closed reaches no one instead of a deleted widget."""
@@ -995,5 +1063,10 @@ class FiltersDialog(CardWindow):
         self.on_change(save=False)
 
     def done(self, result: int) -> None:  # Qt override
+        if self.preview is not None:
+            self.preview.timer.stop()
+            stop = getattr(self.preview.fetch, "stop", None)
+            if stop is not None:
+                stop()  # let go of the native view a Backdrop's After came from
         self.on_change(save=True)
         super().done(result)
