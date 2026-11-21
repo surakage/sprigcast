@@ -1014,3 +1014,27 @@ def test_a_shown_sound_file_starts_and_a_hidden_one_pauses(tmp_path):
         assert _until(lambda: source.state == "paused")
     finally:
         source.stop()
+
+
+def test_the_watch_reads_the_state_last_seen_not_the_player_again():
+    """PC 2026-11-21: with the CPU pinned, the Control API's half-second watch asked each media player for its state
+    from the window's thread and waited 1.2 s on one. The render thread reads it every tick a video shows: the watch
+    takes that, and asks the player only when the last reading is over a second old. info() asks once, not twice."""
+    import time
+    from types import SimpleNamespace as NS
+
+    source = MediaSource.__new__(MediaSource)
+    source.id, source.settings, source._fault_logged = "m", {}, False
+    asked = []
+
+    def info():
+        asked.append(1)
+        return NS(has_video=1, duration=4.0, width=64, height=48, status_text="ok", speed=1.0, hidden=0, faulted=0,
+                  state_name="playing", position=1.25)
+
+    source._native = NS(info=info)
+    source.engine_tick()  # the render thread's reading
+    assert source.recent_state() == "playing" and len(asked) == 1
+    source._state_seen = (time.monotonic() - 5, "playing")  # asleep since: nothing reads it for the watch
+    assert source.recent_state() == "playing" and len(asked) == 2
+    assert source.info()["position"] == 1.25 and len(asked) == 3

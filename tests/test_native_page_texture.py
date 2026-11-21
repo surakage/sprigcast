@@ -157,3 +157,60 @@ def test_a_texture_that_isnt_there_harms_nothing():
     finally:
         bridge.close()
         slot.close()
+
+
+def test_a_page_shown_again_after_its_texture_closed_says_nothing(caplog):
+    """PC 2026-11-21: a page hidden two minutes lets go of its graphics device, texture and all, and its last
+    picture is still named in the block when a bloom switch shows it again. That one picture logged "ERROR
+    engine: Opening a browser page's texture failed (0x80070057)" and a warning; the page's next picture, in a new
+    texture, was fine. A closed texture is waited out without a line; three pictures in a row are a warning."""
+    import logging
+
+    from sprigcast.render import native_bridge
+
+    col = _collection()
+    slot = FrameSlot.create(f"sprigcast-test-{uuid.uuid4().hex[:8]}", 64 * 48)
+    bridge = native_bridge.NativeCanvases(col, warp=True)
+    target = None
+    try:
+        luid = bridge.engine.luid()
+        target = sprigcore.PageTarget(luid, 64, 48, f"{slot.shm.name}-tex1")
+        _draw(target, (1.0, 0.0, 0.0, 1.0))
+        target.end(publish=True)
+        target.close()  # hidden long enough: its device and texture are gone
+        target = None
+        slot.mark_on_card(64, 48, 1)  # ...and the block still names it
+        assert bridge.attach_media("page", slot.shm.name)
+        bridge.sync(col, {}, lambda collection, layout: (layout, None), False)
+        bridge.watch("h", (64, 48), 0)
+        sprigcore.drain_log()
+        with caplog.at_level(logging.INFO):
+            deadline = time.monotonic() + 0.5
+            while time.monotonic() < deadline:
+                bridge.take("h")
+                time.sleep(0.01)
+            target = sprigcore.PageTarget(luid, 64, 48, f"{slot.shm.name}-tex2")  # shown again: a new texture
+            _draw(target, (0.0, 0.0, 1.0, 1.0))
+            target.end(publish=True)
+            slot.mark_on_card(64, 48, 2)
+            assert _shown(bridge, (0, 0, 255)) is not None and not bridge.failed
+            sprigcore.drain_log()
+        assert not [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING and "page" in r.getMessage()]
+        target.close()
+        target = None
+        with caplog.at_level(logging.INFO):
+            for number in (3, 4, 5):  # texture after texture that isn't there: said once, as a warning
+                slot.mark_on_card(64, 48, number)
+                deadline = time.monotonic() + 0.3
+                while time.monotonic() < deadline:
+                    bridge.take("h")
+                    time.sleep(0.01)
+            sprigcore.drain_log()
+        said = [r.getMessage() for r in caplog.records if "texture can't be opened" in r.getMessage()]
+        assert len(said) == 1 and "3 pictures in a row" in said[0]
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+    finally:
+        bridge.close()
+        if target is not None:
+            target.close()
+        slot.close()

@@ -157,6 +157,17 @@ def running_processes() -> list[tuple[int, int, str]]:
 def _list_processes() -> list[tuple[int, int, str]]:
     if sys.platform == "win32":
         try:
+            # One call to Windows for all of them. The snapshot walk below asks once per process, ~450 times every
+            # two seconds: with the PC's CPU pinned, that walk was in every "the window didn't answer" line (PC
+            # 2026-11-21).
+            from sprigcast.core import processes
+
+            found = [(p.pid, p.parent, p.name) for p in processes.snapshot() if p.name]
+            if found:
+                return found
+        except OSError as exc:
+            log.debug("the one-call process list failed, walking a snapshot: %s", exc)
+        try:
             return _toolhelp_processes()
         except OSError as exc:
             log.info("process snapshot failed, asking psutil: %s", exc)

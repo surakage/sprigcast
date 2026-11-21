@@ -849,9 +849,21 @@ void Core::open(Held &held, const std::string &file) {
                      : f == AV_PIX_FMT_BGR0 ? "bgr0" : "raw format " + std::to_string(f);
         }
         const double rate = v->avg_frame_rate.den > 0 ? av_q2d(v->avg_frame_rate) : 0.0;
-        char text[160];
-        std::snprintf(text, sizeof text, "media: the camera gives %dx%d %s at %.4g fps", v->codecpar->width,
-                      v->codecpar->height, gives.c_str(), rate);
+        // A card that mirrors its input (the PC's HD60 X fed 1440p lists nothing smaller) gives more than was asked:
+        // the picture is shrunk to the size asked as it is read, said here so the line isn't read as "shown at 1440p".
+        const int given_w = v->codecpar->width, given_h = v->codecpar->height;
+        const double fit_k = grow.load() ? 1.0
+                                         : std::min({1.0, static_cast<double>(max_w.load()) / std::max(1, given_w),
+                                                     static_cast<double>(max_h.load()) / std::max(1, given_h)});
+        const int shown_w = std::max(2, static_cast<int>(given_w * fit_k) / 2 * 2);
+        const int shown_h = std::max(2, static_cast<int>(given_h * fit_k) / 2 * 2);
+        char text[200];
+        if (fit_k < 1.0)
+            std::snprintf(text, sizeof text, "media: the camera gives %dx%d %s at %.4g fps, shrunk to %dx%d as it is read",
+                          given_w, given_h, gives.c_str(), rate, shown_w, shown_h);
+        else
+            std::snprintf(text, sizeof text, "media: the camera gives %dx%d %s at %.4g fps", given_w, given_h,
+                          gives.c_str(), rate);
         sc::log_line(SC_LOG_INFO, text);
     }
     auto decoder = [&](int index, bool video) -> AVCodecContext * {

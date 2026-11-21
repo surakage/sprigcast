@@ -57,9 +57,11 @@ struct PageTexture {
     std::wstring name;
     ComPtr<ID3D11Texture2D> texture;
     ComPtr<IDXGIKeyedMutex> mutex;
+    HRESULT gone = S_OK;  // why it couldn't be opened by name (SC_GONE)
 };
 
 constexpr int SC_NOT_YET = 1;  // source_page: the picture isn't ready yet (taken next frame)
+constexpr int SC_GONE = 2;     // source_page: the picture's texture is closed (a page shown again makes a new one)
 
 struct Look {
     ComPtr<ID3D11ShaderResourceView> view;
