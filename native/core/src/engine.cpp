@@ -48,6 +48,7 @@ constexpr int FRAME_WAIT_MS = 500;       // how long a Python call waits for a f
 // back after an hour would cost a start again); a capture helper that can be restarted is to replace this.
 constexpr double CAPTURE_BACK_S = 0.5;   // back from parked with nothing new drawn by then: its picture stands
 constexpr double CAPTURE_FRESH_S = 2.0;  // a parked capture's picture this new is shown at once on waking
+constexpr double CAMERA_GAP_S = 1.0 / 30 - 0.004;  // the virtual camera's 30 fps, with room for a late draw
 constexpr double CAPTURE_START_S = 5.0;  // a capture Windows hasn't started by then is given up (Python captures)
 
 int64_t qpc() {
@@ -354,6 +355,7 @@ struct Link {
     bool keep = false;  // still queue frames for sc_engine_output_take
     std::atomic<bool> ended{false};
     std::unique_ptr<CameraBlock> camera;  // instead of a writer: the virtual camera's block
+    std::atomic<bool> camera_only{false};  // only the camera takes this output's frames (no writer, nothing queued)
 };
 
 struct Output {  // shared: an output Python asked for and its finished frames
@@ -477,6 +479,7 @@ struct OutReader {  // the frame thread's: an output's two planes and three copi
     double drawn[3] = {0, 0, 0};
     uint64_t serial[3] = {0, 0, 0};
     int next = 0;
+    double camera_at = -1e9;  // when the last frame for the virtual camera alone was drawn
     // A shared output's instead: NV12 textures an encoder reads on the card.
     uint64_t pool = 0;
     int pool_w = 0, pool_h = 0;
@@ -1146,6 +1149,19 @@ void output_back(sc_engine &e, int index, int slot, const sc_canvas *canvas, con
                 return;
             }
         }
+    }
+    // The virtual camera shows 30 pictures a second (native/camera FRAME): an output only it takes is drawn and
+    // copied back at most that often, not at the canvas's 60. Half the vertical canvas's output work on the PC, whose
+    // vertical canvas fed only TikTok LIVE Studio through the camera (2026-11-21: 12-19 ms of a frame).
+    bool camera_only = false;
+    {
+        std::lock_guard<std::mutex> st(e.state);
+        const std::shared_ptr<Link> &l = e.outputs[index][slot].link;
+        camera_only = l && !l->ended.load() && l->camera_only.load();
+    }
+    if (camera_only) {
+        if (drawn - r.camera_at < CAMERA_GAP_S) return;
+        r.camera_at = drawn;
     }
     const int s = r.next;
     if (r.pending[s]) {  // all three still on their way: the card is behind, this frame is missed
@@ -2451,6 +2467,7 @@ SC_API int sc_engine_output_link(sc_engine *engine, int index, int slot, const s
         }
         std::lock_guard<std::mutex> hold(l->use);
         l->camera.reset();
+        l->camera_only = false;
         if (l->writer.get() != share.get()) {  // another writer: this one starts afresh
             l->writer = share;
             l->last = -1;
@@ -2514,6 +2531,7 @@ SC_API int sc_engine_output_link_camera(sc_engine *engine, int index, int slot, 
         l->writer.reset();
         l->camera = std::move(block);
         l->keep = keep != 0;
+        l->camera_only = keep == 0;
         return SC_OK;
     });
 }

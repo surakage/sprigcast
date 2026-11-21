@@ -109,6 +109,26 @@ def test_policy_all_pauses_cameras_and_off_wakes_everything():
     assert engine._sources["cam"].log == ["sleep", "wake"]
 
 
+def test_live_cameras_stay_open_off_screen():
+    """PC 2026-11-21: a camera reopened at each switch held the switch up to 2 s and came up in another format.
+    Live, cameras stay open (and one paused before is opened ready for its bloom); other sources still rest."""
+    engine, col = _engine()
+    fake = FakeCompositor()
+    col.active_scenes["h"] = "b"
+    engine.sleep_policy = "all"
+    engine._tick(fake, 1.0)
+    engine._tick(fake, 1.0 + CAMERA_SLEEP_AFTER + 0.1)
+    assert engine._sources["cam"].asleep
+    engine.live = True
+    engine._tick(fake, 20.0)
+    assert not engine._sources["cam"].asleep and engine._sources["game"].asleep
+    engine._tick(fake, 20.0 + CAMERA_SLEEP_AFTER + 0.1)
+    assert not engine._sources["cam"].asleep
+    engine.live = False  # off air again: it pauses after its wait (longer for a camera woken soon after a pause)
+    engine._tick(fake, 1000.0)
+    assert engine._sources["cam"].asleep
+
+
 def test_a_source_not_on_screen_is_never_started(monkeypatch):
     from sprigcast.render import engine as module
 
