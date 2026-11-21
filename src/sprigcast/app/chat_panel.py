@@ -563,10 +563,10 @@ class ChatPanel(QWidget):
     def _prepare_link(self) -> None:
         """With a chat link saved, its browser is made now, while the window is still being built.
 
-        The first web view put in a window makes Qt build that window again for the graphics card, and starts the
-        browser engine, on the window's thread. Done when the link was picked mid-stream, the whole window vanished
-        and came back, the window stopped for 1.3 s and the stream hitched (PC, live, 2026-11-21). Before the
-        window is first shown neither can be seen. No page is loaded until the link is shown.
+        Starting the browser engine takes about a second on the window's thread: done when the link was picked
+        mid-stream, the window stopped for 1.3 s and the stream hitched (PC, live, 2026-11-21). At start-up
+        nobody sees it. No page is loaded until the link is shown. (That the whole window also vanished and came
+        back is fixed in WebDockBody: the browser is a window of its own.)
         SPRIGCAST_CHAT_LINK_LATE=1 goes back to making it when first shown."""
         import os
         import time
