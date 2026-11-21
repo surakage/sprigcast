@@ -58,6 +58,8 @@ def test_audio_sources_get_audio_filters(app):
     assert {"Noise Gate", "Compressor", "Gain", "Limiter"} <= set(labels) and "Greenscreen" not in labels
     d.add("noise_gate")
     d.form.set_values({"close_db": -40.0})
+    assert d.source.filters[0].settings["close_db"] == -40.0 and source.filters == []  # until Apply
+    d.apply()
     assert source.filters[0].settings["close_db"] == -40.0
 
 
@@ -116,9 +118,10 @@ def test_sound_filters_stay_apart_from_effects_and_are_a_to_z(app):
     assert {"Ducking", "De-esser", "Equalizer", "Low Cut"} <= set(labels)
     sound.list.setCurrentRow(1)
     sound._move(-1)  # swaps with the sound filter above, the effects keep their places
-    assert [f.id for f in page.filters] == ["a", "d", "c", "b"]
+    assert [f.id for f in sound.source.filters] == ["a", "d", "c", "b"]
     sound._remove()
-    assert [f.id for f in page.filters] == ["a", "c", "b"]
+    assert [f.id for f in sound.source.filters] == ["a", "c", "b"]
+    assert [f.id for f in page.filters] == ["a", "b", "c", "d"]  # previewed: the page keeps its own until Apply
     effects = FiltersDialog(page, lambda save=True: None)
     # filters added before the one-word names keep their saved names, shown by today's
     assert [effects.list.item(i).text() for i in range(effects.list.count())] == ["Greenscreen", "Tone"]
@@ -158,10 +161,10 @@ def test_sound_filters_drag_to_reorder(app):
     for kind in ("compressor", "limiter", "noise_suppression"):
         d.add(kind)
     assert d.list.dragDropMode() == d.list.DragDropMode.InternalMove
-    calls.clear()
+    d.apply_button.setEnabled(False)
     d.list.model().moveRow(QModelIndex(), 2, QModelIndex(), 0)  # what a drop does: Noise Suppression to the top
-    assert [f.kind for f in source.filters] == ["noise_suppression", "compressor", "limiter"]
-    assert calls == [False]
+    assert [f.kind for f in d.source.filters] == ["noise_suppression", "compressor", "limiter"]
+    assert d.apply_button.isEnabled() and calls == []  # previewed until Apply
     assert d.title.text() == "Noise Suppression"  # the picked filter's name over its settings
 
 

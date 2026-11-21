@@ -256,13 +256,16 @@ def test_preview_first_then_apply_or_cancel():  # noqa: PLR0915
     assert source.filters[1] is not d.source.filters[1]  # the source got its own copies
 
 
-def test_sound_filters_still_change_as_you_go():
+def test_sound_filters_preview_first_too():
+    """User 2026-11-21: sound filters work like picture filters: nothing changes until Apply."""
     _app()
     from sprigcast.app.filters_dialog import FiltersDialog
     from sprigcast.core.scene import SourceConfig
 
     source = SourceConfig(id="mic", kind="audio_input", name="Mic")
     d = FiltersDialog(source, lambda save=True: None, grab=lambda *a, **k: None)
-    assert not d.preview_first
+    assert d.preview_first
     d.add("gain")
+    assert source.filters == []
+    d.apply()
     assert [f.kind for f in source.filters] == ["gain"]

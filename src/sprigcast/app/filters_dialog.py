@@ -735,6 +735,330 @@ class BeforeAfter(QWidget):
         event.accept()
 
 
+# Sound filters -------------------------------------------------------------------------------------------
+# User 2026-11-21: sound filters get their own live view, picked by what the filter does, so a change can be
+# understood as you make it: a live curve for loudness filters, a spectrum for tone filters, a waveform for the
+# rest. Before and after meters under it, and a Listen switch (Off, Before, After) to hear either side.
+
+CURVE_KINDS = frozenset({"noise_gate", "compressor", "upward_compressor", "expander", "limiter"})
+SPECTRUM_KINDS = frozenset({"eq3", "low_cut", "de_esser", "noise_suppression"})
+DB_LOW = -60.0  # the curve's and meters' quietest shown level
+SPECTRUM_LOW = -96.0
+
+
+def view_for(kind: str | None) -> str:
+    """Which live view explains a filter best: "curve", "spectrum" or "waveform"."""
+    if kind in CURVE_KINDS:
+        return "curve"
+    if kind in SPECTRUM_KINDS:
+        return "spectrum"
+    return "waveform"
+
+
+def curve_out(kind: str, settings: dict, level_db: float) -> float:
+    """What a loudness filter makes of a steady sound at level_db (its static curve, as drawn)."""
+    s = settings
+    if kind == "compressor":
+        t, r = float(s["threshold_db"]), max(1.0, float(s["ratio"]))
+        out = level_db if level_db <= t else t + (level_db - t) / r
+        return out + float(s.get("output_db", 0.0))
+    if kind == "limiter":
+        return min(level_db, float(s["threshold_db"]))
+    if kind == "expander":
+        t, r = float(s["threshold_db"]), max(1.0, float(s["ratio"]))
+        return level_db if level_db >= t else max(-120.0, t + (level_db - t) * r)
+    if kind == "upward_compressor":
+        t, r = float(s["threshold_db"]), max(1.0, float(s["ratio"]))
+        return level_db if level_db >= t else t + (level_db - t) / r
+    if kind == "noise_gate":
+        return level_db if level_db >= float(s["open_db"]) else -120.0
+    return level_db
+
+
+def bands(samples, count: int = 40, low_hz: float = 60.0, high_hz: float = 16000.0):
+    """Loudness (dB) in `count` bands spaced like hearing (log), from the newest 4096 samples."""
+    import numpy as np
+
+    take = samples[-4096:]
+    if len(take) < 4096:
+        take = np.pad(take, (4096 - len(take), 0))
+    window = np.hanning(len(take)).astype(np.float32)
+    power = np.abs(np.fft.rfft(take * window)) / (len(take) / 4)
+    freqs = np.fft.rfftfreq(len(take), 1 / 48000)
+    edges = np.geomspace(low_hz, high_hz, count + 1)
+    out = np.empty(count, np.float32)
+    for i in range(count):
+        picked = power[(freqs >= edges[i]) & (freqs < edges[i + 1])]
+        level = float(picked.max()) if len(picked) else 0.0
+        out[i] = 20 * np.log10(level) if level > 1e-6 else SPECTRUM_LOW
+    return np.maximum(out, SPECTRUM_LOW)
+
+
+class SoundView(QWidget):
+    """The live view over a sound filter's settings: the curve, the spectrum or the waveform (by the picked
+    filter), twin Before/After meters, and the Listen switch. Draws from preview.snapshot() 15 times a second,
+    only while showing. Fixed height, as BeforeAfter."""
+
+    HEIGHT = 286
+    PANEL_HEIGHT = 196
+    EVERY_MS = 66
+
+    def __init__(self, preview, selected: Callable[[], Filter | None], parent: QWidget | None = None):
+        super().__init__(parent)
+        self.preview = preview
+        self.selected = selected
+        self.setFixedHeight(self.HEIGHT)
+        self.setAccessibleName("Sound before and after")
+        self._held = [DB_LOW, DB_LOW]  # meter peaks, falling slowly
+        self.panel = QWidget(self)
+        self.panel.setFixedHeight(self.PANEL_HEIGHT)
+        self.panel.paintEvent = self._paint_panel  # type: ignore[method-assign]
+        self.meters = QWidget(self)
+        self.meters.setFixedHeight(40)
+        self.meters.paintEvent = self._paint_meters  # type: ignore[method-assign]
+        listen = QLabel("Listen")
+        listen.setStyleSheet(f"color: {theme.LABEL}; background: transparent; font-weight: 600;")
+        self.listen_buttons: dict[str, QPushButton] = {}
+        switch_row = QHBoxLayout()
+        switch_row.setSpacing(0)
+        for mode, text in (("off", "Off"), ("before", "Before"), ("after", "After")):
+            b = QPushButton(text)
+            b.setCheckable(True)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setAccessibleName(f"Listen {text.lower()}" if mode != "off" else "Listen off")
+            first, last = mode == "off", mode == "after"
+            radius = f"border-top-left-radius: {15 if first else 0}px; border-bottom-left-radius: {15 if first else 0}px;" \
+                     f" border-top-right-radius: {15 if last else 0}px; border-bottom-right-radius: {15 if last else 0}px;"
+            b.setStyleSheet(
+                f"QPushButton {{ background: {theme.RAISED}; color: {theme.TEXT}; border: 1px solid {theme.BUTTON_EDGE};"
+                f" {radius} padding: 5px 16px; min-height: 20px; }}"
+                f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
+                f"QPushButton:checked {{ background: {theme.ACCENT}; color: {theme.ACCENT_TEXT}; border-color: {theme.ACCENT};"
+                " font-weight: 650; }")
+            b.clicked.connect(lambda _=False, m=mode: self.set_listen(m))
+            self.listen_buttons[mode] = b
+            switch_row.addWidget(b)
+        self.listen_buttons["off"].setChecked(True)
+        bottom = QHBoxLayout()
+        bottom.setSpacing(14)
+        bottom.addWidget(self.meters, 1)
+        bottom.addWidget(listen)
+        bottom.addLayout(switch_row)
+        col = QVBoxLayout(self)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(12)
+        col.addWidget(self.panel)
+        col.addLayout(bottom)
+        self.timer = QTimer(self)
+        self.timer.setInterval(self.EVERY_MS)
+        self.timer.timeout.connect(self._tick)
+
+    def set_listen(self, mode: str) -> None:
+        for m, b in self.listen_buttons.items():
+            b.setChecked(m == mode)
+        self.preview.set_listen(mode)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self.timer.start()
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        self.timer.stop()
+        super().hideEvent(event)
+
+    def _tick(self) -> None:
+        self.panel.update()
+        self.meters.update()
+
+    def view(self) -> str:
+        flt = self.selected()
+        return view_for(flt.kind if flt is not None else None)
+
+    # Drawing ------------------------------------------------------------------------------------------
+
+    def _chip(self, p: QPainter, box: QRectF, text: str, end: float | None = None, color: str | None = None,
+              dot: bool = False) -> QRectF:
+        """A dark chip in the top row: from the left, or ending at x=end. dot: a colored dot as its key."""
+        font = QFont(self.font())
+        font.setWeight(QFont.Weight.DemiBold)
+        p.setFont(font)
+        w = QFontMetrics(font).horizontalAdvance(text) + (36 if dot else 22)
+        chip = QRectF(end - w if end is not None else box.left() + 12, box.top() + 12, w, 26)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(0, 0, 0, 150))
+        p.drawRoundedRect(chip, 13, 13)
+        text_box = chip
+        if dot:
+            p.setBrush(QColor(color or theme.TEXT_BRIGHT))
+            p.drawEllipse(QPointF(chip.left() + 15, chip.center().y()), 4, 4)
+            text_box = chip.adjusted(14, 0, 0, 0)
+        p.setPen(QColor(theme.TEXT_BRIGHT))
+        p.drawText(text_box, Qt.AlignmentFlag.AlignCenter, text)
+        return chip
+
+    def _paint_panel(self, _event) -> None:
+        before, after, levels = self.preview.snapshot()
+        p = QPainter(self.panel)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        box = QRectF(self.panel.rect())
+        clip = QPainterPath()
+        clip.addRoundedRect(box, 14, 14)
+        p.setClipPath(clip)
+        p.fillRect(box, QColor(theme.CHROME))
+        inner = box.adjusted(16, 48, -16, -14)
+        view = self.view()
+        flt = self.selected()
+        if view == "curve" and flt is not None:
+            self._paint_curve(p, inner, flt, levels)
+            self._chip(p, box, "Live curve")
+            key = (("Now", theme.TEXT_BRIGHT), ("Your settings", theme.ACCENT))
+        elif view == "spectrum":
+            self._paint_spectrum(p, inner, before, after)
+            self._chip(p, box, "Spectrum")
+            key = (("After", theme.ACCENT), ("Before", theme.MUTED))
+        else:
+            self._paint_wave(p, inner, before, after)
+            self._chip(p, box, "Waveform")
+            key = (("After", theme.ACCENT), ("Before", theme.MUTED))
+        end = box.right() - 12
+        for text, color in key:
+            end = self._chip(p, box, text, end=end, color=color, dot=True).left() - 8
+        p.end()
+
+    def _paint_wave(self, p: QPainter, box: QRectF, before, after) -> None:
+        import numpy as np
+
+        mid = box.center().y()
+        p.setPen(QPen(QColor(theme.EDGE_STRONG), 1))
+        p.drawLine(QPointF(box.left(), mid), QPointF(box.right(), mid))
+        columns = max(1, int(box.width() / 3))
+        for samples, color, alpha in ((before, theme.MUTED, 110), (after, theme.ACCENT, 255)):
+            chunks = np.array_split(np.abs(samples), columns)
+            c = QColor(color)
+            c.setAlpha(alpha)
+            p.setPen(QPen(c, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+            for i, chunk in enumerate(chunks):
+                level = min(1.0, float(chunk.max()) if len(chunk) else 0.0)
+                h = max(1.0, level * box.height() / 2)
+                x = box.left() + (i + 0.5) * box.width() / columns
+                p.drawLine(QPointF(x, mid - h), QPointF(x, mid + h))
+
+    def _paint_spectrum(self, p: QPainter, box: QRectF, before, after) -> None:
+        low, high = SPECTRUM_LOW, 0.0
+        b, a = bands(before), bands(after)
+        n = len(b)
+        width = box.width() / n
+        grey = QColor(theme.MUTED)
+        grey.setAlpha(90)
+        for i in range(n):  # before: soft bars
+            h = (b[i] - low) / (high - low) * box.height()
+            p.fillRect(QRectF(box.left() + i * width + 1.5, box.bottom() - h, width - 3, h), grey)
+        path = QPainterPath()  # after: a green line over them
+        for i in range(n):
+            y = box.bottom() - (a[i] - low) / (high - low) * box.height()
+            point = QPointF(box.left() + (i + 0.5) * width, y)
+            path.moveTo(point) if i == 0 else path.lineTo(point)
+        p.setPen(QPen(QColor(theme.ACCENT), 2.4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                      Qt.PenJoinStyle.RoundJoin))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
+        p.setPen(QColor(theme.MUTED))
+        small = QFont(self.font())
+        small.setPointSizeF(max(7.0, small.pointSizeF() - 1.5))
+        p.setFont(small)
+        for label, frac in (("100 Hz", 0.093), ("1 kHz", 0.47), ("10 kHz", 0.85)):
+            p.drawText(QRectF(box.left() + frac * box.width() - 30, box.bottom() - 16, 60, 16),
+                       Qt.AlignmentFlag.AlignCenter, label)
+
+    def _paint_curve(self, p: QPainter, box: QRectF, flt: Filter, levels) -> None:
+        side = min(box.width(), box.height())
+        area = QRectF(box.center().x() - side / 2 * 1.6, box.top(), side * 1.6, side)
+        area = area.intersected(box)
+
+        def at(level_in: float, level_out: float) -> QPointF:
+            fx = (level_in - DB_LOW) / -DB_LOW
+            fy = (min(0.0, max(DB_LOW, level_out)) - DB_LOW) / -DB_LOW
+            return QPointF(area.left() + fx * area.width(), area.bottom() - fy * area.height())
+
+        p.setPen(QPen(QColor(theme.EDGE_STRONG), 1))
+        for db in (-48, -36, -24, -12):
+            x = at(db, db).x()
+            y = at(db, db).y()
+            p.drawLine(QPointF(x, area.top()), QPointF(x, area.bottom()))
+            p.drawLine(QPointF(area.left(), y), QPointF(area.right(), y))
+        p.setPen(QPen(QColor(theme.MUTED), 1.2, Qt.PenStyle.DashLine))
+        p.drawLine(at(DB_LOW, DB_LOW), at(0, 0))  # as it comes in
+        settings = settings_for(flt.kind, flt.settings)
+        path = QPainterPath()
+        steps = 120
+        for i in range(steps + 1):
+            level = DB_LOW + (-DB_LOW) * i / steps
+            point = at(level, curve_out(flt.kind, settings, level))
+            path.moveTo(point) if i == 0 else path.lineTo(point)
+        p.setPen(QPen(QColor(theme.ACCENT), 2.6, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                      Qt.PenJoinStyle.RoundJoin))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(path)
+        threshold = settings.get("threshold_db", settings.get("open_db"))
+        if threshold is not None:
+            x = at(float(threshold), 0).x()
+            p.setPen(QPen(QColor(theme.WARN), 1.2, Qt.PenStyle.DashLine))
+            p.drawLine(QPointF(x, area.top()), QPointF(x, area.bottom()))
+        level_in = levels[0]
+        if level_in > DB_LOW:  # the sound now: how loud it comes in, and where this filter's curve takes it
+            dot = at(min(0.0, level_in), curve_out(flt.kind, settings, min(0.0, level_in)))
+            glow = QColor(theme.ACCENT)
+            glow.setAlpha(70)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(glow)
+            p.drawEllipse(dot, 11, 11)
+            p.setBrush(QColor(theme.TEXT_BRIGHT))
+            p.drawEllipse(dot, 5, 5)
+        p.setPen(QColor(theme.MUTED))
+        small = QFont(self.font())
+        small.setPointSizeF(max(7.0, small.pointSizeF() - 1.5))
+        p.setFont(small)
+        p.drawText(QRectF(area.left(), area.bottom() - 16, area.width() - 4, 16),
+                   Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, "In")
+        p.drawText(QRectF(area.left() + 4, area.top(), 40, 16), Qt.AlignmentFlag.AlignLeft, "Out")
+
+    def _paint_meters(self, _event) -> None:
+        _before, _after, levels = self.preview.snapshot()
+        p = QPainter(self.meters)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        box = QRectF(self.meters.rect())
+        font = QFont(self.font())
+        font.setWeight(QFont.Weight.DemiBold)
+        p.setFont(font)
+        label_w = QFontMetrics(font).horizontalAdvance("Before") + 10
+        number_w = QFontMetrics(font).horizontalAdvance("−60 dB") + 6
+        for row, (name, color) in enumerate((("Before", theme.MUTED), ("After", theme.ACCENT))):
+            level = levels[row]
+            self._held[row] = max(level, self._held[row] - 1.5)  # the peak falls back gently
+            y = box.top() + row * box.height() / 2
+            line = QRectF(box.left(), y, box.width(), box.height() / 2)
+            p.setPen(QColor(theme.LABEL))
+            p.drawText(QRectF(line.left(), line.top(), label_w, line.height()),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, name)
+            track = QRectF(line.left() + label_w, line.center().y() - 3, line.width() - label_w - number_w - 8, 6)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(theme.TRACK))
+            p.drawRoundedRect(track, 3, 3)
+            frac = max(0.0, min(1.0, (level - DB_LOW) / -DB_LOW))
+            if frac > 0:
+                p.setBrush(QColor(color))
+                p.drawRoundedRect(QRectF(track.left(), track.top(), track.width() * frac, track.height()), 3, 3)
+            held = max(0.0, min(1.0, (self._held[row] - DB_LOW) / -DB_LOW))
+            if held > 0:
+                p.setBrush(QColor(theme.TEXT_BRIGHT))
+                p.drawRect(QRectF(track.left() + track.width() * held - 1, track.top() - 2, 2, track.height() + 4))
+            p.setPen(QColor(theme.TEXT))
+            shown = "−∞ dB" if level <= DB_LOW else f"{level:.0f} dB".replace("-", "−")
+            p.drawText(QRectF(track.right() + 8, line.top(), number_w, line.height()),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, shown)
+        p.end()
+
+
 class FiltersDialog(CardWindow):
     """Edits `source.filters` in place and calls on_change(save=False) after every edit, so the
     preview updates live. Closing calls on_change(save=True).
@@ -742,24 +1066,28 @@ class FiltersDialog(CardWindow):
     The Before and after design (user 2026-11-21): the filters with their icons and switches on the left, the
     source live with its filters off and on (drag the split) above the picked filter's settings on the right.
     grab(source_id, callback, raw, limit) is Engine.grab_source; without it (sound filters, tests) there's no
-    picture."""
+    picture. Sound filters get a SoundView instead: hear(source_id, filters) makes the audio/preview.py Preview
+    that runs the window's draft filters on the sound as it comes in."""
 
     def __init__(self, source: SourceConfig, on_change: Callable[..., None], parent: QWidget | None = None,
                  media: str | None = None, sounds: list[tuple[str, str]] | None = None, collection=None,
-                 grab: Callable | None = None):
+                 grab: Callable | None = None, hear: Callable | None = None):
         self.media = media or media_of(source)  # a browser page has both: the Sound card asks for "audio"
         picture = grab is not None and self.media == "video"
-        super().__init__(f"Filters for “{source.name}”", parent, (920, 640) if picture else (820, 540))
+        sound = self.media == "audio"
+        live_sound = sound and hear is not None
+        super().__init__(f"Filters for “{source.name}”", parent,
+                         (920, 640) if picture else (920, 690) if live_sound else (820, 540))
         edge = QColor(theme.ACCENT)
         edge.setAlpha(80)  # a soft green edge, so the window stands off whatever is behind it
         self.card.setStyleSheet(f"#windowCard {{ background: {theme.PANEL}; border: 1px solid {edge.name(QColor.NameFormat.HexArgb)};"
                                 " border-radius: 22px; }")
         # Preview first (user 2026-11-21): with a picture, the window edits a copy. Changes show only in the
         # After side until Apply puts them on the source (and the stream); Cancel or × drops them. Sound filters
-        # (no picture: you listen to them) still change as you go.
+        # Sound filters too (user 2026-11-21): you hear the draft in the window (Listen After), not on the stream.
         self.real = source
-        self.preview_first = picture
-        self.source = source.model_copy(deep=True) if picture else source
+        self.preview_first = picture or sound
+        self.source = source.model_copy(deep=True) if self.preview_first else source
         self.applied = False
         self.sounds = [(sid, name) for sid, name in (sounds or []) if sid != source.id]
         # A placed sprig has a placement on each canvas: its filters follow there, unless it keeps its own.
@@ -775,8 +1103,12 @@ class FiltersDialog(CardWindow):
                 on_change(save=save)
             if self.preview is not None:
                 self.preview.ask()  # show the change now, not on the next tick
+            if self.hearing is not None:
+                self.hearing.set_filters(self._draft())  # heard (and drawn) from the next block
 
         self.preview: BeforeAfter | None = None
+        self.hearing = None  # audio/preview.py's Preview, for sound filters
+        self.sound_view: SoundView | None = None
         self.on_change = changed
         self.form: FilterForm | None = None
         from sprigcast.app import icons
@@ -877,6 +1209,18 @@ class FiltersDialog(CardWindow):
             self.preview = BeforeAfter(source.id, grab,
                                        draft=lambda: [f.model_copy(deep=True) for f in self.source.filters])
             right.addWidget(self.preview)
+        if live_sound:
+            try:
+                self.hearing = hear(source.id, self._draft())
+                self.hearing.start()
+            except Exception:  # noqa: BLE001 - the window still edits; there's just nothing to hear
+                import logging
+
+                logging.getLogger(__name__).exception("filters: can't hear %s", source.id)
+                self.hearing = None
+        if self.hearing is not None:
+            self.sound_view = SoundView(self.hearing, self._current)
+            right.addWidget(self.sound_view)
         title_row = QHBoxLayout()
         title_row.addWidget(self.title, 1)
         title_row.addWidget(self.save_look_button)
@@ -910,6 +1254,9 @@ class FiltersDialog(CardWindow):
             footer.addWidget(self.apply_button)
             root.addLayout(footer)
         self._refresh(0)
+
+    def _draft(self) -> list[Filter]:
+        return [f.model_copy(deep=True) for f in self.source.filters]
 
     def apply(self) -> None:
         """Put the previewed filters on the source (and so on the stream), save, and close."""
@@ -1112,6 +1459,14 @@ class FiltersDialog(CardWindow):
             stop = getattr(self.preview.fetch, "stop", None)
             if stop is not None:
                 stop()  # let go of the native view a Backdrop's After came from
+        if self.sound_view is not None:
+            self.sound_view.timer.stop()
+        if self.hearing is not None:
+            hearing, self.hearing = self.hearing, None
+            import threading
+
+            # it lets go of the sound at once; closing the Listen device can take a moment: not on the UI thread
+            threading.Thread(target=hearing.stop, name="sprigcast-filter-preview-stop", daemon=True).start()
         if self.preview_first:
             self._on_change(save=True)  # applied filters, or nothing changed (Cancel): either way the garden is saved
         else:
