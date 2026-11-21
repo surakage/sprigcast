@@ -1066,7 +1066,7 @@ class AudioPage(QWidget):
                 if (combo := self.device_combos.get(s.id)) is not None and combo.currentData() == NO_DEVICE]
         for source_id in gone:  # "None": the sound leaves, global or not
             audio.global_sources = [i for i in audio.global_sources if i != source_id]
-            collection.remove_source_if_unused(source_id)
+            collection.remove_source_if_unused(source_id, sounds_too=True)
         for source in collection.sources:
             combo = self.device_combos.get(source.id)
             if combo is not None and combo.currentData() != source.settings.get("device", "default"):

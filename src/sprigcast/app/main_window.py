@@ -1584,7 +1584,7 @@ class MainWindow(QMainWindow):
             audio.global_sources = [i for i in audio.global_sources if i != source_id]
         elif audio.global_sources is None and source_id in self.collection.global_device_ids():
             audio.global_sources = [i for i in self.collection.global_device_ids() if i != source_id]
-        self.collection.remove_source_if_unused(source_id)
+        self.collection.remove_source_if_unused(source_id, sounds_too=True)
         self._changed()
         self._refresh_scenes()
         self._refresh_audio()

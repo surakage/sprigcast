@@ -1552,10 +1552,11 @@ class SceneCollection(BaseModel):
         return sorted((c.name for c in self.sources if c.id in mine and c.id not in elsewhere
                        and c.kind not in SOUND_KINDS and c.kind != PART_KIND), key=str.casefold)
 
-    def remove_source_if_unused(self, source_id: str) -> None:
-        """A source no bloom or sprig uses any more goes. Sounds (mics, desktop and app sounds) stay: they live in
-        the Sound area, not in sprigs (2026-11-21: removing old audio sprigs would have taken the mic with them)."""
-        if any(s.id == source_id and s.kind in SOUND_KINDS for s in self.sources):
+    def remove_source_if_unused(self, source_id: str, sounds_too: bool = False) -> None:
+        """A source no bloom or sprig uses any more goes. Sounds (mics, desktop and app sounds) stay unless removed
+        as sounds (sounds_too): they live in the Sound area, not in sprigs (2026-11-21: removing old audio sprigs
+        would have taken the mic with them)."""
+        if not sounds_too and any(s.id == source_id and s.kind in SOUND_KINDS for s in self.sources):
             return
         if not any(item.source == source_id for scene in self.scenes for item in scene.items):
             # A capture's own sound (core/capture_sound.py) goes with it.
