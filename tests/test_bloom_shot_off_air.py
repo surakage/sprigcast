@@ -304,7 +304,7 @@ def test_a_shot_view_is_the_engines_with_nothing_tapping_it():
     col = _collection()
     engine = Engine.__new__(Engine)
     engine._collection, engine.views, engine._shot_views = col, {}, frozenset()
-    engine.staged, engine.editing_part = {}, None
+    engine.staged, engine.editing_part, engine.clean_hidden = {}, None, {}
     off_air = next(s for s in col.scenes if s.canvas == "horizontal" and s.id != col.active_scenes["horizontal"])
     engine.set_view("apishot", "horizontal", "bloom", off_air.id, shot=True)
     engine.set_view("other", "horizontal", "bloom", off_air.id)  # an ordinary view nothing taps: not drawn
