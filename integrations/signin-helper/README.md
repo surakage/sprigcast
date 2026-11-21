@@ -39,6 +39,7 @@ npx wrangler login
 npx wrangler deploy
 npx wrangler secret put YOUTUBE_CLIENT_SECRET
 npx wrangler secret put KICK_CLIENT_SECRET
+npx wrangler secret put TIKTOK_CLIENT_SECRET
 ```
 
 Each `secret put` asks for the value: paste it (the Google one starts with `GOCSPX-`, Kick's is the long

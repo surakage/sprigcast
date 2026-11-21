@@ -743,9 +743,13 @@ class StreamPage(QWidget):
             name = central or output.account
             self.signin_state.setText(f"Signed in as {name}" if name else "Not signed in")
             self.sign_out_button.setVisible(bool(central))
+            gives_key = (output.service or "") in service_signin.GIVES_KEY
+            # TikTok shares no key with apps: its sign-in only shows which account is connected.
+            self.sign_in_button.setVisible(gives_key or not central)
             self.sign_in_button.setText("Get key" if central else "Sign in")
             self.sign_in_button.setToolTip("Fill in the stream key from your account" if central
-                                           else "Sign in to fill in the stream key")
+                                           else "Sign in to fill in the stream key" if gives_key
+                                           else "Sign in to show which account is connected")
         if not can_sign_in or output.id != self._error_for:
             self.signin_error.hide()
         if is_twitch:
@@ -953,7 +957,7 @@ class StreamPage(QWidget):
         from sprigcast.output import service_signin, stream_details
 
         vertical = output.service == "youtube" and output.canvas == "vertical"  # its own key for Dual stream
-        if stream_details.account(output.service or ""):
+        if stream_details.account(output.service or "") and output.service in service_signin.GIVES_KEY:
             self._key_from_account(output, vertical)
             return
         extra = {"begin": lambda s: service_signin.begin(s, vertical=True)} if vertical else {}
@@ -995,7 +999,8 @@ class StreamPage(QWidget):
         self._error_for = ""
         self.signin_error.hide()
         output.account = fetched.account
-        self.key.setText(fetched.key)
+        if fetched.key:  # a TikTok sign-in brings no key: keep the pasted one
+            self.key.setText(fetched.key)
         if fetched.server and not self.server.isReadOnly():
             self.server.setText(fetched.server)
         self._edited()

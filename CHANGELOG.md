@@ -6,6 +6,10 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- Sign in with TikTok (Settings → Stream → a TikTok place): shows which TikTok account is connected, as
+  "Name (@username)". It reads no stream key, because TikTok doesn't share one with apps; paste the key from LIVE
+  Producer as before. Sign out deletes the sign-in and asks TikTok to cancel it. Uses TikTok's sandbox for now,
+  so only test accounts can sign in until TikTok approves the app.
 - Help improve SprigCast: after each stream of a minute or more, SprigCast can send that stream's report and
   today's log to the developer, with stream keys, passwords, names and addresses removed first. Off unless
   you turn it on: asked once after your first stream, and in Settings → General → Logs. Summaries go to the

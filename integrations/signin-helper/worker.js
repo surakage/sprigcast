@@ -1,4 +1,4 @@
-// SprigCast sign-in helper: finishes a YouTube or Kick sign-in for the app, adding the client secret,
+// SprigCast sign-in helper: finishes a YouTube, Kick or TikTok sign-in for the app, adding the client secret,
 // so the secret never ships inside SprigCast. It swaps a sign-in code (plus the app's PKCE verifier) for a
 // token, only for SprigCast's own redirect back to the PC (127.0.0.1 / localhost). With keep=1 (Stream
 // details stays signed in) it also hands back the refresh token, and grant_type=refresh_token swaps one of
@@ -21,6 +21,15 @@ const SERVICES = {
     id: (env) => env.KICK_CLIENT_ID,
     secret: (env) => env.KICK_CLIENT_SECRET,
     redirect: /^http:\/\/localhost:51587\/callback$/, // exactly what's registered with Kick
+  },
+  tiktok: {
+    token: "https://open.tiktokapis.com/v2/oauth/token/",
+    revoke: "https://open.tiktokapis.com/v2/oauth/revoke/", // needs the secret, so the app can't call it itself
+    id: (env) => env.TIKTOK_CLIENT_KEY,
+    secret: (env) => env.TIKTOK_CLIENT_SECRET,
+    idField: "client_key", // TikTok's name for the client id
+    // Login Kit for Desktop: http://127.0.0.1:*/callback is registered (any port)
+    redirect: /^http:\/\/127\.0\.0\.1:\d{2,5}\/callback$/,
   },
 };
 
@@ -63,22 +72,33 @@ export default {
     const service = SERVICES[fields.service];
     if (!service) return json({ error: "invalid_request", error_description: "Unknown service." }, 400);
     const refresh = fields.grant_type === "refresh_token";
-    const { code, code_verifier: verifier, redirect_uri: redirect, refresh_token: refreshToken } = fields;
-    for (const value of refresh ? [refreshToken] : [code, verifier, redirect]) {
+    const revoke = fields.grant_type === "revoke";
+    if (revoke && !service.revoke) return json({ error: "invalid_request" }, 400);
+    const { code, code_verifier: verifier, redirect_uri: redirect, refresh_token: refreshToken, token } = fields;
+    for (const value of revoke ? [token] : refresh ? [refreshToken] : [code, verifier, redirect]) {
       if (typeof value !== "string" || !value || value.length > MAX_FIELD) {
         return json({ error: "invalid_request" }, 400);
       }
     }
-    if (!refresh && !service.redirect.test(redirect)) {
+    if (!refresh && !revoke && !service.redirect.test(redirect)) {
       return json({ error: "invalid_request", error_description: "Only SprigCast's own sign-in." }, 400);
     }
     const id = service.id(env);
     const secret = service.secret(env);
     if (!id || !secret) return json({ error: "not_set_up", error_description: "Sign-in isn't set up yet." }, 503);
 
+    const idField = service.idField || "client_id";
+    if (revoke) {
+      const done = await fetch(service.revoke, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+        body: new URLSearchParams({ [idField]: id, client_secret: secret, token }),
+      });
+      return json({ ok: done.ok }, done.ok ? 200 : 502);
+    }
     const ask = refresh
-      ? { grant_type: "refresh_token", client_id: id, client_secret: secret, refresh_token: refreshToken }
-      : { grant_type: "authorization_code", client_id: id, client_secret: secret, code, code_verifier: verifier,
+      ? { grant_type: "refresh_token", [idField]: id, client_secret: secret, refresh_token: refreshToken }
+      : { grant_type: "authorization_code", [idField]: id, client_secret: secret, code, code_verifier: verifier,
           redirect_uri: redirect };
     const reply = await fetch(service.token, {
       method: "POST",
@@ -91,12 +111,13 @@ export default {
     } catch {
       body = { error: "bad_reply" };
     }
-    // Hand back only what the app uses.
-    const out = reply.ok
+    // Hand back only what the app uses. TikTok can answer 200 with an error in the body.
+    const ok = reply.ok && !!body.access_token;
+    const out = ok
       ? { access_token: body.access_token, token_type: body.token_type, expires_in: body.expires_in, scope: body.scope }
       : { error: body.error || "sign_in_failed", error_description: body.error_description || "" };
     // Only a sign-in that asked to stay signed in (or a refresh, when the service hands out a new one) gets it.
-    if (reply.ok && body.refresh_token && (refresh || fields.keep === "1")) out.refresh_token = body.refresh_token;
-    return json(out, reply.ok ? 200 : reply.status);
+    if (ok && body.refresh_token && (refresh || fields.keep === "1")) out.refresh_token = body.refresh_token;
+    return json(out, ok ? 200 : reply.ok ? 400 : reply.status);
   },
 };

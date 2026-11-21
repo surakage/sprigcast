@@ -314,3 +314,58 @@ def test_going_live_checks_a_signed_in_youtube_key_and_keeps_the_saved_one_when_
     monkeypatch.setattr(stream_details, "account", lambda service: "")
     monkeypatch.setattr(service_signin, "key_from_account", from_account)
     assert fresh(window, output, "dead-key") == "dead-key" and len(asked) == 2  # not signed in: nothing is asked
+
+
+def test_tiktok_names_the_account_with_a_hex_challenge_and_never_touches_the_key(monkeypatch):
+    import hashlib
+    import json
+
+    from sprigcast.output import stream_details
+
+    monkeypatch.setattr(service_signin, "setting", lambda name: {"tiktok/client_id": "tt-key"}.get(name, ""))
+    posts = []
+    monkeypatch.setattr(service_signin, "post_form", lambda url, fields, who, **kw: posts.append((url, fields)) or
+                        {"access_token": "tok", "refresh_token": "ref", "expires_in": 86400})
+    asked = []
+
+    def get_json(url, token, who, headers=None):
+        asked.append(url)
+        return {"data": {"user": {"open_id": "o", "display_name": "Sloth Bloom", "username": "slothbloom"}},
+                "error": {"code": "ok", "message": ""}}
+
+    monkeypatch.setattr(service_signin, "get_json", get_json)
+    open_url, seen = _browser()
+    got = service_signin.tiktok(open_url=open_url)
+    assert (got.account, got.key) == ("Sloth Bloom (@slothbloom)", "")
+    assert seen["client_key"] == "tt-key" and seen["scope"] == "user.info.basic,user.info.profile"
+    assert seen["redirect_uri"].startswith("http://127.0.0.1:") and seen["redirect_uri"].endswith("/callback")
+    verifier = posts[0][1]["code_verifier"]
+    assert seen["code_challenge"] == hashlib.sha256(verifier.encode()).hexdigest()  # TikTok wants hex
+    assert posts[0][1]["service"] == "tiktok" and posts[0][1]["keep"] == "1" and "client_secret" not in posts[0][1]
+    assert asked == [f"{service_signin.TIKTOK_API}/user/info/?fields=open_id,display_name,username"]
+    assert stream_details.account("tiktok") == "Sloth Bloom (@slothbloom)"
+    assert json.loads(stream_details.get_key(stream_details.TOKEN_REF["tiktok"]))["refresh_token"] == "ref"
+    stream_details._remember("tiktok", "")
+    stream_details.set_key(stream_details.TOKEN_REF["tiktok"], "")
+
+
+def test_tiktok_account_text_and_refusals():
+    assert service_signin.tiktok_account({"display_name": "A", "username": "@b"}) == "A (@b)"
+    assert service_signin.tiktok_account({"username": "b"}) == "@b"
+    assert service_signin.tiktok_account({}) == "TikTok"
+    assert "tiktok" not in service_signin.GIVES_KEY
+
+
+def test_tiktok_sign_out_revokes_through_the_helper(monkeypatch):
+    import json
+
+    from sprigcast.output import oauth_loopback as loop
+    from sprigcast.output import stream_details
+
+    stream_details.set_key(stream_details.TOKEN_REF["tiktok"], json.dumps({"refresh_token": "ref"}))
+    stream_details._remember("tiktok", "A (@b)")
+    posts = []
+    monkeypatch.setattr(loop, "post_form", lambda url, fields, who, **kw: posts.append((url, fields)) or {})
+    stream_details.sign_out("tiktok")
+    assert posts == [(service_signin.helper_url(), {"service": "tiktok", "grant_type": "revoke", "token": "ref"})]
+    assert stream_details.account("tiktok") == "" and not stream_details.get_key(stream_details.TOKEN_REF["tiktok"])
