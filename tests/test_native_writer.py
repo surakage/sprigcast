@@ -762,6 +762,8 @@ def test_the_mixer_feeds_a_writers_sound_itself_in_order_and_a_pause_leaves_soun
     finally:
         writer.close()
         play(loud, 2)  # and one closed under the tap is only refused (the tap keeps its encoder alive)
+        mixer.remove_tap(tap)
+        mixer.tap_pause(tap, True)  # an output stopping after its tap went: nothing to do, and nothing logged
         mixer.close()
     chunks = _loud_chunks(path)
     assert 38 <= len(chunks) <= 42, len(chunks)  # 40 blocks: the paused ones never arrived

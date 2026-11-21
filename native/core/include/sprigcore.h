@@ -989,7 +989,7 @@ SC_API int sc_mixer_tap_take(sc_mixer *mixer, int id, float *out, int capacity, 
  * sc_mixer_tap_take gives nothing and blocks wait (at most 64) until sc_mixer_tap_go: the caller first writes what
  * it took before, so no block changes places. writer NULL: taken with sc_mixer_tap_take again. The tap keeps the
  * writer's encoder alive by itself; once the writer finishes or fails its blocks are left out.
- * sc_mixer_tap_pause(1): blocks are left out until (0) (a paused recording). */
+ * sc_mixer_tap_pause(1): blocks are left out until (0) (a paused recording); a tap that is gone is no error. */
 SC_API int sc_mixer_tap_writer(sc_mixer *mixer, int id, sc_writer *writer);
 SC_API int sc_mixer_tap_go(sc_mixer *mixer, int id);
 SC_API int sc_mixer_tap_pause(sc_mixer *mixer, int id, int paused);
