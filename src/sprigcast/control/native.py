@@ -26,6 +26,7 @@ The OBS-compatible door (control/api.py) is frozen: new features land here.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import math
@@ -1890,9 +1891,10 @@ class NativeApi:
             filters = {key: v for key, v in last["filters"].items() if key[0] in here}
             settings = {sid: v for sid, v in last["settings"].items() if sid in here}
         else:
-            filters = {(s.id, f.id): (f.enabled, json.dumps(f.settings, sort_keys=True, default=str))
+            seen, self._written = getattr(self, "_written", {}), {}
+            filters = {(s.id, f.id): (f.enabled, self._as_text(seen, (s.id, f.id), f.settings))
                        for s in col.sources for f in s.filters}
-            settings = {s.id: json.dumps(s.settings, sort_keys=True, default=str) for s in col.sources}
+            settings = {s.id: self._as_text(seen, s.id, s.settings) for s in col.sources}
         items = {}
         for scene in col.scenes:
             for i, item in enumerate(scene.items):
@@ -1926,6 +1928,17 @@ class NativeApi:
             "media": {s.id: self._media_state(s.id) for s in col.sources if s.kind == "media"},
             "shelf": self._shelf(),
         }
+
+    def _as_text(self, seen: dict, key: Any, settings: dict[str, Any]) -> str:
+        """These settings as JSON text, written out only when they differ from the last look: comparing two
+        dicts is many times quicker than writing one out, and nearly all of them are the same from one look to
+        the next (writing every source's out held the window 603 ms on the PC mid-stream with Settings open,
+        and a frame came 125 ms late, 2026-11-21). The copy kept is this look's own: an edit in place still shows."""
+        kept = seen.get(key)
+        if kept is None or kept[0] != settings:
+            kept = (copy.deepcopy(settings), json.dumps(settings, sort_keys=True, default=str))
+        self._written[key] = kept
+        return kept[1]
 
     def _media_state(self, source_id: str) -> str | None:
         recent = getattr(self.host, "media_state", None)

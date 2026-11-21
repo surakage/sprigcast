@@ -507,3 +507,28 @@ def test_an_app_that_says_its_name_in_its_greeting_is_named_in_the_log():
     assert server._who(b) == "a SprigCast API app"
     assert server._who(c) == "Bridge PC (a SprigCast API app)"  # paired: the name it was given here
     assert server._who(d) == "'StreamBridge' (a SprigCast API app with this PC's key)"
+
+
+def test_a_full_look_writes_out_only_the_settings_that_changed(monkeypatch):
+    """Writing every source's settings out as JSON on each look held the window 603 ms on the PC mid-stream
+    (2026-11-21, a frame 125 ms late): only what differs from the last look is written out now."""
+    from sprigcast.control import native
+
+    api, host = _api()
+    api.changes()
+    written = []
+    real = native.json.dumps
+    monkeypatch.setattr(native.json, "dumps", lambda *a, **k: (written.append(a[0]), real(*a, **k))[1])
+    assert api.changes() == [] and written == []
+    mic = host.collection.source("mic")
+    mic.settings.setdefault("nested", {})["deep"] = [1, 2]  # changed in place, deep inside
+    api.changes()
+    written.clear()
+    mic.settings["nested"]["deep"].append(3)
+    assert [name for name, _ in api.changes()] == ["source.changed"]
+    assert written == [mic.settings]
+    written.clear()
+    assert api.changes() == [] and written == []
+    host.collection.sources.remove(mic)  # a source gone: nothing of it is kept
+    api.changes()
+    assert "mic" not in api._written
