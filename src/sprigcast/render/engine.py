@@ -1377,11 +1377,17 @@ class Engine:
             if told.get(source_id) != hidden:
                 told[source_id] = hidden
                 tell = getattr(source, "set_hidden", None)
+                began = time.perf_counter()
                 try:
                     if tell is not None:
                         tell(hidden)
                 except Exception as exc:  # a plugin's source: never stop the render loop for it
                     log.warning("source %s set_hidden failed: %s", source_id, exc)
+                # The late-frame line names the slowest: "telling sources shown or hidden" took 1146 ms on the PC
+                # (2026-11-21) with nothing saying which source.
+                spent = time.perf_counter() - began
+                if spent > getattr(self, "_slowest_rest", ("", "", 0.0))[2]:
+                    self._slowest_rest = (source_id, "hidden" if hidden else "shown", spent)
         for source_id in [s for s in told if s not in self._sources]:
             del told[source_id]
 

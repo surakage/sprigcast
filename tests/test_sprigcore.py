@@ -200,3 +200,26 @@ def test_an_engine_that_gave_up_says_so_and_refuses_work():
         with pytest.raises(sprigcore.NativeError) as e:
             eng.upload("a", _picture(4, 4))
         assert e.value.code == sprigcore.FAULTED
+
+
+def test_output_frames_reuse_buffers_nobody_holds(monkeypatch):
+    """A new 3 MB bytearray an output frame was fresh memory from Windows each time (~420,000 page faults a second
+    live on the PC, 2026-11-21): a buffer nobody holds any more is taken again; one still held is left alone."""
+    from sprigcast import sprigcore
+
+    monkeypatch.setattr(sprigcore, "_spares", {})
+    first = sprigcore._spare_buffer(64)
+    second = sprigcore._spare_buffer(64)
+    assert first is not second
+    first_id = id(first)
+    del first
+    again = sprigcore._spare_buffer(64)
+    assert id(again) == first_id and again is not second
+    view = memoryview(again)  # a view (np.frombuffer, a slice for PyAV) holds it too
+    del again
+    third = sprigcore._spare_buffer(64)
+    assert id(third) != first_id and third is not second
+    view.release()
+    monkeypatch.setattr(sprigcore, "SPARE_FRAMES", 3)
+    held = [sprigcore._spare_buffer(64) for _ in range(5)]
+    assert len(sprigcore._spares[64]) == 3 and len({id(b) for b in held}) == 5
