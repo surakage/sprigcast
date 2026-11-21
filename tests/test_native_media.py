@@ -418,6 +418,8 @@ def test_a_stinger_clip_plays_through_the_engine(player_lib, files, monkeypatch,
     assert player.ready.is_set() and player.error is None
     assert abs(player.duration - 2.0) < 0.1 and player.size == (160, 120)
     assert not np.abs(player.read_block(240)).any()  # silent until the transition shows its first frame
+    # the engine's mixer reads its sound straight from the player (no Python per block: choppy when busy)
+    assert player.native_sound() is player.engine_player is not None
     frames, sound, began = [], 0, time.monotonic()
     while time.monotonic() - began < 1.0:
         frame = player.frame_at(time.monotonic() - began)
@@ -429,6 +431,7 @@ def test_a_stinger_clip_plays_through_the_engine(player_lib, files, monkeypatch,
     assert frames[0].shape == (120, 160, 4) and player.channel_order == "RGBA" and (frames[0][..., 3] == 255).all()
     player.close()
     player.close()
+    assert player.native_sound() is None
     assert player.frame_at(2.0) is None and not np.abs(player.read_block(240)).any()
 
     if "webm" in files:  # a see-through clip keeps its alpha

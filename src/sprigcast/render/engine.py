@@ -861,6 +861,9 @@ class Engine:
             transition = new.transition_for(before, after)
             self._finish_transition(canvas.id)
             outgoing = next((s for s in old.scenes if s.id == before), None)
+            incoming = next((s for s in new.scenes if s.id == after), None)
+            log.info("on air on %s: %r (was %r), %s", canvas.id, getattr(incoming, "name", after),
+                     getattr(outgoing, "name", before), transition.kind)
             self._wait_for_waking(canvas.id, outgoing, new, after)
             if outgoing is None or transition.kind == "cut":
                 continue
