@@ -20,7 +20,7 @@ The port and password are the ones shown in Settings → Connections. Apps on ot
 `place.changed` says when one place you stream to changes while the others carry on. `state` and `was` are `connecting`, `live`, `reconnecting` or `stopped`. `reconnects` counts how often it lost its connection or a new try failed, and `dropped` is true when it had been live. A drop is `was: "live", state: "reconnecting"`; each failed try sends it again with one more in `reconnects`; back again is `was: "reconnecting", state: "live"`.
 
 ```json
-{"event": "place.changed", "data": {"place": "out-5", "name": "Kick (horizontal)", "service": "kick", "shape": "horizontal", "state": "reconnecting", "was": "live", "reconnects": 1, "dropped": true}}
+{"event": "place.changed", "place": "out-5", "name": "Kick (horizontal)", "service": "kick", "shape": "horizontal", "state": "reconnecting", "was": "live", "reconnects": 1, "dropped": true}
 ```
 
 Wherever a place is asked for, its id (`out-5`), its name (`Kick (horizontal)`) or its service (`kick`) will do.

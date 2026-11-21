@@ -39,6 +39,7 @@ export function readInfo(path) {
 function freshState() {
 	return {
 		onAir: {}, sounds: {}, volumes: {}, items: {}, media: {}, filters: {}, sprigs: {},
+		places: {}, // place id -> "connecting", "live" or "reconnecting" while it's sent to (none: stopped)
 		stream: false, record: false, recordPaused: false, clips: false, camera: false,
 		garden: null, path: null, transition: null, deaths: null, timer: null,
 	};
@@ -65,6 +66,16 @@ export function timerText(timer, now = Date.now()) {
 export function addSeconds(settings) {
 	const seconds = Number(String(settings?.seconds ?? "").trim() || 60);
 	return Number.isFinite(seconds) && seconds !== 0 ? seconds : 60;
+}
+
+/** One word for a place that's sent to: SprigCast's own state, or (an older SprigCast) from reconnecting. */
+export function placeState(place) {
+	return place?.state && place.state !== "stopped" ? place.state : place?.reconnecting ? "reconnecting" : "live";
+}
+
+/** What a Place key shows under its picture: nothing while it's fine. */
+export function placeTitle(state) {
+	return { connecting: "Connecting", reconnecting: "Retrying" }[state];
 }
 
 export function authAnswer(password, salt, challenge) {
@@ -270,7 +281,7 @@ export class SprigCast extends EventEmitter {
 			const auth = message.hello.auth;
 			const password = this.password || this._found?.password || "";
 			const answer = auth ? authAnswer(password, auth.salt, auth.challenge) : null;
-			this.socket.send(JSON.stringify({ auth: answer, events: EVENTS }));
+			this.socket.send(JSON.stringify({ auth: answer, name: "Stream Deck", events: EVENTS })); // name: for SprigCast's log
 		} else if (message.welcome) {
 			this.ready = true;
 			this._tries = 0;
@@ -301,6 +312,7 @@ export class SprigCast extends EventEmitter {
 			st.volumes[s.name] = s.volumeDb;
 		}
 		st.stream = Boolean(stream?.on);
+		this.setPlaces(stream?.places);
 		st.record = Boolean(record?.on);
 		st.recordPaused = Boolean(record?.on && record?.paused);
 		st.clips = Boolean(clips?.on);
@@ -312,6 +324,15 @@ export class SprigCast extends EventEmitter {
 		for (const p of sprigs?.sprigs ?? []) st.sprigs[p.name] = p.state ?? null;
 		st.deaths = typeof deaths?.count === "number" ? deaths.count : null;
 		this.setTimer(timer);
+	}
+
+	/** Each place as SprigCast last listed them (stream.status, place.start, place.stop): only those sent to now. */
+	setPlaces(places) {
+		if (!Array.isArray(places)) return;
+		this.state.places = {};
+		for (const p of places) {
+			if (p?.on) this.state.places[p.id] = placeState(p);
+		}
 	}
 
 	/** The Stream timer as SprigCast last said (timer.* answer or timer.changed), stamped so keys count on from it. */
@@ -337,7 +358,12 @@ export class SprigCast extends EventEmitter {
 			st.volumes[message.name] = message.volumeDb;
 		} else if (event === "stream.changed") {
 			st.stream = Boolean(message.on);
+			if (!st.stream) st.places = {};
+			else this.run("stream.status").then((status) => this.setPlaces(status?.places), () => {}).finally(() => this.emit("changed"));
 			if (st.timer?.mode === "uptime") this._askTimer();
+		} else if (event === "place.changed") {
+			if (message.state === "stopped") delete st.places[message.place];
+			else st.places[message.place] = message.state;
 		}
 		else if (event === "record.changed") {
 			st.record = Boolean(message.on);

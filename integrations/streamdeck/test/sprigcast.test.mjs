@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { AUTO_PORTS, EVENTS, SprigCast, addSeconds, authAnswer, clockText, infoFile, timerText } from "../src/sprigcast.js";
+import { AUTO_PORTS, EVENTS, SprigCast, addSeconds, authAnswer, clockText, infoFile, placeState, placeTitle, timerText } from "../src/sprigcast.js";
 
 test("password answer matches SprigCast's (obs-websocket 5 scheme)", () => {
 	assert.equal(authAnswer("leafy", "salt1", "chal2"), "0CjBF+kyqOBOjAwldo0zscggufE/eEKk/jy6hl6VImM=" /* sprigcast.control.protocol.auth_string */);
@@ -70,7 +70,7 @@ test("connects only while wanted, catches up, and tracks what's on air", async (
 	const socket = FakeSocket.last;
 	assert.equal(socket.url, "ws://127.0.0.1:4456/sprigcast");
 	await welcome(socket);
-	assert.deepEqual(socket.sent[0], { auth: null, events: EVENTS });
+	assert.deepEqual(socket.sent[0], { auth: null, name: "Stream Deck", events: EVENTS });
 	assert.equal(sc.ready, true);
 	assert.match(sc.status, /Connected to SprigCast on port 4456/);
 	assert.equal(sc.isOnAir("BRB"), true);
@@ -345,4 +345,35 @@ test("tracks a paused recording for the Pause recording key", async () => {
 	socket.say({ event: "record.changed", on: false });
 	assert.equal(sc.state.recordPaused, false); // stopped: not paused any more
 	sc.want(false);
+});
+
+test("tracks each place for the Place key: catch-up, place.changed, and none once the stream ends", async () => {
+	FakeSocket.all = [];
+	const saved = ANSWERS["stream.status"];
+	ANSWERS["stream.status"] = { on: true, places: [
+		{ id: "out-1", on: true, state: "live" },
+		{ id: "out-2", on: false, state: "stopped" },
+		{ id: "out-3", on: true, reconnecting: true }, // an older SprigCast: no state
+	] };
+	const client = new SprigCast({ WebSocketClass: FakeSocket, info: "" });
+	client.configure({ port: 4455, password: "x" });
+	client.want(true);
+	const socket = FakeSocket.last;
+	await welcome(socket);
+	ANSWERS["stream.status"] = saved;
+	assert.equal(socket.sent.find((m) => "auth" in m).name, "Stream Deck"); // SprigCast's log names it
+	assert.deepEqual(client.state.places, { "out-1": "live", "out-3": "reconnecting" });
+	socket.say({ event: "place.changed", place: "out-1", state: "reconnecting", was: "live", reconnects: 1, dropped: true });
+	assert.equal(client.state.places["out-1"], "reconnecting");
+	assert.equal(placeTitle(client.state.places["out-1"]), "Retrying");
+	socket.say({ event: "place.changed", place: "out-1", state: "live", was: "reconnecting", reconnects: 1 });
+	assert.equal(placeTitle(client.state.places["out-1"]), undefined);
+	socket.say({ event: "place.changed", place: "out-3", state: "stopped", was: "reconnecting" });
+	assert.deepEqual(client.state.places, { "out-1": "live" });
+	client.setPlaces([{ id: "out-2", on: true, state: "connecting" }, { id: "out-1", on: false }]); // a place.start answer
+	assert.deepEqual(client.state.places, { "out-2": "connecting" });
+	assert.equal(placeState({ on: true }), "live");
+	socket.say({ event: "stream.changed", on: false });
+	assert.deepEqual(client.state.places, {});
+	client.want(false);
 });

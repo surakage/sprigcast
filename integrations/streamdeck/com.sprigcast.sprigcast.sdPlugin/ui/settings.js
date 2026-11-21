@@ -13,6 +13,7 @@ const FIELDS = {
 	media: [["media", "Media", "getMedia"], ["mode", "Press", ["toggle", "play", "pause", "restart", "stop"]]],
 	filter: [["source", "Source", "getSources"], ["filter", "Filter", "getFilters"], ["mode", "Press", ["toggle", "on", "off"]]],
 	transition: [["kind", "Transition", "getTransitions"], ["ms", "Length (ms)", null]],
+	place: [["place", "Place", "getPlaces"], ["mode", "Press", ["toggle", "start", "stop"]]],
 	garden: [["garden", "Garden", "getGardens"]],
 	path: [["path", "Path", "getPaths"]],
 	deaths: [["mode", "Press", ["add", "remove", "reset", "show"]]],

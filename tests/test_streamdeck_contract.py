@@ -144,3 +144,34 @@ def test_api_json_lets_apps_on_this_pc_connect_by_themselves(tmp_path):
     finally:
         server.stop()
     assert not server.info_path.exists()
+
+
+def test_the_place_key_gets_what_it_lights_from():
+    """Place key: its list (id and name), each place's state while live, and the place.changed event."""
+    from sprigcast.core.scene import Output
+    from test_control_streambridge import PlacesHost
+
+    col = _collection()
+    col.outputs = [Output(id="out-1", type="stream", service="twitch", canvas="horizontal", enabled=True),
+                   Output(id="out-2", type="stream", service="kick", canvas="vertical", enabled=True)]
+    host = PlacesHost(col)
+    api = NativeApi(host)
+    listed = _ok(api, "places.list")["places"]
+    assert [(p["id"], p["fullName"], p["shape"]) for p in listed] == [
+        ("out-1", "Twitch (horizontal)", "horizontal"), ("out-2", "Kick (vertical)", "vertical")]
+    host.live = {"seconds": 1.0}
+    host.places = {"out-1": {"state": "live", "reconnects": 0}}
+    now = {p["id"]: p for p in _ok(api, "stream.status")["places"]}
+    assert (now["out-1"]["on"], now["out-1"]["state"]) == (True, "live") and now["out-2"]["on"] is False
+    started = {p["id"]: p for p in _ok(api, "place.start", place="out-2")["places"]}
+    assert started["out-2"]["on"] is True and started["out-2"]["state"] in ("live", "connecting")
+    stopped = {p["id"]: p for p in _ok(api, "place.stop", place="out-2")["places"]}
+    assert stopped["out-2"]["on"] is False
+    api.changes()
+    host.places["out-1"] = {"state": "reconnecting", "reconnects": 1, "reconnecting": True}
+    events = [d for name, d in api.changes(False) if name == "place.changed"]
+    assert [(e["place"], e["state"]) for e in events] == [("out-1", "reconnecting")]
+    session = NativeSession(api, password="")
+    session.events = {"output"}
+    session.welcomed = True
+    assert '"place": "out-1"' in session.event("place.changed", events[0])  # in the group the plugin asks for

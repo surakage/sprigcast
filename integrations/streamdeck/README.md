@@ -12,6 +12,7 @@ bloom is on air, a sound key shows when it's muted, and Go live and Record turn 
 | Mute sound | toggles, mutes or unmutes a sound | while muted | Audio Mixer |
 | Sound volume | changes or sets a sound's volume; on a Stream Deck + dial, turn for volume and press to mute | dial shows the level | Audio Mixer |
 | Go live | starts or stops the stream | pink while live | Stream |
+| Place | while live: starts or stops sending to one place (toggle, start or stop); the others carry on | pink while it's live, "Retrying" while it has lost its connection | |
 | Record | starts or stops recording | pink while recording | Record |
 | Pause recording | pauses or carries on (toggle, pause or resume) in the same file | while paused | Record Pause |
 | Add chapter | adds a chapter mark to the recording (optional name) | ✓ on success | Record Chapter Marker |
