@@ -229,7 +229,7 @@ class KickChat(QObject):
             wait = BACKOFF[min(self._tries, len(BACKOFF) - 1)]
             self._tries += 1
         if why != self._why:
-            log.info("kick chat %s: %s; trying again in %d s", self.channel, why, wait)
+            log.info("kick chat: %s; trying again in %d s", why, wait)  # no names
             self._why = why
         self.status.emit(f"offline: {why}")
         self._retry.start(wait * 1000)

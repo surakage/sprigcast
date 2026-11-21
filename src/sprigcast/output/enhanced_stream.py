@@ -17,6 +17,7 @@ import threading
 import time
 from fractions import Fraction
 
+from sprigcast.core import privacy
 from sprigcast.output.enhanced import EnhancedConfig, TrackMetrics, bpm_sei, wall_clock
 from sprigcast.output.recorder import SAMPLE_RATE, VIDEO_QUEUE, encoder_hwaccel
 from sprigcast.output.shared_stream import SharedStreamEncoder
@@ -105,7 +106,10 @@ class EnhancedStreamer(Streamer):
         )
         self.config = config
         self._url = config.url
-        self._secrets = [s for s in {config.key.split("?")[0], user_key} if s]
+        # Twitch's sign-in for the stream (config.key, "v2_..." plus our query) holds a "?" of its own: each form of
+        # it is hidden, not only what comes before the first "?" (the key reached the log that way, 2026-11-20).
+        self._secrets = [s for s in {config.key, config.url, user_key} if s]
+        privacy.remember_secret(*self._secrets)
         self.tracks = [_Track(i, cfg, canvases[cfg.canvas_index]) for i, cfg in enumerate(config.tracks)]
         self._video = self.tracks[0].queue  # health checks look at the main quality's queue
         self._lock = threading.Lock()
@@ -191,9 +195,7 @@ class EnhancedStreamer(Streamer):
     # Stats ---------------------------------------------------------------------------------
 
     def redact(self, text: str) -> str:
-        for secret in self._secrets:
-            text = text.replace(secret, "****")
-        return text
+        return privacy.mask(text, self._secrets)
 
     def stats(self) -> dict:
         out = super().stats()

@@ -80,9 +80,9 @@ def stream_test(url: str, seconds: float = SECONDS, ceiling_kbps: int = CEILING_
             return None
         return int((sent - counted_from) * 8 / 1000 / (end - counted_at))
     except Exception as exc:
-        message = str(exc)
-        for secret in (url, url.rsplit("/", 1)[-1].split("?")[0]):  # never log the stream key
-            message = message.replace(secret, "****") if secret else message
+        from sprigcast.core import privacy
+
+        message = privacy.mask(str(exc), [url, url.rsplit("/", 1)[-1]])  # never log the stream key
         log.info("upload test stream failed: %s", message)
         return None
     finally:

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from sprigcast.core import privacy
 from sprigcast.output.autopilot import Autopilot
 from sprigcast.output.recorder import Recorder, rate_limits, video_options
 
@@ -233,6 +234,7 @@ class Streamer(Recorder):
         self.bandwidth_test = bandwidth_test
         self._url = stream_url(server, key, bandwidth_test)
         self._key = key
+        privacy.remember_secret(key, self._url)  # never in a log line
         self.connected = False
         self.reconnects = 0
         self.status = "connecting"
@@ -306,7 +308,7 @@ class Streamer(Recorder):
 
     def redact(self, text: str) -> str:
         """Error text from FFmpeg can contain the URL; never let the key reach the screen or a log."""
-        return text.replace(self._key, "****") if self._key else text
+        return privacy.mask(text, [self._key])
 
     def summary(self) -> str:
         """One line for after the stream ends: how much was dropped and what was slow."""

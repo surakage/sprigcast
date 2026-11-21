@@ -59,6 +59,9 @@ def _call(name: str, data: bytes) -> bytes:
 
 def protect(value: str) -> str:
     """The value to save. Encrypted on Windows; as it is elsewhere."""
+    from sprigcast.core import privacy
+
+    privacy.remember_secret(value)  # never in a log line from now on
     if not value or not available():
         return value
     try:
@@ -71,12 +74,17 @@ def protect(value: str) -> str:
 def unprotect(saved: str) -> str:
     """The secret from a saved value: decrypted, or a plain (old) value as it is. "" if it can't be read
     (saved by another Windows user or PC)."""
+    from sprigcast.core import privacy
+
     if not is_protected(saved):
+        privacy.remember_secret(saved)
         return saved
     if not available():
         return ""
     try:
-        return _call("CryptUnprotectData", base64.b64decode(saved[len(PREFIX):])).decode("utf-8")
+        value = _call("CryptUnprotectData", base64.b64decode(saved[len(PREFIX):])).decode("utf-8")
+        privacy.remember_secret(value)  # never in a log line from now on
+        return value
     except (OSError, ValueError) as exc:
         log.warning("secret store: couldn't read a saved secret (%s)", exc)
         return ""

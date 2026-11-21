@@ -31,7 +31,6 @@ log = logging.getLogger(__name__)
 DAYS = 7  # how far back the report reaches
 MAX_LOG_BYTES = 24 * 2**20  # newest first; older files are left out past this
 CRASH_TAIL = 256 * 1024
-HIDDEN = "[hidden]"
 
 # Settings whose names say they hold a secret; their values are hidden and also scrubbed from every file.
 SECRET_NAME = re.compile(r"password|token|secret|cookie|oauth|(?:^|[/_])key$|control/devices", re.I)
@@ -58,74 +57,8 @@ def default_folder() -> Path:
 # Hiding what's private ---------------------------------------------------------------------------------
 
 
-_URL = re.compile(r"\b(rtmps?|srt|rist|wss?|https?|udp|tcp)://([^/\s\"'<>?#,]+)([^\s\"'<>,)]*)", re.I)
-_ASSIGN = re.compile(r"(?i)\b(stream[_ ]?key|key|token|access_token|refresh_token|password|passwd|secret|auth|"
-                     r"sig|signature|oauth|streamid)(\s*[=:]\s*)([\"']?)([^\s\"'&,;(\[][^\s\"'&,;]*)")
-_BEARER = re.compile(r"(?i)\b(bearer|oauth:)\s*[A-Za-z0-9._~+/=-]{8,}")
-_KNOWN_KEYS = [
-    re.compile(r"\blive_\d+_[A-Za-z0-9]{10,}"),  # Twitch stream key
-    re.compile(r"\b[a-z0-9]{4}(?:-[a-z0-9]{4}){3,4}\b"),  # YouTube stream key
-    re.compile(r"\bsk_[a-z]{2}-[A-Za-z0-9]{6,}"),  # Kick stream key
-    re.compile(r"\bsc_local_[A-Za-z0-9_-]{8,}"),  # SprigCast's own API key for apps on this PC
-]
-_USER_FOLDER = re.compile(r"(?i)([A-Z]:[\\/]+(?:Users|Documents and Settings)[\\/]+)([^\\/\s\"'<>|:*?]+)")
-_UNIX_HOME = re.compile(r"(/(?:home|Users)/)([^/\s\"']+)")
-_EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+(?:\.[\w-]+)+\b")
-_IPV4 = re.compile(r"\b(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\b")
-
-
-def _private_ip(parts: tuple[int, ...]) -> bool:
-    a, b = parts[0], parts[1]
-    return (a in (0, 10, 127) or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168)
-            or (a == 169 and b == 254) or a >= 224)
-
-
-class Scrubber:
-    """Turns text into text that is safe to send: see the module docstring for what it hides."""
-
-    def __init__(self, secrets=(), names=()):
-        # Longest first, so a secret that contains another is hidden whole.
-        self.secrets = sorted({s for s in secrets if s and len(s) >= 4}, key=len, reverse=True)
-        self.names = []
-        for name in names:  # the Windows user name, the PC's name
-            if name and len(name) >= 3:
-                self.names.append(re.compile(rf"(?<![\w]){re.escape(name)}(?![\w])", re.I))
-
-    @classmethod
-    def for_this_pc(cls, secrets=()) -> Scrubber:
-        names = [os.environ.get("USERNAME", ""), os.environ.get("USER", ""), Path.home().name,
-                 os.environ.get("COMPUTERNAME", ""), platform.node().split(".")[0]]
-        return cls(secrets, [n for n in names if n.lower() not in {"user", "admin", "root", "public", "default"}])
-
-    @staticmethod
-    def _url(match: re.Match) -> str:
-        scheme, host, rest = match.group(1), match.group(2), match.group(3)
-        if "@" in host:  # user:password@host
-            host = host.rsplit("@", 1)[1]
-        return f"{scheme}://{host}" + ("/" + HIDDEN if rest.strip("/") else rest)
-
-    @staticmethod
-    def _ip(match: re.Match) -> str:
-        parts = tuple(int(p) for p in match.groups())
-        if any(p > 255 for p in parts) or _private_ip(parts):
-            return match.group(0)
-        return "[ip]"
-
-    def __call__(self, text: str) -> str:
-        for secret in self.secrets:
-            text = text.replace(secret, HIDDEN)
-        text = _URL.sub(self._url, text)
-        text = _BEARER.sub(lambda m: f"{m.group(1)} {HIDDEN}", text)
-        text = _ASSIGN.sub(lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}{HIDDEN}", text)
-        for pattern in _KNOWN_KEYS:
-            text = pattern.sub(HIDDEN, text)
-        text = _USER_FOLDER.sub(r"\1you", text)
-        text = _UNIX_HOME.sub(r"\1you", text)
-        text = _EMAIL.sub("[email]", text)
-        text = _IPV4.sub(self._ip, text)
-        for name in self.names:
-            text = name.sub("you", text)
-        return text
+# The scrubbing itself lives in core/privacy.py: the logs use the same one.
+from sprigcast.core.privacy import HIDDEN, Scrubber, _private_ip  # noqa: E402, F401
 
 
 def _leaves(value) -> list[str]:

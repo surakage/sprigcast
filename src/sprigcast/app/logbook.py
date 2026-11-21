@@ -9,8 +9,11 @@
   and on the next start what Windows recorded about it (app/crash_report.py).
 
 Day logs and stream reports older than 14 days are deleted at start-up (Settings → General → Logs:
-7, 14, 30 or 90 days, or Forever). SPRIGCAST_LOG_DIR puts the folder somewhere else. Stream keys never
-reach these files.
+7, 14, 30 or 90 days, or Forever). SPRIGCAST_LOG_DIR puts the folder somewhere else.
+
+Nothing personal reaches these files: every handler, every stream report line and crash.log go through
+core/privacy.py (keys, tokens, passwords, addresses past their host, the user and PC name, e-mails, public IPs,
+device serials, channel names). What faulthandler writes straight to a file is scrubbed at the next start.
 """
 
 from __future__ import annotations
@@ -22,6 +25,8 @@ import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+
+from sprigcast.core import privacy
 
 log = logging.getLogger(__name__)
 
@@ -87,12 +92,14 @@ def setup(now: datetime | None = None) -> Path | None:
     try:
         folder.mkdir(parents=True, exist_ok=True)
         removed = _prune(folder, now)
+        remember_personal()
         path = folder / f"sprigcast {now:%Y-%m-%d}.log"
+        _sweep(folder, path)
         handler = logging.FileHandler(path, encoding="utf-8")
     except OSError as exc:
         log.warning("no log file (%s)", exc)
         return None
-    handler.setFormatter(_Formatter(FORMAT))
+    handler.setFormatter(privacy.ScrubbingFormatter(_Formatter(FORMAT)))
     handler.setLevel(logging.INFO)
     handler.addFilter(Floods())
     quiet_live_flv()
@@ -101,6 +108,7 @@ def setup(now: datetime | None = None) -> Path | None:
         root.removeHandler(_handler)
         _handler.close()
     root.addHandler(handler)
+    privacy.guard_root()  # the console too
     if root.level > logging.INFO or root.level == logging.NOTSET:
         root.setLevel(logging.INFO)
     _handler = handler
@@ -119,6 +127,35 @@ def setup(now: datetime | None = None) -> Path | None:
     logging.getLogger("sprigcast").info("SprigCast %s started; logs in %s%s", _version(), folder,
                                         f" ({removed} older than {keep_days()} days removed)" if removed else "")
     return path
+
+
+def _sweep(folder: Path, today: Path) -> None:
+    """What faulthandler wrote straight to crash.log or today's log last run is scrubbed now, before this run
+    writes to them; older logs (anything an older SprigCast wrote) on a side thread that rests as it goes."""
+    first = [p for p in (folder / "crash.log", today) if p.exists()]
+    privacy.sweep(folder, first)
+    rest = [p for p in privacy.log_files(folder) if p not in first]
+    if rest:
+        import threading
+
+        threading.Thread(target=privacy.sweep, args=(folder, rest), kwargs={"pause": 0.01}, name="log-sweep",
+                         daemon=True).start()
+
+
+def remember_personal() -> None:
+    """The chat channels named in Settings: hidden from the log even before a chat reader starts."""
+    try:
+        import json
+
+        from PySide6.QtCore import QSettings
+
+        settings = QSettings()
+        names = json.loads(str(settings.value("chat/names", "") or "{}"))
+        old = str(settings.value("chat/twitch_channel", "") or "")
+    except Exception:
+        return
+    if isinstance(names, dict):
+        privacy.remember_name(old, *[n for n in names.values() if isinstance(n, str)])
 
 
 @contextlib.contextmanager
@@ -347,6 +384,7 @@ class StreamReport:
             redact = getattr(st, "redact", None)
             if redact:
                 text = redact(text)
+        text = privacy.scrub(text)
         try:
             self._file.write(text + "\n")
         except OSError:

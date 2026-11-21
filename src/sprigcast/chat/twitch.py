@@ -184,7 +184,7 @@ class TwitchChat(QObject):
             return
         wait = BACKOFF[min(self._tries, len(BACKOFF) - 1)]
         self._tries += 1
-        log.info("twitch chat %s (%s); retrying in %d s", self.channel, why, wait)
+        log.info("twitch chat (%s); retrying in %d s", why, wait)  # no names
         self.status.emit(f"offline: {why}")
         self._retry.start(wait * 1000)
 

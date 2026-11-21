@@ -263,6 +263,9 @@ def _name_chat(service: str, name: str) -> None:
             names = {}
         if not isinstance(names, dict) or names.get(service):
             return
+        from sprigcast.core import privacy
+
+        privacy.remember_name(name)  # never in the log
         names[service] = name
         settings.setValue(CHAT_NAMES, json.dumps(names))
         log.info("sign-in: %s chat follows the signed-in channel", service)

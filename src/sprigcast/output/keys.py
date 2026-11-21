@@ -30,6 +30,10 @@ def get_key(key_ref: str | None) -> str | None:
 
         key = keyring.get_password(KEYRING_SERVICE, key_ref) or None
         _present[key_ref] = key is not None
+        if key:
+            from sprigcast.core import privacy
+
+            privacy.remember_secret(key)  # a stream key or a sign-in: never in a log line
         return key
     except Exception as exc:  # no backend (some Linux setups), locked store, ...
         log.warning("could not read stream key %s: %s", key_ref, exc)
@@ -41,6 +45,9 @@ def set_key(key_ref: str, key: str) -> None:
     import keyring
 
     if key:
+        from sprigcast.core import privacy
+
+        privacy.remember_secret(key)
         keyring.set_password(KEYRING_SERVICE, key_ref, key)
     else:
         try:

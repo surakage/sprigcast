@@ -6,6 +6,14 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- Nothing personal in the logs: every line of the day log, each stream report, crash.log and the console now
+  goes through one scrubber that hides stream keys, sign-in tokens, the API password and device keys (the values
+  this run has read and anything shaped like one), everything after the server in a stream or web address, the
+  Windows user and PC name, e-mail addresses, public IP addresses, device serial numbers and chat channel names.
+  Twitch Enhanced Broadcasting's stream sign-in got past the old check (it holds a "?" of its own) and was written
+  in full to the log and the stream report when a stream dropped (2026-11-20). Logs already on the PC are cleaned
+  at the next start. Not tried on a PC yet.
+
 - Web pages play MP4 videos: a page's H.264 MP4 (StreamBridge's Random Clip Player plays Twitch clips like that)
   is turned into WebM the first time it's asked for, on the graphics card when it can (AV1), else VP8, and the
   copy is kept for next time (1.5 GB at most). The page engine can't play H.264 itself, so these clips showed an
