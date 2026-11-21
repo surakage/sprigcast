@@ -7,6 +7,7 @@
 #include "sprigcore.h"
 
 #include <exception>
+#include <functional>
 #include <new>
 #include <string>
 
@@ -21,6 +22,12 @@ void name_thread(const wchar_t *name);
 // The calling thread runs ahead of SprigCast's others (Windows): sound mixing and capture.
 void sound_thread_priority();
 void sender_thread_priority();  // a stream's sender: above normal, so a busy PC doesn't look like a slow network
+
+// A writer's way in for sound from the mixer (sc_mixer_tap_writer): (track, interleaved stereo, frames) -> what
+// sc_writer_audio answers. Keeps the writer's encoder alive by itself, so a writer closed first is only refused.
+// *tracks: the writer's sound tracks.
+using WriterSound = std::function<int(int, const float *, int)>;
+WriterSound writer_sound(sc_writer *writer, int *tracks);
 
 // Every exported function runs inside this: no C++ exception crosses into Python. Built with /EHa, catch (...)
 // also stops Windows faults (an access violation in a driver or in our own code).

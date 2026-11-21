@@ -711,3 +711,66 @@ def test_clips_stay_in_memory_when_the_ring_cant_be_made(player_lib, tmp_path): 
     finally:
         writer.close()
     assert len(_lumas(tmp_path / "clip.mkv")) >= 30
+
+
+def _loud_chunks(path):
+    """Per 1024 samples of the file's first sound track: is it loud?"""
+    with av.open(str(path)) as f:
+        sound = np.concatenate([frame.to_ndarray().reshape(frame.to_ndarray().shape[0], -1).mean(axis=0)
+                                if frame.format.is_planar else
+                                frame.to_ndarray().reshape(-1, 2).mean(axis=1) for frame in f.decode(audio=0)])
+    chunks = [sound[i:i + 1024] for i in range(0, len(sound) - 1023, 1024)]
+    return [float(np.sqrt(np.mean(c * c))) > 0.1 for c in chunks]
+
+
+def test_the_mixer_feeds_a_writers_sound_itself_in_order_and_a_pause_leaves_sound_out(player_lib, tmp_path):  # noqa: F811
+    path = tmp_path / "heard.mkv"
+    writer = sprigcore.Writer(str(path), "libx264", W, H, fps=30, video_kbps=500, keyframe_frames=30,
+                              video_options={"preset": "ultrafast"}, audio_tracks=2, queue_frames=120)
+    mixer = sprigcore.SoundMixer(clocked=False)
+    block = sprigcore.MIXER_BLOCK
+    wave = (0.5 * np.sin(np.arange(block) * 2 * np.pi * 750 / 48000)).astype(np.float32)  # whole cycles a block
+    loud, quiet = np.stack([wave, wave], axis=1), np.zeros((block, 2), np.float32)
+    try:
+        source = mixer.add_source(gain=1.0, tracks=("stream",))
+        tap = mixer.add_tap([0])  # one mix: into both of the writer's tracks
+
+        def play(what, blocks):
+            for _ in range(blocks):
+                mixer.push(source, what)
+                mixer.tick(1)
+
+        for n in range(60):
+            assert writer.video(nv12(100), n) == sprigcore.SC_OK
+        play(quiet, 10)  # taken and written by the caller, as Python did
+        while (got := mixer.take(tap, 1)) is not None:
+            for track in (0, 1):
+                assert writer.audio(got[1][0], track) == sprigcore.SC_OK
+        play(loud, 1)  # mixed between the last take and the switch: still the tap's
+        mixer.tap_writer(tap, writer)
+        assert mixer.take(tap, 1) is None  # the writer's from here
+        play(loud, 9)  # waits: the caller may still be writing what it took
+        mixer.tap_go(tap)
+        play(quiet, 10)  # straight into the writer
+        mixer.tap_pause(tap, True)
+        play(loud, 10)  # a paused recording: left out
+        mixer.tap_pause(tap, False)
+        play(quiet, 10)
+        stats = finished(writer)
+        assert stats.state_name == "finished", stats.error_text
+        play(loud, 3)  # a finished writer refuses: no harm
+    finally:
+        writer.close()
+        play(loud, 2)  # and one closed under the tap is only refused (the tap keeps its encoder alive)
+        mixer.close()
+    chunks = _loud_chunks(path)
+    assert 38 <= len(chunks) <= 42, len(chunks)  # 40 blocks: the paused ones never arrived
+    first = chunks.index(True)
+    run = sum(chunks)
+    assert 9 <= first <= 12 and 9 <= run <= 11, chunks  # pushed sound plays a block later
+    assert all(chunks[first:first + run]), chunks  # one run: nothing changed places
+    both = []
+    for i in (0, 1):
+        with av.open(str(path)) as f:
+            both.append(sum(frame.samples for frame in f.decode(audio=i)))
+    assert both[0] == both[1]
