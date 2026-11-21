@@ -3231,8 +3231,16 @@ class MainWindow(QMainWindow):
         if spike is None:
             spike = self._spike_watch = busy_pc.spike_watch()
         if spike.feed(cpu, None):
+            on_air = self.streaming is not None or self.recording is not None
+
             def name_them() -> None:
-                log.info(busy_pc.spike_line(busy_pc.heavy_apps(with_use=True), cpu))
+                apps = busy_pc.heavy_apps(with_use=True)
+                log.info(busy_pc.spike_line(apps, cpu))
+                # On air, a job of Windows' own that can wait is said at once, not after a busy minute.
+                jobs = busy_pc.background_jobs(apps) if on_air else []
+                if jobs and time.monotonic() - getattr(self, "_job_said", float("-inf")) >= busy_pc.WARN_EVERY_S:
+                    self._job_said = time.monotonic()
+                    self._busy_note = f"Your PC is busy (CPU {cpu or 0:.0f}%). " + busy_pc.job_message(*jobs[0])
 
             from sprigcast.core import workers
 
@@ -8660,7 +8668,19 @@ class MainWindow(QMainWindow):
             recording_planned=bool(self.collection.recording.canvases),
             upload_kbps=doctor.usable_upload(QSettings()),
             unreachable=[] if self.streaming is not None else list(getattr(self, "_unreachable_lines", [])),
+            camera_sizes=self._camera_sizes(),
         )
+
+    def _camera_sizes(self) -> dict:
+        """Each open camera or capture card: (the size its device delivers, the size its source uses)."""
+        sizes = {}
+        for source_id, source in list(self.engine._sources.items()):
+            feed = getattr(source, "_feed", None)
+            given = getattr(feed, "given", None) or getattr(feed, "picture", None)
+            used = getattr(source, "_size", None)  # (never `size`: a text would be drawn for it)
+            if feed is not None and given and isinstance(used, tuple) and len(used) == 2 and min(used) > 0:
+                sizes[source_id] = ((int(given[0]), int(given[1])), (int(used[0]), int(used[1])))
+        return sizes
 
     def _doctor_warnings(self) -> list[str]:
         """The Stream doctor's quick check when going live: only serious problems."""

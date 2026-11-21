@@ -100,6 +100,9 @@ class Checkup:
     free_gb: float | None = None  # in the recordings folder
     recording_planned: bool = False
     upload_kbps: int | None = None  # what the upload carries (Optimize's test, or what a clean stream carried)
+    # source id -> (the size its device delivers, the size the source uses); filled for cameras and capture cards
+    camera_sizes: dict[str, tuple[tuple[int, int], tuple[int, int]]] = field(default_factory=dict)
+    busy_apps: list[tuple[str, float]] | None = None  # other programs' CPU, (name, % of the whole PC); None: not asked
     unreachable: list[str] = field(default_factory=list)  # places whose server wouldn't connect (output/preflight.py)
 
 
@@ -133,6 +136,8 @@ def examine(c: Checkup) -> list[Finding]:
     found += _encoder(c)
     found += _audio(c)
     found += _sources(c)
+    found += _oversized(c)
+    found += _busy(c)
     found += [Finding("warning", "Places", line) for line in c.unreachable]
     if c.recording_planned and c.free_gb is not None and c.free_gb < LOW_DISK_GB:
         found.append(Finding("warning", "Disk", f"Only {c.free_gb:.1f} GB free for recordings: "
@@ -338,6 +343,36 @@ def _sources(c: Checkup) -> list[Finding]:
     return found
 
 
+OVERSIZED = 2.5  # a device delivering this many times the pixels its source uses gets a hint (1440p for 720p: 4)
+
+
+def _oversized(c: Checkup) -> list[Finding]:
+    """A capture device sending a much bigger picture than its source uses: every picture is taken in whole and
+    shrunk, for nothing (the PC's HD60 X sent 2560x1440 for a 1280x720 source, 2026-11-21)."""
+    found = []
+    for s in c.collection.sources:
+        given, used = c.camera_sizes.get(s.id) or ((0, 0), (0, 0))
+        if min(*given, *used) <= 0 or given[0] * given[1] < OVERSIZED * used[0] * used[1]:
+            continue
+        smaller = " or ".join(f"{p}p" for p in (1080, 720) if min(used) <= p < min(given)) or f"{min(used)}p"
+        found.append(Finding("info", "Sources", f"{s.name} sends {given[0]} x {given[1]} for a {used[0]} x {used[1]} "
+                                                f"source: set the device or console to output {smaller}."))
+    return found
+
+
+def _busy(c: Checkup) -> list[Finding]:
+    """Other programs using a lot of the CPU right now: Windows' own jobs that can wait, then anything heavy."""
+    from sprigcast.app import busy_pc
+
+    apps = c.busy_apps or []
+    jobs = busy_pc.background_jobs(apps)
+    found = [Finding("warning", "PC", busy_pc.job_message(name, pct)) for name, pct in jobs]
+    named = {name for name, _pct in jobs}
+    found += [Finding("info", "PC", f"{name} is using {pct:.0f}% of the CPU: close it if the stream doesn't need it.")
+              for name, pct in apps if name not in named and pct >= busy_pc.HEAVY_PCT]
+    return found
+
+
 # Gathering ---------------------------------------------------------------------
 
 
@@ -441,7 +476,7 @@ def load_last_streams(settings) -> dict[str, LastStream]:
 
 
 AREA_ICONS = {"Keys": "key", "Upload": "upload", "Encoder": "gear", "GPU": "monitor", "Audio": "mic", "Sources": "camera",
-              "Disk": "disk", "Places": "broadcast", "All": "leaf"}  # drawn by app/icons.py
+              "Disk": "disk", "PC": "monitor", "Places": "broadcast", "All": "leaf"}  # drawn by app/icons.py
 BADGES = {"bad": "✕", "warning": "!", "good": "✓", "checking": "…"}
 SUBTITLES = {
     "bad": "Fix the red ones before you go live.",
@@ -554,10 +589,19 @@ class DoctorDialog(CardWindow):
         self.scroll.setVisible(False)
         self._set_verdict("checking", "Checking…")
         self._clear_rows()
+        # Who has the CPU, looked up while the doctor listens (two looks a second apart, off this thread).
+        from sprigcast.app import busy_pc
+        from sprigcast.core import workers
+
+        self._busy = workers.run(lambda: busy_pc.heavy_apps(limit=5, with_use=True), name="doctor-busy")
         QTimer.singleShot(int(self._listen * 1000), self.finish)
 
     def finish(self) -> None:
-        self.findings = examine(self._gather())
+        checkup = self._gather()
+        busy = getattr(self, "_busy", None)
+        if checkup.busy_apps is None and busy is not None and busy.done() and busy.exception() is None:
+            checkup.busy_apps = busy.result()
+        self.findings = examine(checkup)
         self._set_verdict(overall(self.findings), headline(self.findings))
         self._clear_rows()
         problems = [f for f in self.findings if f.level in ("bad", "warning")]  # the header covers all-clear
