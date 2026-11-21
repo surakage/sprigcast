@@ -849,6 +849,30 @@ def com_release(pointer: int) -> None:
         lib.sc_com_release(pointer)
 
 
+SPARE_FRAMES = 12  # of each size, kept to take output frames into again
+
+
+_spares: dict[int, list[bytearray]] = {}
+
+
+def _spare_buffer(size: int) -> bytearray:
+    """A buffer of ``size`` bytes for an output frame: one taken before that nobody holds any more, else a new one.
+
+    A new bytearray a frame (3 MB at 1080p) was fresh memory from Windows each time, zeroed page by page: the PC
+    took ~420,000 page faults a second live with cameras (2026-11-21), kernel time 30-38%. Whoever takes a frame
+    keeps the bytearray (or a view of it, which holds it) while it needs it, so one held by the pool alone is free.
+    Called on the render thread only."""
+    pool = _spares.setdefault(size, [])
+    for buf in pool:
+        # held by the pool's list, `buf` and getrefcount's own argument only: nothing else has it
+        if sys.getrefcount(buf) <= 3:
+            return buf
+    buf = bytearray(size)
+    if len(pool) < SPARE_FRAMES:
+        pool.append(buf)
+    return buf
+
+
 class Engine:
     """The engine's own frame loop (phase 2): a frame thread in the DLL draws every canvas at the frame rate and
     shows them in preview windows. Every call only hands work over and returns at once; the frame thread takes it
@@ -1101,7 +1125,7 @@ class Engine:
         """The oldest finished NV12 frame of an output: (data, when it was drawn in time.perf_counter()
         seconds, frames dropped so far), or None when none is waiting. Never waits."""
         size = width * height * 3 // 2
-        data = bytearray(size)
+        data = _spare_buffer(size)
         fresh, drawn, dropped = ctypes.c_int(0), ctypes.c_double(0.0), ctypes.c_uint64(0)
         _check(_need().sc_engine_output_take(self.handle, index, slot, (ctypes.c_char * size).from_buffer(data),
                                              size, ctypes.byref(fresh), ctypes.byref(drawn), ctypes.byref(dropped)))
