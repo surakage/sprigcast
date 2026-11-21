@@ -472,3 +472,31 @@ def test_the_asking_app_is_named_never_by_its_key():
     assert server._who(paired) == "StreamBridge (a SprigCast API app)"
     assert server._who(local) == "a SprigCast API app with this PC's key"
     assert server._who(other) == "a SprigCast API app"
+
+
+def test_an_app_that_says_its_name_in_its_greeting_is_named_in_the_log():
+    """StreamBridge 2026-11-21 sent {"events", "name", "auth"} and the log still called it nameless: "name" was
+    only read when pairing."""
+    from types import SimpleNamespace
+
+    pytest.importorskip("PySide6.QtWebSockets")
+    from sprigcast.app import control_server
+
+    api, _host = _api()
+    session = NativeSession(api=api)
+    list(session.receive(json.dumps({"events": "none", "name": "  StreamBridge\n" + "x" * 80})))
+    assert session.welcomed and session.name.startswith("StreamBridge") and len(session.name) == 40
+    session.name = "StreamBridge"
+    quiet = NativeSession(api=api)
+    list(quiet.receive(json.dumps({"events": "none", "name": 7})))  # not text: no name, still welcomed
+    assert quiet.welcomed and quiet.name == ""
+    server = control_server.ControlServer.__new__(control_server.ControlServer)
+    server.pairing = SimpleNamespace(devices=[SimpleNamespace(name="Bridge PC", key="sc_secret")])
+    server.local_key = "sc_local"
+    a, b, c, d = object(), object(), object(), object()
+    server.sessions = {a: session, b: quiet, c: NativeSession(api=api, key="sc_secret", name="StreamBridge"),
+                       d: NativeSession(api=api, key="sc_local", name="StreamBridge")}
+    assert server._who(a) == "'StreamBridge' (a SprigCast API app, by its own word)"
+    assert server._who(b) == "a SprigCast API app"
+    assert server._who(c) == "Bridge PC (a SprigCast API app)"  # paired: the name it was given here
+    assert server._who(d) == "'StreamBridge' (a SprigCast API app with this PC's key)"

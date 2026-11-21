@@ -36,7 +36,7 @@ app    → {"auth": "<answer>", "events": ["bloom", "sound"]}
 server → {"welcome": {"api": 0, "events": ["bloom", "sound"]}}
 ```
 
-`auth` is `null` when no password is set. Then send `{"events": "all"}` (or a list, or `"none"`) to start.
+`auth` is `null` when no password is set. Then send `{"events": "all"}` (or a list, or `"none"`) to start. Add `"name": "My app"` to that first message and SprigCast's log names your app by it (an app paired with a code is named by its pairing instead). It's only for the log.
 
 The password answer is `base64(sha256(base64(sha256(password + salt)) + challenge))`. This is the same as obs-websocket's, so existing client code can be reused.
 
@@ -369,7 +369,7 @@ With `overlaps`, each shape also has `overlaps`: `[{"a", "a_name", "a_in", "b", 
 | `screenshot.take` | A picture of what's on air in each shape, or of one source or bloom. | `shape` (optional): both (default), horizontal or vertical, `source` (optional): just this source (a camera...), name or id, `bloom` (optional): just this bloom, name or id, `width` (optional): shrink to this width in pixels (keeps the shape), `save` (optional): true (default): save PNGs in the recordings folder, under Screenshots, `data` (optional): true: send the picture back as base64 PNG (for bots and pages; large) |
 
 
-`screenshot.take` with `bloom` pictures that bloom on the `shape` you name, whether it's on air or not. A bloom on air is pictured as its canvas. A bloom off air is drawn on its own canvas without being put on air: its sources wake for the moment it takes (up to about 4 seconds for cameras and web pages), then rest again, and its shot has `"on_air": false`. That isn't done while live or recording (`not_allowed`), so the stream never pays for it. With `shape` both (the default) you get a picture for each shape the bloom is in; a shape left out is named in `skipped` (`shape`, `why`): the bloom has no layout for that canvas (its vertical look is a bloom of its own: ask for that one by name), or it's on air on one canvas only. A canvas's or bloom's picture is on black with nothing see-through, as viewers get it; a single source's picture keeps its see-through parts.
+`screenshot.take` with `bloom` pictures that bloom on the `shape` you name, whether it's on air or not. A bloom on air is pictured as its canvas. A bloom off air is drawn on its own canvas without being put on air: its sources wake for the moment it takes (up to about 4 seconds for cameras and web pages), then rest again, and its shot has `"on_air": false`. That isn't done while live or recording (`not_allowed`), so the stream never pays for it. With `shape` both (the default) you get a picture for each shape the bloom is in; a shape left out is named in `skipped` (`shape`, `why`): the bloom has no layout for that canvas (its vertical look is a bloom of its own: ask for that one by name), or it's on air on one canvas only. A canvas's or bloom's picture is on black with nothing see-through, as viewers get it; a single source's picture keeps its see-through parts. With no `shape`, a bloom named by one canvas's own id (or a name only that one has, such as the vertical bloom's) is pictured on that canvas.
 
 ### sound
 

@@ -1742,6 +1742,15 @@ class NativeApi:
         else:
             bloom = self._bloom(data)
             family = self.col.linked_with(bloom.id)
+            if data.get("shape") is None:
+                # No shape given and the bloom named is one canvas's own (its id, or a name only it has): that
+                # canvas. {"bloom": "bloom-8"}, the vertical Gameplay, answered with the horizontal one first
+                # (PC, 2026-11-21). The main bloom, or a name its shapes share, is still every shape.
+                wanted = data["bloom"]
+                named = next((s for s in family if s.id == wanted), None) or \
+                    next((s for s in family if s.name == wanted), None)
+                if named is not None and named is not bloom:
+                    shape = named.canvas
             # A shape this bloom has no layout for is said, not quietly left out: a bloom made for one canvas (its
             # vertical look being another bloom) answered "both" with one picture and no word why (PC, 2026-11-21).
             asked = self._shapes() if shape == "both" else [shape]
@@ -2118,6 +2127,7 @@ class NativeSession:
     keys: list[str] = field(default_factory=list)  # paired devices' keys: each works like the password
     pairing: Any = None  # control.pairing.Pairing: a code from Settings → Connections → Pair a device
     key: str = ""  # the paired key it signed in with (removing that device closes this connection)
+    name: str = ""  # what it calls itself in its greeting ("name"): only ever for the log
     welcomed: bool = False
     events: set[str] = field(default_factory=lambda: set(EVENT_GROUPS))
     salt: str = field(default_factory=lambda: secrets.token_urlsafe(24))
@@ -2179,6 +2189,9 @@ class NativeSession:
                 if not right:
                     yield Close(4009, "Wrong password.")
                     return
+            said = message.get("name")
+            if isinstance(said, str):  # its own word for itself: kept short and printable, used only in the log
+                self.name = "".join(c for c in said if c.isprintable()).strip()[:40]
             self._set_events(message.get("events", "all"))
             self.welcomed = True
             yield json.dumps({"welcome": {"api": API_VERSION, "events": sorted(self.events)}})
