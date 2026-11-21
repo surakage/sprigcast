@@ -77,7 +77,7 @@ def type_of(group: str | None) -> str:
     if group in GROUP_COLOURS:
         return group
     return "Other" if "Other" in GROUP_COLOURS else GROUPS[-1]
-HEARD_DB = -50.0  # RMS above this counts as playing
+HEARD_DB = -42.0  # a peak above this counts as playing (hiss and room noise stay below it)
 LINGER_S = 4.0  # a sound stays listed this long after it goes quiet
 CHIP_STYLE = theme.button_style(11, "3px 11px", extra="min-height: 16px; font-size: 11px;")
 MUTED_CHIP_STYLE = CHIP_STYLE + f"QPushButton {{ background: {theme.LIVE}; color: #ffffff; border-color: {theme.LIVE_EDGE}; }}"
@@ -124,6 +124,16 @@ class Sound:
     can_monitor: bool = True
     tracks: tuple[str, ...] = ("stream", "recording", "clips")  # the named tracks it goes to
     apps: str | None = None  # where it comes from: its apps, device or file; None when there's nothing to change
+    desktop: bool = False  # a page whose sound plays on desktop audio: SprigCast can't mix or measure it
+
+
+def note_text(sound: Sound) -> str:
+    """A sound row's note: muted, on desktop, or its volume when not 0 dB."""
+    if sound.muted:
+        return "muted"
+    if sound.desktop:
+        return "on desktop"
+    return f"{sound.volume_db:+.0f} dB" if sound.volume_db else ""
 
 
 class VolumeMeter(ThinMeter):
@@ -182,7 +192,7 @@ class VolumeMeter(ThinMeter):
         p.drawRoundedRect(bar, 2, 2)
         if self.level > 0 and not self.muted:
             colour = self.colour or theme.ACCENT
-            if self.level >= 0.85:
+            if self.level >= theme.CLIP_LEVEL:
                 colour = theme.LIVE
             p.setBrush(QColor(colour))
             p.drawRoundedRect(QRectF(0, bar.top(), max(4.0, bar.width() * self.level), 4), 2, 2)
@@ -345,7 +355,7 @@ class SoundCard(QWidget):
         self._show_muted()
         for sid, sound in self.sounds.items():  # volume changes in place: a drag isn't cut off by a rebuild
             note = self.notes.get(sid)
-            text = "muted" if sound.muted else f"{sound.volume_db:+.0f} dB" if sound.volume_db else ""
+            text = note_text(sound)
             if note is not None and note.text() != text:
                 note.setText(text)
             meter = self.meters.get(sid)
@@ -364,17 +374,19 @@ class SoundCard(QWidget):
         for source_id, meter in self.meters.items():
             if source_id not in levels:
                 continue
-            rms = levels[source_id][1]
-            meter.set_db(rms)
-            if rms > HEARD_DB:
+            # The bars follow the loudest moment since the last update, not one short slice of it: speech and
+            # a short alert sound move them right away (2026-11-21: the mic and alerts read "quiet").
+            peak = levels[source_id][0]
+            meter.set_db(peak)
+            if peak > HEARD_DB:
                 self.heard[source_id] = now
             sound = self.sounds.get(source_id)
-            if sound is not None and not sound.muted and rms > loudest.get(sound.group, (-61.0, ""))[0]:
-                loudest[sound.group] = (rms, sound.name)
+            if sound is not None and not sound.muted and peak > loudest.get(sound.group, (-61.0, ""))[0]:
+                loudest[sound.group] = (peak, sound.name)
         for group, meter in self.group_meters.items():
             meter.set_db(loudest.get(group, (-60.0, ""))[0])
         if self.tuning in levels:
-            self.tune.meter.set_db(levels[self.tuning][1])
+            self.tune.meter.set_db(levels[self.tuning][0])
         self._apply_visibility(now, {g: name for g, (_, name) in loudest.items()})
 
     # Building -----------------------------------------------------------------------------
@@ -529,7 +541,7 @@ class SoundCard(QWidget):
         row.sid = sound.id
         if row.name.text() != sound.name:
             row.name.setText(sound.name)
-        note = "muted" if sound.muted else f"{sound.volume_db:+.0f} dB" if sound.volume_db else ""
+        note = note_text(sound)
         if row.note.text() != note:
             row.note.setText(note)
         meter = row.meter
@@ -574,8 +586,8 @@ class SoundCard(QWidget):
         if sound is not None:
             sound.volume_db = db
         note = self.notes.get(sound_id)
-        if note is not None and not (sound and sound.muted):
-            note.setText(f"{db:+.0f} dB" if db else "")
+        if note is not None and sound is not None:
+            note.setText(note_text(sound))
         self.on_change(sound_id, {"volume_db": db})
 
     # Calm by default ----------------------------------------------------------------------
@@ -616,7 +628,12 @@ class SoundCard(QWidget):
                 text = playing.get(group) or self.sounds[heard[0]].name
                 style = f"color: {theme.TEXT}; background: transparent; font-size: 12px;"
             else:
-                text = f"{part['count']} quiet" if part["count"] > 1 else "quiet"
+                desk = sum(1 for sid in part["ids"] if sid in self.sounds and self.sounds[sid].desktop
+                           and not self.sounds[sid].muted)
+                quiet = part["count"] - desk
+                text = f"{quiet} quiet" if quiet > 1 else "quiet" if quiet else ""
+                if desk:  # its sound isn't in SprigCast's mix, so its bar can't move
+                    text = ", ".join(t for t in (text, f"{desk} on desktop") if t)
                 style = f"color: {theme.MUTED}; background: transparent; font-size: 12px;"
             key = (lit, text, opened)
             if self._lit.get(group) == key:

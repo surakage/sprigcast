@@ -350,9 +350,9 @@ class ThinMeter(QWidget):
         p.drawRoundedRect(r, 3, 3)
         if self.level > 0 and not self.muted:
             if self.colour:
-                colour = self.colour if self.level < 0.85 else theme.LIVE  # pink only near clipping
+                colour = self.colour if self.level < theme.CLIP_LEVEL else theme.LIVE  # pink only near clipping
             else:
-                colour = theme.ACCENT if self.level < 2 / 3 else theme.WARN if self.level < 0.85 else theme.LIVE
+                colour = theme.ACCENT if self.level < theme.LOUD_LEVEL else theme.WARN if self.level < theme.CLIP_LEVEL else theme.LIVE
             p.setBrush(QColor(colour))
             p.drawRoundedRect(QRectF(0, 0, max(6.0, r.width() * self.level), r.height()), 3, 3)
         p.end()

@@ -83,6 +83,10 @@ def test_groups_show_only_what_is_playing(app):
     assert theme.MUTED in card.parts["Voice"]["name"].styleSheet()
     card.set_levels({"al": (-60, -60)}, now=106.0)  # quiet again for longer than LINGER_S
     assert sub("SFX") == "2 quiet"
+    # Speech between words: the last slice is quiet, but the loudest moment since the last update counts.
+    card.set_levels({"mic": (-14, -58)}, now=107.0)
+    assert sub("Voice") == "Mic" and card.meters["mic"].level > 0.7
+    card.set_levels({"mic": (-60, -60)}, now=112.0)
     card.toggle_group("SFX")
     assert shown() == {"al", "tts"}
     card.toggle_group("SFX")
@@ -240,3 +244,17 @@ def test_a_new_set_of_sounds_reuses_the_rows(app):
     card.show_sound([])
     assert not card.rows
     card.close()
+
+
+def test_page_on_desktop_says_so(app):
+    from sprigcast.app.sound_card import Sound, SoundCard
+
+    card = SoundCard(lambda *_: None, lambda *_: None, lambda *_: None)
+    card.show_sound([Sound("a", "Alerts", group="Browser"), Sound("b", "Countdown", group="Browser"),
+                     Sound("c", "Sound Alerts", group="Browser", desktop=True)])
+    card.set_levels({}, now=100.0)
+    assert card.parts["Browser"]["sub"].text() == "2 quiet, 1 on desktop"
+    assert card.notes["c"].text() == "on desktop"
+    card.show_sound([Sound("c", "Sound Alerts", group="Browser", desktop=True)])
+    card.set_levels({}, now=101.0)
+    assert card.parts["Browser"]["sub"].text() == "1 on desktop"
