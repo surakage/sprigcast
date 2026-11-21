@@ -42,3 +42,50 @@ def test_with_the_internet_down_reconnects_keep_trying_every_few_seconds():
     assert "internet" in hint and max(waits) <= OFFLINE_RETRY
     hint, wait, after = retry_plan("[Errno 104] Connection reset by peer", 0, 16.0)
     assert "stream key" in hint and wait == 16.0 and after == RETRY_MAX  # other failures back off as before
+
+
+def test_a_failed_connect_says_why_in_plain_words():
+    """"couldn't connect to rtmp://…: I/O error" four times told nobody anything (YouTube, live 2026-11-21)."""
+    from sprigcast.output.stream import offline, plain_reason
+
+    assert plain_reason("I/O error") == "the server ended the connection as it was starting (I/O error)"
+    assert plain_reason("[Errno 5] I/O error").endswith("([Errno 5] I/O error)")
+    assert plain_reason("Immediate exit requested").startswith("the server didn't answer in time")
+    assert plain_reason("[Errno 10060] Connection timed out").startswith("the server didn't answer in time")
+    assert plain_reason("Connection refused").startswith("the server refused")
+    dns = "[Errno 5] I/O error; last error log: [rtmp] Failed to resolve hostname live.twitch.tv"
+    assert plain_reason(dns) == dns and offline(plain_reason(dns))
+    assert plain_reason("I/O error; last error log: [rtmp] Cannot open connection tcp://x:1935").startswith(
+        "the server couldn't be reached")
+def test_two_places_on_one_stream_key_are_warned_about_and_the_one_left_out_says_why(caplog):
+    """YouTube (horizontal) and YouTube (vertical) shared one key: vertical went live and horizontal said
+    "couldn't connect ... I/O error" four times (live, 2026-11-21)."""
+    from types import SimpleNamespace as NS
+
+    from sprigcast.output.stream import dropped_status, mark_same_keys, same_key_warnings
+
+    targets = [NS(name="YouTube (horizontal)", server="rtmp://a.rtmp.youtube.com/live2", key="abcd-SECRET"),
+               NS(name="YouTube (vertical)", server="rtmp://a.rtmp.youtube.com/live2/", key="abcd-SECRET"),
+               NS(name="Twitch (horizontal)", server="rtmp://live.twitch.tv/app", key="live_other"),
+               object()]
+    warnings = same_key_warnings(targets)
+    assert len(warnings) == 1 and warnings[0].startswith("YouTube (horizontal) and YouTube (vertical) use the same")
+    assert "SECRET" not in warnings[0]
+    assert same_key_warnings(targets[1:]) == []
+
+    h = NS(name="YouTube (horizontal)", _url="rtmp://a.rtmp.youtube.com/live2/abcd-SECRET")
+    v = NS(name="YouTube (vertical)", _url="rtmp://a.rtmp.youtube.com/live2/abcd-SECRET")
+    t = NS(name="Twitch (horizontal)", _url="rtmp://live.twitch.tv/app/live_other")
+    mark_same_keys([h, v, t])
+    assert (h.same_key_as, v.same_key_as, t.same_key_as) == ("YouTube (vertical)", "YouTube (horizontal)", "")
+    why = "couldn't connect to rtmp://a.rtmp.youtube.com/live2: I/O error"
+    status = dropped_status(h, why, " (check the server and stream key)", 4)
+    assert status == f"disconnected: {why} (YouTube (vertical) uses the same stream key); retrying in 4 s"
+    dropped_status(h, why, "", 8)
+    said = [r.getMessage() for r in caplog.records if "same stream key" in r.getMessage()]
+    assert len(said) == 1 and "SECRET" not in said[0]  # once in the log, not at every try
+    # A try that did send is an ordinary drop; so is any drop of a place alone on its key.
+    assert dropped_status(h, "Broken pipe", "", 4, sent=True) == "disconnected: Broken pipe; retrying in 4 s"
+    assert dropped_status(t, why, " (hint)", 4) == f"disconnected: {why} (hint); retrying in 4 s"
+    mark_same_keys([h, t])  # vertical was stopped
+    assert h.same_key_as == ""

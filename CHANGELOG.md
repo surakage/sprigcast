@@ -6,6 +6,16 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- YouTube: a place signed in to YouTube checks its stream key when you go live and sends to the key your
+  stream is waiting on. It used to keep the channel's first key, which could be an old one that YouTube
+  refuses. Not tried on a PC yet.
+- A place that can't connect says why in plain words (for example "the server ended the connection as it was
+  starting") in front of the network's own "I/O error".
+- A place switched off and back on while live sends the same encoded video as before (Twitch's quality or a
+  shared encoder) instead of getting an encoder and a sender of its own, which overloaded the PC and made that
+  place drop frames.
+- Two places that use the same stream key are named before you go live, since a stream key takes one stream at
+  a time. A place that can't connect also says when another place uses its key.
 - Twitch Enhanced Broadcasting's connection is packed and sent by the C++ engine, like every other place
   already was, instead of by a busy Python thread beside the window. `SPRIGCAST_NO_NATIVE_ESEND=1` turns it
   off. Not tried on a PC yet.

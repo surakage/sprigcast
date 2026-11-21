@@ -333,15 +333,57 @@ def _youtube_rest(flow: Flow, code: str) -> Fetched:
 VERTICAL_KEY_NAME = "SprigCast Vertical"
 
 
-def _youtube_key(token: str, vertical: bool = False) -> str:
-    """The first reusable stream key, or a new one called SprigCast. vertical: the key called SprigCast Vertical
-    (made when there's none), never the horizontal one: YouTube's Dual stream takes the vertical feed on a key
-    of its own, picked in Live Control Room."""
+def pick_youtube_key(streams: list, saved: str | None = None, waiting: tuple[str, ...] = ()) -> tuple[str, str]:
+    """Which of the channel's stream keys to send to: (key, why), ("", "") when there is none.
+
+    A channel can have several reusable keys and only one a stream is waiting on shows the stream. The first
+    one listed was taken before, and a channel with an old key listed first sent to a dead one: YouTube closed
+    the connection five times with nothing but "I/O error" (live 2026-11-21). waiting: the ids of the keys that
+    YouTube's live and waiting streams are bound to, the live one and the soonest first. So: the saved key while
+    a stream waits on it; else the first key a stream waits on; else the saved key while the channel still has
+    it; else the first."""
+    def key(stream) -> str:
+        return str(((stream.get("cdn") or {}).get("ingestionInfo") or {}).get("streamName") or "")
+
+    keys = [s for s in streams if key(s)]
+    mine = next((s for s in keys if saved and key(s) == saved), None)
+    if mine is not None and mine.get("id") in waiting:
+        return saved, "the saved key, which a YouTube stream is waiting on"
+    for stream_id in waiting:
+        bound = next((s for s in keys if s.get("id") == stream_id), None)
+        if bound is not None:
+            return key(bound), "the key your next YouTube stream is waiting on"
+    if mine is not None:
+        return saved, "the saved key, still one of the channel's"
+    return (key(keys[0]), "the channel's first reusable key") if keys else ("", "")
+
+
+def _youtube_waiting(token: str) -> tuple[str, ...]:
+    """The ids of the stream keys YouTube's live and waiting streams are bound to: live first, then the soonest.
+    () when there are none or YouTube didn't say."""
+    from sprigcast.output import stream_details
+
+    part, found = "id,snippet,contentDetails", []
+    try:
+        for status in ("active", "upcoming"):
+            items = stream_details._yt(token, "GET", f"liveBroadcasts?part={part}&broadcastStatus={status}"
+                                                     "&broadcastType=all&maxResults=50").get("items") or []
+            items.sort(key=lambda b: (b.get("snippet") or {}).get("scheduledStartTime") or "9999")
+            found += [str((b.get("contentDetails") or {}).get("boundStreamId") or "") for b in items]
+    except stream_details.DetailsError as exc:
+        log.info("sign-in: couldn't look up the waiting YouTube streams (%s)", exc)
+    return tuple(dict.fromkeys(i for i in found if i))
+
+
+def _youtube_key(token: str, vertical: bool = False, saved: str | None = None) -> str:
+    """The channel's stream key to send to (pick_youtube_key), or a new one called SprigCast. vertical: the key
+    called SprigCast Vertical (made when there's none), never the horizontal one: YouTube's Dual stream takes the
+    vertical feed on a key of its own, picked in Live Control Room. saved: the key in use now."""
     import json
     import urllib.request
 
     try:
-        streams = get_json(f"{YOUTUBE_API}/liveStreams?part=cdn,snippet,contentDetails&mine=true&maxResults=50",
+        streams = get_json(f"{YOUTUBE_API}/liveStreams?part=id,cdn,snippet,contentDetails&mine=true&maxResults=50",
                            token, "YouTube").get("items") or []
     except SignInError as exc:
         if "not enabled for live streaming" in str(exc).lower():
@@ -351,9 +393,11 @@ def _youtube_key(token: str, vertical: bool = False) -> str:
               and (s.get("cdn") or {}).get("ingestionType", "rtmp") == "rtmp"]
     named = [s for s in usable if (s.get("snippet") or {}).get("title") == VERTICAL_KEY_NAME]
     usable = named if vertical else [s for s in usable if s not in named]
-    if usable:
-        log.info("sign-in: youtube using an existing reusable stream key")
-        return usable[0]["cdn"]["ingestionInfo"]["streamName"]
+    waiting = _youtube_waiting(token) if len(usable) > 1 else ()  # one key: nothing to choose
+    key, why = pick_youtube_key(usable, saved, waiting)
+    if key:
+        log.info("sign-in: youtube using %s (%d reusable key%s)", why, len(usable), "" if len(usable) == 1 else "s")
+        return key
     log.info("sign-in: youtube has no reusable stream key, making one")
     body = {"snippet": {"title": VERTICAL_KEY_NAME if vertical else "SprigCast"},
             "cdn": {"frameRate": "variable", "ingestionType": "rtmp", "resolution": "variable"},
@@ -405,15 +449,16 @@ def _kick_rest(flow: Flow, code: str) -> Fetched:
 SIGN_IN = {"youtube": youtube, "kick": kick}
 
 
-def key_from_account(service: str, vertical: bool = False) -> Fetched:
+def key_from_account(service: str, vertical: bool = False, saved: str | None = None) -> Fetched:
     """The stream key (and Kick's server) through the account signed in on that platform: no new sign-in.
-    Worker thread. Raises SignInError, worded for the person."""
+    Worker thread. Raises SignInError, worded for the person. saved: the key in use now (YouTube keeps it only
+    while it is still the right one, pick_youtube_key)."""
     from sprigcast.output import stream_details
 
     def call(token: str) -> Fetched:
         if service == "youtube":
             account = _youtube_channel(token).get("title", "YouTube")
-            return Fetched(account=account, key=_youtube_key(token, vertical))
+            return Fetched(account=account, key=_youtube_key(token, vertical, saved))
         channels = get_json(f"{KICK_API}/channels", token, "Kick").get("data") or []
         channel = channels[0] if channels else {}
         stream = channel.get("stream") or {}

@@ -465,7 +465,7 @@ class EnhancedStreamer(Streamer):
 
         from sprigcast import sprigcore
         from sprigcast.output.delay import DelayLine
-        from sprigcast.output.stream import CONNECT_TIMEOUT, SEND_TIMEOUT, ingest_name
+        from sprigcast.output.stream import CONNECT_TIMEOUT, SEND_TIMEOUT, ingest_name, plain_reason
 
         aac = av.CodecContext.create("aac", "w")
         aac.sample_rate, aac.layout, aac.format = SAMPLE_RATE, "stereo", "fltp"
@@ -491,7 +491,7 @@ class EnhancedStreamer(Streamer):
                 said = [str(entry[2]).strip() for entry in logs if str(entry[2]).strip()]
             if stats.state_name == "failed":
                 detail = " | FFmpeg: " + " / ".join(said[-4:]) if said else ""
-                why = (stats.error_text or "no answer").removeprefix("couldn't connect: ")
+                why = plain_reason((stats.error_text or "no answer").removeprefix("couldn't connect: "))
                 raise ConnectionError(f"couldn't connect to {ingest_name(self._url)}: {why}{detail}")
             self._send_error = None
             self._backlog_bytes = 0

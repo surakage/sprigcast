@@ -36,6 +36,8 @@ from sprigcast.output.stream import (
     SEND_TIMEOUT,
     SEVERITY,
     log_live,
+    plain_reason,
+    dropped_status,
     retry_plan,
     explain_connect,
     ingest_name,
@@ -554,7 +556,7 @@ class StreamLink:
                 said = [str(line[2]).strip() for line in logs if str(line[2]).strip()]
             if stats.state_name == "failed":
                 detail = " | FFmpeg: " + " / ".join(said[-4:]) if said else ""
-                why = (stats.error_text or "no answer").removeprefix("couldn't connect: ")
+                why = plain_reason((stats.error_text or "no answer").removeprefix("couldn't connect: "))
                 raise ConnectionError(f"couldn't connect to {ingest_name(self._url)}: {why}{detail}")
             self._sender = sender
             self._started = self._congested = False
@@ -697,7 +699,7 @@ class StreamLink:
         delay = RETRY_FIRST
         while not self._stop.is_set():
             self.status = "connecting" if not self.reconnects else f"reconnecting (try {self.reconnects})"
-            began = time.monotonic()
+            began, sent = time.monotonic(), self.bytes_out
             try:
                 self._session()
                 self.status = "stopped"
@@ -709,7 +711,7 @@ class StreamLink:
                     delay = RETRY_FIRST
                 self.reconnects += 1
                 hint, delay, after = retry_plan(message, self.bytes_out, delay)
-                self.status = f"disconnected: {message}{hint}; retrying in {delay:.0f} s"
+                self.status = dropped_status(self, message, hint, delay, self.bytes_out > sent)
                 if self._stop.wait(delay):
                     self.status = "stopped"
                     return

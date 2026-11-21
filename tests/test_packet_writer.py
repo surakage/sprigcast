@@ -552,3 +552,79 @@ def test_an_enhanced_connection_the_engine_cant_make_is_tried_again_and_keeps_th
         assert all(t.encoder.running and t.encoder.error is None for t in st.tracks)  # the qualities go on
     finally:
         st.stop()
+
+
+def test_a_place_switched_back_on_while_live_sends_twitchs_quality_again(native, tmp_path, monkeypatch):
+    """YouTube switched off and on mid-stream got a Python encoder and sender of its own beside the Twitch quality
+    it had been sending; soon the PC was at 100% and YouTube dropped 110 frames (live, 2026-11-21). It is placed as
+    going live would have: on Twitch's quality again, and a place with a picture nobody encodes gets a shared
+    encoder the engine sends from."""
+    import time
+
+    import numpy as np
+    from test_enhanced import ANSWER
+
+    from sprigcast.core.scene import Canvas
+    from sprigcast.output import enhanced as e
+    from sprigcast.output.enhanced_stream import EnhancedStreamer
+    from sprigcast.output.shared_stream import StreamLink
+    from sprigcast.render.engine import Frame
+
+    cfg = e.parse_config(ANSWER, "live_user", "libx264")
+    h = Canvas(id="horizontal", width=640, height=360, fps=30)
+    v = Canvas(id="vertical", width=360, height=640, fps=30)
+    twitch = stream_mod.StreamTarget("Twitch", h, "rtmp://x/app", "live_user", 6000, output_id="tw")
+    twitch.enhanced, twitch.canvases = cfg, [h, v]
+
+    def youtube():
+        return stream_mod.StreamTarget("YouTube", h, str(tmp_path), "yt.flv", 8000, output_id="yt")
+
+    real_init = EnhancedStreamer.__init__
+
+    def init(self, *a, **k):
+        real_init(self, *a, **k)
+        self._url = str(tmp_path / "tw.flv")
+    monkeypatch.setattr(EnhancedStreamer, "__init__", init)
+    engine = stream_tests._Engine()
+    session = stream_mod.StreamSession.start(engine, [twitch, youtube()], "libx264")
+    start = time.perf_counter()
+
+    def feed(frames, first):
+        for i in range(first, first + frames):
+            when = start + 0.01 + i / 30
+            while time.perf_counter() < when:
+                time.sleep(0.002)
+            for c in (h, v):
+                data = np.full((c.height, c.width, 4), i * 3 % 255, np.uint8).tobytes()
+                for canvas_id, callback in list(engine.frame_taps):
+                    if canvas_id == c.id:
+                        callback(Frame(c.id, c.width, c.height, data, when))
+            for tap in list(engine.mixer.taps):
+                tap(np.zeros((1600, 2), np.float32))
+
+    try:
+        feed(30, 0)
+        quality = session.borrowed[0]
+        first = session.find("yt")
+        assert first.shared is quality and len(engine.frame_taps) == 3
+        taps = len(engine.mixer.taps)
+        assert session.drop("yt") and quality.links == [] and quality.running
+        feed(10, 30)
+        again = session.add(youtube(), "libx264")
+        assert isinstance(again, StreamLink) and again is not first and again.shared is quality
+        assert quality.links == [again] and session.borrowed == [quality] and session.shared == []
+        assert len(engine.frame_taps) == 3 and len(engine.mixer.taps) == taps  # no encoder, no second sound tap
+        feed(75, 40)  # it starts at the quality's next keyframe
+        assert again.connected and again.frames > 0 and again._sender is not None  # sent by the engine
+
+        small = stream_mod.StreamTarget("Kick", h, str(tmp_path), "kick.flv", 800, (480, 270), output_id="kick")
+        kick = session.add(small, "libx264")
+        assert isinstance(kick, StreamLink) and len(session.shared) == 1 and kick.shared is session.shared[0]
+        assert len(engine.frame_taps) == 4
+        feed(45, 115)
+        assert kick.connected and kick._sender is not None
+    finally:
+        session.stop()
+    assert engine.frame_taps == [] and engine.mixer.taps == []
+    with av.open(str(tmp_path / "kick.flv")) as f:
+        assert (f.streams.video[0].width, f.streams.video[0].height) == (480, 270)
