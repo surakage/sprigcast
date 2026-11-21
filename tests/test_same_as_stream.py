@@ -135,3 +135,17 @@ def test_a_canvas_not_being_streamed_records_with_its_own_encoder(tmp_path):
         assert pool.encoders == {} and stream_enc.holders == {"stream"}
     finally:
         stream_enc.stop()
+
+
+def test_the_recording_borrows_the_best_encoder_of_a_canvas():
+    """Enhanced Broadcasting or places of different sizes run several encoders on one canvas: "Same as stream"
+    records the biggest picture (then the highest bitrate), never the small quality."""
+    from types import SimpleNamespace
+
+    def enc(w, h, kbps, running=True):
+        return SimpleNamespace(running=running, holders={"stream"}, source_id="horizontal", out_width=w,
+                               out_height=h, bitrate_kbps=kbps)
+
+    small, big, bigger_rate, stopped = enc(852, 480, 1500), enc(1280, 720, 4500), enc(1280, 720, 6000), enc(1920, 1080, 6000, False)
+    session = SimpleNamespace(shared=[small, big, bigger_rate, stopped])
+    assert StreamSession.encoders_by_canvas(session) == {"horizontal": bigger_rate}

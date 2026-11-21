@@ -206,10 +206,20 @@ def bloom_switched() -> None:
     don't land in the frames that switch (PC live 2026-11-21: gen 2 16 ms + tidy 23 ms right after a switch)."""
     global _quiet_until, _gc_held
     _quiet_until = time.monotonic() + SWITCH_QUIET_S
+    _memory_after_switch(_quiet_until - SWITCH_QUIET_S)
     if not _gc_held and gc.isenabled():
         gc.disable()
         _gc_held = True
         threading.Timer(SWITCH_QUIET_S, _let_gc_go).start()
+
+
+def _memory_after_switch(now: float) -> None:
+    """A memory line and map are due MEMORY_AFTER_SWITCH_S after this switch (watch_memory), unless one was
+    written for a switch MEMORY_SWITCH_EVERY_S ago or less."""
+    global _memory_switch_due, _memory_switch_said
+    if now - _memory_switch_said >= MEMORY_SWITCH_EVERY_S:
+        _memory_switch_said = now
+        _memory_switch_due = now + MEMORY_AFTER_SWITCH_S
 
 
 def _let_gc_go() -> None:
@@ -419,22 +429,49 @@ def watch_cpu(now: float | None = None) -> str | None:
 
 
 MEMORY_EVERY_S = 600.0  # a memory line this often, so a slow climb shows where it went (not only at stops)
+MEMORY_GREW_MB = 200.0  # ...and as soon as it has grown this much since the last line (a fast climb, while it climbs)
+MEMORY_AFTER_SWITCH_S = 20.0  # ...and this long after a bloom switch (its sources are open by then)
+MEMORY_SWITCH_EVERY_S = 120.0  # (a switch's line at most this often: a show switches blooms all the time)
 _memory_logged: float | None = None
+_memory_was = 0.0  # MB committed at the last line
+_memory_switch_due: float | None = None
+_memory_switch_said = float("-inf")
+
+
+def _committed_mb() -> float:
+    try:
+        import psutil
+
+        info = psutil.Process().memory_info()
+        return float(getattr(info, "private", None) or info.rss) / 1e6
+    except Exception:  # noqa: BLE001
+        return 0.0
 
 
 def watch_memory(now: float | None = None) -> str | None:
     """Every 10 minutes: one memory line, with what Python keeps aside (frozen objects are only looked
-    through again at rest; a climb there is cycles left behind since). Returns the line."""
-    global _memory_logged
+    through again at rest; a climb there is cycles left behind since). Sooner when memory grew MEMORY_GREW_MB since
+    the last line, and once after a bloom switch: the PC's Gameplay bloom (2026-11-21) grew 1.1 GB in 9 minutes
+    with no line or map in between to say where. Returns the line."""
+    global _memory_logged, _memory_was, _memory_switch_due
     now = time.monotonic() if now is None else now
+    reason = ""
     if _memory_logged is not None and now - _memory_logged < MEMORY_EVERY_S:
-        return None
+        have = _committed_mb()
+        if _memory_was and have - _memory_was >= MEMORY_GREW_MB:
+            reason = f"grew {have - _memory_was:.0f} MB in {now - _memory_logged:.0f} s"
+        elif _memory_switch_due is not None and now >= _memory_switch_due:
+            reason = "after a bloom switch"
+        else:
+            return None
+    _memory_switch_due = None
     _memory_logged = now
-    line = f"memory now: {memory_line()}; kept aside {gc.get_freeze_count():,}"
+    _memory_was = _committed_mb()
+    line = f"memory now{f' ({reason})' if reason else ''}: {memory_line()}; kept aside {gc.get_freeze_count():,}"
     log.info(line)
     from sprigcast.core.memory_map import log_memory_map
 
-    log_memory_map()  # and what holds the committed memory, from a thread of its own
+    log_memory_map(reason)  # and what holds the committed memory, from a thread of its own
     return line
 
 

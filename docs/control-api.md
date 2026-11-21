@@ -124,6 +124,7 @@ These codes are never renamed; new ones may be added. `app.actions` returns ever
 | `events.item_moved` | item.moved when something is moved, sized, cropped or turned |
 | `filters.share` | a placed sprig's filters follow on its other canvases; filters.share, filters.list same_on_both_canvases |
 | `layout.get` | layout.get: every item's place, crop, bounds, source size and canvas box; flat, overlaps |
+| `places.size` | places.list size [w, h] and fps (what is sent: the place's own, else its shape's), and enhanced on Twitch |
 | `places.ready` | places.list name, ready, problem ("Needs a stream key"): why a place can't go live yet |
 | `app_audio.pids` | app_audio settings pids: [process id, ...] catches those processes' trees instead of apps |
 | `browser.h264` | Only when Web pages play H.264/AAC themselves (video tags, streaming players); without it MP4 files still play, converted |

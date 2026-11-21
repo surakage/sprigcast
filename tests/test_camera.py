@@ -515,9 +515,19 @@ def test_one_camera_in_two_modes_opens_once_at_the_bigger(fake_cv2):
         assert small._feed.settings["fps"] == 60
         assert wait_for(lambda: small._frames.peek() is not None and small.size == (32, 18))
         assert big.size == (64, 36)
+        # With the engine's own player the feed says what it plays: the smaller source is laid out at its size.
+        assert small.engine_layout is None
+        small._feed.picture = (64, 36)
+        assert small.engine_layout == (32, 18) and big.engine_layout is None
         small.set_shrink(1.0)
         big.set_shrink(0.25)  # the big one shown small: the small one still needs half the picture
         assert small._feed.shrink() == 0.5
+        # The camera came up in its own, bigger mode (none asked was taken): no picture bigger than the biggest
+        # source is made (PC 2026-11-21: 1.1 GB of full-size pictures for 1080p and 720p sources).
+        big.set_shrink(1.0)
+        small._feed.picture = (256, 144)
+        assert small._feed.shrink() == 0.25
+        small._feed.picture = (64, 36)
         big.stop()  # it doesn't shrink back while the camera runs
         assert small._feed.settings["width"] == 64
     finally:
@@ -536,3 +546,41 @@ def test_a_reopened_camera_uses_the_modes_it_listed_before(monkeypatch):
     monkeypatch.setattr(camera, "dshow_modes", lambda name: answers.pop(0))
     first = camera.listed_modes("video=Cam")
     assert camera.listed_modes("video=Cam") == first and first
+
+
+def test_the_camera_lister_is_loaded_ahead(monkeypatch):
+    """PC 2026-11-21: opening a camera's properties held the window 318 ms loading what lists cameras. The warm-up
+    loads it at start, off the window's thread, and says which lister there is."""
+    import sys
+
+    from sprigcast.sources import camera
+
+    assert camera.warm_lister() == "" or sys.platform == "win32"
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(camera, "_dshow_backend", lambda: object())
+    assert camera.warm_lister() == "light"
+    loaded = []
+    monkeypatch.setattr(camera, "_dshow_backend", lambda: None)
+    monkeypatch.setattr(camera, "_cv2", lambda: loaded.append("cv2"))
+    monkeypatch.setitem(sys.modules, "cv2_enumerate_cameras", object())
+    assert camera.warm_lister() == "opencv" and loaded == ["cv2"]
+    monkeypatch.setattr(camera, "_cv2", lambda: (_ for _ in ()).throw(RuntimeError("no OpenCV")))
+    assert camera.warm_lister() == ""
+
+
+def test_other_sizes_are_tried_before_the_cameras_own_mode():
+    """PC 2026-11-21: the HD60 X with no signal refused the size asked and came up in its own mode, 32 MB a
+    picture. Its other sizes come first: the next bigger one, then the biggest below."""
+    from sprigcast.sources import camera
+
+    modes = [("pixel_format", "nv12", 1920, 1080, 30.0, 60.0), ("pixel_format", "nv12", 2560, 1440, 30.0, 60.0),
+             ("pixel_format", "bgr0", 3840, 2160, 30.0, 60.0), ("pixel_format", "nv12", 3840, 2160, 30.0, 60.0),
+             ("pixel_format", "nv12", 1280, 720, 30.0, 60.0), ("pixel_format", "nv12", 640, 480, 30.0, 60.0)]
+    first = camera.choose_modes(modes, 1920, 1080, 60)
+    assert {m["video_size"] for m in first} == {"1920x1080"}
+    more = camera.other_modes(modes, 1920, 1080, 60, first)
+    sizes = list(dict.fromkeys(m["video_size"] for m in more))
+    assert sizes == ["2560x1440", "1280x720", "3840x2160"]  # OTHER_SIZES of them: next above, biggest below
+    assert more[0] == {"video_size": "2560x1440", "framerate": "60", "pixel_format": "nv12"}
+    assert [m for m in more if m["video_size"] == "3840x2160"][0]["pixel_format"] == "nv12"  # least data first
+    assert camera.other_modes([], 1920, 1080, 60, []) == []

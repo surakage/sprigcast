@@ -205,3 +205,20 @@ def test_twitch_dropping_leaves_the_quality_encoding_for_the_other_places(monkey
     assert offered == [packet]
     enc._on_packet(packet)  # the connection already failed: nothing more is sent until it reconnects
     assert offered == [packet, packet]
+
+
+def test_a_place_smaller_than_its_canvas_asks_twitch_for_no_bigger_quality():
+    """The user's setup (2026-11-21): 1080p canvas, every place at 1280x720@60. Twitch was told 1920x1080 and
+    could answer with 1080p qualities: each made and encoded on the PC for nothing asked for."""
+    from types import SimpleNamespace
+
+    from sprigcast.output import enhanced as e
+
+    canvas = SimpleNamespace(width=1920, height=1080)
+    assert e.place_size((1280, 720), canvas) == (1280, 720)
+    assert e.place_size(None, canvas) is None and e.place_size((1920, 1080), canvas) is None
+    assert e.place_size((2560, 1440), canvas) is None  # never bigger than the canvas
+    body = e.build_request("live_key", [e.CanvasInfo(1920, 1080, 60, (1280, 720)), e.CanvasInfo(1080, 1920, 60)], "0.1.0")
+    first, second = body["preferences"]["canvases"]
+    assert (first["width"], first["height"], first["canvas_width"], first["canvas_height"]) == (1280, 720, 1920, 1080)
+    assert (second["width"], second["height"]) == (1080, 1920)

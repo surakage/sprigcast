@@ -160,6 +160,15 @@ class CanvasInfo:
     width: int
     height: int
     fps: int
+    out_size: tuple[int, int] | None = None  # the place's own size (1280x720 of a 1080p canvas): none bigger is sent
+
+
+def place_size(size, canvas) -> tuple[int, int] | None:
+    """The place's own size when it is smaller than its canvas (even on both sides), else None."""
+    if not size:
+        return None
+    w, h = int(size[0]) // 2 * 2, int(size[1]) // 2 * 2
+    return (w, h) if 0 < w <= canvas.width and 0 < h <= canvas.height and (w, h) != (canvas.width, canvas.height) else None
 
 
 LIGHT_TRACKS = 2  # qualities a canvas asks Twitch for when the place leaves it on Auto
@@ -176,7 +185,10 @@ def build_request(stream_key: str, canvases: list[CanvasInfo], version: str, *,
         "audio_max_buffering_ms": 960,
         "audio_fixed_buffering": False,
         "canvases": [
-            {"width": c.width, "height": c.height, "canvas_width": c.width, "canvas_height": c.height,
+            # width x height: the size sent at most (the place's, when it is set smaller than its canvas: a place
+            # at 720p got 1080p qualities, each made and encoded for nothing the user asked for).
+            {"width": (c.out_size or (c.width, c.height))[0], "height": (c.out_size or (c.width, c.height))[1],
+             "canvas_width": c.width, "canvas_height": c.height,
              "framerate": {"numerator": c.fps, "denominator": 1}}
             for c in canvases
         ],
