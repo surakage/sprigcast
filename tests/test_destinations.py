@@ -490,7 +490,11 @@ def test_where_it_goes_switches_and_edit_adds_nothing(app, tmp_path, monkeypatch
         assert not side.editing
         side.set_live(True)
         switch = side.place_rows["tt"][3]
-        assert not switch.isEnabled() and not side.add_place.isEnabled() and not side.manage.isEnabled()
+        # Live: + Add and Edit wait for the stream to end, but each place's switch works (it ends or starts
+        # just that place).
+        assert switch.isEnabled() and not side.add_place.isEnabled() and not side.manage.isEnabled()
+        assert "this place only" in switch.toolTip()
+        side.set_live(False)
         # Two Twitch destinations say which shape each one sends.
         col.outputs.append(Output(id="tw2", type="stream", service="twitch", canvas="vertical", key_ref="k/tw2"))
         w._live_destinations()
@@ -997,3 +1001,102 @@ def test_edit_rows_all_draw_and_take_clicks_in_a_short_list(app, tmp_path, monke
         assert bar.value() == 0
     finally:
         w.close()
+
+
+def test_a_place_is_ended_and_started_again_while_the_rest_stay_live(app, tmp_path, monkeypatch):
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("PlaceLiveTest")
+    QSettings().clear()
+    from sprigcast.app import message as msgbox
+    from sprigcast.app.main_window import MainWindow
+
+    class St:
+        def __init__(self, output_id, tracks=()):
+            self.output_id, self.name, self.tracks = output_id, output_id, tracks
+
+    class Session:
+        elapsed = 5.0
+
+        def __init__(self, ids):
+            self.streamers = [("horizontal", St(i)) for i in ids]
+            self.borrowed, self.added, self.dropped = [], [], []
+
+        def find(self, output_id):
+            return next((st for _, st in self.streamers if st.output_id == output_id), None)
+
+        def drop(self, output_id):
+            self.dropped.append(output_id)
+            self.streamers = [(c, st) for c, st in self.streamers if st.output_id != output_id]
+            return True
+
+        def add(self, target, *a, **k):
+            self.added.append(target.output_id)
+            self.streamers.append(("horizontal", St(target.output_id)))
+
+    col = _collection()
+    w = MainWindow(col, tmp_path / "scenes.json")
+    warned, ended = [], []
+    monkeypatch.setattr(msgbox, "warning", lambda *a, **k: warned.append(a[-1]))
+    monkeypatch.setattr(w, "_refresh_stream_status", lambda: w._live_destinations())
+    monkeypatch.setattr(w, "_on_live_clicked", lambda: ended.append(True))
+    try:
+        w._set_mode("live")
+        side = w.live_side
+        w.streaming = session = Session(["tw", "tt"])
+        side.set_live(True)
+        w._live_destinations()
+        tw, tt = side.place_rows["tw"][3], side.place_rows["tt"][3]
+        assert tw.isChecked() and tt.isChecked() and tw.isEnabled()
+        # Off: only that place ends; it shows off, the other stays on, and it's remembered as off.
+        tw.click()
+        assert session.dropped == ["tw"] and not side.place_rows["tw"][3].isChecked()
+        assert side.place_rows["tt"][3].isChecked() and not col.outputs[0].enabled
+        assert w._sending_ids() == {"tt"}
+        # Settings now locks only the place still sending.
+        from sprigcast.app.stream_dialog import StreamPage
+
+        page = StreamPage(col)
+        page.set_live(w._sending_ids())
+        page.select_output("tt")
+        assert not page.live_note.isHidden() and not page.remove_button.isEnabled() and not page.enabled.isEnabled()
+        page._remove()
+        assert [o.id for o in page.outputs] == ["tw", "tt"]  # can't be removed from under its stream
+        page.select_output("tw")
+        assert page.live_note.isHidden() and page.remove_button.isEnabled()
+        page.bitrate.setValue(3210)
+        page.bitrate.editingFinished.emit()
+        page.select_output("tt")
+        page.outputs[1].bitrate_kbps = 1  # even if something changed it, a sending place is saved as it went live
+        assert page.apply_to(col) and col.outputs[1].bitrate_kbps != 1
+        # On again: it starts with its settings as they are now. A problem puts the switch back and says why.
+        monkeypatch.setattr(w, "_stream_target", lambda output, ask=True, quiet=False: (None, "Twitch: add your stream key in Stream…"))
+        side.place_rows["tw"][3].click()
+        QApplication.processEvents()
+        assert warned == ["Twitch: add your stream key in Stream…"] and not side.place_rows["tw"][3].isChecked()
+        assert not col.outputs[0].enabled and session.added == []
+        monkeypatch.setattr(w, "_stream_target", lambda output, ask=True, quiet=False: (
+            type("Target", (), {"name": output.id, "output_id": output.id})(), None))
+        side.place_rows["tw"][3].click()
+        assert session.added == ["tw"] and side.place_rows["tw"][3].isChecked() and col.outputs[0].enabled
+        # The last place sending: its switch is End stream (asked first, if that's on), and goes back meanwhile.
+        side.place_rows["tw"][3].click()
+        assert w._sending_ids() == {"tt"}
+        side.place_rows["tt"][3].click()
+        assert ended == [True] and session.dropped == ["tw", "tw"] and side.place_rows["tt"][3].isChecked()
+        # Twitch Enhanced lending its picture to others can't be ended alone.
+        shared = object()
+        lender = St("tw", tracks=(type("T", (), {"encoder": shared})(),))
+        session.streamers.append(("horizontal", lender))
+        session.borrowed = [shared]
+        w._live_destinations()
+        side.place_rows["tw"][3].click()
+        QApplication.processEvents()
+        assert "Enhanced Broadcasting" in warned[-1] and side.place_rows["tw"][3].isChecked()
+        assert session.dropped == ["tw", "tw"]
+    finally:
+        w.streaming = None
+        w.close()
+        QSettings().clear()

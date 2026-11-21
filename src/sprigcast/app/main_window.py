@@ -2360,6 +2360,7 @@ class MainWindow(QMainWindow):
 
         places = []
         streams = [o for o in self.collection.outputs if o.type == "stream"]
+        sending = self._sending_ids() if self.streaming is not None else None
         for output in streams:
             service = SERVICES.get(output.service or "custom", SERVICES["custom"])
             issue = problem(output, self.collection, probably_has_key) if output.enabled else None
@@ -2367,7 +2368,8 @@ class MainWindow(QMainWindow):
             name = service.label
             if sum(1 for o in streams if o.service == output.service) > 1:  # two Twitch rows: say which shape
                 name += f" · {output.canvas.capitalize()}"
-            places.append(Destination(output.id, name, output.enabled, note, output.canvas,
+            on = output.enabled if sending is None else output.id in sending  # live: on means sending now
+            places.append(Destination(output.id, name, on, note, output.canvas,
                                       output.bandwidth_test if service.bandwidth_test else None,
                                       output.service or "custom"))
         self.live_side.show_destinations(places, levels or {})
@@ -6606,7 +6608,59 @@ class MainWindow(QMainWindow):
         if self.streaming is None:
             self._live_destinations()
 
+    def _sending_ids(self) -> set[str]:
+        """The places the stream is going to right now (none when offline)."""
+        session = self.streaming
+        return set() if session is None else {getattr(st, "output_id", st.name) for _, st in session.streamers}
+
+    def _place_switched_live(self, output_id: str, on: bool) -> None:
+        """A place's switch on the Live screen while live: off ends just that place, on starts it again (with
+        whatever its settings say now), and the rest of the stream carries on (user, 2026-11-21)."""
+        output = next((o for o in self.collection.outputs if o.id == output_id and o.type == "stream"), None)
+        if output is None:
+            return
+        service = SERVICES.get(output.service or "custom", SERVICES["custom"]).label
+        sending = self._sending_ids()
+        if not on:
+            if output_id not in sending:
+                problem = None
+            elif len(sending) == 1:
+                self._live_destinations()  # the switch goes back: this is the whole stream
+                self._on_live_clicked()  # End stream, with its "are you sure" if that's on
+                return
+            elif self._lends_its_picture(output_id):
+                problem = (f"Other places are sending {service}'s picture. Switch off Enhanced Broadcasting, "
+                           "or end the stream.")
+            else:
+                problem = self.stop_place(output_id)
+        else:
+            problem = self.start_place(output_id)
+        if problem:
+            log.info("places: %s (%s) not switched %s while live: %s", output_id, service, "on" if on else "off",
+                     problem)
+            self._say(problem)
+            QTimer.singleShot(0, self, lambda: msgbox.warning(self, "SprigCast", problem))  # (after the click)
+        else:
+            log.info("places: %s (%s) switched %s while live", output_id, service, "on" if on else "off")
+            output.enabled = on
+            self.collection.save(self.scenes_path)
+            self._keep_path_file()
+        self._stream_status_at = 0.0
+        if self.streaming is not None:
+            self._refresh_stream_status()
+
+    def _lends_its_picture(self, output_id: str) -> bool:
+        """Twitch Enhanced Broadcasting whose qualities other places are sending (they have no encoder of
+        their own: ending it would leave them with nothing)."""
+        session = self.streaming
+        st = session.find(output_id) if session is not None else None
+        lent = [id(enc) for enc in getattr(session, "borrowed", [])]
+        return any(id(getattr(track, "encoder", None)) in lent for track in getattr(st, "tracks", ()))
+
     def _on_stream_toggled(self, output_id: str, on: bool) -> None:
+        if self.streaming is not None:
+            self._place_switched_live(output_id, on)
+            return
         for output in self.collection.outputs:
             if output.id == output_id:
                 output.enabled = on
@@ -7056,6 +7110,7 @@ class MainWindow(QMainWindow):
             audio_devices=devices,
             streaming=self.streaming is not None,
             recording=self.recording is not None,
+            live_places=self._sending_ids(),
             control=self.control,
             check_updates=lambda: self.updater.check(manual=True),
             tab=tab,

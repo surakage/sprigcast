@@ -101,9 +101,17 @@ def edits_action(w, edit):
     return next(a for a, e in w.page.edits.items() if e is edit)
 
 
-def test_live_disables_stream_and_video(app):
-    w = _window(_collection(), streaming=True)
-    assert not w.stream_page.isEnabled()
+def test_live_locks_the_places_sending_and_video(app):
+    from sprigcast.core.scene import Output
+
+    col = _collection()
+    col.outputs.append(Output(id="tw", type="stream", service="twitch", canvas="horizontal", key_ref="k/tw"))
+    sending = "tw"
+    w = _window(col, streaming=True, live_places={sending})
+    # Only a place that is sending is locked; one that was ended can be fixed and started again.
+    assert w.stream_page.isEnabled() and w.stream_page.live_ids == {sending}
+    w.stream_page.select_output(sending)
+    assert not w.stream_page.remove_button.isEnabled() and not w.stream_page.live_note.isHidden()
     assert not w.video_fields["horizontal"][1].isEnabled()
     assert w.recording_page.isEnabled()
 

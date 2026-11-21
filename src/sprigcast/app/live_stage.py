@@ -389,6 +389,8 @@ def _sentence(note: str) -> str:
     return note[:1].upper() + note[1:]
 
 
+SWITCH_TIP = "On: Go live sends here. Off: skipped."
+SWITCH_TIP_LIVE = "Off: end the stream to this place only. On: start it again."
 # + Add: the five everyday places and Custom RTMP; every other place is behind "Show all…" (app/place_picker.py).
 SERVICE_CHOICES = (("twitch", "Twitch"), ("youtube", "YouTube"), ("kick", "Kick"), ("tiktok", "TikTok"),
                    ("facebook", "Facebook"), ("custom", "Custom RTMP"))
@@ -827,7 +829,7 @@ class LiveSide(QWidget):
             self.set_editing(False)
         self.manage.setEnabled(not live)
         for *_, switch in self.place_rows.values():
-            switch.setEnabled(not live)  # a place joins or leaves only between streams
+            switch.setToolTip(SWITCH_TIP_LIVE if live else SWITCH_TIP)  # live: ends or starts just this place
         self.live.setText("End stream" if live else "Go live")
         self.live.setStyleSheet(HEADER_END_STYLE if live else HEADER_GO_STYLE)
 
@@ -947,15 +949,15 @@ class LiveSide(QWidget):
             state = colour if place.on and level != "idle" else theme.MUTED
             text = f'{place.canvas.capitalize()}  ·  <span style="color:{state}">{_sentence(place.note)}</span>'
             key = (place.on, self.is_live, place.name, text, place.canvas, place.test)
+            if switch.isChecked() != place.on:  # (also a switch flipped by hand that didn't take: it goes back)
+                switch.blockSignals(True)
+                switch.setChecked(place.on)
+                switch.blockSignals(False)
             if shown.get(place.id) == key:
                 continue  # every second while live: a restyle re-polishes the row (532 ms once on the PC)
             before = shown.get(place.id)
             shown[place.id] = key
-            if switch.isChecked() != place.on:
-                switch.blockSignals(True)
-                switch.setChecked(place.on)
-                switch.blockSignals(False)
-            switch.setEnabled(not self.is_live)
+            switch.setToolTip(SWITCH_TIP_LIVE if self.is_live else SWITCH_TIP)
             if name.text() != place.name:
                 name.setText(place.name)
             if before is None or before[0] != place.on:
@@ -1011,7 +1013,7 @@ class LiveSide(QWidget):
         words.addWidget(note)
         switch = Switch()
         switch.setCursor(Qt.CursorShape.PointingHandCursor)
-        switch.setToolTip("On: Go live sends here. Off: skipped.")
+        switch.setToolTip(SWITCH_TIP_LIVE if self.is_live else SWITCH_TIP)
         switch.toggled.connect(lambda on, pid=place.id: self.on_toggle(pid, on))
         line.addWidget(tile)
         line.addLayout(words, 1)
