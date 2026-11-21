@@ -188,3 +188,54 @@ def test_an_apps_screenshot_is_made_while_the_window_keeps_answering():
         client.close()
         _wait(app, lambda: not server.sessions, 2.0)
         server.stop()
+
+
+def test_both_shapes_means_both_and_a_shape_left_out_is_said():
+    """PC 2026-11-21: {"bloom", "shape": "both"} gave one picture and no word why."""
+    host = Host(_collection())
+    api = NativeApi(host)
+    # On air on both canvases: both pictures (it gave only the first).
+    out = api.run("screenshot.take", {"bloom": "Chatting", "save": False, "data": True})
+    assert [s["shape"] for s in out["shots"]] == ["horizontal", "vertical"] and "skipped" not in out
+    assert all(s["bloom"] == "Chatting" for s in out["shots"])
+    # On air in one shape only: that one, and the other is named.
+    host.collection.active_scenes["vertical"] = "solo-v"
+    out = api.run("screenshot.take", {"bloom": "Chatting", "save": False, "data": True})
+    assert [s["shape"] for s in out["shots"]] == ["horizontal"]
+    assert out["skipped"] == [{"shape": "vertical", "why": "'Chatting' isn't on air there."}]
+    # A bloom made for one canvas (its other look is a bloom of its own): the shape it has no layout for is named.
+    out = api.run("screenshot.take", {"bloom": "Shorts", "save": False, "data": True})
+    assert [s["shape"] for s in out["shots"]] == ["vertical"]
+    assert out["skipped"] == [{"shape": "horizontal", "why": "'Shorts' has no horizontal layout."}]
+    out = api.run("screenshot.take", {"bloom": "BRB", "shape": "vertical", "save": False, "data": True})
+    assert "skipped" not in out
+
+
+def test_a_canvas_picture_has_nothing_see_through():
+    """PC 2026-11-21: the PNG kept the canvas's see-through pixels, so it looked black in one viewer and white in
+    another. It's put on black, as viewers get it."""
+    from PySide6.QtGui import QColor, QImage
+
+    from sprigcast.app import screenshot
+
+    canvas = QImage(4, 2, QImage.Format.Format_RGBA8888_Premultiplied)
+    canvas.fill(QColor(0, 0, 0, 0))
+    canvas.setPixelColor(0, 0, QColor(255, 0, 0, 255))
+    canvas.setPixelColor(1, 0, QColor(255, 255, 255, 26))  # the chat area: barely there
+    flat = screenshot.on_black(canvas)
+    assert not flat.hasAlphaChannel()
+    assert flat.pixelColor(0, 0) == QColor(255, 0, 0) and flat.pixelColor(3, 1) == QColor(0, 0, 0)
+    assert flat.pixelColor(1, 0).red() in (25, 26, 27)  # white at alpha 26, on black
+
+    class Frame:
+        width, height, data, fmt = 4, 2, bytes(canvas.constBits()), "rgba"
+
+    class Engine:
+        def add_frame_tap(self, key, tap):
+            tap(Frame())
+
+        def remove_frame_tap(self, key, tap):
+            pass
+
+    got = screenshot.grab(Engine(), ["horizontal"])
+    assert got and not got["horizontal"].hasAlphaChannel()
