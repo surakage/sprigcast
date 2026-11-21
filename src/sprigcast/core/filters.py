@@ -645,6 +645,17 @@ class FFmpegAudioFilter(AudioFilter):
         graph.configure()
         self._graph, self._built_for, self._pts = graph, tuple(spec), 0
 
+    def engine_text(self) -> str:
+        """The chain as the engine's mixer runs it (sprigcore.SoundMixer.set_filters FILTER_GRAPH): a filter a line,
+        "name<TAB>args", options given by name quoted (a Windows path's "C:" would end the argument)."""
+        lines = []
+        for name, args in self.graph_spec():
+            if isinstance(args, dict):
+                args = ":".join(f"{k}='" + str(v).replace("\\", "/").replace("'", "'\\''") + "'"
+                                for k, v in args.items())
+            lines.append(f"{name}\t{args}" if args else name)
+        return "\n".join(lines)
+
     def process(self, block):
         import av
 

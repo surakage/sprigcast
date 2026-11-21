@@ -13,6 +13,8 @@ namespace sc::ffm {
 FFmpeg ff;
 std::atomic<bool> ff_ready{false};
 std::mutex ff_lock;
+FilterGraphApi fg;
+std::atomic<bool> fg_ready{false};
 
 void *open_library(const char *path) {
 #ifdef _WIN32

@@ -140,9 +140,14 @@ def chromium_flags(current: str = "") -> str:
     """Chromium's start flags with a cap on page processes: each site got its own (60-100 MB each), so five
     overlays from five sites cost five. Two keeps one crashing page from taking all of them down with it.
     Must be set before Qt WebEngine loads (main() does it first thing)."""
+    flags = current
+    if "--autoplay-policy" not in flags:
+        # Sound plays without a click in frames too, not only the top page (StreamBridge's combined Sounds page
+        # plays from same-origin iframes, 2026-11-21). PlaybackRequiresUserGesture covers the page itself.
+        flags = f"{flags} --autoplay-policy=no-user-gesture-required"
     if "--renderer-process-limit" in current:
-        return current  # set by hand (to test something): kept
-    return f"{current} --renderer-process-limit={RENDERER_LIMIT}".strip()
+        return flags.strip()  # set by hand (to test something): kept
+    return f"{flags} --renderer-process-limit={RENDERER_LIMIT}".strip()
 
 
 def shim() -> str:

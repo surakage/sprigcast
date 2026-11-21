@@ -170,6 +170,9 @@ class Engine:
         self._transitions: dict[str, Running] = {}  # canvas id -> the transition it is in
         self._warm: dict[tuple, object] = {}  # (path, limit, gain) -> a stinger player opened ahead (_warm_stingers)
         self._ending = False  # the render loop is ending: nothing more is opened ahead
+        self._warm_lock = threading.Lock()
+        self._warming: dict[tuple, threading.Thread] = {}  # stingers being opened ahead, on a thread of their own
+        self._warm_wanted: list[tuple] = []
         self._filtered: frozenset[str] = frozenset()  # sources with video filters, see _sync_filters
         # canvas id -> (outgoing scene, give up at, sources still opening): a switch waiting for them
         self._waking: dict[str, tuple] = {}
@@ -710,12 +713,14 @@ class Engine:
                     )
                     ticks, stats_at = 0, now
         finally:
-            self._ending = True
+            with self._warm_lock:
+                self._ending = True
             for canvas_id in list(self._transitions):
                 self._finish_transition(canvas_id, compositor)
-            for player in self._warm.values():
+            with self._warm_lock:
+                warm, self._warm = list(self._warm.values()), {}
+            for player in warm:
                 player.close()
-            self._warm.clear()
             retire.stop_all(list(self._sources.values()), CLOSE_ALL_S)  # side by side, not one after another
             if gpu is not None:
                 gpu.release()
@@ -960,7 +965,8 @@ class Engine:
 
     def _new_stinger(self, path: str, transition, collection: SceneCollection) -> StingerPlayer:
         key = self._stinger_key(path, transition, collection)
-        player = self._warm.pop(key, None)
+        with self._warm_lock:
+            player = self._warm.pop(key, None)
         if player is not None and player.error is None:
             return player  # opened ahead: its first pictures are waiting
         if player is not None:
@@ -987,18 +993,40 @@ class Engine:
                 if key is not None and key not in wanted:
                     wanted.append(key)
         wanted = wanted[:WARM_STINGERS]
-        for key in [k for k in self._warm if k not in wanted]:
-            self._warm.pop(key).close()
-        for key in wanted:
-            if key in self._warm:
-                continue
-            try:
-                player = open_stinger(*key)
-                player.start()
-            except Exception as exc:  # noqa: BLE001 (opened at the switch instead)
-                log.warning("stinger %s couldn't be opened ahead: %s", key[0], exc)
-                continue
-            self._warm[key] = player
+        with self._warm_lock:
+            self._warm_wanted = wanted
+            unwanted = [self._warm.pop(k) for k in [k for k in self._warm if k not in wanted]]
+            missing = [k for k in wanted if k not in self._warm and k not in self._warming]
+            for key in missing:
+                # Opened on a thread of its own: opened here, right after a switch took the warm one, the clip's file
+                # and decoder held the switch frame (PC live 2026-11-21: "commands 31.4 ms" at a switch).
+                thread = self._warming[key] = threading.Thread(target=self._open_warm, args=(key,),
+                                                               name="sprigcast-stinger-ahead", daemon=True)
+                thread.start()
+        for player in unwanted:
+            player.close()
+
+    def _open_warm(self, key: tuple) -> None:
+        player = None
+        try:
+            player = open_stinger(*key)
+            player.start()
+        except Exception as exc:  # noqa: BLE001 (opened at the switch instead)
+            log.warning("stinger %s couldn't be opened ahead: %s", key[0], exc)
+        with self._warm_lock:
+            self._warming.pop(key, None)
+            keep = player is not None and not self._ending and key in self._warm_wanted and key not in self._warm
+            if keep:
+                self._warm[key] = player
+        if player is not None and not keep:
+            player.close()
+
+    def _wait_warm(self, timeout: float = 5.0) -> None:
+        """Until the stingers being opened ahead are open (tests)."""
+        with self._warm_lock:
+            threads = list(self._warming.values())
+        for thread in threads:
+            thread.join(timeout)
 
     def _wipe_map(self, path: str) -> np.ndarray | None:
         """A wipe image as a small grey RGB picture (it is a soft gradient: 960 px wide is plenty)."""

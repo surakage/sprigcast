@@ -238,6 +238,7 @@ def test_a_stinger_clip_is_opened_ahead_of_the_switch(compositor, tmp_path):
     t = Transition(kind="stinger", stinger=Stinger(path=clip, cut_ms=200))
     engine = Engine(collection("a", t))
     engine._warm_stingers(engine._collection)
+    engine._wait_warm()  # opened on a thread of its own, never on the render thread
     assert len(engine._warm) == 1
     ahead = next(iter(engine._warm.values()))
     assert ahead.ready.wait(5)
@@ -248,6 +249,7 @@ def test_a_stinger_clip_is_opened_ahead_of_the_switch(compositor, tmp_path):
     assert engine._transition_step(compositor, "h", now)["overlay"] == ahead.id
     assert engine._transition_step(compositor, "h", now + 1.0) is None
     assert not ahead._thread.is_alive()
+    engine._wait_warm()
     again = next(iter(engine._warm.values()))  # opened again for the next switch
     assert again is not ahead
     engine._warm_stingers(collection("a"))  # no stinger any more: let go of

@@ -156,6 +156,19 @@ def test_events_in_our_words():
     api.changes(full=False)  # a source gone between two looks is never named from the old one
 
 
+def test_a_stream_ended_and_started_again_between_two_looks_says_both():
+    api, host = _api()
+    host.stream_key = lambda: host.key
+    host.key, host.live = 1, {"seconds": 1.0}
+    api.changes()
+    assert [e for e in api.changes() if e[0] == "stream.changed"] == []
+    host.key = 2  # stopped and started again before the next look
+    assert [e for e in api.changes() if e[0] == "stream.changed"] == [("stream.changed", {"on": False}),
+                                                                       ("stream.changed", {"on": True})]
+    host.key, host.live = 0, None
+    assert [e for e in api.changes() if e[0] == "stream.changed"] == [("stream.changed", {"on": False})]
+
+
 def test_session_password_and_requests():
     api, _ = _api()
     session = NativeSession(api=api, password="leafy")

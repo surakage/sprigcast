@@ -26,6 +26,11 @@ extern "C" {
 #include <mutex>
 #include <string>
 
+// libavfilter's types, only ever handled by pointer (see FilterGraphApi).
+struct AVFilterGraph;
+struct AVFilterContext;
+struct AVFilter;
+
 namespace sc::ffm {
 
 #define SC_FF_FUNCTIONS(X)                                                                                         \
@@ -60,6 +65,25 @@ struct FFmpeg {
 extern FFmpeg ff;
 extern std::atomic<bool> ff_ready;
 extern std::mutex ff_lock;
+
+// FFmpeg's audio filters (libavfilter), for the sound mixer's filters only Python had (equalizer, RNNoise, ...):
+// loaded on their own by sc_mixer_ffmpeg_load_filters, after the rest. Declared here, not from its headers (the
+// engine is built without them): the graph and its filters are only ever handled by pointer.
+struct FilterGraphApi {
+    unsigned (*avfilter_version)(void) = nullptr;
+    AVFilterGraph *(*avfilter_graph_alloc)(void) = nullptr;
+    void (*avfilter_graph_free)(AVFilterGraph **) = nullptr;
+    const AVFilter *(*avfilter_get_by_name)(const char *) = nullptr;
+    int (*avfilter_graph_create_filter)(AVFilterContext **, const AVFilter *, const char *, const char *,
+                                        void *, AVFilterGraph *) = nullptr;
+    int (*avfilter_link)(AVFilterContext *, unsigned, AVFilterContext *, unsigned) = nullptr;
+    int (*avfilter_graph_config)(AVFilterGraph *, void *) = nullptr;
+    int (*av_buffersrc_add_frame_flags)(AVFilterContext *, AVFrame *, int) = nullptr;
+    int (*av_buffersink_get_frame)(AVFilterContext *, AVFrame *) = nullptr;
+    int (*av_opt_set_int)(void *, const char *, int64_t, int) = nullptr;  // libavutil's
+};
+extern FilterGraphApi fg;
+extern std::atomic<bool> fg_ready;
 
 void *open_library(const char *path);
 void *find_symbol(void *library, const char *name);
