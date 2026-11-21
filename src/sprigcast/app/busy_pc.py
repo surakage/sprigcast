@@ -31,6 +31,22 @@ KNOWN = {
     "xsplit.core.exe": "XSplit", "twitch studio.exe": "Twitch Studio",
     "nvidia broadcast.exe": "NVIDIA Broadcast", "wavelink.exe": "Wave Link",
 }
+# Work Windows does by itself that can wait until after a stream, by the name people know it as, and what to do
+# about it. On the user's PC (live, 2026-11-21) a Defender scan held the CPU at 100% and the voice went choppy.
+BACKGROUND = {
+    "msmpeng.exe": "Windows Defender", "mpcmdrun.exe": "Windows Defender", "mrt.exe": "Windows Defender",
+    "tiworker.exe": "Windows Update", "trustedinstaller.exe": "Windows Update", "wuauclt.exe": "Windows Update",
+    "musnotification.exe": "Windows Update", "usoclient.exe": "Windows Update",
+    "searchindexer.exe": "Windows Search", "searchprotocolhost.exe": "Windows Search",
+    "searchfilterhost.exe": "Windows Search",
+}
+ADVICE = {
+    "Windows Defender": "schedule its scans outside stream hours",
+    "Windows Update": "let it finish before you go live",
+    "Windows Search": "let it finish before you go live",
+}
+BACKGROUND_PCT = 10.0  # of the whole PC: a background job using this much is worth saying
+HEAVY_PCT = 25.0  # any other program using this much is named in the Stream doctor
 IGNORE = {"system idle process", "idle", "system", "sprigcast.exe", "python.exe", "pythonw.exe"}
 
 
@@ -59,7 +75,20 @@ class BusyWatch:
 
 def friendly(name: str) -> str:
     key = name.lower()
-    return KNOWN.get(key) or (name[:-4] if key.endswith(".exe") else name)
+    return KNOWN.get(key) or BACKGROUND.get(key) or (name[:-4] if key.endswith(".exe") else name)
+
+
+def background_jobs(apps: list[tuple[str, float]]) -> list[tuple[str, float]]:
+    """Of (name, % of the whole PC) pairs: Windows' own jobs that can wait (Defender, Update, Search) using
+    BACKGROUND_PCT or more, heaviest first."""
+    names = set(BACKGROUND.values())
+    return sorted(((n, pct) for n, pct in apps if n in names and pct >= BACKGROUND_PCT), key=lambda a: -a[1])
+
+
+def job_message(name: str, pct: float) -> str:
+    """One background job, said plainly: "Windows Defender is using 38% of the CPU: schedule its scans outside
+    stream hours." """
+    return f"{name} is using {pct:.0f}% of the CPU: {ADVICE.get(name, 'let it finish before you go live')}."
 
 
 def spike_watch(clock=time.monotonic) -> BusyWatch:
@@ -133,7 +162,8 @@ def heavy_apps(limit: int = 3, wait: float = 1.0, with_use: bool = False) -> lis
     known = set(KNOWN.values())
     # Streaming apps first when they are busy at all, then whatever else is heaviest.
     heavy = [n for n, pct in ranked if pct / cores >= 2.0]
-    heavy.sort(key=lambda n: (n not in known, -use[n]))
+    waiting = {n for n, _pct in background_jobs([(n, pct / cores) for n, pct in ranked])}
+    heavy.sort(key=lambda n: (n not in waiting, n not in known, -use[n]))  # a scan that can wait is said first
     return heavy[:limit]
 
 
@@ -146,6 +176,9 @@ def busy_message(apps: list[str], cpu: float | None, gpu: float | None) -> str:
     load = " and ".join(parts) or "busy"
     if not apps:
         return f"Your PC is busy ({load}). Dropped frames now are from the PC being busy, not from SprigCast."
+    if apps[0] in ADVICE:  # Windows' own job (heavy_apps puts it first): what to do about that one
+        advice = ADVICE[apps[0]]
+        return f"Your PC is busy ({load}): {apps[0]} is using it. {advice[:1].upper()}{advice[1:]}."
     names = apps[0] if len(apps) == 1 else ", ".join(apps[:-1]) + " and " + apps[-1]
     verb = "is" if len(apps) == 1 else "are"
     return (f"Your PC is busy ({load}): {names} {verb} using it too. "

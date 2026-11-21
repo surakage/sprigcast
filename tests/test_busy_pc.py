@@ -71,5 +71,27 @@ def test_who_has_the_cpu_comes_from_two_looks_at_everything(monkeypatch):
     clock = iter([0.0, 1.0])
     monkeypatch.setattr(busy_pc, "time", SimpleNamespace(monotonic=lambda: next(clock), sleep=lambda s: None))
     use = busy_pc.cpu_by_app(1.0)
-    assert set(use) == {"MsMpEng", "OBS"}  # not SprigCast, not a process id used again by another app
-    assert round(use["MsMpEng"]) == 60 and round(use["OBS"]) == 10  # % of one core
+    assert set(use) == {"Windows Defender", "OBS"}  # not SprigCast, not a process id used again by another app
+    assert round(use["Windows Defender"]) == 60 and round(use["OBS"]) == 10  # % of one core
+
+
+def test_a_job_of_windows_own_is_named_first_with_what_to_do():
+    """PC 2026-11-21, live: a Defender scan pinned the CPU; the note said only that the PC was busy."""
+    assert busy_pc.friendly("MsMpEng.exe") == "Windows Defender" and busy_pc.friendly("TiWorker.exe") == "Windows Update"
+    jobs = busy_pc.background_jobs([("OBS", 30.0), ("Windows Update", 12.0), ("Windows Defender", 41.0),
+                                    ("Windows Search", 2.0)])
+    assert jobs == [("Windows Defender", 41.0), ("Windows Update", 12.0)]
+    assert busy_pc.job_message(*jobs[0]) == \
+        "Windows Defender is using 41% of the CPU: schedule its scans outside stream hours."
+    assert busy_pc.busy_message(["Windows Defender", "OBS"], 100.0, None) == \
+        "Your PC is busy (CPU 100%): Windows Defender is using it. Schedule its scans outside stream hours."
+    assert "OBS and Chrome are using it too" in busy_pc.busy_message(["OBS", "Chrome"], 90.0, None)
+
+
+def test_a_heavy_scan_comes_before_streaming_apps(monkeypatch):
+    cores = busy_pc.os.cpu_count() or 1
+    use = {"OBS": 20.0 * cores, "Meld Studio": 15.0 * cores, "Streamfog": 12.0 * cores, "Windows Defender": 40.0 * cores}
+    monkeypatch.setattr(busy_pc, "cpu_by_app", lambda wait=1.0: dict(use))
+    assert busy_pc.heavy_apps()[0] == "Windows Defender"
+    use["Windows Defender"] = 3.0 * cores  # a light one waits its turn
+    assert busy_pc.heavy_apps() == ["OBS", "Meld Studio", "Streamfog"]
