@@ -6,12 +6,17 @@ seconds of stream time), and each keyframe carries broadcast performance metrics
 through the one sender thread inherited from Streamer, which writes them to the FLV/RTMP
 connection; FFmpeg's FLV muxer writes track 0 as classic FLV video and the others as Enhanced
 RTMP multitrack packets.
+
+With the native engine encoding the qualities, the engine packs and sends them too (sc_esend, _engine_session):
+Python still chooses and tags each packet and encodes the sound, but nothing is packed or sent under its lock.
+SPRIGCAST_NO_NATIVE_ESEND=1 keeps the sender thread here.
 """
 
 from __future__ import annotations
 
 import logging
 import math
+import os
 import queue
 import threading
 import time
@@ -30,6 +35,16 @@ from sprigcast.output.stream import (
 )
 
 log = logging.getLogger(__name__)
+
+
+class _Out:
+    """A packet on its way to the engine's sender: which stream of the connection, and its bytes and times."""
+
+    __slots__ = ("data", "dts", "key", "pts", "size", "stream", "time_base")
+
+    def __init__(self, stream: int, data: bytes, pts: int, dts: int, time_base, key: bool):
+        self.stream, self.data, self.pts, self.dts, self.time_base, self.key = stream, data, pts, dts, time_base, key
+        self.size = len(data)
 
 
 class _Track:
@@ -127,6 +142,7 @@ class EnhancedStreamer(Streamer):
         # its size (no picture passes through Python); Python only tags keyframes and sends the packets.
         self.native = engine_encodes_streams()
         self._live = None  # (container, session start in perf_counter seconds) while connected, native only
+        self._esend = None  # the engine's sender while it sends this connection (sprigcore.EnhancedSender)
         if self.native:
             for track in self.tracks:
                 track.encoder = _TrackEncoder(self, track, start_time)
@@ -273,6 +289,19 @@ class EnhancedStreamer(Streamer):
         if self._send_error is not None:
             raise self._send_error
         line = self._delay_line
+        if self._esend is not None:
+            for packet in packets:
+                if not isinstance(packet, _Out):  # the sound, from PyAV's encoder
+                    stamp = packet.pts if packet.pts is not None else packet.dts
+                    if stamp is None:
+                        continue
+                    packet = _Out(len(self.tracks), bytes(packet), stamp,
+                                  packet.dts if packet.dts is not None else stamp, packet.time_base, True)
+                if line is not None:
+                    line.put(packet)
+                else:
+                    self._to_engine(packet)
+            return
         for packet in packets:
             if line is not None:
                 line.put(packet)
@@ -280,6 +309,11 @@ class EnhancedStreamer(Streamer):
             with self._lock:
                 self._backlog_bytes += packet.size
             self._send_q.put(packet)
+
+    def _to_engine(self, packet: _Out) -> None:
+        sender = self._esend
+        if sender is not None:  # once it failed it takes nothing: the session sees that and reconnects
+            sender.packet(packet.stream, packet.data, packet.pts, packet.dts, packet.time_base, packet.key)
 
     def _send_loop(self, container) -> None:
         from sprigcast.core.pacing import ABOVE_NORMAL, raise_thread_priority
@@ -350,8 +384,8 @@ class EnhancedStreamer(Streamer):
 
     def _native_session(self) -> None:
         container, finished = None, False
+        self._sender = None
         try:
-            container = self._open_container()
             deadline = time.monotonic() + 15
             for track in self.tracks:
                 enc = track.encoder
@@ -363,6 +397,10 @@ class EnhancedStreamer(Streamer):
                     if time.monotonic() > deadline:
                         raise RuntimeError(f"quality {track.index + 1}'s encoder did not start")
                     time.sleep(0.02)
+            writers = self._engine_writers()
+            if writers is not None:
+                return self._engine_session(writers)
+            container = self._open_container()
             for track in self.tracks:
                 track.stream = container.add_stream_from_template(track.encoder._templates[0])
                 track.started = False
@@ -401,6 +439,117 @@ class EnhancedStreamer(Streamer):
                         raise
                     log.warning("closing stream %s failed: %s", self.name, self.redact(str(exc)))
 
+    def _engine_writers(self):
+        """Each quality's writer when the engine can send this connection itself (interface 43), else None: the
+        sender thread here does, as before (a test's own container, or SPRIGCAST_NO_NATIVE_ESEND=1)."""
+        from sprigcast import sprigcore
+
+        if (type(self)._open_container is not EnhancedStreamer._open_container or "_open_container" in vars(self)
+                or os.environ.get("SPRIGCAST_NO_NATIVE_ESEND") or not hasattr(sprigcore, "EnhancedSender")):
+            return None
+        writers = [getattr(track.encoder, "writer", None) for track in self.tracks]
+        if any(w is None or not getattr(w, "packets", False) for w in writers):
+            return None
+        lib = sprigcore._media_lib()
+        return writers if lib is not None and hasattr(lib, "sc_esend_open") else None
+
+    def _engine_session(self, writers) -> None:
+        """One connection packed and sent by the engine (native/core/src/writer.cpp ESend): the qualities' packets
+        are still chosen and tagged here (_from_track) and the sound is encoded here, but each is only handed
+        over; FFmpeg's FLV muxer, the Enhanced RTMP form and the network are on a thread of the engine's own.
+        Packing and sending them on a Python thread above normal priority held Python's lock some 230 times a
+        second, beside a window that stopped answering for 371 ms (PC, 2026-11-21)."""
+        import av
+        import av.logging as avlog
+        from av.codec.context import Flags
+
+        from sprigcast import sprigcore
+        from sprigcast.output.delay import DelayLine
+        from sprigcast.output.stream import CONNECT_TIMEOUT, SEND_TIMEOUT, ingest_name
+
+        aac = av.CodecContext.create("aac", "w")
+        aac.sample_rate, aac.layout, aac.format = SAMPLE_RATE, "stereo", "fltp"
+        aac.bit_rate = self.config.audio_kbps * 1000
+        aac.time_base = Fraction(1, SAMPLE_RATE)
+        aac.flags |= Flags.global_header  # its header goes in the stream's start, as FLV wants
+        aac.open()
+        base = (self.bytes_out, self.mux_seconds)
+        sender, line = None, None
+        old = avlog.get_level()
+        louder = old is None or old > avlog.WARNING
+        if louder:
+            avlog.set_level(avlog.WARNING)
+        try:
+            # Why a connect fails is in what FFmpeg logs, said on the engine's thread (StreamLink._session_engine).
+            with avlog.Capture(False) as logs:
+                sender = sprigcore.EnhancedSender(self._url, writers, bytes(aac.extradata or b""),
+                                                  self.config.audio_kbps, SAMPLE_RATE, 2, CONNECT_TIMEOUT,
+                                                  SEND_TIMEOUT)
+                while (stats := sender.stats()).state_name == "connecting":
+                    if self._stop.wait(0.02):
+                        return
+                said = [str(entry[2]).strip() for entry in logs if str(entry[2]).strip()]
+            if stats.state_name == "failed":
+                detail = " | FFmpeg: " + " / ".join(said[-4:]) if said else ""
+                why = (stats.error_text or "no answer").removeprefix("couldn't connect: ")
+                raise ConnectionError(f"couldn't connect to {ingest_name(self._url)}: {why}{detail}")
+            self._send_error = None
+            self._backlog_bytes = 0
+            for track in self.tracks:
+                track.started = False
+            line = DelayLine(self.delay_s, self._to_engine, f"delay-{self.name}") if self.delay_s > 0 else None
+            self._delay_line = line
+            self._esend = sender
+            self._live = (None, self.start_time)  # the tracks' packets go out from their next keyframe
+
+            def numbers():
+                stats = sender.stats()
+                self.bytes_out, self.mux_seconds = base[0] + stats.bytes, base[1] + stats.send_seconds
+                self.longest_stall = max(self.longest_stall, stats.longest_send)
+                self._backlog_bytes = stats.backlog_bytes
+                if stats.state_name == "live" and not self.connected:
+                    self.connected, self._connected_at, self.status = True, time.monotonic(), "live"
+                    log_live(self)
+                return stats
+
+            while not self._stop.is_set():
+                self._write_audio(None, aac)
+                for track in self.tracks:
+                    if track.encoder.error is not None:
+                        raise RuntimeError(f"quality {track.index + 1}: {track.encoder.error}")
+                if self._send_error is not None:
+                    raise self._send_error
+                if numbers().state_name == "failed":
+                    raise RuntimeError(sender.stats().error_text or "the connection dropped")
+                time.sleep(0.01)
+            self._stop_encoders()  # their last packets go out before the stream's end
+            self._live = None
+            self._write_audio(None, aac)
+            self._mux(None, aac.encode(None))
+            self._delay_line = None
+            if line is not None:
+                line.finish(self.delay_s + 5)  # the delayed part goes out on time, then the stream ends
+            sender.finish()
+            deadline = time.monotonic() + 3.0
+            while (stats := numbers()).state_name not in ("finished", "failed") and time.monotonic() < deadline:
+                time.sleep(0.01)
+            if stats.state_name == "failed":
+                raise RuntimeError(stats.error_text or "the connection dropped")
+            if stats.state_name != "finished":
+                log.warning("stream %s: the engine's sender is still busy with the network; leaving the connection",
+                            self.name)
+        finally:
+            if louder:
+                avlog.set_level(old)
+            self._live = None
+            self._esend = None
+            self._delay_line = None
+            if line is not None:
+                line.close()  # what's delayed belongs to this connection and goes with it
+            self._backlog_bytes = 0
+            if sender is not None:
+                sender.close()
+
     def _send_failed(self, exc: Exception) -> None:
         """Sending a quality's packet failed: the stream's session sees it, drops the connection and reconnects."""
         if self._send_error is None:
@@ -434,12 +583,19 @@ class EnhancedStreamer(Streamer):
                 session=(self._rendered, 0, sum(t.dropped for t in self.tracks), sum(t.frames for t in self.tracks)),
                 rendition=(enc.frames, track.dropped, track.frames),
             ))
-        packet = av.Packet(data)
-        packet.pts = None if p.pts is None else p.pts - offset
-        packet.dts = None if p.dts is None else p.dts - offset
-        packet.time_base = p.time_base
-        packet.is_keyframe = p.keyframe
-        packet.stream = track.stream
+        if self._esend is not None:
+            stamp = p.pts if p.pts is not None else p.dts
+            if stamp is None:
+                return
+            packet = _Out(track.index, data, stamp - offset, (p.dts if p.dts is not None else stamp) - offset,
+                          p.time_base, bool(p.keyframe))
+        else:
+            packet = av.Packet(data)
+            packet.pts = None if p.pts is None else p.pts - offset
+            packet.dts = None if p.dts is None else p.dts - offset
+            packet.time_base = p.time_base
+            packet.is_keyframe = p.keyframe
+            packet.stream = track.stream
         if track.index == 0:
             self.frames, self.dropped, self._rendered = track.frames, track.dropped, enc.frames + enc.dropped
             self.encode_seconds = enc.encode_seconds

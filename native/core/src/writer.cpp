@@ -1024,6 +1024,267 @@ void Link::run() {
 }
 
 
+// ---- Twitch Enhanced Broadcasting sent by the engine (sc_esend) -------------------------------------------------
+// output/eflv.py's EnhancedIngest on a thread of the engine's own: FFmpeg's FLV muxer writes every quality and the
+// sound into memory, each classic H.264 video tag of the main quality is rewritten as its Enhanced RTMP
+// single-track form (Twitch drops the connection otherwise), and the bytes go to the server through FFmpeg's
+// RTMP protocol, which sends each FLV tag as a message. Python still chooses and tags the packets
+// (output/enhanced_stream.py _from_track); packing and sending them held Python's lock on a thread above normal
+// priority, 230 packets a second, and the window stopped answering for 371 ms beside it (PC, 2026-11-21).
+struct ESend {
+    std::string url;
+    double connect_s = 10, send_s = 20;
+    std::vector<AVCodecParameters *> pars;  // each stream's headers: the qualities, then the sound
+
+    std::mutex lock;
+    std::condition_variable wake, done_cv;
+    std::deque<std::shared_ptr<const Encoded>> waiting;
+    int state = SC_LINK_CONNECTING;
+    bool finishing = false, done = false;
+    std::string error;
+    uint64_t packets = 0, bytes = 0, backlog_bytes = 0;
+    double send_seconds = 0, longest_send = 0;
+    std::atomic<bool> stop{false};
+    std::atomic<bool> closing{false};
+    std::atomic<double> deadline{0};
+    std::thread thread;
+
+    // Sender thread only.
+    std::vector<uint8_t> packed;   // what the FLV muxer wrote since it was last taken
+    std::vector<uint8_t> pending;  // FLV bytes not yet a whole tag
+    bool flv_header = false;
+    AVIOContext *out = nullptr;
+    bool broken = false;
+
+    ~ESend() {
+        for (auto *p : pars) ff.avcodec_parameters_free(&p);
+    }
+    void run();
+    void session(AVFormatContext *&flv);
+    void forward();
+    void rewrite(std::vector<uint8_t> &to);
+};
+
+int esend_interrupted(void *opaque) {
+    auto *e = static_cast<ESend *>(opaque);
+    if (now_s() > e->deadline.load()) return 1;
+    return (e->stop.load() && !e->closing.load()) ? 1 : 0;
+}
+
+#if LIBAVFORMAT_VERSION_MAJOR >= 61
+int esend_packed(void *opaque, const uint8_t *data, int size) {
+#else
+int esend_packed(void *opaque, uint8_t *data, int size) {
+#endif
+    auto *e = static_cast<ESend *>(opaque);
+    e->packed.insert(e->packed.end(), data, data + size);
+    return size;
+}
+
+// A classic FLV H.264 video tag's body in its Enhanced RTMP single-track form (eflv.py enhanced_video_body).
+void enhanced_video_body(const uint8_t *body, size_t size, std::vector<uint8_t> &to) {
+    constexpr uint8_t EX = 0x80, AVC = 7;
+    static const uint8_t FOURCC[4] = {'a', 'v', 'c', '1'};
+    if (size < 5 || (body[0] & EX) || (body[0] & 0x0F) != AVC) {
+        to.insert(to.end(), body, body + size);
+        return;
+    }
+    const uint8_t frame = body[0] & 0x70, kind = body[1];
+    const uint8_t *data = body + 5;
+    const size_t left = size - 5;
+    const bool no_offset = body[2] == 0 && body[3] == 0 && body[4] == 0;
+    const uint8_t type = kind == 0 ? 0 : kind == 2 ? 2 : no_offset ? 3 : 1;  // start, end, frames X, frames
+    to.push_back(static_cast<uint8_t>(EX | frame | type));
+    to.insert(to.end(), FOURCC, FOURCC + 4);
+    if (kind == 2) return;
+    if (type == 1) to.insert(to.end(), body + 2, body + 5);
+    to.insert(to.end(), data, data + left);
+}
+
+// What the muxer wrote, whole tags only, with classic H.264 tags made Enhanced (eflv.py Rewriter.feed).
+void ESend::rewrite(std::vector<uint8_t> &to) {
+    constexpr size_t HEADER = 13, TAG = 11;
+    pending.insert(pending.end(), packed.begin(), packed.end());
+    packed.clear();
+    size_t at = 0;
+    if (!flv_header) {
+        if (pending.size() < HEADER) return;
+        to.insert(to.end(), pending.begin(), pending.begin() + HEADER);
+        at = HEADER;
+        flv_header = true;
+    }
+    std::vector<uint8_t> body;
+    while (pending.size() - at >= TAG) {
+        const uint8_t *tag = pending.data() + at;
+        const size_t size = (static_cast<size_t>(tag[1]) << 16) | (static_cast<size_t>(tag[2]) << 8) | tag[3];
+        const size_t whole = TAG + size + 4;
+        if (pending.size() - at < whole) break;
+        if ((tag[0] & 0x1F) == 9) {
+            body.clear();
+            enhanced_video_body(tag + TAG, size, body);
+            const uint32_t n = static_cast<uint32_t>(body.size()), back = n + static_cast<uint32_t>(TAG);
+            to.push_back(tag[0]);
+            to.push_back(static_cast<uint8_t>(n >> 16));
+            to.push_back(static_cast<uint8_t>(n >> 8));
+            to.push_back(static_cast<uint8_t>(n));
+            to.insert(to.end(), tag + 4, tag + TAG);
+            to.insert(to.end(), body.begin(), body.end());
+            for (int shift = 24; shift >= 0; shift -= 8) to.push_back(static_cast<uint8_t>(back >> shift));
+        } else {
+            to.insert(to.end(), tag, tag + whole);
+        }
+        at += whole;
+    }
+    pending.erase(pending.begin(), pending.begin() + static_cast<std::ptrdiff_t>(at));
+}
+
+// The muxer's new bytes go to the server.
+void ESend::forward() {
+    std::vector<uint8_t> bytes_out;
+    rewrite(bytes_out);
+    if (bytes_out.empty()) return;
+    ff.avio_write(out, bytes_out.data(), static_cast<int>(bytes_out.size()));
+    ff.avio_flush(out);
+    if (out->error < 0) {
+        broken = true;
+        throw Error(stop.load() ? "stopped" : "sending: " + av_text(out->error));
+    }
+}
+
+void ESend::session(AVFormatContext *&flv) {
+    deadline = now_s() + connect_s;
+    AVIOInterruptCB cb{esend_interrupted, this};
+    AVDictionary *how = nullptr;
+    if (url.rfind("rtmp", 0) == 0) ff.av_dict_set(&how, "rtmp_enhanced_codecs", "avc1", 0);
+    const int opened = ff.avio_open2(&out, url.c_str(), AVIO_FLAG_WRITE, &cb, &how);
+    ff.av_dict_free(&how);
+    if (opened < 0) throw Error("couldn't connect: " + av_text(opened));
+    must(ff.avformat_alloc_output_context2(&flv, nullptr, "flv", nullptr), "the stream's packing");
+    constexpr int ROOM = 32768;
+    auto *room = static_cast<unsigned char *>(ff.av_malloc(ROOM));
+    if (!room) throw std::bad_alloc();
+    flv->pb = ff.avio_alloc_context(room, ROOM, 1, this, nullptr, esend_packed, nullptr);
+    if (!flv->pb) {
+        ff.av_free(room);
+        throw std::bad_alloc();
+    }
+    flv->flags |= AVFMT_FLAG_CUSTOM_IO;
+    for (auto *par : pars) {
+        AVStream *st = ff.avformat_new_stream(flv, nullptr);
+        if (!st) throw std::bad_alloc();
+        must(ff.avcodec_parameters_copy(st->codecpar, par), "the stream's headers");
+        st->codecpar->codec_tag = 0;
+    }
+    AVDictionary *options = nullptr;
+    ff.av_dict_set(&options, "flvflags", "no_duration_filesize", 0);
+    ff.av_dict_set(&options, "flush_packets", "1", 0);
+    const int head = ff.avformat_write_header(flv, &options);
+    ff.av_dict_free(&options);
+    if (head < 0) throw Error("couldn't start the stream: " + av_text(head));
+    ff.avio_flush(flv->pb);
+    forward();
+    {
+        std::lock_guard<std::mutex> hold(lock);
+        state = SC_LINK_READY;
+    }
+    AVPacket *pkt = ff.av_packet_alloc();
+    if (!pkt) throw std::bad_alloc();
+    struct Free {
+        AVPacket *p;
+        ~Free() { ff.av_packet_free(&p); }
+    } free_pkt{pkt};
+    for (;;) {
+        std::shared_ptr<const Encoded> p;
+        {
+            std::unique_lock<std::mutex> hold(lock);
+            for (;;) {
+                if (stop.load()) return;
+                if (!waiting.empty()) break;
+                if (finishing) {
+                    hold.unlock();
+                    closing = true;
+                    deadline = now_s() + 5;
+                    ff.av_write_trailer(flv);
+                    ff.avio_flush(flv->pb);
+                    forward();
+                    hold.lock();
+                    state = SC_LINK_FINISHED;
+                    return;
+                }
+                wake.wait_for(hold, std::chrono::milliseconds(200));
+            }
+            p = std::move(waiting.front());
+            waiting.pop_front();
+        }
+        AVStream *st = flv->streams[p->track];
+        pkt->data = const_cast<uint8_t *>(p->data.data());  // not reference-counted: the muxer copies it
+        pkt->size = static_cast<int>(p->size);
+        pkt->pts = p->pts;
+        pkt->dts = p->dts;
+        pkt->flags = p->key ? AV_PKT_FLAG_KEY : 0;
+        pkt->stream_index = st->index;
+        ff.av_packet_rescale_ts(pkt, p->tb, st->time_base);
+        const double began = now_s();
+        deadline = began + send_s;
+        const int w = ff.av_interleaved_write_frame(flv, pkt);
+        ff.av_packet_unref(pkt);
+        if (w < 0) {
+            broken = true;
+            throw Error("packing: " + av_text(w));
+        }
+        forward();
+        const double spent = now_s() - began;
+        std::lock_guard<std::mutex> hold(lock);
+        backlog_bytes -= std::min<uint64_t>(backlog_bytes, p->size);
+        send_seconds += spent;
+        longest_send = std::max(longest_send, spent);
+        bytes += p->size;
+        ++packets;
+        state = SC_LINK_LIVE;
+    }
+}
+
+void ESend::run() {
+    sc::name_thread(L"SprigCast Enhanced sender");
+    sc::sender_thread_priority();
+    AVFormatContext *flv = nullptr;
+    std::string why;
+    bool faulted = false;
+    try {
+        session(flv);
+    } catch (const std::exception &e) {
+        why = e.what();
+    } catch (...) {
+        faulted = true;  // crash gate: nothing of this connection is touched again
+        why = "the connection faulted";
+    }
+    if (!faulted) {
+        try {
+            closing = true;
+            deadline = now_s() + 2;
+            if (flv) {
+                if (flv->pb) {
+                    ff.av_free(flv->pb->buffer);
+                    ff.avio_context_free(&flv->pb);
+                }
+                ff.avformat_free_context(flv);
+            }
+            if (out) ff.avio_closep(&out);
+        } catch (...) {
+        }
+    }
+    std::lock_guard<std::mutex> hold(lock);
+    if (state != SC_LINK_FINISHED) {
+        state = SC_LINK_FAILED;
+        if (error.empty()) error = why.empty() ? "stopped" : why;
+    }
+    waiting.clear();
+    backlog_bytes = 0;
+    done = true;
+    done_cv.notify_all();
+}
+
+
 // ---- A recording written by the engine (sc_file) ---------------------------------------------------------------
 // output/shared.py's FileTap and output/replay.py's PacketFile on a thread of the engine's own: the file starts at
 // a keyframe, pauses and resumes as if no time passed, splits into parts and ends just before a keyframe.
@@ -2071,6 +2332,138 @@ SC_API void sc_link_destroy(sc_link *h) {
                 l.thread.join();
             } else {
                 l.thread.detach();  // still stuck in the network: it keeps its Link and ends by itself
+            }
+        }
+    } catch (...) {
+    }
+    delete h;
+}
+
+}  // extern "C"
+
+struct sc_esend {
+    std::shared_ptr<ESend> send;
+};
+
+extern "C" {
+
+SC_API int sc_esend_open(const sc_esend_config *cfg, sc_esend **out) {
+    return sc::guarded("sc_esend_open", [&]() -> int {
+        if (!cfg || !out || !cfg->url || !*cfg->url || !cfg->videos || cfg->video_count < 1 || cfg->video_count > 8 ||
+            !cfg->audio_header || cfg->audio_header_size < 2 || cfg->audio_header_size > 64)
+            return sc::fail(SC_ERR_ARGUMENT, "sc_esend_open: no address, qualities or sound header");
+        *out = nullptr;
+        auto e = std::make_shared<ESend>();
+        e->url = cfg->url;
+        if (cfg->connect_timeout_ms > 0) e->connect_s = cfg->connect_timeout_ms / 1000.0;
+        if (cfg->send_timeout_ms > 0) e->send_s = cfg->send_timeout_ms / 1000.0;
+        e->deadline = now_s() + 3600;
+        for (int i = 0; i < cfg->video_count; ++i) {
+            sc_writer *w = cfg->videos[i];
+            if (!w || !w->core->packets)
+                return sc::fail(SC_ERR_ARGUMENT, "sc_esend_open: a quality's writer doesn't hand out packets");
+            AVCodecParameters *par = ff.avcodec_parameters_alloc();
+            if (!par) throw std::bad_alloc();
+            e->pars.push_back(par);
+            std::lock_guard<std::mutex> hold(w->core->links_lock);
+            if (!w->core->streams_ready || !w->core->out || w->core->out->nb_streams < 1)
+                return sc::fail(SC_ERR_ARGUMENT, "sc_esend_open: a quality's encoder isn't open yet");
+            must(ff.avcodec_parameters_copy(par, w->core->out->streams[0]->codecpar), "a quality's headers");
+        }
+        AVCodecParameters *sound = ff.avcodec_parameters_alloc();
+        if (!sound) throw std::bad_alloc();
+        e->pars.push_back(sound);
+        sound->codec_type = AVMEDIA_TYPE_AUDIO;
+        sound->codec_id = AV_CODEC_ID_AAC;
+        sound->format = AV_SAMPLE_FMT_FLTP;
+        sound->sample_rate = cfg->audio_rate > 0 ? cfg->audio_rate : 48000;
+        sound->bit_rate = static_cast<int64_t>(std::max(1, cfg->audio_kbps)) * 1000;
+        sound->frame_size = 1024;
+        ff.av_channel_layout_default(&sound->ch_layout, cfg->audio_channels > 0 ? cfg->audio_channels : 2);
+        sound->extradata = static_cast<uint8_t *>(
+            ff.av_mallocz(static_cast<size_t>(cfg->audio_header_size) + AV_INPUT_BUFFER_PADDING_SIZE));
+        if (!sound->extradata) throw std::bad_alloc();
+        std::memcpy(sound->extradata, cfg->audio_header, static_cast<size_t>(cfg->audio_header_size));
+        sound->extradata_size = cfg->audio_header_size;
+        auto handle = std::make_unique<sc_esend>();
+        handle->send = e;
+        e->thread = std::thread([e] { e->run(); });
+        *out = handle.release();
+        return SC_OK;
+    });
+}
+
+SC_API int sc_esend_packet(sc_esend *h, int stream, const uint8_t *data, int size, int64_t pts, int64_t dts,
+                           int tb_num, int tb_den, int key) {
+    return sc::guarded("sc_esend_packet", [&]() -> int {
+        if (!h || !data || size < 0 || tb_num < 1 || tb_den < 1)
+            return sc::fail(SC_ERR_ARGUMENT, "sc_esend_packet: no packet");
+        ESend &e = *h->send;
+        if (stream < 0 || stream >= static_cast<int>(e.pars.size()))
+            return sc::fail(SC_ERR_ARGUMENT, "sc_esend_packet: no such stream");
+        auto p = std::make_shared<Encoded>();
+        p->track = stream;
+        p->key = key != 0;
+        p->pts = pts;
+        p->dts = dts;
+        p->tb = AVRational{tb_num, tb_den};
+        p->size = static_cast<size_t>(size);
+        p->data.resize(p->size + AV_INPUT_BUFFER_PADDING_SIZE);
+        if (size) std::memcpy(p->data.data(), data, p->size);
+        std::lock_guard<std::mutex> hold(e.lock);
+        if (e.state == SC_LINK_FAILED || e.state == SC_LINK_FINISHED || e.finishing) return SC_WRITER_REFUSED;
+        e.backlog_bytes += p->size;
+        e.waiting.push_back(std::move(p));
+        e.wake.notify_one();
+        return SC_OK;
+    });
+}
+
+SC_API int sc_esend_stats_get(sc_esend *h, sc_esend_stats *out) {
+    return sc::guarded("sc_esend_stats_get", [&]() -> int {
+        if (!h || !out) return sc::fail(SC_ERR_ARGUMENT, "sc_esend_stats_get: nothing given");
+        ESend &e = *h->send;
+        std::lock_guard<std::mutex> hold(e.lock);
+        std::memset(out, 0, sizeof *out);
+        out->state = e.state;
+        out->packets = e.packets;
+        out->bytes = e.bytes;
+        out->backlog_bytes = e.backlog_bytes;
+        out->send_seconds = e.send_seconds;
+        out->longest_send = e.longest_send;
+        std::snprintf(out->error, sizeof out->error, "%s", e.error.c_str());
+        return SC_OK;
+    });
+}
+
+SC_API int sc_esend_finish(sc_esend *h) {
+    return sc::guarded("sc_esend_finish", [&]() -> int {
+        if (!h) return sc::fail(SC_ERR_ARGUMENT, "sc_esend_finish: no sender");
+        ESend &e = *h->send;
+        std::lock_guard<std::mutex> hold(e.lock);
+        e.finishing = true;
+        e.wake.notify_all();
+        return SC_OK;
+    });
+}
+
+SC_API void sc_esend_destroy(sc_esend *h) {
+    if (!h) return;
+    try {
+        ESend &e = *h->send;
+        e.stop.store(true);
+        {
+            std::lock_guard<std::mutex> hold(e.lock);
+            e.wake.notify_all();
+        }
+        if (e.thread.joinable()) {
+            std::unique_lock<std::mutex> hold(e.lock);
+            const bool ended = e.done_cv.wait_for(hold, std::chrono::seconds(5), [&] { return e.done; });
+            hold.unlock();
+            if (ended) {
+                e.thread.join();
+            } else {
+                e.thread.detach();  // still stuck in the network: it keeps its ESend and ends by itself
             }
         }
     } catch (...) {

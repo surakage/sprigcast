@@ -321,9 +321,22 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   ten times a second (status, health, auto bitrate) and decides when to try again; the reason a connect failed
   is still FFmpeg's own words. The packets are still handed to Python as well, for clips and a recording from
   the same encoder. Needs no graphics card, so it works with the old drawing engine's fallback too whenever
-  the writer encodes. `SPRIGCAST_NO_NATIVE_LINK=1` sends from Python as before. Twitch Enhanced Broadcasting's
-  own connection (`output/enhanced_stream.py`) is still sent by Python. Tests: `tests/test_native_writer.py`
+  the writer encodes. `SPRIGCAST_NO_NATIVE_LINK=1` sends from Python as before. Tests: `tests/test_native_writer.py`
   (the link alone), `tests/test_packet_writer.py` (through `StreamLink`).
+- **Twitch Enhanced Broadcasting sent by the engine (interface 43, `sc_esend_*`, `writer.cpp` `ESend`).** The
+  one connection that carries every quality was still packed and sent by a Python thread above normal priority
+  (`output/eflv.py`): about 230 packets a second under Python's lock, and on the PC the window stopped
+  answering for 371 ms beside it (2026-11-21). Now a thread of the engine's own does what `EnhancedIngest`
+  did: FFmpeg's FLV muxer writes into memory, each classic H.264 tag of the main quality is rewritten as its
+  Enhanced RTMP form, and the bytes go out through FFmpeg's RTMP protocol (`rtmp_enhanced_codecs=avc1`). Python
+  still chooses each packet (`EnhancedStreamer._from_track`: the connection's clock, keyframe start, letting go
+  when the network is behind, the broadcast metrics on keyframes) and encodes the sound, then hands each over
+  with `sc_esend_packet`, which copies it and returns at once. `EnhancedStreamer._engine_session` reads the
+  numbers and reconnects as before; a stream delay still waits in Python's `DelayLine`. The codec headers are
+  copied from the qualities' writers when it opens. Needs no graphics card. `SPRIGCAST_NO_NATIVE_ESEND=1` keeps
+  Python's sender. Still to move: the choosing and tagging of packets and the sound's encoding (the qualities
+  other places borrow make that a step of its own). Tests: `tests/test_packet_writer.py` (what goes out is
+  tag for tag what `eflv.py` makes of the same packets; the off switch; a connection that can't be made).
 - **Recordings written by the engine (interface 40, `sc_file_*`, `writer.cpp` `File`).** A recording from a
   shared encoder (`output/shared.py` `FileTap`: the canvas encoder recordings and clips share, and a "Same as
   stream" recording) is packed and written by a thread of the engine's own from the writer's packets, with

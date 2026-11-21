@@ -1307,6 +1307,31 @@ class WriterStats(ctypes.Structure):
 WRITER_STATES = ("opening", "running", "finished", "failed")
 
 
+class EsendConfig(ctypes.Structure):
+    """include/sprigcore.h sc_esend_config."""
+
+    _fields_ = [("url", ctypes.c_char_p), ("videos", ctypes.POINTER(ctypes.c_void_p)), ("video_count", ctypes.c_int),
+                ("audio_header", ctypes.c_char_p), ("audio_header_size", ctypes.c_int),
+                ("audio_rate", ctypes.c_int), ("audio_channels", ctypes.c_int), ("audio_kbps", ctypes.c_int),
+                ("connect_timeout_ms", ctypes.c_int), ("send_timeout_ms", ctypes.c_int)]
+
+
+class EsendStats(ctypes.Structure):
+    """include/sprigcore.h sc_esend_stats."""
+
+    _fields_ = [("state", ctypes.c_int), ("packets", ctypes.c_uint64), ("bytes", ctypes.c_uint64),
+                ("backlog_bytes", ctypes.c_uint64), ("send_seconds", ctypes.c_double),
+                ("longest_send", ctypes.c_double), ("error", ctypes.c_char * 256)]
+
+    @property
+    def state_name(self) -> str:
+        return LINK_STATES[self.state] if 0 <= self.state < len(LINK_STATES) else "failed"
+
+    @property
+    def error_text(self) -> str:
+        return self.error.decode("utf-8", "replace")
+
+
 class LinkConfig(ctypes.Structure):
     """include/sprigcore.h sc_link_config."""
 
@@ -1461,6 +1486,11 @@ def _media_sigs() -> dict:
         "sc_link_stats_get": (c_int, [vp, ctypes.POINTER(LinkStats)]),
         "sc_link_finish": (c_int, [vp]),
         "sc_link_destroy": (None, [vp]),
+        "sc_esend_open": (c_int, [ctypes.POINTER(EsendConfig), ctypes.POINTER(vp)]),
+        "sc_esend_packet": (c_int, [vp, c_int, text, c_int, ctypes.c_int64, ctypes.c_int64, c_int, c_int, c_int]),
+        "sc_esend_stats_get": (c_int, [vp, ctypes.POINTER(EsendStats)]),
+        "sc_esend_finish": (c_int, [vp]),
+        "sc_esend_destroy": (None, [vp]),
         "sc_file_open": (c_int, [vp, ctypes.POINTER(FileConfig), ctypes.POINTER(vp)]),
         "sc_file_pause": (c_int, [vp]),
         "sc_file_resume": (c_int, [vp]),
@@ -1968,6 +1998,78 @@ class Writer:
             handle, self._handle = self._handle, None
         if handle:
             self._lib.sc_writer_destroy(handle)
+            drain_log()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:  # noqa: BLE001 (interpreter shutting down)
+            pass
+
+
+class EnhancedSender:
+    """Twitch Enhanced Broadcasting's connection, packed and sent by a thread of the engine's own (include/
+    sprigcore.h sc_esend): ``writers`` are the qualities' packets-mode writers in order (their codec headers are
+    copied), ``audio_header`` the AAC encoder's. :meth:`packet` queues one packet and returns at once; stream
+    0.. are the qualities, the last one the sound. Every method is safe from any thread."""
+
+    def __init__(self, url: str, writers, audio_header: bytes, audio_kbps: int, audio_rate: int = 48000,
+                 channels: int = 2, connect_timeout_s: float = 0.0, send_timeout_s: float = 0.0):
+        import contextlib
+        import threading
+
+        self._lib = _media_lib()
+        if self._lib is None or not hasattr(self._lib, "sc_esend_open"):
+            raise NativeError(-2, "the engine can't send Enhanced Broadcasting")
+        self._lock = threading.Lock()
+        self._handle = None
+        self.streams = len(writers) + 1
+        handles = (ctypes.c_void_p * len(writers))()
+        with contextlib.ExitStack() as held:  # no writer closes while its headers are read
+            for i, writer in enumerate(writers):
+                held.enter_context(writer._lock)
+                if not writer._handle:
+                    raise NativeError(-1, "a quality's writer is closed")
+                handles[i] = writer._handle
+            config = EsendConfig(str(url).encode("utf-8"), handles, len(writers), bytes(audio_header),
+                                 len(audio_header), int(audio_rate), int(channels), int(audio_kbps),
+                                 int(connect_timeout_s * 1000), int(send_timeout_s * 1000))
+            handle = ctypes.c_void_p()
+            _check(self._lib.sc_esend_open(ctypes.byref(config), ctypes.byref(handle)))
+        self._handle = handle
+
+    def packet(self, stream: int, data: bytes, pts: int, dts: int, time_base, key: bool) -> bool:
+        """Queue one packet (copied). False once the connection failed, finished or is closed."""
+        with self._lock:
+            if not self._handle:
+                return False
+            code = self._lib.sc_esend_packet(self._handle, int(stream), data, len(data), int(pts), int(dts),
+                                             int(time_base.numerator), int(time_base.denominator), 1 if key else 0)
+        if code == WRITER_REFUSED:
+            return False
+        _check(code)
+        return True
+
+    def stats(self) -> EsendStats:
+        out = EsendStats()
+        with self._lock:
+            if not self._handle:
+                out.state = LINK_STATES.index("failed")
+                return out
+            _check(self._lib.sc_esend_stats_get(self._handle, ctypes.byref(out)))
+        return out
+
+    def finish(self) -> None:
+        """Take nothing new, send what waits, then end the stream properly."""
+        with self._lock:
+            if self._handle:
+                _check(self._lib.sc_esend_finish(self._handle))
+
+    def close(self) -> None:
+        with self._lock:
+            handle, self._handle = self._handle, None
+        if handle:
+            self._lib.sc_esend_destroy(handle)
             drain_log()
 
     def __del__(self):
