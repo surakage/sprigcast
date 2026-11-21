@@ -70,7 +70,7 @@ section.alt { background: var(--bg2); }
 .tile { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 24px; }
 .tile h3 { font-size: 1.08rem; margin: 16px 0 8px; }
 .tile p { margin: 0; font-size: .97rem; }
-.tile .where { margin-top: 14px; font-size: .88rem; color: var(--faint); }
+.tile .where, .head .where { margin-top: 14px; font-size: .88rem; color: var(--faint); }
 .icon { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center;
   background: rgba(79, 216, 143, .12); color: var(--mint); }
 .icon svg { width: 22px; height: 22px; }
@@ -253,6 +253,17 @@ export const HOME = page("SprigCast: free streaming and recording for Windows", 
   deletes anything on your channel, reads your comments or messages, or touches other Google services. Your YouTube
   data goes only between your PC and YouTube. Read the <a href="/privacy">privacy policy</a>.</p></div>
 </div></section>
+
+<section><div class="wrap">
+  <div class="head"><h2>Signing in with TikTok</h2>
+  <p>Signing in is optional. If you sign in with TikTok, SprigCast reads your avatar, display name and username to
+  show which TikTok account is connected to your TikTok place. The sign-in stays on your PC, encrypted by Windows,
+  until you press Sign out.</p>
+  <p class="where">In SprigCast: Settings → Stream → TikTok → Sign in</p></div>
+  <div class="never">${icon("shield")}<p><strong>What SprigCast never does.</strong> It never posts, reads your
+  videos, comments or messages, or sees your TikTok password. Your TikTok data goes only between your PC and TikTok.
+  Read the <a href="/privacy">privacy policy</a>.</p></div>
+</div></section>
 `);
 
 export const PRIVACY = page("Privacy policy · SprigCast", "/privacy", policy("Privacy policy",
@@ -262,7 +273,7 @@ export const PRIVACY = page("Privacy policy · SprigCast", "/privacy", policy("P
 <ul class="summary">
   <li>SprigCast runs on your PC. There are no SprigCast accounts, ads, analytics or tracking.</li>
   <li>We don't sell, rent or share your data, and we don't use it for advertising or to train AI models.</li>
-  <li>Your YouTube data goes only between your PC and YouTube. We don't keep a copy of it.</li>
+  <li>Your YouTube and TikTok data goes only between your PC and that service. We don't keep a copy of it.</li>
   <li>Your sign-in is encrypted on your PC by Windows and always sent over HTTPS. Sign out deletes it.</li>
 </ul>
 
@@ -303,7 +314,7 @@ from one address, and doesn't keep it. It runs on Cloudflare, which carries the 
 does.</p>
 
 <h2>How we protect your data</h2>
-<p>Your Google sign-in tokens and stream keys are sensitive, so SprigCast protects them like this:</p>
+<p>Your Google and TikTok sign-in tokens and stream keys are sensitive, so SprigCast protects them like this:</p>
 <ul>
   <li><strong>Encrypted on your PC.</strong> Tokens and stream keys are stored only in Windows Credential Manager,
   which encrypts them with Windows Data Protection (DPAPI) tied to your Windows account. Other Windows users and
@@ -325,9 +336,9 @@ can.</p>
 <h2>Retention and deletion</h2>
 <ul>
   <li><strong>On your PC:</strong> sign-in tokens and stream keys are kept until you press <strong>Sign out</strong>
-  (Settings → Stream → YouTube) or remove the place. The title and other details you type stay in SprigCast's
+  (Settings → Stream → YouTube or TikTok) or remove the place. The title and other details you type stay in SprigCast's
   settings until you change them or uninstall.</li>
-  <li><strong>On our servers:</strong> nothing. We keep no Google user data, so there's nothing for us to
+  <li><strong>On our servers:</strong> nothing. We keep no Google or TikTok user data, so there's nothing for us to
   delete.</li>
   <li><strong>Sign out</strong> deletes the tokens from your PC and asks Google to cancel them. Stream keys you've
   already filled in keep working until you remove them.</li>
@@ -345,6 +356,36 @@ Policy</a>, including the Limited Use requirements.</p>
 <p>SprigCast uses YouTube API Services. By signing in with YouTube, you agree to the
 <a href="https://www.youtube.com/t/terms">YouTube Terms of Service</a>. Google's handling of your data is covered
 by the <a href="https://policies.google.com/privacy">Google Privacy Policy</a>.</p>
+
+<h2>Signing in with TikTok</h2>
+<p>Signing in with TikTok is optional. SprigCast asks TikTok for two permissions: your basic profile info
+(<code>user.info.basic</code>: avatar and display name) and your profile information (<code>user.info.profile</code>:
+username, profile link and verified badge). To sign in, open <strong>Settings → Stream</strong>, pick or add a TikTok
+place and press <strong>Sign in</strong>.</p>
+
+<h2>TikTok user data we access</h2>
+<ul>
+  <li><strong>Your display name, avatar, username, profile link and verified badge</strong>, to show which TikTok
+  account is connected to your TikTok place.</li>
+  <li><strong>The ID TikTok makes for SprigCast</strong> (open ID), to recognize the same account if you sign in
+  again.</li>
+  <li><strong>Sign-in tokens</strong> that TikTok gives SprigCast, so it can read the details above.</li>
+</ul>
+<p>SprigCast doesn't post, read or delete videos, read comments, messages, followers or analytics, or see your TikTok
+password, email address or phone number.</p>
+
+<h2>How we use and share TikTok user data</h2>
+<p>Only to show which TikTok account is connected in SprigCast. It's read when you press Sign in. We don't sell,
+rent, share or transfer your TikTok data to anyone, and never use it for advertising, profiling, analytics or
+training AI or machine learning models. It goes only between your PC and TikTok. The last step of signing in goes
+through the sign-in helper, which adds SprigCast's TikTok client secret and passes TikTok's answer straight back to
+your PC without storing or logging it.</p>
+<p>Your TikTok tokens are protected and deleted the same way as your Google ones (see below): stored only in Windows
+Credential Manager, sent only over HTTPS, hidden from logs and reports, and kept until you press
+<strong>Sign out</strong> (which deletes them and asks TikTok to cancel them), remove the place or uninstall. You can
+also remove SprigCast in the TikTok app under Settings and privacy → Security → Manage app permissions. Using TikTok
+with SprigCast is also covered by TikTok's <a href="https://www.tiktok.com/legal/terms-of-service">Terms of
+Service</a> and <a href="https://www.tiktok.com/legal/privacy-policy">Privacy Policy</a>.</p>
 
 <h2>Other services</h2>
 <p>Kick and Twitch sign-ins work the same way: they're optional, the tokens stay on your PC, and they're used only
@@ -385,7 +426,11 @@ license. It comes with no warranty: use it at your own risk.</p>
 
 <h2>Your content</h2>
 <p>You're responsible for what you stream and record, and for following the rules of the services you stream to,
-including the <a href="https://www.youtube.com/t/terms">YouTube Terms of Service</a>.</p>
+including the <a href="https://www.youtube.com/t/terms">YouTube Terms of Service</a> and TikTok's
+<a href="https://www.tiktok.com/legal/terms-of-service">Terms of Service</a> and
+<a href="https://www.tiktok.com/community-guidelines">Community Guidelines</a>.</p>
+<p>SprigCast isn't made, endorsed or sponsored by Google, YouTube or TikTok. Their names are trademarks of their
+owners.</p>
 
 <h2>The sign-in helper</h2>
 <p>The sign-in helper at signin.slothbloom.com is there only for SprigCast's own sign-ins. Please don't use it for
