@@ -120,6 +120,7 @@ def _wants_gpu(callback) -> bool:
         return False
 
 
+WARM_STINGERS = 4  # stinger clips kept open ahead of a switch, at most
 STINGER_WAIT_S = 2.0  # a stinger clip that has not started by then is swapped for a quick fade
 
 
@@ -167,6 +168,8 @@ class Engine:
         self._taps_lock = threading.Lock()
         self._grabs: list[tuple[str | None, Callable[[np.ndarray | None], None]]] = []  # see grab_source
         self._transitions: dict[str, Running] = {}  # canvas id -> the transition it is in
+        self._warm: dict[tuple, object] = {}  # (path, limit, gain) -> a stinger player opened ahead (_warm_stingers)
+        self._ending = False  # the render loop is ending: nothing more is opened ahead
         self._filtered: frozenset[str] = frozenset()  # sources with video filters, see _sync_filters
         # canvas id -> (outgoing scene, give up at, sources still opening): a switch waiting for them
         self._waking: dict[str, tuple] = {}
@@ -557,6 +560,7 @@ class Engine:
         except Exception as exc:  # remote desktop without GL, ...
             self.events.put(EngineError(f"Could not start the GPU compositor: {exc}", graphics=True))
             return
+        self._warm_stingers(self._collection)
 
         from sprigcast import sprigcore
         from sprigcast.core import pacing
@@ -705,8 +709,12 @@ class Engine:
                     )
                     ticks, stats_at = 0, now
         finally:
+            self._ending = True
             for canvas_id in list(self._transitions):
                 self._finish_transition(canvas_id, compositor)
+            for player in self._warm.values():
+                player.close()
+            self._warm.clear()
             retire.stop_all(list(self._sources.values()), CLOSE_ALL_S)  # side by side, not one after another
             if gpu is not None:
                 gpu.release()
@@ -803,6 +811,7 @@ class Engine:
                 self._start_transitions(self._collection, command.collection)
                 self._start_state_fades(self._collection, command.collection)
                 self._collection = command.collection
+                self._warm_stingers(self._collection)
                 for canvas in self._collection.canvases:
                     self.frames.setdefault(canvas.id, Mailbox())
                 self._sync_sources(compositor)
@@ -937,16 +946,58 @@ class Engine:
             running.began = now  # the transition starts now that the camera is there
         return None
 
-    def _new_stinger(self, path: str, transition, collection: SceneCollection) -> StingerPlayer:
+    @staticmethod
+    def _stinger_key(path: str, transition, collection: SceneCollection) -> tuple:
+        """(path, limit, gain): what a stinger player is opened with."""
         width = max(c.width for c in collection.canvases)
         height = max(c.height for c in collection.canvases)
         matte = transition.stinger.matte
         limit = (width * (2 if matte == "right" else 1), height * (2 if matte == "below" else 1))
         sting = transition.stinger
         gain = 0.0 if sting.muted else 10 ** (sting.volume_db / 20)
-        player = open_stinger(path, limit, gain)
+        return path, limit, gain
+
+    def _new_stinger(self, path: str, transition, collection: SceneCollection) -> StingerPlayer:
+        key = self._stinger_key(path, transition, collection)
+        player = self._warm.pop(key, None)
+        if player is not None and player.error is None:
+            return player  # opened ahead: its first pictures are waiting
+        if player is not None:
+            player.close()
+        player = open_stinger(*key)
         player.start()
         return player
+
+    def _warm_stingers(self, collection: SceneCollection) -> None:
+        """Open the stinger clips this collection can play ahead of time, paused with their first pictures decoded.
+
+        Opened at the switch, the clip's file, decoder and first pictures all came at once with the bloom's cameras
+        waking, on a PC already busy (2026-11-21: "the stinger is a bit spotty, a slight slow down"). Opened ahead,
+        the switch starts from pictures already waiting; a clip used is opened again for the next switch."""
+        if self._ending or not collection.canvases:
+            return
+        wanted: list[tuple] = []
+        for transition in [collection.transition, *(rule.transition for rule in collection.transition_rules)]:
+            if transition.kind != "stinger":
+                continue
+            for canvas in collection.canvases:
+                path = stinger_path(transition, canvas) if getattr(canvas, "enabled", True) else ""
+                key = self._stinger_key(path, transition, collection) if path else None
+                if key is not None and key not in wanted:
+                    wanted.append(key)
+        wanted = wanted[:WARM_STINGERS]
+        for key in [k for k in self._warm if k not in wanted]:
+            self._warm.pop(key).close()
+        for key in wanted:
+            if key in self._warm:
+                continue
+            try:
+                player = open_stinger(*key)
+                player.start()
+            except Exception as exc:  # noqa: BLE001 (opened at the switch instead)
+                log.warning("stinger %s couldn't be opened ahead: %s", key[0], exc)
+                continue
+            self._warm[key] = player
 
     def _wipe_map(self, path: str) -> np.ndarray | None:
         """A wipe image as a small grey RGB picture (it is a soft gradient: 960 px wide is plenty)."""
@@ -973,6 +1024,7 @@ class Engine:
             self.mixer.remove_extra(player)
             player.close()
             free.append(("texture", player.id))
+            self._warm_stingers(self._collection)  # ready for the next switch
         if running.wipe_map and not any(r.wipe_map == running.wipe_map for r in self._transitions.values()):
             free.append(("texture", f"wipe:{running.wipe_map}"))
         if compositor is None:  # called from a command: free them on the next tick, unless reused by then

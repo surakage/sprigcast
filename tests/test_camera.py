@@ -524,3 +524,15 @@ def test_one_camera_in_two_modes_opens_once_at_the_bigger(fake_cv2):
         small.stop()
         big.stop()
     assert camera._feeds == {}
+
+
+def test_a_reopened_camera_uses_the_modes_it_listed_before(monkeypatch):
+    """PC 2026-11-21: a camera reopened came up as MJPEG, then NV12, then BGR, as its list (asked while it was still
+    closing) came back empty or short. The last list it gave is used when it gives none."""
+    from sprigcast.sources import camera
+
+    monkeypatch.setattr(camera, "_listed", {})
+    answers = [[("vcodec", "mjpeg", 1280, 720, 30.0, 30.0)], []]
+    monkeypatch.setattr(camera, "dshow_modes", lambda name: answers.pop(0))
+    first = camera.listed_modes("video=Cam")
+    assert camera.listed_modes("video=Cam") == first and first

@@ -43,7 +43,7 @@ namespace sc::ffm {
     X(3, swscale_version) X(3, sws_getContext) X(3, sws_scale) X(3, sws_freeContext)                               \
     X(4, swresample_version) X(4, swr_alloc_set_opts2) X(4, swr_init) X(4, swr_convert) X(4, swr_free)             \
     X(4, swr_get_out_samples)                                                                                      \
-    X(0, av_dict_parse_string) X(0, av_dict_free) X(0, av_dict_set) X(0, av_frame_get_buffer)                      \
+    X(0, av_dict_parse_string) X(0, av_dict_free) X(0, av_dict_set) X(0, av_dict_get) X(0, av_frame_get_buffer)                      \
     X(0, av_frame_make_writable) X(1, avcodec_find_encoder) X(1, avcodec_find_encoder_by_name)                     \
     X(1, avcodec_send_frame) X(1, avcodec_receive_packet) X(1, avcodec_parameters_from_context)                    \
     X(1, av_packet_rescale_ts) X(2, avformat_alloc_output_context2) X(2, avformat_new_stream)                      \

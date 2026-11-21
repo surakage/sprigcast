@@ -286,6 +286,33 @@ def test_a_see_through_webm_keeps_its_alpha(player_lib, files):
     assert alpha[:, :28].min() > 200 and alpha[:, 36:].max() < 50
 
 
+def test_a_plain_webm_plays_without_libvpx(player_lib, files, tmp_path):
+    """A VP9 WebM with no see-through part (the in-app converter's) is FFmpeg's own decoder's, which can use the
+    graphics card: libvpx, CPU only, starting it cost the PC a dropped camera frame (2026-11-21)."""
+    import av
+
+    if "libvpx-vp9" not in av.codecs_available:
+        pytest.skip("this FFmpeg has no VP9 encoder")
+    plain = tmp_path / "plain.webm"
+    with av.open(str(plain), "w") as c:
+        v = c.add_stream("libvpx-vp9", rate=30)
+        v.width, v.height, v.pix_fmt = 64, 48, "yuv420p"
+        for i in range(15):
+            img = np.zeros((48, 64, 3), np.uint8)
+            img[:, :32] = (255, 0, 0)
+            frame = av.VideoFrame.from_ndarray(img, format="rgb24").reformat(format="yuv420p")
+            frame.pts = i
+            c.mux(v.encode(frame))
+        c.mux(v.encode())
+    with av.open(str(plain)) as c:
+        assert "alpha_mode" not in c.streams.video[0].metadata
+    player = opened(str(plain))
+    got = pump(player, 3, until=lambda g: len(g) >= 1)
+    player.close()
+    pixels, order = got[0]
+    assert order.startswith("I420/") and pixels.shape == (48 + 24, 64)
+
+
 def test_files_that_cant_play_say_so(player_lib, files):
     missing = opened(str(files["folder"] / "nothing.mp4"))
     broken_file = files["folder"] / "broken.mp4"

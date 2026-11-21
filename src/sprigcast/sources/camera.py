@@ -208,6 +208,20 @@ def dshow_modes(name: str) -> list[tuple[str, str, int, int, float, float]]:
     return parse_dshow_modes(listing_lines)
 
 
+_listed: dict[str, list] = {}  # device name -> the modes it last listed (kept for when it lists none)
+
+
+def listed_modes(name: str) -> list:
+    """The camera's modes, or the ones it listed last time when it lists none now (still closing, busy): a camera
+    reopened came up in a different format each time on the PC (MJPEG, then NV12, then BGR, 2026-11-21) as the
+    list it was opened from changed."""
+    modes = dshow_modes(name)
+    if modes:
+        _listed[name] = modes
+        return modes
+    return _listed.get(name, [])
+
+
 def _rate(value: float) -> str:
     """A frame rate for FFmpeg's dshow, which matches a mode by its frame interval (100 ns units).
 
@@ -525,7 +539,7 @@ class _Feed:
         listed = []
         self.open_errors = []
         for name in names:
-            self.modes_seen = dshow_modes(name)
+            self.modes_seen = listed_modes(name)
             listed = choose_modes(self.modes_seen, w, h, fps)
             if self.modes_seen:
                 break
@@ -645,7 +659,7 @@ def _engine_choices(feed: _Feed, device: CameraDevice) -> tuple[str, list[tuple[
     names.append(f"video={device.name}")
     listed = []
     for name in names:
-        feed.modes_seen = dshow_modes(name)
+        feed.modes_seen = listed_modes(name)
         listed = choose_modes(feed.modes_seen, w, h, fps)
         if feed.modes_seen:
             break
