@@ -816,17 +816,17 @@ void Core::open(Held &held, const std::string &file) {
     if (camera && held.vi >= 0) {  // what it gives, on every open: size, format and rate
         const AVStream *v = held.fmt->streams[held.vi];
         const AVCodec *codec = ff.avcodec_find_decoder(v->codecpar->codec_id);
-        std::string format = codec && codec->name ? codec->name : "an unknown format";
+        std::string gives = codec && codec->name ? codec->name : "an unknown format";
         if (v->codecpar->codec_id == AV_CODEC_ID_RAWVIDEO) {
             const int f = v->codecpar->format;
-            format = f == AV_PIX_FMT_NV12 ? "nv12" : f == AV_PIX_FMT_YUYV422 ? "yuyv422" : f == AV_PIX_FMT_UYVY422 ? "uyvy422"
+            gives = f == AV_PIX_FMT_NV12 ? "nv12" : f == AV_PIX_FMT_YUYV422 ? "yuyv422" : f == AV_PIX_FMT_UYVY422 ? "uyvy422"
                      : f == AV_PIX_FMT_YUV420P ? "yuv420p" : f == AV_PIX_FMT_BGR24 ? "bgr24" : f == AV_PIX_FMT_BGRA ? "bgra"
                      : f == AV_PIX_FMT_BGR0 ? "bgr0" : "raw format " + std::to_string(f);
         }
         const double rate = v->avg_frame_rate.den > 0 ? av_q2d(v->avg_frame_rate) : 0.0;
         char text[160];
         std::snprintf(text, sizeof text, "media: the camera gives %dx%d %s at %.4g fps", v->codecpar->width,
-                      v->codecpar->height, format.c_str(), rate);
+                      v->codecpar->height, gives.c_str(), rate);
         sc::log_line(SC_LOG_INFO, text);
     }
     auto decoder = [&](int index, bool video) -> AVCodecContext * {
