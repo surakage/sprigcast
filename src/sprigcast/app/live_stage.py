@@ -366,7 +366,7 @@ class Destination:
     note: str  # "Ready", "Needs a stream key", or the live bitrate
     canvas: str = "horizontal"
     test: bool | None = None  # Twitch bandwidth test on/off; None where the service has none
-    service: str = ""  # twitch, youtube, kick, tiktok, x or custom: picks the little tile
+    service: str = ""  # a key of output/stream.py SERVICES: picks the little tile
 
 
 PLACE_MIME = "application/x-sprigcast-place"  # a destination being dragged to a new spot in the list
@@ -375,7 +375,11 @@ PLACE_MIME = "application/x-sprigcast-place"  # a destination being dragged to a
 PLATFORM_TILES = {
     "twitch": ("Tw", "#9146ff", "#ffffff"), "youtube": ("Yt", "#ff2d48", "#ffffff"),
     "kick": ("K", "#53fc18", "#0b0f0d"), "tiktok": ("Tt", "#0b0f0d", "#ffffff"),
-    "x": ("X", "#0b0f0d", "#ffffff"),
+    "x": ("X", "#0b0f0d", "#ffffff"), "facebook": ("Fb", "#1877f2", "#ffffff"),
+    "chzzk": ("Cz", "#00ffa3", "#0b0f0d"), "mixcloud": ("Mx", "#5000ff", "#ffffff"),
+    "niconico": ("Nc", "#252525", "#ffffff"), "restream": ("Rs", "#ff5a1f", "#0b0f0d"),
+    "showroom": ("Sr", "#f5c518", "#0b0f0d"), "soop": ("So", "#0545b1", "#ffffff"),
+    "vimeo": ("Vm", "#1ab7ea", "#0b0f0d"), "whowatch": ("Ww", "#ffd43b", "#0b0f0d"),
 }
 
 
@@ -384,8 +388,9 @@ def _sentence(note: str) -> str:
     return note[:1].upper() + note[1:]
 
 
+# + Add: the five everyday places and Custom RTMP; every other place is behind "Show all…" (app/place_picker.py).
 SERVICE_CHOICES = (("twitch", "Twitch"), ("youtube", "YouTube"), ("kick", "Kick"), ("tiktok", "TikTok"),
-                   ("x", "X"), ("custom", "Custom RTMP"))
+                   ("facebook", "Facebook"), ("custom", "Custom RTMP"))
 # Edit mode's tools: every one the same 30 x 28 rounded button with one icon, evenly spaced.
 TOOL_STYLE = theme.button_style(9, "0px", extra="min-width: 30px; max-width: 30px; min-height: 26px; max-height: 26px;")
 SURE_STYLE = theme.button_style(9, "0px 10px", extra="min-height: 26px; max-height: 26px; font-size: 11px;") + (
@@ -704,6 +709,21 @@ class LiveSide(QWidget):
         self.add_menu = QMenu(self)
         for key, label in SERVICE_CHOICES:
             self.add_menu.addAction(label).triggered.connect(lambda _=False, k=key: on_destination(f"new:{k}"))
+        self.add_menu.addSeparator()
+
+        def show_all() -> None:  # after the menu has closed: a pop-up opened from inside a menu's click fights it
+            def ask() -> None:
+                from sprigcast.app.place_picker import pick_place
+
+                key = pick_place(self.window())
+                if key:
+                    on_destination(f"new:{key}")
+            QTimer.singleShot(0, self, ask)
+
+        from sprigcast.output.stream import SHOW_ALL
+
+        self.show_all_places = self.add_menu.addAction(SHOW_ALL)
+        self.show_all_places.triggered.connect(lambda _=False: show_all())
         self.add_place.clicked.connect(self._show_add_menu)
         QTimer.singleShot(ADD_MENU_READY_MS, self, self._ready_add_menu)  # (once the window has settled)
         top.addWidget(self.add_place)

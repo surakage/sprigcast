@@ -54,8 +54,9 @@ CONTENT = (
     ("other", "Other", "plus"),
 )
 SHAPES = (("horizontal", "Landscape", "landscape"), ("vertical", "Portrait", "portrait"), ("both", "Both", "dual"))
-PLACES = ("twitch", "youtube", "kick", "tiktok", "x")
-PLACE_COLORS = {"twitch": "#9b6cff", "youtube": "#ff4e45", "kick": "#53fc18", "tiktok": "#25f4ee", "x": "#e6ede8"}
+PLACES = ("twitch", "youtube", "kick", "tiktok", "facebook")  # output/stream.py TOP_SERVICES
+PLACE_COLORS = {"twitch": "#9b6cff", "youtube": "#ff4e45", "kick": "#53fc18", "tiktok": "#25f4ee",
+                "facebook": "#4d9bff", "x": "#e6ede8"}
 
 # Which starter blooms each kind of show gets, and the name a bloom takes for it.
 NO_SCREEN = ("Starting soon", "Just Chatting", "Be right back", "Ending")

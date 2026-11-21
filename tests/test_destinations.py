@@ -429,6 +429,18 @@ def test_where_it_goes_switches_and_edit_adds_nothing(app, tmp_path, monkeypatch
         monkeypatch.setattr(twitch_auth, "connected_account", lambda: "someone")
         side.add_menu.actions()[0].trigger()  # Twitch with a connected account: ready, nothing to open
         assert col.outputs[3].twitch_account and len(opened) == 2
+        # The menu: the five everyday places, Custom RTMP, then Show all… with every other place behind it.
+        assert [a.text() for a in side.add_menu.actions() if not a.isSeparator()] == [
+            "Twitch", "YouTube", "Kick", "TikTok", "Facebook", "Custom RTMP", "Show all…"]
+        from sprigcast.app import place_picker
+
+        monkeypatch.setattr(place_picker, "pick_place", lambda parent=None: "soop")
+        side.show_all_places.trigger()
+        QApplication.processEvents()
+        assert col.outputs[4].service == "soop" and opened[-1] == col.outputs[4].id
+        col.outputs.pop()
+        opened.pop()
+        w._live_destinations()
         # Edit works right here: shape, test mode and remove (twice) without opening Settings.
         side.manage.click()
         assert side.editing and side.manage.text() == "Done" and side.all_settings.isVisibleTo(side.where_card)
