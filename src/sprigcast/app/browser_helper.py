@@ -330,6 +330,9 @@ class RemoteHost:
         elif kind == "desktop":
             sound = self._sounds.get(source_id)
             if sound is not None:
+                if not sound.on_desktop_reason:
+                    log.info("browser source %s: its sound plays on desktop audio, so SprigCast can't mix or "
+                             "measure it (%s)", source_id, header.get("reason", ""))
                 sound.on_desktop_reason = str(header.get("reason", ""))
         elif kind == "note":
             with self._lock:

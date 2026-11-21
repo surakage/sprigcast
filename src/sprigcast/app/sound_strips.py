@@ -117,7 +117,7 @@ class Fader(QWidget):
         p.setBrush(QColor(theme.RAISED))
         p.drawRoundedRect(bar, 3, 3)
         if self.level > 0 and not self.muted:
-            colour = theme.ACCENT if self.level < 2 / 3 else theme.WARN if self.level < 0.85 else theme.LIVE
+            colour = theme.ACCENT if self.level < theme.LOUD_LEVEL else theme.WARN if self.level < theme.CLIP_LEVEL else theme.LIVE
             p.setBrush(QColor(colour))
             h = max(6.0, bar.height() * self.level)
             p.drawRoundedRect(QRectF(bar.x(), bar.bottom() - h, 6, h), 3, 3)
@@ -545,4 +545,4 @@ class SoundStrips(QFrame):
             return
         for sid, strip in self.strips.items():
             if sid in levels:
-                strip.fader.set_db(levels[sid][1])
+                strip.fader.set_db(levels[sid][0])  # the loudest since the last update
