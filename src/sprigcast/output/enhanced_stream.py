@@ -18,7 +18,7 @@ import time
 from fractions import Fraction
 
 from sprigcast.core import privacy
-from sprigcast.output.enhanced import EnhancedConfig, TrackMetrics, bpm_sei, wall_clock
+from sprigcast.output.enhanced import EnhancedConfig, TrackMetrics, bpm_sei, wall_clock, with_sei
 from sprigcast.output.recorder import SAMPLE_RATE, VIDEO_QUEUE, encoder_hwaccel
 from sprigcast.output.shared_stream import SharedStreamEncoder
 from sprigcast.output.stream import (
@@ -89,7 +89,12 @@ class _TrackEncoder(SharedStreamEncoder):
             raise RuntimeError("the engine's writer couldn't start this quality")
 
     def _on_packet(self, p) -> None:
-        self.owner._from_track(self.track, p)
+        try:
+            self.owner._from_track(self.track, p)
+        except Exception as exc:  # noqa: BLE001
+            # Twitch's connection failing is the stream's to handle (it reconnects); raised here, it stopped this
+            # encoder for good, and Kick, Facebook and YouTube sending this quality starved (PC, 2026-11-21).
+            self.owner._send_failed(exc)
         if self.links:
             super()._on_packet(p)
 
@@ -380,14 +385,19 @@ class EnhancedStreamer(Streamer):
                         raise
                     log.warning("closing stream %s failed: %s", self.name, self.redact(str(exc)))
 
+    def _send_failed(self, exc: Exception) -> None:
+        """Sending a quality's packet failed: the stream's session sees it, drops the connection and reconnects."""
+        if self._send_error is None:
+            self._send_error = exc
+
     def _from_track(self, track: _Track, p) -> None:
         """A packet from a track's writer (its encoder thread): from the track's first keyframe since this
         connection began, on the connection's clock, keyframes tagged with the broadcast metrics."""
         import av
 
         live = self._live
-        if live is None or p.kind != "video":
-            return
+        if live is None or p.kind != "video" or self._send_error is not None:
+            return  # not connected, or the connection already failed: the session reconnects
         container, began = live
         enc = track.encoder
         offset = round((began - enc.start_time) / p.time_base)  # the connection's 0 in this track's frame numbers
@@ -403,11 +413,11 @@ class EnhancedStreamer(Streamer):
         track.frames += 1
         if p.keyframe:
             now = time.time()
-            data += bpm_sei(
+            data = with_sei(data, bpm_sei(
                 track.metrics, cts=now, fer=now, ferc=now, pir=now,
                 session=(self._rendered, 0, sum(t.dropped for t in self.tracks), sum(t.frames for t in self.tracks)),
                 rendition=(enc.frames, track.dropped, track.frames),
-            )
+            ))
         packet = av.Packet(data)
         packet.pts = None if p.pts is None else p.pts - offset
         packet.dts = None if p.dts is None else p.dts - offset
@@ -512,7 +522,7 @@ class EnhancedStreamer(Streamer):
                     session=(self._rendered, 0, sum(t.dropped for t in self.tracks), sum(t.frames for t in self.tracks)),
                     rendition=(track.frames_in, track.dropped, track.frames),
                 )
-                tagged = av.Packet(bytes(packet) + sei)
+                tagged = av.Packet(with_sei(bytes(packet), sei))
                 tagged.pts, tagged.dts, tagged.time_base = packet.pts, packet.dts, packet.time_base
                 tagged.stream = packet.stream
                 tagged.is_keyframe = True

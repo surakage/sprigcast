@@ -401,6 +401,24 @@ def sei_nal(payload: bytes) -> bytes:
     return b"\x00\x00\x00\x01\x06" + _escape(bytes(body))
 
 
+def with_sei(frame: bytes, sei: bytes) -> bytes:
+    """A frame (Annex-B H.264) with SEI NAL units put in front of its first picture slice.
+
+    An SEI after the slice starts a new access unit as far as H.264 goes, so a strict reader sees a frame with
+    no picture: SprigCast added the broadcast metrics after each keyframe's slice, and Twitch dropped the
+    Enhanced Broadcasting connection about a second after going live, every time (PC, 2026-11-21). A frame not
+    in Annex-B form (no start code) is left as it was, with the SEI after it."""
+    at = 0
+    while True:
+        at = frame.find(b"\x00\x00\x01", at)
+        if at < 0 or at + 3 >= len(frame):
+            return frame + sei
+        if frame[at + 3] & 0x1F in (1, 5):  # a picture slice: the SEI goes before its start code
+            start = at - 1 if at > 0 and frame[at - 1] == 0 else at
+            return frame[:start] + sei + frame[start:]
+        at += 3
+
+
 @dataclass
 class TrackMetrics:
     """Counter values at the previous keyframe, so each report carries the change since then."""

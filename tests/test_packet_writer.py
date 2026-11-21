@@ -109,7 +109,7 @@ def test_enhanced_broadcasting_tracks_encode_on_writers_with_aligned_keyframes(n
     import time
 
     import numpy as np
-    from test_enhanced import ANSWER
+    from test_enhanced import ANSWER, _metrics_before_picture
 
     from sprigcast.core.scene import Canvas
     from sprigcast.output import enhanced as e
@@ -153,7 +153,7 @@ def test_enhanced_broadcasting_tracks_encode_on_writers_with_aligned_keyframes(n
         for p in c.demux(video=list(range(3))):
             if p.is_keyframe:
                 keys.setdefault(p.stream.index, []).append(round(float(p.pts * p.time_base), 2))
-                tagged.append(e.BPM_ERM_UUID in bytes(p))
+                tagged.append(_metrics_before_picture(bytes(p)))
     assert keys[0] == keys[1] == keys[2] and len(keys[0]) >= 2, keys
     assert all(tagged)
 
@@ -215,3 +215,4 @@ def test_youtube_at_a_twitch_quality_sends_its_packets_without_an_encoder_of_its
     with av.open(str(paths["yt"])) as f:
         sent = [bytes(p) for p in f.demux(video=0) if p.size]
     assert sent and not any(e.BPM_ERM_UUID in b for b in sent)  # Twitch's metrics stay Twitch's
+
