@@ -45,11 +45,12 @@ def test_add_menu_is_a_to_z_with_the_new_entries(tmp_path, monkeypatch):
         middle = labels[1:-1]
         assert middle == sorted(middle, key=str.lower)
         # User, 2026-11-20: professional names, and each entry adds one leaf (double-click picks what it shows)
-        assert middle == ["Application Audio", "Audio File", "Audio Input", "Audio Output", "Browser", "Chat",
-                          "Color", "Display Capture", "Game Capture", "Image", "Mirror", "Text", "Video Capture",
-                          "Video File", "Window Capture"]
+        # Sounds are added from the Sound card's + (user, 2026-11-20), so they're not listed here
+        assert middle == ["Browser", "Chat", "Color", "Display Capture", "Game Capture", "Image", "Mirror", "Text",
+                          "Video Capture", "Video File", "Window Capture"]
         submenus = [a.text() for a in w.add_source_menu.actions() if a.menu() is not None]
-        assert submenus == ["Sprig", "Mirror", "Plugins"]  # nothing else lists devices before adding
+        assert submenus == labels  # every kind opens to New… and what you have of it
+        assert all(not a.icon().isNull() for a in w.add_source_menu.actions() if a.menu() is not None)
     finally:
         w.close()
 
@@ -116,9 +117,10 @@ def test_add_puts_in_a_blank_leaf_and_double_click_picks_what_it_shows(tmp_path,
         w.selected_scene_id = "p"
         w._refresh_scenes()
         w._fill_add_source_menu()
-        actions = {a.text(): a for a in w.add_source_menu.actions()}
         for label in ("Window Capture", "Display Capture", "Video Capture", "Image", "Video File", "Browser"):
-            actions[label].trigger()
+            kind = next(k for n, k in __import__("sprigcast.app.main_window", fromlist=["x"]).BLANK_KINDS.items()
+                        if n == label)
+            w._add_blank(kind, label)
         added = {c.name: c for c in col.sources if c.settings.get("blank")}
         assert set(added) == {"Window Capture", "Display Capture", "Video Capture", "Image", "Video File", "Browser"}
         assert all(any(i.source == c.id for i in col.scene("p").items) for c in added.values())  # leaves now
@@ -132,5 +134,78 @@ def test_add_puts_in_a_blank_leaf_and_double_click_picks_what_it_shows(tmp_path,
         monkeypatch.setattr(w, "_display_dialog", lambda settings: {"monitor": 2, "cursor": True})
         w._edit_source_settings()
         assert display.name == "Monitor 2" and "blank" not in display.settings
+    finally:
+        w.close()
+
+
+def test_each_kind_opens_to_new_and_what_you_have(tmp_path, monkeypatch):
+    """User, 2026-11-20 (a video of the menu they liked): + Add → a kind → New… or one you already have.
+    New… puts the leaf in and opens its picker at once."""
+    from PySide6.QtWidgets import QApplication, QMenu
+
+    col, w = _window(tmp_path, monkeypatch)
+    try:
+        w.selected_scene_id = "p"
+        w._refresh_scenes()
+        w._fill_add_source_menu()
+        color = next(a.menu() for a in w.add_source_menu.actions() if a.text() == "Color")
+        color.aboutToShow.emit()
+        names = [a.text() for a in color.actions() if not a.isSeparator()]
+        assert names == ["New…", "Moss"]  # Moss is in bloom A, not in this sprig
+        color.actions()[-1].trigger()
+        assert [i.source for i in col.scene("p").items] == ["bg"]  # the same leaf again
+        assert len(col.sources) == 1
+
+        opened = []
+        monkeypatch.setattr(w, "_display_dialog", lambda settings: opened.append(1) or {"monitor": 2, "cursor": True})
+        display = next(a.menu() for a in w.add_source_menu.actions() if a.text() == "Display Capture")
+        display.aboutToShow.emit()
+        assert [a.text() for a in display.actions()] == ["New…"]
+        display.actions()[0].trigger()
+        QApplication.processEvents()
+        added = next(c for c in col.sources if c.kind == "display_capture")
+        assert opened == [1] and added.name == "Monitor 2" and "blank" not in added.settings
+        assert isinstance(display, QMenu)
+    finally:
+        w.close()
+
+
+def test_a_sound_inspector_changes_its_source(tmp_path, monkeypatch):
+    """User, 2026-11-20: sounds stay in Sound; "add the ability to change the source in its inspector, so I
+    can change the mic to a different"."""
+    from sprigcast.app import media_dialog
+    from sprigcast.core.scene import SourceConfig
+
+    col, w = _window(tmp_path, monkeypatch)
+    try:
+        col.sources.append(SourceConfig(id="mic", kind="audio_input", name="Mic",
+                                        settings={"device": "default", "volume_db": -6.0, "muted": False}))
+        col.sources.append(SourceConfig(id="song", kind="media", name="Rain",
+                                        settings={"path": "C:/Music/Rain.mp3", "volume_db": 0.0, "muted": False}))
+        mic, song = col.source("mic"), col.source("song")
+        assert w._sound_source_text(mic) == "Default (follows Windows)" and w._sound_source_text(song) == "Rain.mp3"
+        monkeypatch.setattr(w, "_pick_audio_device", lambda kind, current, title, primary: "Headset Mic (USB)")
+        w._change_sound_source("mic")
+        assert mic.settings["device"] == "Headset Mic (USB)" and mic.settings["volume_db"] == -6.0  # the rest stays
+        assert "Headset" in w._sound_source_text(mic)
+
+        shown = []
+
+        def fake_modal(dialog):
+            shown.append((dialog.only, dialog.path.placeholderText()))
+            dialog.path.setText("C:/Music/Storm_Loop.wav")
+            return True
+
+        monkeypatch.setattr("sprigcast.app.main_window.modal", fake_modal)
+        w._change_sound_source("song")
+        assert shown == [("sound", "Pick a sound file")]  # only sound files
+        assert song.settings["path"] == "C:/Music/Storm_Loop.wav" and song.name == "Storm Loop"
+        assert media_dialog.MediaDialog("Video File", {}, only="video").path.placeholderText() == "Pick a video"
+
+        from sprigcast.app.sound_card import TunePage
+
+        page = TunePage(lambda *a: None, lambda sid: None, lambda: None, lambda sid: None)
+        page.show_sound(w._sound_item(mic))
+        assert page.apps_card.title() == "Source" and not page.apps_card.isHidden()
     finally:
         w.close()

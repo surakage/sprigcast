@@ -111,16 +111,20 @@ class Choice(QWidget):
 class MediaDialog(CardDialog):
     """New or change a video or sound file. values() gives the settings to save."""
 
-    def __init__(self, title: str, settings: dict[str, Any], parent: QWidget | None = None, primary: str = "Save"):
+    def __init__(self, title: str, settings: dict[str, Any], parent: QWidget | None = None, primary: str = "Save",
+                 only: str | None = None):
         super().__init__(title, parent, width=540)
         s = {**MediaSource.defaults, **settings}
+        # + Add's Audio File and Video File leaves pick only their own kind of file (user, 2026-11-20)
+        self.only = only if only in ("sound", "video") else None
+        self.what = {"sound": "a sound file", "video": "a video"}.get(self.only, "a video or sound file")
         self.switches: dict[str, Switch] = {}
 
         # The file.
         where, box = _section("File")
         row = QHBoxLayout()
         row.setSpacing(8)
-        self.path = self.line_edit("Pick a video or sound file")
+        self.path = self.line_edit(f"Pick {self.what}")
         self.path.setText(str(s.get("path", "") or ""))
         self.path.setCursorPosition(0)
         browse = QPushButton("Choose…")
@@ -229,15 +233,17 @@ class MediaDialog(CardDialog):
 
     def _fit_to_file(self) -> None:
         """A sound file has no picture: no When it ends, but Play at launch. A loop never ends."""
-        sound = is_sound_file(self.path.text().strip())
-        for key, shown in (("play_on_start", sound), ("ends", not sound), ("shown", not sound),
+        path = self.path.text().strip()
+        sound = is_sound_file(path) if path else self.only == "sound"
+        leaf = self.only == "sound"  # an Audio File leaf plays while its bloom is on air: When shown, not at launch
+        for key, shown in (("play_on_start", sound and not leaf), ("ends", not sound), ("shown", not sound or leaf),
                            ("hw_decode", not sound)):
             self.row_boxes[key].setVisible(shown)
         self.ends.setEnabled(not self.loop.isChecked())
         self.rows["ends"][0].setEnabled(not self.loop.isChecked())
 
     def _pick_file(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Choose a video or sound file", self.path.text(), file_filter())
+        path, _ = QFileDialog.getOpenFileName(self, f"Choose {self.what}", self.path.text(), file_filter(self.only))
         if path:
             self.path.setText(path)
             self.path.setCursorPosition(0)
