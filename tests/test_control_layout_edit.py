@@ -226,3 +226,29 @@ def test_in_the_real_window_a_batch_is_one_ctrl_z(tmp_path, monkeypatch):
         assert dry["dry_run"] and w.collection.to_text() == before and len(w._undo) == steps + 1
     finally:
         w.close()
+
+
+def test_a_sound_made_in_a_batch_can_be_muted_in_the_same_batch(caplog):
+    """StreamBridge 4.1.136, 2026-11-21: source.new app_audio then sound.mute as one step failed the whole batch,
+    because a sound's own settings couldn't be in one. They can: they're saved in the garden like the rest."""
+    import logging
+
+    api, host = _api()
+    steps = [{"do": "source.new", "name": "Raid clip sound", "kind": "app_audio", "settings": {"app": "clip.exe"}},
+             {"do": "sound.mute", "sound": "Raid clip sound", "muted": True},
+             {"do": "sound.volume", "sound": "Raid clip sound", "db": -12},
+             {"do": "sound.balance", "sound": "Raid clip sound", "balance": -0.5}]
+    before = api.col.to_text()
+    with caplog.at_level(logging.INFO):
+        out = _send(api, {"steps": steps, "dry_run": True})
+        assert out["ok"] and api.col.to_text() == before and "changed Raid clip sound" not in caplog.text  # nothing done
+        out = _send(api, {"steps": steps, "one_step": True})
+    assert out["ok"] and out["result"]["applied"] is True and [s["ok"] for s in out["result"]["steps"]] == [True] * 4
+    made = next(s for s in api.col.sources if s.name == "Raid clip sound")
+    assert made.settings["muted"] is True and made.settings["volume_db"] == -12 and made.settings["balance"] == -0.5
+    assert out["result"]["steps"][1]["result"]["muted"] is True
+    assert host.commits == ["sound"] and host.fresh == 1 and caplog.text.count("changed Raid clip sound") == 3
+    # One that fails still changes nothing.
+    out = _send(api, {"steps": [{"do": "sound.mute", "sound": "Raid clip sound", "muted": False},
+                                {"do": "sound.mute", "sound": "Nope"}], "one_step": True})
+    assert not out["ok"] and made.settings["muted"] is True

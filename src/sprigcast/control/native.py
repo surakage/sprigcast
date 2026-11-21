@@ -89,7 +89,8 @@ def features() -> list[str]:
 BATCH_ACTIONS = frozenset({
     "item.add", "item.place", "item.order", "item.show", "item.hide", "item.toggle", "item.lock", "item.remove",
     "item.duplicate", "source.new", "source.set", "source.rename", "source.rotate", "source.remove",
-    "filter.add", "filter.set", "filter.remove", "filter.move", "items.list", "layout.get"})
+    "filter.add", "filter.set", "filter.remove", "filter.move", "items.list", "layout.get",
+    "sound.mute", "sound.volume", "sound.balance"})  # a sound's own settings: saved in the garden like the rest
 PREVIEW = API_VERSION == 0
 EVENT_GROUPS = ("bloom", "item", "sprig", "sound", "filter", "source", "output", "transition", "media", "custom",
                 "plugin", "garden", "path")
@@ -943,7 +944,11 @@ class NativeApi:
     def _set_sound(self, source: SourceConfig, changes: dict[str, Any]):
         before = source.settings
         source.settings = {**source.settings, **changes}
-        sound_changed(source, before)
+        held = getattr(self.host, "sound_changes", None)  # in a batch: logged when it's applied, not before
+        if held is not None:
+            held.append((source, before))
+        else:
+            sound_changed(source, before)
         self.host.commit("sound")
         return self._sound_info(source)
 
@@ -1265,6 +1270,7 @@ class NativeApi:
 
         class Quiet:  # the host, showing the copy, with saving and redrawing held back
             collection = copy
+            sound_changes: list = []
 
             def __getattr__(self, name):
                 if name == "commit_settings":
@@ -1307,6 +1313,8 @@ class NativeApi:
             self.host = real_host
         applied = ok and not dry_run and bool(committed)
         if applied:
+            for source, before in Quiet.sound_changes:
+                sound_changed(source, before)
             for name in type(self.col).model_fields:  # in place: everything holding the garden sees the change
                 setattr(self.col, name, getattr(copy, name))
             fresh = getattr(real_host, "new_undo_step", None)
