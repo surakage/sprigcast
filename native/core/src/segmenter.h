@@ -28,4 +28,9 @@ using DrawSmall = std::function<void(ID3D11RenderTargetView *target, int width, 
 bool segment(sc_device &dev, uint64_t key, int pic_w, int pic_h, bool room, float blur, const DrawSmall &draw,
              SegmentViews &out);
 
+// Called as a scene is drawn: no picture asked for a mask for REST_S, so the finder lets go of all it holds on
+// this device (shaders, the model, every picture's textures). The filter taken off left them there for the rest of
+// the run (PC 2026-11-21); put back on, the finder is made again in the frame that asks.
+void segment_rest(sc_device &dev);
+
 }  // namespace sc

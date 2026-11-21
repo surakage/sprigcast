@@ -176,3 +176,27 @@ def test_a_tall_or_large_picture_works_too(device):
     tall = np.ascontiguousarray(np.rot90(person(), 1))
     got = draw(device, VideoEffects(bg_mode=1), tall, size=(H, W))
     assert got.shape == (W, H, 4)
+
+
+@needs_engine
+def test_the_finder_lets_go_when_no_picture_uses_the_filter(device, caplog):
+    """PC 2026-11-21: with the filter taken off, the finder kept its shaders, the model and every picture's textures
+    for the rest of the run. Ten seconds with no picture asking, the next scene drawn lets all of it go; the filter
+    put back on works as before."""
+    import logging
+    import time
+
+    pic = person()
+    draw(device, VideoEffects(bg_mode=1, bg_edge=1.0), pic)
+    assert sprigcore.background_status()["state"] == "running"
+    sprigcore.drain_log()
+    time.sleep(10.5)
+    with caplog.at_level(logging.INFO):
+        plain = draw(device, VideoEffects(), pic)  # the filter is off: a scene drawn without it
+        sprigcore.drain_log()
+    assert plain[..., 3].min() > 0.99
+    assert [r for r in caplog.records if "person finder let go" in r.getMessage()]
+    assert sprigcore.background_status()["state"] != "running"
+    got = draw(device, VideoEffects(bg_mode=1, bg_edge=1.0), pic)  # back on: made again in the frame that asks
+    assert got[10, 10, 3] < 0.1 and got[130, 128, 3] > 0.9
+    assert sprigcore.background_status()["state"] == "running"

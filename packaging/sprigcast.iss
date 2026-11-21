@@ -308,6 +308,13 @@ var
 begin
   if not FileExists(BundledCamera()) or CameraIsCurrent() then
     exit;
+  // An install nobody is watching (a test run: /VERYSILENT /NOCAMERA=1) can't answer Windows' permission prompt:
+  // it waited about two minutes for it and then went on (PC 2026-11-21). An update a person started still asks.
+  if ExpandConstant('{param:NOCAMERA|0}') <> '0' then
+  begin
+    Log('SprigCast Camera: not set up (/NOCAMERA=1); Settings > Output > Virtual camera can set it up');
+    exit;
+  end;
   Stamp := GetDateTimeString('yyyymmddhhnnss', #0, #0);
   Command := 'mkdir "' + CameraDir() + '" 2>nul & ' + InstallDll(BundledCamera(), CameraDir() + '\sprigcast_camera.dll', Stamp);
   if FileExists(BundledCamera32()) then

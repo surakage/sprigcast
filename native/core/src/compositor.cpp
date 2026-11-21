@@ -702,6 +702,7 @@ int sc::render_scene(sc_device &dev, ID3D11RenderTargetView *target, int width, 
                      double time) {
     int ready = dev.prepare_compositor();
     if (ready != SC_OK) return ready;
+    segment_rest(dev);
     std::shared_ptr<const Snapshot> snap = dev.comp.snapshot;
     ID3D11DeviceContext *c = dev.context.Get();
     if (!snap || !snap->by_id.count(scene_id)) {

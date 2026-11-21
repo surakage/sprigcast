@@ -224,19 +224,27 @@ def dshow_modes(name: str) -> list[tuple[str, str, int, int, float, float]]:
         import av.logging as avlog
     except ImportError:
         return []
-    old = avlog.get_level()
-    listing_errors.clear()
-    avlog.set_level(avlog.INFO)  # the list comes as log lines, which PyAV drops by default
-    try:
-        with avlog.Capture(False) as logs:  # FFmpeg may log from its own threads too
-            try:
-                av.open(name, format="dshow", options={"list_options": "true"}).close()
-            except Exception as exc:  # listing always "fails": there is nothing to open
-                listing_errors.append(str(exc))
-    finally:
-        avlog.set_level(old)
-    listing_lines[:] = [str(entry[-1]) if isinstance(entry, tuple) else str(entry) for entry in logs]
-    return parse_dshow_modes(listing_lines)
+    # One camera at a time: the list comes as FFmpeg's log lines, and the capture takes every thread's. Two cameras
+    # opening together at start had one take both lists and the other none (PC 2026-11-21: the HD60 X tried the
+    # Streamfog camera's 35 modes on top of its own, and the Streamfog camera, with no list, came up in its own
+    # mode, bgr24 at 30 fps, not nv12).
+    with _listing_lock:
+        old = avlog.get_level()
+        listing_errors.clear()
+        avlog.set_level(avlog.INFO)  # the list comes as log lines, which PyAV drops by default
+        try:
+            with avlog.Capture(False) as logs:  # FFmpeg may log from its own threads too
+                try:
+                    av.open(name, format="dshow", options={"list_options": "true"}).close()
+                except Exception as exc:  # listing always "fails": there is nothing to open
+                    listing_errors.append(str(exc))
+        finally:
+            avlog.set_level(old)
+        listing_lines[:] = [str(entry[-1]) if isinstance(entry, tuple) else str(entry) for entry in logs]
+        return parse_dshow_modes(listing_lines)
+
+
+_listing_lock = threading.Lock()
 
 
 _listed: dict[str, list] = {}  # device name -> the modes it last listed (kept for when it lists none)
@@ -251,6 +259,22 @@ def listed_modes(name: str) -> list:
         _listed[name] = modes
         return modes
     return _listed.get(name, [])
+
+
+def modes_line(modes) -> str:
+    """Every size a camera offers with its formats and fastest rate, smallest first, for the log:
+    "1920x1080 mjpeg/nv12 up to 60 fps; 2560x1440 nv12 up to 60 fps". A capture card may offer only the size of
+    the signal it is fed (the PC's HD60 X fed 1440p, 2026-11-21): the log then shows there was no smaller mode to
+    ask for."""
+    by_size: dict[tuple[int, int], tuple[set, float]] = {}
+    for m in modes:
+        formats, fastest = by_size.setdefault((m[2], m[3]), (set(), 0.0))
+        formats.add(str(m[1]))
+        by_size[(m[2], m[3])] = (formats, max(fastest, float(m[5])))
+    if not by_size:
+        return "no list of modes"
+    return "; ".join(f"{w}x{h} {'/'.join(sorted(formats))} up to {fastest:.4g} fps"
+                     for (w, h), (formats, fastest) in sorted(by_size.items(), key=lambda kv: kv[0][0] * kv[0][1]))
 
 
 def _rate(value: float) -> str:
@@ -439,6 +463,7 @@ class _Feed:
         self.player: sprigcore.MediaPlayer | None = None
         self._engine_refused = False  # the engine's player couldn't: Python reads it from now on
         self.picture: tuple[int, int] | None = None  # the size the engine's player plays (its own mode's, at times)
+        self.given: tuple[int, int] | None = None  # the size the device really delivers, before it is fitted
 
     def start(self, after: "_Feed | None" = None) -> None:
         """after: the same camera still closing after a sleep(); this feed opens it once that's done."""
@@ -550,6 +575,7 @@ class _Feed:
         self.backend = "Engine (FFmpeg)"
         self.opened_with = None
         log.info("%s: the engine reads %r", self.id, device.name)
+        log.info("%s: asked for %dx%d at %d fps; the camera offers %s", self.id, w, h, fps, modes_line(self.modes_seen))
         self.player = player
         lost = None  # what the engine said when the camera went (the log says when it comes back)
         try:
@@ -563,6 +589,8 @@ class _Feed:
                 if text == "ok" and info.width > 0:
                     self.status = f"capturing {info.width}x{info.height}"
                     self.picture = (info.width, info.height)
+                    given = (getattr(info, "given_width", 0), getattr(info, "given_height", 0))
+                    self.given = given if min(given) > 0 else self.picture
                     for source in list(self.subscribers):
                         source._size = source.fit(self.picture)
                     if lost is not None:

@@ -51,11 +51,14 @@ def warm(modules: list[str] | None = None, pause_s: float = 0.02) -> list[str]:
     if modules is None and sys.platform == "win32":
         names += WINDOWS_ONLY
     loaded, began = [], time.perf_counter()
+    took: list[tuple[float, str]] = []
     for name in names:
         if name in sys.modules:
             continue
         try:
+            at = time.perf_counter()
             importlib.import_module(name)
+            took.append((1000 * (time.perf_counter() - at), name))
             loaded.append(name)
         except Exception as exc:  # noqa: BLE001 (a missing optional part: it loads, or fails, when used)
             log.debug("warm-up: %s didn't load: %s", name, exc)
@@ -70,8 +73,22 @@ def warm(modules: list[str] | None = None, pause_s: float = 0.02) -> list[str]:
         except Exception as exc:  # noqa: BLE001
             log.debug("warm-up: the camera lister didn't load: %s", exc)
     if loaded:
-        log.info("warm-up: loaded %d modules in %.0f ms", len(loaded), 1000 * (time.perf_counter() - began))
+        total = 1000 * (time.perf_counter() - began)
+        log.info("warm-up: loaded %d modules in %.0f ms%s", len(loaded), total, slowest(took, total))
     return loaded
+
+
+SLOW_MS = 1500.0  # a warm-up over this says which modules took it
+
+
+def slowest(took: list[tuple[float, str]], total_ms: float) -> str:
+    """"; slowest: output.recorder 2100 ms, app.doctor 600 ms" for a slow warm-up: the first start of a new build
+    took 3,698 ms against 566 to 890 ms (PC 2026-11-21) and the log couldn't say which load it was, or whether it
+    was every file being read for the first time."""
+    if total_ms < SLOW_MS:
+        return ""
+    top = sorted(took, reverse=True)[:3]
+    return "; slowest: " + ", ".join(f"{name.removeprefix('sprigcast.')} {ms:.0f} ms" for ms, name in top)
 
 
 def keep_aside() -> None:

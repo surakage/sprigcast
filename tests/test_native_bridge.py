@@ -461,6 +461,29 @@ def test_a_projector_watching_a_view_is_still_drawn_by_python():
     assert got and fake.rendered and engine._native.views == {}
 
 
+def test_a_bloom_pictured_off_air_is_the_engines_and_python_draws_nothing():
+    """PC 2026-11-21: a screenshot of a bloom off air had Python's compositor draw every sprig of it in one tick (a
+    late frame of 35 to 57 ms). Its view is handed to the native engine, which draws it in a slot of its own; the
+    screenshot reads it there. Nothing taps it, so Python draws nothing."""
+    from types import SimpleNamespace
+
+    engine, fake = _build_engine(), FakeCompositor()
+    native = engine._native
+    native._slots = {"view:apishot": 2}
+    native.engine = SimpleNamespace(_sizes={2: (64, 36)}, read_bgra=lambda slot: b"e" * (64 * 36 * 4))
+    assert engine.native_view_ready("apishot") is None  # no such view yet: nothing to wait for
+    engine.set_view("apishot", "h", "bloom", "next-h", shot=True)
+    assert engine.native_view_ready("apishot") is False  # the engine hasn't taken it yet
+    _run(engine, fake, seconds=0.1)
+    assert set(native.views) == {"apishot"} and native.views["apishot"][1].id == "next-h"
+    assert fake.rendered == [] and engine.native_view_ready("apishot") is True
+    data, w, h = engine.native_shot("view:apishot")
+    assert (w, h) == (64, 36) and data[:1] == b"e"
+    engine.set_view("apishot", None)
+    _run(engine, fake, seconds=0.1)
+    assert native.views == {} and engine.native_shot("view:apishot") is None and fake.rendered == []
+
+
 def test_frames_the_engine_let_go_of_count_as_the_recordings_drops():
     from sprigcast.output.recorder import Recorder
 
