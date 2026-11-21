@@ -6834,13 +6834,16 @@ class MainWindow(QMainWindow):
             if not remote:
                 msgbox.warning(self, "SprigCast", "Not ready to go live:\n\n" + "\n".join(problems))
             return {"problem": "Not ready to go live: " + " ".join(problems)}
+        from sprigcast.output.stream import same_key_warnings
+
         warnings: list[str] = []
+        same_key = same_key_warnings(targets)
         if remote:
-            warnings = self._doctor_warnings()
+            warnings = same_key + self._doctor_warnings()
             if warnings and not force:
                 log.info("an app asked to go live; the Stream doctor said wait: %s", " | ".join(warnings))
                 return {"warnings": warnings}
-        elif not self._doctor_says_go():
+        elif not self._doctor_says_go(same_key):
             return {"problem": "Canceled."}
         self._say("Connecting…")
         self._wake_up()
@@ -8529,9 +8532,10 @@ class MainWindow(QMainWindow):
         checkup.gpu_pct = None  # nvidia-smi can take a moment; the full doctor checks it
         return [f.text for f in doctor.examine(checkup) if f.level == "bad"]
 
-    def _doctor_says_go(self) -> bool:
-        """Quick check when going live: only serious problems ask first."""
-        bad = self._doctor_warnings()
+    def _doctor_says_go(self, first: list[str] | None = None) -> bool:
+        """Quick check when going live: only serious problems ask first. first: what going live found itself
+        (two places on one stream key), shown above the doctor's."""
+        bad = [*(first or []), *self._doctor_warnings()]
         if not bad:
             return True
         box = msgbox.MessageCard("Stream doctor", "\n\n".join(bad), self, "warn", width=520)

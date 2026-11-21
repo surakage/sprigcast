@@ -149,6 +149,30 @@ def open_ingest(url: str):
     return av.open(url, "w", format="flv", timeout=(CONNECT_TIMEOUT, SEND_TIMEOUT))
 
 
+_PLAIN_REASONS = (
+    ("cannot open connection", "the server couldn't be reached"),
+    ("i/o error", "the server ended the connection as it was starting"),
+    ("immediate exit", "the server didn't answer in time"),
+    ("timed out", "the server didn't answer in time"),
+    ("connection refused", "the server refused the connection"),
+    ("connection reset", "the server dropped the connection"),
+    ("aborted", "the server dropped the connection"),
+    ("broken pipe", "the server dropped the connection"),
+)
+
+
+def plain_reason(why: str) -> str:
+    """Why a connect failed, in plain words with the network's own after them: "I/O error" alone told nobody
+    anything (YouTube, live 2026-11-21). What isn't known is left as it was."""
+    low = why.lower()
+    if offline(why):
+        return why  # retry_plan says the PC is offline
+    for words, plain in _PLAIN_REASONS:
+        if words in low:
+            return f"{plain} ({why})"
+    return why
+
+
 @contextmanager
 def explain_connect(url: str):
     """Around the connect: a failure names the server (never the key) and adds what FFmpeg itself logged, which
@@ -167,7 +191,8 @@ def explain_connect(url: str):
                 said = [str(line[2]).strip() for line in logs if str(line[2]).strip()]
                 hint = "" if urlsplit(url).path.strip("/").count("/") else " (the server address has no app part)"
                 detail = " | FFmpeg: " + " / ".join(said[-4:]) if said else ""
-                raise ConnectionError(f"couldn't connect to {ingest_name(url)}{hint}: {exc}{detail}") from exc
+                why = plain_reason(str(exc) or exc.__class__.__name__)
+                raise ConnectionError(f"couldn't connect to {ingest_name(url)}{hint}: {why}{detail}") from exc
     finally:
         if louder:
             avlog.set_level(old)
@@ -188,6 +213,52 @@ def retry_plan(message: str, bytes_out: int, delay: float) -> tuple[str, float, 
         return " (this PC can't reach the internet right now)", wait, min(wait * 2, OFFLINE_RETRY)
     hint = "" if bytes_out else " (check the server and stream key)"
     return hint, delay, min(delay * 2, RETRY_MAX)
+
+
+def same_key_warnings(targets) -> list[str]:
+    """Before going live: places that would send to the same server with the same stream key. A service takes one
+    stream per key, so all but one would fail to connect with nothing clearer than "I/O error" (YouTube horizontal
+    and vertical on one key, live 2026-11-21). Names only, never the key."""
+    by: dict[tuple, list[str]] = {}
+    for t in targets:
+        server, key = getattr(t, "server", None), getattr(t, "key", None)
+        if server and key:
+            by.setdefault((str(server).rstrip("/").lower(), key), []).append(t.name)
+    return [f"{_and(names)} use the same stream key. A stream key takes one stream at a time, so they get in "
+            "each other's way: one may not connect or may keep dropping. Give each place its own key in Stream…."
+            for names in by.values() if len(names) > 1]
+
+
+def _and(names: list[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def mark_same_keys(streamers) -> None:
+    """Each stream learns which others send to its very address (server and key): a failed connect then says so
+    (dropped_status)."""
+    by: dict[str, list] = {}
+    for st in streamers:
+        url = getattr(st, "_url", None)
+        if isinstance(url, str) and url:
+            by.setdefault(url, []).append(st)
+    for st in streamers:
+        url = getattr(st, "_url", None)
+        others = [o.name for o in by.get(url, []) if o is not st] if isinstance(url, str) else []
+        st.same_key_as = _and(others) if others else ""
+
+
+def dropped_status(st, message: str, hint: str, delay: float, sent: bool = False) -> str:
+    """The status of a stream that dropped and will try again. When another place sends with the very same stream
+    key and this try sent nothing (sent False), that is said too: it is the likeliest reason, though not a
+    known one."""
+    other = getattr(st, "same_key_as", "")
+    if other and not sent:
+        if not getattr(st, "_same_key_said", False):
+            st._same_key_said = True
+            log.warning("stream %s can't get through and %s uses the same stream key: a stream key takes one "
+                        "stream at a time", st.name, other)
+        return f"disconnected: {message} ({other} uses the same stream key); retrying in {delay:.0f} s"
+    return f"disconnected: {message}{hint}; retrying in {delay:.0f} s"
 
 
 @dataclass
@@ -527,7 +598,7 @@ class Streamer(Recorder):
             self._congested = False
             self.connected = False
             self.status = "connecting" if not self.reconnects else f"reconnecting (try {self.reconnects})"
-            began = time.monotonic()
+            began, sent = time.monotonic(), self.bytes_out
             try:
                 self._session()
                 self.status = "stopped"
@@ -539,7 +610,7 @@ class Streamer(Recorder):
                     delay = RETRY_FIRST  # it had been running fine: start the backoff again
                 self.reconnects += 1
                 hint, delay, after = retry_plan(message, self.bytes_out, delay)
-                self.status = f"disconnected: {message}{hint}; retrying in {delay:.0f} s"
+                self.status = dropped_status(self, message, hint, delay, self.bytes_out > sent)
                 if self._stop.wait(delay):
                     self.status = "stopped"
                     return
@@ -720,6 +791,7 @@ class StreamSession:
             engine.mixer.add_tap(st.push_audio, ("stream",))
         for enc in [*shared, *borrowed_encoders]:
             engine.mixer.add_tap(enc.push_audio, ("stream",))
+        mark_same_keys([st for _, st in streamers])
         return session
 
     @staticmethod
@@ -749,9 +821,14 @@ class StreamSession:
         return next((st for _, st in self.streamers if getattr(st, "output_id", None) == output_id), None)
 
     def add(self, target: StreamTarget, codec: str, encoder=None, delay_s: float = 0.0):
-        """Start one more destination while live (an app's place.start): on a running shared encoder of the same
-        picture at a close bitrate it may take (output/shared_stream.py bitrate_groups), else its own."""
-        from sprigcast.output.shared_stream import SHARE_WITHIN, StreamLink, share_key
+        """Start one more destination while live (an app's place.start, or a place switched back on): as going live
+        would have placed it. It sends one of Twitch's qualities when that is its picture, else joins a running
+        shared encoder of the same picture at a close bitrate it may take (output/shared_stream.py
+        bitrate_groups), else gets an encoder of its own: with the native engine a shared one the engine sends
+        from, as at go-live. (It used to get a Python encoder and sender of its own even beside the quality it
+        had been sending: YouTube switched off and on, live 2026-11-21, then the PC at 100% and 110 frames
+        dropped.)"""
+        from sprigcast.output.shared_stream import SHARE_WITHIN, SharedStreamEncoder, StreamLink, share_key
 
         if target.size is None and hasattr(target.canvas, "output_size"):
             size = target.canvas.output_size()
@@ -759,6 +836,27 @@ class StreamSession:
                 target.size = size
         picture = share_key(target)
         ceiling = int(target.max_kbps or 0) or int(target.bitrate_kbps)
+
+        def linked(enc):
+            link = StreamLink(target.name, target.server, target.key, enc, target.bandwidth_test)
+            link.output_id = target.output_id or target.name
+            link.delay_s = delay_s
+            enc.links.append(link)
+            self.streamers.append((target.canvas.id, link))
+            return link
+
+        quality = self._twitch_quality(picture)
+        if quality is not None:
+            link = linked(quality)
+            link.start()
+            borrowed = self.__dict__.setdefault("borrowed", [])
+            if all(quality is not b for b in borrowed):
+                borrowed.append(quality)  # its links need sound: it encodes the stream's mix too
+                self.engine.mixer.add_tap(quality.push_audio, ("stream",))
+            log.info("%s sends Twitch's %dx%d quality (%d kbps): no encoder of its own", target.name,
+                     picture[1][0], picture[1][1], quality.bitrate_kbps)
+            self.engine.mixer.add_tap(link.push_audio, ("stream",))
+            return link
         for enc in getattr(self, "shared", []):
             kbps = int(getattr(enc, "bitrate_kbps", 0))
             if picture is None or getattr(enc, "share_picture", None) != picture or kbps > ceiling or \
@@ -772,17 +870,49 @@ class StreamSession:
             link.start()
             log.info("stream %s joins the shared encoder at %d kbps (set %d)", target.name, kbps, target.bitrate_kbps)
             self.engine.mixer.add_tap(link.push_audio, ("stream",))
+            mark_same_keys([st for _, st in self.streamers])
+            return link
+        if not hasattr(self, "taps"):
+            self.taps = []
+        if picture is not None and engine_encodes_streams():
+            c = target.canvas
+            enc = SharedStreamEncoder(c, picture[2], min(int(target.bitrate_kbps), ceiling), codec, time.perf_counter(),
+                                      target.size, encoder, auto_bitrate=target.auto_bitrate)
+            enc.share_picture = picture
+            link = linked(enc)
+            enc.start()
+            link.start()
+            tap = (c.id, enc.push_frame, enc.gpu_size)
+            self.taps.append(tap)
+            self.__dict__.setdefault("owned", {})[id(enc)] = [tap]
+            self.__dict__.setdefault("shared", []).append(enc)
+            self.engine.add_frame_tap(*tap)
+            self.engine.mixer.add_tap(link.push_audio, ("stream",))
+            self.engine.mixer.add_tap(enc.push_audio, ("stream",))
             return link
         st, mine = self._one(target, codec, encoder, delay_s, time.perf_counter())
         self.streamers.append((target.canvas.id, st))
-        if not hasattr(self, "taps"):
-            self.taps = []
         self.taps += mine
         self.__dict__.setdefault("owned", {})[id(st)] = mine
         for canvas_id, callback, *size in mine:
             self.engine.add_frame_tap(canvas_id, callback, *size)
         self.engine.mixer.add_tap(st.push_audio, ("stream",))
+        mark_same_keys([st for _, st in self.streamers])
         return st
+
+    def _twitch_quality(self, picture):
+        """The running encoder of one of Twitch Enhanced Broadcasting's qualities with this picture (canvas, size,
+        frame rate), also one Twitch left running for the places sending it; None when there is none."""
+        if picture is None:
+            return None
+        tracks = [tr for _, st in self.streamers if getattr(st, "native", False) for tr in getattr(st, "tracks", ())]
+        tracks += [enc.track for enc in getattr(self, "borrowed", []) if hasattr(enc, "track")]
+        for tr in tracks:
+            enc = getattr(tr, "encoder", None)
+            if enc is not None and getattr(enc, "running", False) and \
+                    (tr.canvas.id, (tr.cfg.width, tr.cfg.height), tr.fps) == tuple(picture):
+                return enc
+        return None
 
     def drop(self, output_id: str) -> bool:
         """Stop one destination while the rest stay live (an app's place.stop). False if it isn't streaming."""
@@ -790,6 +920,7 @@ class StreamSession:
         if st is None:
             return False
         self.streamers = [(c, s) for c, s in self.streamers if s is not st]
+        mark_same_keys([s for _, s in self.streamers])  # the place left may now be the only one on its key
         owned = self.__dict__.setdefault("owned", {})
         gone = list(owned.pop(id(st), []))
         # Twitch Enhanced Broadcasting whose qualities other places send: Twitch goes, those qualities' encoders

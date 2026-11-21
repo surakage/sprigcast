@@ -346,6 +346,14 @@ def test_main_window_remote_start_asks_nothing(monkeypatch):
                                    _doctor_says_go=no_popups)
     start = pytest_mw.MainWindow._start_streaming
     assert start(window, remote=True) == {"warnings": ["Your PC is busy (CPU 95%)."]}
+    twin = lambda name: types.SimpleNamespace(name=name, server="rtmp://y/live2", key="one-key")  # noqa: E731
+    places = iter([twin("YouTube (horizontal)"), twin("YouTube (vertical)")])
+    window._stream_target = lambda o, ask=True, quiet=False: (next(places), None)
+    window._doctor_warnings = list
+    col.outputs[1].enabled = True  # two places on one stream key: said before going live, with no pop-up
+    said = start(window, remote=True)["warnings"]
+    assert len(said) == 1 and said[0].startswith("YouTube (horizontal) and YouTube (vertical) use the same")
+    col.outputs[1].enabled = False
     window._stream_target = lambda o, ask=True, quiet=False: (None, "Twitch: add your stream key in Stream…")
     assert start(window, remote=True) == {"problem": "Not ready to go live: Twitch: add your stream key in Stream…"}
     col.outputs = []
