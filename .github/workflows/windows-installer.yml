@@ -18,6 +18,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # all tags and history: a tester build's Discord post lists what changed since the last one
       - uses: astral-sh/setup-uv@v6
       - name: Inno Setup 6.7 (dark wizard) on PATH
         shell: pwsh
@@ -210,12 +212,24 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "CHANGELOG.md needs a section for $version" }
           $shown = (& packaging\build\python\python.exe -c "import sprigcast; print(sprigcast.display_version())").Trim()
           gh release create $tag $setup packaging\out\SHA256.txt --title "SprigCast $shown" --notes-file notes.md --verify-tag --latest
+      # The release's card in the Discord's public #releases: version, what's new, download, size. Without the
+      # DISCORD_RELEASES_WEBHOOK secret nothing is posted; a Discord failure never fails the release.
+      - name: Post the release to Discord
+        if: startsWith(github.ref, 'refs/tags/v')
+        continue-on-error: true
+        shell: pwsh
+        env:
+          DISCORD_RELEASES_WEBHOOK: ${{ secrets.DISCORD_RELEASES_WEBHOOK }}
+        run: |
+          $setup = "packaging\out\SprigCast-Setup-$("${{ github.ref_name }}".TrimStart("v")).exe"
+          & packaging\build\python\python.exe packaging\discord_post.py release "${{ github.ref_name }}" $setup
       # A test-* tag (for example test-2026-11-21) publishes a pre-release for testers: a download link that
       # lasts, with docs/tester-guide.md as its text. The in-app updater skips pre-releases, so nobody is offered
       # a test build as an update. The build names itself a test build (sprigcast.build_label).
       # Run by hand with tester_tag set, the same pre-release is published and the run makes the tag itself at the
       # commit it built, so nobody has to push a tag (a tag made with the run's own token starts no second build).
       - name: Publish the test pre-release
+        id: tester
         if: startsWith(github.ref, 'refs/tags/test-') || (github.event_name == 'workflow_dispatch' && inputs.tester_tag != '')
         shell: pwsh
         env:
@@ -233,3 +247,16 @@ jobs:
           $setup = Get-ChildItem packaging\out\SprigCast-Setup-*.exe | Select-Object -First 1
           if (-not $setup) { throw "No installer was built" }
           gh release create $tag $setup.FullName packaging\out\SHA256.txt --title "SprigCast test build ($label)" --notes-file docs\tester-guide.md @target --prerelease
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "label=$label" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "setup=$($setup.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+      # The test build's card in the Tester Garden's #tester-news (never the public #releases): what changed since
+      # the last test build, download, size. Without the DISCORD_TESTER_WEBHOOK secret nothing is posted.
+      - name: Post the test build to the Tester Garden
+        if: steps.tester.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          DISCORD_TESTER_WEBHOOK: ${{ secrets.DISCORD_TESTER_WEBHOOK }}
+        run: |
+          & packaging\build\python\python.exe packaging\discord_post.py test "${{ steps.tester.outputs.tag }}" "${{ steps.tester.outputs.setup }}" --label "${{ steps.tester.outputs.label }}"
