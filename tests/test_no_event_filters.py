@@ -121,5 +121,6 @@ def test_garden_check_parts_are_made_as_children_of_where_they_end_up(app):
     assert row.parent() is home and all(part.parent() is row for part in row.parts)
     assert Elided("words", home).parent() is home
     page = garden_check.GardenCheckPage(lambda: garden_check.GardenSnapshot(checks=[("Mic heard", True, "")]), [])
-    assert page.checks.itemAt(0).widget().parent() is page._now
-    assert page.overload_bar.parent() is page._now and page.done.parent() is page
+    assert page.checks.itemAt(0).widget().parent() is page._checked  # in its "Things we checked" card
+    assert page.overload_bar.parent().parent() is page._now and page.done.parent() is page  # in "Stream health"
+    assert page.close_button.parent() is page

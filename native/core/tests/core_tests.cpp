@@ -1,6 +1,7 @@
 // Engine checks that run without Python, on Windows' software renderer (WARP), so CI and every PC can run them.
 // Exit code 0 = all passed. Pixel checks against Python's reference drawing live in tests/test_sprigcore.py.
 #include "sprigcore.h"
+#include "../src/capture_drift.h"
 
 #ifndef NOMINMAX
 #  define NOMINMAX
@@ -176,6 +177,30 @@ int main() {
         sc_playback_close(playback);
         CHECK(sc_playback_open(nullptr, SC_MIXER_MONITOR, nullptr, &playback) == SC_ERR_ARGUMENT);
         sc_mixer_destroy(mixer);
+    }
+    {  // A device whose clock runs slow (the HD60 X: 47,450 a second of 48,000) is measured and evened out; a good
+       // clock, a pause with no signal and wild bursts are left alone.
+        auto run = [](double per_second, double seconds, double pause_at = -1.0) {
+            sc::sound::DriftMeter meter;
+            const size_t packet = 480;
+            double t = 0.0;
+            while (t < seconds) {
+                if (pause_at >= 0.0 && t >= pause_at && t < pause_at + 1.0) {
+                    t = pause_at + 1.0;  // nothing for a second, then it carries on
+                    continue;
+                }
+                meter.feed(packet, 48000, t);
+                t += static_cast<double>(packet) / per_second;
+            }
+            return meter.ratio;
+        };
+        const double slow = run(47450.0, 200.0);
+        CHECK(std::fabs(slow - 47450.0 / 48000.0) < 0.0005);
+        CHECK(run(48010.0, 200.0) == 1.0);           // within 0.2%: untouched
+        CHECK(run(47450.0, 10.0) == 1.0);            // not judged before a whole window
+        CHECK(run(30000.0, 200.0) == 1.0);           // 37% off is no clock
+        CHECK(std::fabs(run(47450.0, 200.0, 60.0) - 47450.0 / 48000.0) < 0.0005);  // a pause doesn't count as slow
+        std::printf("capture drift: 47,450 a second evened out with ratio %.5f\n", slow);
     }
     {  // Sound capture: the test tone reaches the mix; a missing device and the default open and close cleanly
        // (CI has no sound card: they only say why they aren't capturing).
