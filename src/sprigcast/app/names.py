@@ -215,3 +215,15 @@ def ask_name(parent: QWidget | None, short: str, original: str) -> str:
         return short or original
     dialog = NameDialog(short, original, parent)
     return dialog.name() if modal(dialog) else short
+
+
+def sort_key(name: str) -> tuple:
+    """A name's place in A–Z order as people read it: a leading emoji or symbol is skipped ("🟣 Elgato" under E),
+    case doesn't count, and numbers count as numbers ("Chat 2" before "Chat 10"). The whole name breaks ties."""
+    import re
+
+    text = name.casefold()
+    start = next((i for i, ch in enumerate(text) if ch.isalnum()), len(text))
+    words = [(0, int(part), "") if part.isdigit() else (1, 0, part)
+             for part in re.split(r"(\d+)", text[start:].strip()) if part]
+    return (words, text)

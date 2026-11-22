@@ -145,7 +145,10 @@ def _shared():
         _profile.setHttpCacheMaximumSize(64 * 1024 * 1024)
         from sprigcast.app import page_video
 
-        page_video.install(_profile, base)  # MP4 clips this engine can't play, converted to WebM
+        videos = page_video.install(_profile, base)  # MP4 clips this engine can't play, converted to WebM
+        from sprigcast.app import page_requests
+
+        page_requests.install(_profile, page_video._interceptors[-1] if videos else None)  # what sign-ins send
     return _engine, _component, _profile
 
 
