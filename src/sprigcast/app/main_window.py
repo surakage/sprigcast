@@ -343,6 +343,17 @@ def close_reason(user: bool, app=None) -> str:
     return "SprigCast closed itself (Quit, Clear all my data, or an app's request)"
 
 
+def _show_sprigcast_to_captures(window) -> None:
+    """A screen or window capture's Show SprigCast reaches SprigCast's open windows as soon as it's set (and when
+    it's taken off or its capture removed, the Privacy setting is back). Checked on every send to the engine."""
+    from sprigcast.app import privacy
+
+    if privacy.set_shown_by_capture(privacy.shows_sprigcast(window.collection)) and privacy.supported() \
+            and privacy.hidden():
+        privacy.apply_to(window)
+        window._privacy_to_open_windows()
+
+
 class MainWindow(QMainWindow):
     _record_finished = Signal(object, bool)  # a recording's files are closed (from the thread that waited)
     _clip_written = Signal(list, list)  # a clip's files are written (files, problems), from the thread that wrote
@@ -2752,9 +2763,11 @@ class MainWindow(QMainWindow):
         first = self.build_canvas if build else self.collection.canvases[0].id
         if self.splitter.indexOf(self.canvas_columns[first]) != 0:
             self.splitter.insertWidget(0, self.canvas_columns[first])
-        if build:
-            self._share_stage()  # now, so the swap doesn't show a frame of the old sizes
-            QTimer.singleShot(0, self, self._share_stage)
+        # Now, so the swap doesn't show a frame of the old sizes, and again once the columns have their new sizes.
+        # Live too: switching a canvas off (Settings, the canvas menu) left the other one leaning to the side
+        # where its twin had been, with the twin's space empty (PC, 2026-11-22).
+        self._share_stage()
+        QTimer.singleShot(0, self, self._share_stage)
         primary = self.collection.canvases[0].id
         self.link_button.setVisible(self.build_canvas != primary)
         canvas = self.collection.canvas(self.build_canvas)
@@ -3398,6 +3411,7 @@ class MainWindow(QMainWindow):
     def _send_to_engine(self) -> None:
         """The collection to the engine: only the blooms on air when nothing else changed since the last send (a
         switch: the engine skips comparing every source in the switch frame), else a whole copy."""
+        _show_sprigcast_to_captures(self)
         dump = self.collection.model_dump()
         last = getattr(self, "_engine_dump", None)
         if last is not None and dump["active_scenes"] != last["active_scenes"]:
@@ -3863,7 +3877,35 @@ class MainWindow(QMainWindow):
         self.source_list.setVisible(not empty)
         self.inside_empty.setVisible(empty)
         self._updating = False
+        self._refresh_sprig_icons()
         self._refresh_properties()
+
+    def _refresh_sprig_icons(self) -> None:
+        """The Sprigs list's icons say what each sprig holds: kept right as leaves come and go (user's PC,
+        2026-11-21: a leaf was added and the sprig still showed the empty +). Only rows that changed are touched."""
+        tree = getattr(self, "scene_tree", None)
+        if tree is None:
+            return
+        canvas_id = self.build_canvas
+        was, self._updating = self._updating, True
+        try:
+            stack = [tree.topLevelItem(i) for i in range(tree.topLevelItemCount())]
+            while stack:
+                row = stack.pop()
+                stack.extend(row.child(i) for i in range(row.childCount()))
+                if row.data(0, ROLE_ROW) != "sprig":
+                    continue
+                part = next((s for s in self.collection.scenes if s.id == row.data(0, ROLE_ID)), None)
+                if part is None:
+                    continue
+                kind = self.collection.sprig_kind(part, canvas_id, look=self._look_kind)
+                colour = self._sprig_colour(part, canvas_id) if kind == "color" else None
+                if row.data(0, ROLE_SOURCE_KIND) != kind:
+                    row.setData(0, ROLE_SOURCE_KIND, kind)
+                if row.data(0, ROLE_COLOUR) != colour:
+                    row.setData(0, ROLE_COLOUR, colour)
+        finally:
+            self._updating = was
 
     def _inside_roles(self, row: QListWidgetItem, source_id: str, canvas_id: str) -> None:
         """What the Inside list draws: the plain name, a quiet tag, and a sprig's own contents."""
@@ -5472,7 +5514,8 @@ class MainWindow(QMainWindow):
         if not windows and not settings.get("title"):
             msgbox.information(self, "SprigCast", "Window capture is only available on Windows.")
             return None
-        dialog = WindowCaptureDialog(settings, windows, has_sound, self, list_windows=list_windows)
+        dialog = WindowCaptureDialog(settings, windows, has_sound, self, list_windows=list_windows,
+                                     list_own=lambda: list_windows(include_own=True))
         return dialog.values() if modal(dialog) else None
 
     def _add_display(self, monitor=None) -> None:
@@ -7843,7 +7886,8 @@ class MainWindow(QMainWindow):
             self._privacy_set = True
             from sprigcast.app import privacy
 
-            if privacy.hidden():  # Settings → General → Privacy
+            privacy.set_shown_by_capture(privacy.shows_sprigcast(self.collection))
+            if privacy.hidden_now():  # Settings → General → Privacy (unless a capture shows SprigCast)
                 privacy.apply_to(self, True)
             QTimer.singleShot(1500, self, self.reopen_projectors)  # once the window is up and drawn
 

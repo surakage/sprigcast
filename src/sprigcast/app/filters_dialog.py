@@ -526,55 +526,96 @@ def nv12_to_rgba(data: bytes, width: int, height: int):
 
 
 class EngineGrab:
-    """The Filters window's pictures from the engine: Before is the source drawn without its filters (Python's
-    compositor). After is the source with them; when it has a filter only the native engine draws
-    (filters.NATIVE_DRAWN, like Backdrop), After comes from a small native view of the source alone instead.
-    stop() lets go of that view when the window closes."""
+    """The Filters window's pictures from the engine.
 
-    VIEW = "filters-window"
+    With the native engine both come from it, as two small views of the source alone (Engine.set_view): Before
+    with no looks at all and After with the window's unapplied filters (Engine.set_view_effects), so filters only
+    the native engine draws (Backdrop) show too, and the pictures come every frame, ready for the window to take
+    15 times a second. The Python engine draws them on request instead (Engine.grab_source), 5 times a second.
+    stop() lets go of the views when the window closes.
+
+    PC 2026-11-22: After showed nothing with Backdrop. Asking for Before let go of After's view every time, and the
+    view showed the source's own filters, not the window's."""
+
+    BEFORE, AFTER = "filters-before", "filters-after"
+    LONG_SIDE = 480
 
     def __init__(self, engine, collection):
         self.engine, self.collection = engine, collection
-        self.latest = None  # (bytes, w, h) of the native view, from the render thread
-        self._tapped: str | None = None  # the source the native view shows
+        self.native = getattr(engine, "_native", None) is not None and hasattr(engine, "set_view_effects")
+        self.every_ms = 66 if self.native else 200
+        self.latest: dict[str, tuple] = {}  # view name -> (bytes, w, h, frame number), from the render thread
+        self._made: dict[str, tuple] = {}  # view name -> (frame number, RGBA picture) last handed to the window
+        self._count = 0
+        self._tapped: str | None = None  # the source the views show
+        self._looks: tuple | None = None  # what the After view's looks were made from
 
     def __call__(self, source_id: str, back: Callable, raw: bool, limit: int, filters: list | None = None) -> None:
         """filters: the window's unapplied copies, drawn instead of the source's own (After only)."""
-        from sprigcast.core.filters import NATIVE_DRAWN
-
-        source = self.collection.source(source_id)
-        shown = filters if filters is not None else (source.filters if source is not None else [])
-        native = not raw and any(f.enabled and f.kind in NATIVE_DRAWN for f in shown)
-        if not native:
-            self.stop()
+        if not self.native:
             self.engine.grab_source(source_id, back, raw, limit, filters=None if raw else filters)
             return
         if self._tapped != source_id:
-            self._tap(source_id, limit)
-        got = self.latest
-        back(None if got is None else nv12_to_rgba(*got))
+            self._tap(source_id)
+        if not raw:
+            source = self.collection.source(source_id)
+            self._send_looks(source_id, filters if filters is not None else (source.filters if source else []))
+        back(self._picture(self.BEFORE if raw else self.AFTER))
 
-    def _tap(self, source_id: str, limit: int) -> None:
+    def _picture(self, name: str):
+        got = self.latest.get(name)
+        if got is None:
+            return None
+        made = self._made.get(name)
+        if made is not None and made[0] == got[3]:
+            return made[1]  # no new frame since: the same picture, not converted again
+        picture = nv12_to_rgba(got[0], got[1], got[2])
+        self._made[name] = (got[3], picture)
+        return picture
+
+    def _send_looks(self, source_id: str, filters: list) -> None:
+        from sprigcast.core.filters import VideoEffects, video_effects
+        from sprigcast.core.scene import item_key
+
+        looks = (source_id, tuple((f.kind, f.enabled, repr(sorted(f.settings.items()))) for f in filters))
+        if looks == self._looks:
+            return
+        self._looks = looks
+        self.engine.set_view_effects({item_key(f"view:{self.BEFORE}", source_id): VideoEffects(),
+                                      item_key(f"view:{self.AFTER}", source_id): video_effects(filters)})
+
+    def _tap(self, source_id: str) -> None:
         self.stop()
         canvases = [c for c in self.collection.canvases if c.enabled] or self.collection.canvases
         if not canvases:
             return
         canvas = max(canvases, key=lambda c: c.width / max(1, c.height))  # the widest: the window's picture is wide
-        k = min(1.0, limit / max(canvas.width, canvas.height))
+        k = min(1.0, self.LONG_SIDE / max(canvas.width, canvas.height))
         size = (max(2, round(canvas.width * k) // 2 * 2), max(2, round(canvas.height * k) // 2 * 2))
-        self.engine.set_view(self.VIEW, canvas.id, "source", source_id)
-        self.engine.add_frame_tap(f"view:{self.VIEW}", self._frame, nv12_size=size)
+        for name in (self.BEFORE, self.AFTER):
+            self.engine.set_view(name, canvas.id, "draft", (source_id, self.LONG_SIDE))
+            self.engine.add_frame_tap(f"view:{name}", self._taker(name), nv12_size=size)
         self._tapped = source_id
 
-    def _frame(self, frame) -> None:  # render thread: keep the newest, nothing more
-        self.latest = (bytes(frame.data), frame.width, frame.height)
+    def _taker(self, name: str) -> Callable:
+        takers = self.__dict__.setdefault("_takers", {})
+        if name not in takers:
+            def take(frame, name=name) -> None:  # render thread: keep the newest, nothing more
+                self._count += 1
+                self.latest[name] = (bytes(frame.data), frame.width, frame.height, self._count)
+
+            takers[name] = take
+        return takers[name]
 
     def stop(self) -> None:
         if self._tapped is None:
             return
-        self.engine.remove_frame_tap(f"view:{self.VIEW}", self._frame)
-        self.engine.set_view(self.VIEW, None)
-        self._tapped, self.latest = None, None
+        for name in (self.BEFORE, self.AFTER):
+            self.engine.remove_frame_tap(f"view:{name}", self._taker(name))
+            self.engine.set_view(name, None)
+        self.engine.set_view_effects({})
+        self._tapped, self._looks = None, None
+        self.latest, self._made = {}, {}
 
 
 class _Grabbed(QObject):
@@ -610,7 +651,7 @@ class BeforeAfter(QWidget):
         self.bridge = _Grabbed()
         self.bridge.got.connect(self._take)
         self.timer = QTimer(self)
-        self.timer.setInterval(self.EVERY_MS)
+        self.timer.setInterval(getattr(grab, "every_ms", self.EVERY_MS))  # the native engine's views: smoother
         self.timer.timeout.connect(self.ask)
 
     def showEvent(self, event) -> None:  # noqa: N802
