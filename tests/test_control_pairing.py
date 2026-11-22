@@ -223,7 +223,7 @@ def _talk(port: int, first: dict | None, answer, app) -> list[dict]:
     return said
 
 
-def test_a_paired_key_gets_in_over_the_network_after_a_restart(monkeypatch):
+def test_a_paired_key_gets_in_over_the_network_after_a_restart(monkeypatch, caplog):
     """The whole way, as on the PC: pair over a real socket, stop SprigCast's API and make a new one from what was
     saved (a restart), then connect with the key. Closing those connections leaves no Qt warning (PC log: "wildcard
     call disconnects from destroyed signal of QTcpSocket" a minute after each start)."""
@@ -234,6 +234,7 @@ def test_a_paired_key_gets_in_over_the_network_after_a_restart(monkeypatch):
     from test_control_api import _api as _obs_api, _qt
 
     app = _qt()
+    caplog.set_level("INFO", logger="sprigcast")
     monkeypatch.setattr(secret_store, "available", lambda: True)
     monkeypatch.setattr(secret_store, "protect", lambda v: "dpapi:" + v[::-1] if v else v)
     monkeypatch.setattr(secret_store, "unprotect", lambda v: v[6:][::-1] if v.startswith("dpapi:") else v)
@@ -259,6 +260,8 @@ def test_a_paired_key_gets_in_over_the_network_after_a_restart(monkeypatch):
         assert any("welcome" in m for m in said), said
         wrong = _talk(port, None, lambda h: {"auth": auth_string("nope", h["auth"]["salt"], h["auth"]["challenge"])}, app)
         assert {"closed": 4009} in wrong
+        refused = [r.getMessage() for r in caplog.records if "Wrong password" in r.getMessage()]
+        assert refused and "SprigCast API app" in refused[-1], refused  # every refusal says which door and app
         wait = QEventLoop()
         QTimer.singleShot(300, wait.quit)  # the closed connections let go of their sockets
         wait.exec()
