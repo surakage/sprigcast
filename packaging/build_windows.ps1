@@ -118,5 +118,7 @@ if ($env:GITHUB_RUN_ID -and -not ($env:GITHUB_REF -like "refs/tags/v*")) {
 # 4. The wizard's brand art, then the installer.
 & $python (Join-Path $PSScriptRoot "make_wizard_images.py") (Join-Path $build "wizard")
 $version = (& $python -c "import importlib.metadata as m; print(m.version('sprigcast'))").Trim()
-iscc "/DAppVersion=$version" "/DBuildDir=$build" "/O$out" (Join-Path $PSScriptRoot "sprigcast.iss")
+# The name people see ("Beta 0.3", "Version 1"); the file name and Windows' version number stay numeric.
+$shown = (& $python -c "import sprigcast; print(sprigcast.display_version())").Trim()
+iscc "/DAppVersion=$version" "/DAppShown=$shown" "/DBuildDir=$build" "/O$out" (Join-Path $PSScriptRoot "sprigcast.iss")
 Get-ChildItem $out

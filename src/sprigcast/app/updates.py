@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sprigcast import __version__, update
+from sprigcast import __version__, display_version, update
 from sprigcast.app.modal import modal
 from sprigcast.app import theme
 
@@ -74,12 +74,12 @@ class UpdatePrompt(QWidget):
         words = QVBoxLayout()
         words.setSpacing(4)
         words.addStretch(1)
-        title = QLabel(f"SprigCast {release.version} is ready")
+        title = QLabel(f"SprigCast {display_version(release.version)} is ready")
         title.setObjectName("updateTitle")
         title.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-size: 18px; font-weight: 700;")
         words.addWidget(title)
         size = f" · {_mb(release.installer_size)}" if release.installer_size else ""
-        sub = QLabel(f"You have {__version__}{size}")
+        sub = QLabel(f"You have {display_version()}{size}")
         sub.setStyleSheet(theme.MUTED_STYLE)
         words.addWidget(sub)
         words.addStretch(1)
@@ -236,7 +236,7 @@ class Updater(QObject):
         if release is None or not update.is_newer(release.version):
             log.info("update check: %s is the newest", __version__)
             if manual:
-                self._message("You're up to date", f"SprigCast {__version__} is the newest version.")
+                self._message("You're up to date", f"SprigCast {display_version()} is the newest version.")
             return
         log.info("update check: %s is out (you have %s)", release.version, __version__)
         if not manual and QSettings().value(SKIPPED, "", type=str) == release.version:

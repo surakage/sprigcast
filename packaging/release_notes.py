@@ -14,10 +14,23 @@ from pathlib import Path
 CHANGELOG = Path(__file__).resolve().parent.parent / "CHANGELOG.md"
 
 
+def _shown(version: str) -> str:
+    """Same rule as sprigcast.display_version (kept here so this runs without the app on the path)."""
+    parts = version.split(".")
+    if len(parts) != 3 or not all(part.isdigit() for part in parts):
+        return version
+    major, minor, patch = (int(part) for part in parts)
+    if major >= 1 and minor == 0 and patch == 0:
+        return f"Version {major}"
+    return f"Beta {major}.{minor}" + (f".{patch}" if patch else "")
+
+
 def section(text: str, version: str) -> str | None:
-    """The lines under "## <version>" (with or without a note after it) up to the next "## " heading."""
+    """The lines under "## <version>" or "## <shown name>" ("## Beta 0.3" for 0.3.0), with or without a note
+    after it, up to the next "## " heading."""
     lines = text.splitlines()
-    head = re.compile(rf"^## {re.escape(version)}(\s|$)")
+    names = {version, _shown(version)}
+    head = re.compile(r"^## (" + "|".join(re.escape(n) for n in names) + r")(\s|$)")
     for start, line in enumerate(lines):
         if head.match(line):
             end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
