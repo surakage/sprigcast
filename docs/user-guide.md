@@ -68,7 +68,7 @@ Thank you! A few things make your reports most useful:
 
 - Say what you were doing, and roughly when.
 - Send a report even for small things: a stutter, a sound gap, a button that felt slow.
-- Under **Settings → General → Help improve SprigCast** you can choose to send a summary after every stream.
+- Under **Settings → General → Logs**, tick **Send stream summaries to the developer** to send a summary after every stream.
   It's off unless you turn it on, and holds nothing personal (see step 5).
 
 ## 7. Updates and uninstalling

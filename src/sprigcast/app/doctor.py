@@ -170,7 +170,7 @@ def _label(output) -> str:
 def _keys(c: Checkup) -> list[Finding]:
     outputs = [o for o in c.collection.outputs if o.type == "stream" and o.enabled]
     if not outputs:
-        return [Finding("warning", "Keys", "No destination is switched on: turn one on in the Destinations dock.")]
+        return [Finding("warning", "Keys", "No destination is switched on: switch one on from the Destinations card.")]
     found = []
     for o in outputs:
         why = problem(o, c.collection, c.has_key)
