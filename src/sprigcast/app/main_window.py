@@ -3863,7 +3863,35 @@ class MainWindow(QMainWindow):
         self.source_list.setVisible(not empty)
         self.inside_empty.setVisible(empty)
         self._updating = False
+        self._refresh_sprig_icons()
         self._refresh_properties()
+
+    def _refresh_sprig_icons(self) -> None:
+        """The Sprigs list's icons say what each sprig holds: kept right as leaves come and go (user's PC,
+        2026-11-21: a leaf was added and the sprig still showed the empty +). Only rows that changed are touched."""
+        tree = getattr(self, "scene_tree", None)
+        if tree is None:
+            return
+        canvas_id = self.build_canvas
+        was, self._updating = self._updating, True
+        try:
+            stack = [tree.topLevelItem(i) for i in range(tree.topLevelItemCount())]
+            while stack:
+                row = stack.pop()
+                stack.extend(row.child(i) for i in range(row.childCount()))
+                if row.data(0, ROLE_ROW) != "sprig":
+                    continue
+                part = next((s for s in self.collection.scenes if s.id == row.data(0, ROLE_ID)), None)
+                if part is None:
+                    continue
+                kind = self.collection.sprig_kind(part, canvas_id, look=self._look_kind)
+                colour = self._sprig_colour(part, canvas_id) if kind == "color" else None
+                if row.data(0, ROLE_SOURCE_KIND) != kind:
+                    row.setData(0, ROLE_SOURCE_KIND, kind)
+                if row.data(0, ROLE_COLOUR) != colour:
+                    row.setData(0, ROLE_COLOUR, colour)
+        finally:
+            self._updating = was
 
     def _inside_roles(self, row: QListWidgetItem, source_id: str, canvas_id: str) -> None:
         """What the Inside list draws: the plain name, a quiet tag, and a sprig's own contents."""
