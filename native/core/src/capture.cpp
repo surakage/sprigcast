@@ -9,6 +9,7 @@
 //
 // The device name "sprigcast-test-tone" makes a 440 Hz tone with no sound card, on any system (checks).
 #include "base.h"
+#include "capture_drift.h"
 
 #include <algorithm>
 #include <atomic>
@@ -44,6 +45,7 @@ using sc::sound::narrow;
 // Interleaved frames of any channel count and rate -> 48 kHz stereo (front left and right; mono doubled).
 struct Converter {
     int channels = 2, rate = RATE;
+    double ratio = 1.0;        // how fast the device really delivers against its rate (capture_drift.h)
     double position = 0.0;     // where the next output sample falls (see run)
     float last[2] = {0, 0};    // the previous input frame (stereo)
     bool primed = false;
@@ -62,7 +64,7 @@ struct Converter {
             const float *f = in + i * static_cast<size_t>(channels);
             return channels == 1 ? f[0] : f[side];
         };
-        if (rate == RATE) {
+        if (rate == RATE && ratio == 1.0) {
             out.resize(frames * 2);
             for (size_t i = 0; i < frames; ++i) {
                 out[2 * i] = at(i, 0);
@@ -75,7 +77,7 @@ struct Converter {
             last[1] = at(0, 1);
             primed = true;
         }
-        const double step = static_cast<double>(rate) / RATE;
+        const double step = static_cast<double>(rate) * ratio / RATE;
         // Frame 0 is `last` (the previous call's final frame), frame k is in[k - 1]; `position` is where the next
         // output sample falls on that scale.
         auto frame = [&](size_t k, int side) { return k == 0 ? last[side] : at(k - 1, side); };
@@ -107,6 +109,8 @@ struct sc_capture {
     sc_capture_stats stats{};
     Converter converter;
     std::vector<float> converted;
+    sc::sound::DriftMeter drift;  // evens out a device whose clock runs slow or fast (capture_drift.h)
+    std::string drift_name;       // the device, for the log line when that starts
 
     void set_state(int state, const std::string &error = "", const std::wstring &name = L"") {
         std::lock_guard<std::mutex> hold(lock);
@@ -125,7 +129,20 @@ struct sc_capture {
     }
 
     void push(const float *frames, size_t count, int channels, int rate) {
-        if (converter.channels != channels || converter.rate != rate) converter.reset(channels, rate);
+        if (converter.channels != channels || converter.rate != rate) {
+            converter.reset(channels, rate);
+            drift.reset();
+        }
+        const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (drift.feed(count, rate, now)) {
+            converter.ratio = drift.ratio;
+            sc::log_line(SC_LOG_INFO, "sound capture: " + (drift_name.empty() ? std::string("a device") : drift_name)
+                                          + (drift.ratio == 1.0 ? " keeps time again, played as it comes"
+                                                                : " delivers " + std::to_string(static_cast<int>(
+                                                                      std::lround(rate * drift.ratio)))
+                                                                      + " a second of " + std::to_string(rate)
+                                                                      + ": evened out to " + std::to_string(RATE)));
+        }
         converter.run(frames, count, converted);
         const int n = static_cast<int>(converted.size() / 2);
         if (n) sc_mixer_source_push(mixer, source, converted.data(), n);
@@ -275,6 +292,9 @@ struct sc_capture {
             return false;
         }
         set_state(SC_CAPTURE_CAPTURING, "", name);
+        drift.reset();  // a device opened again is measured afresh
+        converter.ratio = 1.0;
+        drift_name = narrow(name);
         {
             std::lock_guard<std::mutex> hold(lock);
             stats.channels = channels;
