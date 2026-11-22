@@ -64,6 +64,16 @@ class ResourceMeter:
                 "at": time.monotonic()}
 
 
+def memory_text(process) -> str:
+    """SprigCast's memory as Task Manager's "Memory" column shows it, plus everything in RAM (shared files too)."""
+    own = _private_working_set(process) / 1e6
+    try:
+        everything = process.memory_info().rss / 1e6
+    except (psutil.Error, OSError):
+        return f"{own:.0f} MB"
+    return f"{own:.0f} MB ({everything:.0f} MB with shared)" if everything > own + 1 else f"{own:.0f} MB"
+
+
 def _private_working_set(process) -> int:
     """What Task Manager's "Memory" column shows on Windows (private working set); RSS elsewhere.
 
