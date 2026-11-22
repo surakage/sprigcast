@@ -73,8 +73,9 @@ def test_preview_runs_the_draft_filters_not_the_real_ones():
 
 
 def test_the_mixer_hands_the_sound_before_its_filters_and_keeps_its_own():
+    # Its own sound id, as above: another test's mixer still running with a "mic" would hand blocks here too.
     class Mic:
-        id, kind, name, gain, settings = "mic", "audio_input", "Mic", 1.0, {}
+        id, kind, name, gain, settings = "mixer-test-mic", "audio_input", "Mic", 1.0, {}
 
         def read_block(self, n):
             return _tone()[:n]
@@ -85,11 +86,11 @@ def test_the_mixer_hands_the_sound_before_its_filters_and_keeps_its_own():
     got, heard = [], []
     mixer.set_sources([mic])
     mixer.add_tap(got.append, ("stream",))
-    peek.add("mic", heard.append)
+    peek.add(mic.id, heard.append)
     try:
         mixer.tick()
     finally:
-        peek.remove("mic", heard.append)
+        peek.remove(mic.id, heard.append)
     assert np.max(np.abs(heard[0])) == pytest.approx(0.5, rel=1e-4)  # before its filters
     assert np.max(np.abs(got[0])) == pytest.approx(0.5 * 10 ** (-6 / 20), rel=1e-3)  # the stream: unchanged
 
