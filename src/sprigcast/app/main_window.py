@@ -8116,12 +8116,13 @@ class MainWindow(QMainWindow):
         cpu = pick_codec() == "libx264"
         facts = lowend.pc_facts()
         older = bool(lowend.older_reasons(facts))
+        to_cpu = lowend.cpu_encodes(facts)
         try:
             hdd = bool(lowend.on_hard_drive(self._recordings_folder()))
         except Exception:
             hdd = False
         lines, fps = lowend.light_changes(self.collection, pending_fps=lowend.waiting_fps(), cpu_encoding=cpu,
-                                          older=older, hdd=hdd)
+                                          older=older, hdd=hdd, cpu_encodes=to_cpu)
         if not lines:
             msgbox.information(self, "Light settings", "You're already on light settings.")
             return False
@@ -8135,7 +8136,7 @@ class MainWindow(QMainWindow):
         if box.clicked is not use:
             return False
         _, fps = lowend.light_changes(self.collection, apply=True, pending_fps=lowend.waiting_fps(), cpu_encoding=cpu,
-                                      older=older, hdd=hdd)
+                                      older=older, hdd=hdd, cpu_encodes=to_cpu)
         waits = lowend.store_fps(fps, self.collection) if fps else False
         lowend.store_tier("light")
         self.collection.save(self.scenes_path)

@@ -422,6 +422,8 @@ def pick_codec() -> str:
 
 
 def codec_label(codec: str) -> str:
+    if codec == "libx264" and _picked not in (None, "libx264"):
+        return "x264 (CPU, picked in Settings)"  # a graphics-card encoder was found here (tester, 2026-11-22)
     return CODEC_LABELS.get(codec) or ENCODER_NAMES.get(codec, codec)
 
 
