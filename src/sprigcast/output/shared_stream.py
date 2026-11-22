@@ -623,6 +623,8 @@ class StreamLink:
         packet = av.Packet(p.payload())
         packet.pts = None if p.pts is None else p.pts - offset
         packet.dts = None if p.dts is None else p.dts - offset
+        if packet.pts is not None and packet.dts is not None and packet.dts > packet.pts:
+            packet.dts = packet.pts  # never decoded after it's shown (AMD on a Radeon R2 ran a frame ahead)
         packet.time_base = p.time_base
         packet.is_keyframe = p.keyframe
         packet.stream = streams[p.kind]

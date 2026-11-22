@@ -5,6 +5,7 @@
 // Like media.cpp this needs no graphics card and builds on Linux, so its checks run there too
 // (tests/test_native_writer.py).
 #include "base.h"
+#include "packet_times.h"
 #include "ffmpeg.h"
 #include "writer.h"
 
@@ -260,6 +261,7 @@ struct Core {
     std::atomic<bool> leave{false};  // writers_leave_device: the engine let go of this encoder's device
     void upload(FramePtr &picture);
     void write_packets(AVCodecContext *enc, AVStream *stream, AVPacket *use = nullptr);
+    bool dts_told = false;  // logged once that the encoder's decode times ran ahead
     void encode_video(AVFrame *frame, bool key = false);
     void encode_sound(Track &t, bool flush);
     void close_all(bool trailer);
@@ -427,6 +429,14 @@ void Core::write_packets(AVCodecContext *enc, AVStream *stream, AVPacket *use) {
         const int r = ff.avcodec_receive_packet(enc, p);
         if (r == AVERROR(EAGAIN) || r == AVERROR_EOF) return;
         must(r, "encoding");
+        // FFmpeg's AMD encoder takes decode times from a list of the frames handed in, apart from the
+        // pictures it gives back; on an older Radeon (tester PC 2026-11-22, Radeon R2) that list ran a
+        // frame ahead, so every stream ended at its second frame with "pts < dts" -> "Invalid argument".
+        if (sc::even_out_dts(p->pts, p->dts) && !dts_told) {
+            dts_told = true;
+            sc::log_line(SC_LOG_INFO, std::string("writer: ") + enc->codec->name
+                         + " gave decode times after the picture times; using the picture times");
+        }
         if (packets) {  // for the caller to take: copied out, in the encoder's own time base
             Out o;
             o.track = stream->index;

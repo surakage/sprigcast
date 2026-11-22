@@ -228,6 +228,9 @@ def import_av() -> bool:
 def run() -> None:
     QCoreApplication.setApplicationName("SprigCast")
     QCoreApplication.setOrganizationName("Slothbloom")
+    from sprigcast.app import single_instance
+
+    first_copy = single_instance.claim()  # at once: a slow start mustn't let a second click open a second copy
     _announce_running()
     _quiet_start_log()
     from sprigcast.core import thread_names
@@ -297,9 +300,12 @@ def run() -> None:
     from sprigcast.core.painted import brand_fonts
 
     brand_fonts()  # Nunito for the text plugins (timer, clock, Now playing)
-    from sprigcast.app import crash_report, single_instance
+    from sprigcast.app import crash_report
 
-    if single_instance.ask_running_copy():  # already open: that window comes forward instead
+    if first_copy:
+        if single_instance.ask_running_copy():  # already open (no mutex: not Windows): that window comes forward
+            sys.exit(0)
+    elif single_instance.wait_for_first_copy():  # open or still starting: that window comes forward instead
         sys.exit(0)
     shown: list = []  # the window, once it exists (a second launch before then just waits)
     server = single_instance.listen(lambda: shown and single_instance.bring_forward(shown[0]), app)
