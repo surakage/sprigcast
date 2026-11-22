@@ -5277,12 +5277,13 @@ class MainWindow(QMainWindow):
         if not self.chat_panel.reading():
             self.statusBar().showMessage("Add your channels in the Chat panel (⋯ → Channels…) to fill it.", 8000)
 
-    def _interact(self, source_id: str) -> None:
-        """Open a browser source's page on screen so you can click and type in it."""
+    def _interact(self, source_id: str, parent: QWidget | None = None):
+        """Open a browser source's page on screen so you can click and type in it. From the page's settings card
+        it belongs to that card, so the card being open doesn't block it."""
         source = next((s for s in self.collection.sources if s.id == source_id), None)
         if source is None or self.browser_host is None:
-            return
-        self.browser_host.interact(source_id, source.settings, source.name, self)
+            return None
+        return self.browser_host.interact(source_id, source.settings, source.name, parent or self)
 
     def _add_browser(self) -> None:
         if self.browser_host is None:
@@ -6051,7 +6052,8 @@ class MainWindow(QMainWindow):
 
                 host = self.browser_host
                 dialog = WebPageDialog(config.name, config.settings, self,
-                                       on_reload=(lambda: host.reload(config.id)) if host else None)
+                                       on_reload=(lambda: host.reload(config.id)) if host else None,
+                                       on_interact=(lambda card: self._interact(config.id, card)) if host else None)
             elif config.kind == "media":
                 from sprigcast.app.media_dialog import MediaDialog
 
