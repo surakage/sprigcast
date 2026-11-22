@@ -8261,10 +8261,33 @@ class MainWindow(QMainWindow):
         pop.open()
         return pop
 
+    def _disk_free_gb(self, folder: Path) -> float | None:
+        """Free space where recordings go, as last measured (None until the first answer). Measured on a worker,
+        at most every 10 s: a hard drive waking up held the window 3.3 s in Garden check (tester PC, 2026-11-22)."""
+        import shutil
+
+        from sprigcast.core import workers
+
+        known = getattr(self, "_disk_free", None)  # (folder, GB, when)
+        fresh = known is not None and known[0] == folder and time.monotonic() - known[2] < 10
+        if not fresh and not getattr(self, "_disk_asking", False):
+            self._disk_asking = True
+
+            def ask() -> None:
+                try:
+                    gb = shutil.disk_usage(folder if folder.exists() else folder.anchor or Path.home()).free / 1e9
+                    self._disk_free = (folder, gb, time.monotonic())
+                except OSError:
+                    pass
+                finally:
+                    self._disk_asking = False
+
+            self._disk_job = workers.run(ask, name="disk-free")
+        return known[1] if known is not None and known[0] == folder else None
+
     def _garden_snapshot(self):
         """Today's numbers for the Garden check: the meter, the render loop, each place and quick checks."""
         import re
-        import shutil
 
         from sprigcast.app.destinations import live_line, problem
         from sprigcast.app.garden_check import GardenSnapshot
@@ -8276,11 +8299,7 @@ class MainWindow(QMainWindow):
         stats = getattr(self, "_last_stats", None)
         if stats is not None:
             snap.render_ms = stats.render_ms
-        folder = self._recordings_folder()
-        try:
-            snap.disk_gb = shutil.disk_usage(folder if folder.exists() else folder.anchor or Path.home()).free / 1e9
-        except OSError:
-            pass
+        snap.disk_gb = self._disk_free_gb(self._recordings_folder())
         if self.streaming is not None:
             sending = 0
             for _, st in self.streaming.streamers:

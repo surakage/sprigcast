@@ -170,6 +170,20 @@ def _announce_running() -> None:
     _mutex = kernel32.CreateMutexW(None, False, APP_MUTEX)  # released by Windows when the process ends
 
 
+def _trust_windows_certificates() -> None:
+    """Windows: Python's web requests check certificates the way Windows does, so an older PC fetches a root
+    certificate it doesn't have yet instead of failing. The update check, Twitch sign-in and stream titles all
+    failed with "certificate verify failed" on a tester's donated Windows 10 PC (2026-11-22)."""
+    if sys.platform != "win32":
+        return
+    try:
+        import truststore
+
+        truststore.inject_into_ssl()
+    except Exception as exc:  # noqa: BLE001 - Python's own check stays, as before
+        logging.getLogger(__name__).info("certificates: Python's own list (%s)", exc)
+
+
 def inside_package() -> str:
     """The Windows app package this process runs inside, or "" (the normal case).
 
@@ -278,6 +292,7 @@ def run() -> None:
 
     first_copy = single_instance.claim()  # at once: a slow start mustn't let a second click open a second copy
     _announce_running()
+    _trust_windows_certificates()
     _quiet_start_log()
     from sprigcast.core import thread_names
 
@@ -464,6 +479,7 @@ def run() -> None:
     garden_at = time.perf_counter() - began
     window = MainWindow(collection, scenes_path, plugins_dir, shelf=shelf)
     window_at = time.perf_counter() - began
+    window._disk_free_gb(window._recordings_folder())  # measured now on a worker, ready for Garden check
     window.start_in_live()  # always opens on Live, not the screen it closed on
     try:
         from sprigcast.app.leftovers import clean_up_recordings
