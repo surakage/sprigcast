@@ -133,8 +133,13 @@ def load(settings) -> list[HealthRecord]:
 
 
 def notice(streamers) -> tuple[str, str]:
-    """(level, text) for Live's stage while something needs a glance; ("", "") when all is well."""
+    """(level, text) for Live's stage while something needs a glance; ("", "") when all is well.
+
+    Places sharing one encoder are lowered together, so they share one phrase: "Bitrate lowered to 3,600 kbps:
+    Twitch, Kick and YouTube (horizontal)", not the same words once per place (live 2026-11-22: four of them made a
+    banner as big as the preview)."""
     parts, level = [], ""
+    lowered: dict[int, list[str]] = {}
     for _, st in streamers:
         status = str(getattr(st, "status", ""))
         if not getattr(st, "connected", True) and getattr(st, "reconnects", 0) and \
@@ -144,9 +149,24 @@ def notice(streamers) -> tuple[str, str]:
             continue
         pilot = getattr(st, "autopilot", None)
         if pilot is not None and pilot.lowered:
-            parts.append(f"{st.name}: bitrate lowered to {pilot.current_kbps} kbps")
+            lowered.setdefault(int(pilot.current_kbps), []).append(str(st.name))
             level = level or "warning"
+    for kbps, names in lowered.items():
+        parts.append(f"Bitrate lowered to {kbps:,} kbps: {_names(names)}")
     return level, "  ·  ".join(parts)
+
+
+def _names(names: list[str]) -> str:
+    """"Twitch, Kick and YouTube (horizontal)": a canvas they all share is said once, at the end."""
+    import re
+
+    canvases = {m.group(1) if (m := re.search(r" \(([^()]+)\)$", n)) else None for n in names}
+    tail = ""
+    if len(names) > 1 and len(canvases) == 1 and None not in canvases:
+        tail = f" ({canvases.pop()})"
+        names = [re.sub(r" \([^()]+\)$", "", n) for n in names]
+    joined = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+    return joined + tail
 
 
 def duration(seconds: int) -> str:
