@@ -255,8 +255,8 @@ def apply_pending_video(collection: SceneCollection) -> bool:
     for canvas in collection.canvases:
         change = pending.get(canvas.id)
         if change:
-            canvas.width = int(change.get("width", canvas.width))
-            canvas.height = int(change.get("height", canvas.height))
+            collection.resize_canvas(canvas.id, int(change.get("width", canvas.width)),
+                                     int(change.get("height", canvas.height)))  # the blooms scale with it
             canvas.fps = int(change.get("fps", canvas.fps))
             canvas.enabled = bool(change.get("enabled", canvas.enabled))
     QSettings().remove(PENDING_VIDEO)

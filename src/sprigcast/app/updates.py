@@ -56,8 +56,30 @@ def _mb(n: int) -> str:
     return f"{n / 1_000_000:.0f} MB"
 
 
+NOTES_CSS = (  # the changelog's headings in the app's mint, lists with room to breathe
+    f"h1, h2 {{ color: {theme.TEXT_BRIGHT}; font-size: 18px; font-weight: 700; margin: 10px 0 6px 0; }}"
+    f"h3, h4 {{ color: {theme.ACCENT}; font-size: 15px; font-weight: 700; margin: 12px 0 4px 0; }}"
+    f"p, li {{ color: {theme.TEXT}; margin: 2px 0; }}"
+    f"a {{ color: {theme.ACCENT}; }}"
+)
+
+
+def notes_html(markdown: str) -> str:
+    """The release notes (Markdown from the changelog) as HTML that NOTES_CSS can colour."""
+    from PySide6.QtGui import QTextDocument
+
+    doc = QTextDocument()
+    doc.setMarkdown(markdown)
+    return doc.toHtml()
+
+
 class UpdatePrompt(QWidget):
-    """What the pop-up shows: the sloth, the new version, what's new, progress and the buttons."""
+    """What the pop-up shows: the sloth, the new version, what's new (scrolls), progress and the buttons.
+
+    Sized for what it holds: the first version sat in the pop-up's smallest size, squashed so the notes and the
+    buttons overlapped and the sloth didn't show (2026-11-22)."""
+
+    WIDTH, NOTES_HEIGHT = 600, 320
 
     def __init__(self, release: update.Release, busy: bool, installed: bool, parent: QWidget | None = None):
         super().__init__(parent)
@@ -65,20 +87,21 @@ class UpdatePrompt(QWidget):
 
         self.release = release
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 0, 4, 0)
-        layout.setSpacing(14)
+        layout.setContentsMargins(4, 0, 4, 4)
+        layout.setSpacing(16)
 
         top = QHBoxLayout()
-        top.setSpacing(16)
-        top.addWidget(ArtPicture("happy", 92), 0, Qt.AlignmentFlag.AlignVCenter)
+        top.setSpacing(18)
+        top.addWidget(ArtPicture("happy", 96), 0, Qt.AlignmentFlag.AlignVCenter)
         words = QVBoxLayout()
         words.setSpacing(4)
         words.addStretch(1)
         title = QLabel(f"SprigCast {display_version(release.version)} is ready")
         title.setObjectName("updateTitle")
-        title.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-size: 18px; font-weight: 700;")
+        title.setWordWrap(True)
+        title.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-size: 20px; font-weight: 700;")
         words.addWidget(title)
-        size = f" · {_mb(release.installer_size)}" if release.installer_size else ""
+        size = f" · {_mb(release.installer_size)} download" if release.installer_size else ""
         sub = QLabel(f"You have {display_version()}{size}")
         sub.setStyleSheet(theme.MUTED_STYLE)
         words.addWidget(sub)
@@ -86,17 +109,16 @@ class UpdatePrompt(QWidget):
         top.addLayout(words, 1)
         layout.addLayout(top)
 
-        heading = QLabel("What's new")
-        heading.setStyleSheet(f"color: {theme.TEXT}; font-weight: 600;")
-        layout.addWidget(heading)
         self.notes = QTextBrowser()
         self.notes.setObjectName("updateNotes")
         self.notes.setOpenExternalLinks(True)
-        self.notes.setMarkdown(release.notes or "See the release page for details.")
-        self.notes.setStyleSheet(f"QTextBrowser {{ background: {theme.CARD}; color: {theme.TEXT}; border: none;"
-                                 f" border-radius: 14px; padding: 10px 12px; }}")
-        self.notes.setMinimumHeight(180)
-        self.notes.setMaximumHeight(260)
+        self.notes.document().setDefaultStyleSheet(NOTES_CSS)
+        self.notes.document().setDocumentMargin(14)
+        self.notes.document().setIndentWidth(18)  # lists sit close to their heading
+        self.notes.setHtml(notes_html(release.notes or "See the release page for what's new."))
+        self.notes.setStyleSheet(f"QTextBrowser {{ background: {theme.SECTION}; color: {theme.TEXT};"
+                                 f" border: 1px solid {theme.SECTION_EDGE}; border-radius: 16px; padding: 4px; }}")
+        self.notes.setFixedHeight(self.NOTES_HEIGHT)
         layout.addWidget(self.notes)
 
         self.status = QLabel()
@@ -130,9 +152,13 @@ class UpdatePrompt(QWidget):
         for button in (self.skip_button, self.later_button, self.go_button):
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.setAutoDefault(False)
-        layout.addLayout(buttons)
         self.set_mode(busy, installed)
-        self.setMinimumWidth(460)
+        tall = max(self.later_button.sizeHint().height(), self.go_button.sizeHint().height())
+        for button in (self.later_button, self.go_button):  # side by side, one height
+            button.setFixedHeight(tall)
+        layout.addLayout(buttons)
+        self.setMinimumWidth(self.WIDTH)
+        self.setMinimumHeight(layout.totalMinimumSize().height())
 
     def set_mode(self, busy: bool, installed: bool) -> None:
         if not installed:
@@ -161,6 +187,20 @@ class UpdatePrompt(QWidget):
     def working(self, on: bool) -> None:
         for button in (self.skip_button, self.go_button):
             button.setEnabled(not on)
+
+
+def fit_to(dialog: QWidget, page: QWidget) -> None:
+    """Grow the pop-up to hold its page (PopUp's own smallest size, 360x260, would squash it)."""
+    layout = dialog.layout()
+    if layout is not None:
+        layout.activate()
+    want = dialog.sizeHint().expandedTo(page.minimumSizeHint())
+    extra_w = dialog.width() - page.width() if page.width() else 80
+    extra_h = dialog.height() - page.height() if page.height() else 140
+    width = max(want.width(), page.minimumWidth() + extra_w)
+    height = max(want.height(), page.minimumHeight() + extra_h)
+    dialog.resize(width, height)
+    dialog.setMinimumSize(width, height)
 
 
 class Updater(QObject):
@@ -298,6 +338,7 @@ class Updater(QObject):
         dialog = self._popup("Update")
         prompt = UpdatePrompt(release, self.busy(), self.installed)
         dialog.add_tab("update", "Update", prompt)
+        fit_to(dialog, prompt)
         prompt.later_button.clicked.connect(dialog.reject)
         prompt.skip_button.clicked.connect(lambda: (QSettings().setValue(SKIPPED, release.version), dialog.reject()))
         prompt.go_button.clicked.connect(lambda: self._go(release))

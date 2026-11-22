@@ -2,8 +2,9 @@
 
 A bare-minimum PC (four CPU threads, 8 GB of memory, or no graphics-card encoder) streams well at
 720p and 30 fps with a fast encoder preset; it struggles at 1080p60. ``light_changes`` lists what
-differs from that and can apply it. Canvas sizes stay as they are, so no scene has to be laid out
-again: streams are scaled down as they are encoded, and only the frame rate changes.
+differs from that and can apply it. Canvas sizes stay as they are here: streams are scaled down as they
+are encoded, and only the frame rate changes. Optimize (optimize.canvas_size_rule) also offers a 720p
+canvas on a light PC, with every bloom scaled to fit (SceneCollection.resize_canvas).
 """
 
 from __future__ import annotations
@@ -346,7 +347,7 @@ def light_changes(collection: SceneCollection, apply: bool = False, pending_fps:
     return lines, fps
 
 
-def store_fps(fps: dict[str, int], collection=None) -> bool:
+def store_fps(fps: dict[str, int], collection=None, sizes: dict[str, tuple[int, int]] | None = None) -> bool:
     """Queue canvas frame rates for the next start, next to anything Settings → Video already queued. With the
     collection given, a change that asks for what a canvas already is isn't kept (60 → 30 → 60 with no restart
     in between left "60 fps" waiting on a 60 fps canvas, PC 2026-11-19). True when something waits afterwards."""
@@ -357,11 +358,13 @@ def store_fps(fps: dict[str, int], collection=None) -> bool:
 
     from sprigcast.app.settings_window import PENDING_VIDEO, pending_video
 
-    if not fps:
+    if not fps and not sizes:
         return bool(pending_video())
     pending = pending_video()
     for canvas_id, value in fps.items():
         pending.setdefault(canvas_id, {})["fps"] = value
+    for canvas_id, (width, height) in (sizes or {}).items():
+        pending.setdefault(canvas_id, {}).update(width=width, height=height)
     if collection is not None:
         for canvas in collection.canvases:
             now = {"width": canvas.width, "height": canvas.height, "fps": canvas.fps, "enabled": canvas.enabled}
@@ -374,7 +377,7 @@ def store_fps(fps: dict[str, int], collection=None) -> bool:
         QSettings().setValue(PENDING_VIDEO, json.dumps(pending))
     else:
         QSettings().remove(PENDING_VIDEO)
-    logging.getLogger(__name__).info("video: canvas frame rates queued for the next start: %s", pending or "nothing")
+    logging.getLogger(__name__).info("video: canvas changes queued for the next start: %s", pending or "nothing")
     return bool(pending)
 
 

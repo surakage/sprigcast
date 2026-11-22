@@ -83,6 +83,7 @@ class Change:
     now: str  # what it is now
     apply: Callable[[], None]
     fps: dict[str, int] = field(default_factory=dict)  # canvas frame rates queued for the next start
+    size: dict[str, tuple[int, int]] = field(default_factory=dict)  # canvas sizes queued for the next start
 
 
 @dataclass
@@ -102,6 +103,13 @@ class Plan:
             change.apply()
             fps.update(change.fps)
         return fps
+
+    def sizes(self, chosen: list[Change] | None = None) -> dict[str, tuple[int, int]]:
+        """Canvas sizes the chosen changes queue for the next start (the blooms scale with them)."""
+        sizes: dict[str, tuple[int, int]] = {}
+        for change in self.changes if chosen is None else chosen:
+            sizes.update(change.size)
+        return sizes
 
 
 # Checks -------------------------------------------------------------------------------
@@ -685,16 +693,41 @@ def _canvas_fps(p: PcProfile, c: SceneCollection, canvas_id: str) -> int:
 
 def video_rule(p: PcProfile, c: SceneCollection, waiting: dict[str, int] | None = None) -> list[Change]:
     waiting = waiting or {}
+    sizes = light_canvas_sizes(p, c)
     changes = []
     for canvas in c.canvases:
         if not canvas.enabled:
             continue
         fps = _canvas_fps(p, c, canvas.id)
         now = waiting.get(canvas.id, canvas.fps)
-        if fps != now:
+        size = sizes.get(canvas.id)
+        if size:  # one row: the size and the frame rate change at the same restart
+            changes.append(Change("Video", f"{canvas.id.capitalize()} canvas: {_size_text(size)}, {fps} fps, blooms "
+                                  "scaled to fit (after a restart)", f"{_size_text((canvas.width, canvas.height))}, "
+                                  f"{now} fps", lambda: None, fps={canvas.id: fps} if fps != now else {},
+                                  size={canvas.id: size}))
+        elif fps != now:
             changes.append(Change("Video", f"{canvas.id.capitalize()} canvas: {fps} fps (after a restart)",
                                   f"{now} fps", lambda: None, fps={canvas.id: fps}))
     return changes
+
+
+def light_canvas_sizes(p: PcProfile, c: SceneCollection) -> dict[str, tuple[int, int]]:
+    """A light PC draws its canvases at 720p: a 1080p canvas cost a Radeon R2 most of its time just to draw, with
+    streams sent at 480p anyway (tester PC, 2026-11-22). Only when nothing is meant to go out above 720p."""
+    from sprigcast.app.lowend import light_size
+
+    if not p.weak_reasons:
+        return {}
+    quality = tuple(p.extra.get(QUALITY) or recommended_step(p, c))
+    if max(quality[0], target(p, _encodes(p, c)).step[0]) > 720:
+        return {}
+    sizes = {}
+    for canvas in c.canvases:
+        smaller = light_size(canvas.width, canvas.height) if canvas.enabled else None
+        if smaller:
+            sizes[canvas.id] = smaller
+    return sizes
 
 
 def recording_rule(p: PcProfile, c: SceneCollection) -> list[Change]:

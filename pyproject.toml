@@ -22,6 +22,7 @@ dependencies = [
     "psutil>=5.9",  # CPU and memory in the stats panel (M10)
     "winrt-Windows.Media.Control>=3.0; sys_platform == 'win32'",  # Now playing store plugin: the song Windows says is playing (loaded only while on screen)
     "winrt-runtime>=3.0; sys_platform == 'win32'",
+    "truststore>=0.10; sys_platform == 'win32'",  # web requests trust what Windows trusts: an older PC fetches missing root certificates (tester 2026-11-22)
 ]
 
 [project.scripts]

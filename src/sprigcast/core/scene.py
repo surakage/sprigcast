@@ -1481,6 +1481,40 @@ class SceneCollection(BaseModel):
         here = self.canvas(shape.canvas)
         self._refit_placements(part, shape.canvas, (here.width, here.height), (main.width, main.height))
 
+    def resize_canvas(self, canvas_id: str, width: int, height: int) -> None:
+        """Give a canvas a new size, with everything laid out on it scaled to match.
+
+        Items keep their place and size relative to the canvas (a picture that filled 1920x1080 fills 1280x720);
+        a canvas of another shape gets the old layout fitted into it, centred. A sprig's picture follows its
+        canvas, so a placement of a sprig laid out on this canvas keeps its scale here and grows elsewhere.
+        Without this, a smaller canvas cut off whatever sat past its new edge (tester PC, 2026-11-22).
+        """
+        canvas = self.canvas(canvas_id)
+        old_w, old_h = canvas.width, canvas.height
+        canvas.width, canvas.height = width, height
+        if (old_w, old_h) == (width, height) or old_w <= 0 or old_h <= 0 or width <= 0 or height <= 0:
+            return
+        f = min(width / old_w, height / old_h)
+        ox, oy = (width - old_w * f) / 2, (height - old_h * f) / 2
+        sources = {s.id: s for s in self.sources}
+        for scene in self.scenes:
+            here = scene.canvas == canvas_id
+            for item in scene.items:
+                source = sources.get(item.source)
+                part = self.part_of(source) if source is not None else None
+                shrinks = part is not None and self.shape_for(part, scene.canvas).canvas == canvas_id
+                if shrinks:  # crop is in the sprig's own pixels, which scaled too
+                    item.crop = tuple(round(c * f) for c in item.crop)  # type: ignore[assignment]
+                if here:
+                    item.x, item.y = item.x * f + ox, item.y * f + oy
+                    item.bounds_size = (item.bounds_size[0] * f, item.bounds_size[1] * f)
+                    if not shrinks:
+                        item.scale *= f
+                        item.scale_y = None if item.scale_y is None else item.scale_y * f
+                elif shrinks and not item.bounded:
+                    item.scale /= f
+                    item.scale_y = None if item.scale_y is None else item.scale_y / f
+
     def _refit_placements(self, part: Scene, canvas_id: str, old: tuple[int, int], new: tuple[int, int]) -> None:
         """Placements of `part` on a canvas switch from a layout of size `old` to one of size `new`.
 

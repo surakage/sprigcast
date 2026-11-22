@@ -2,6 +2,7 @@
 // Exit code 0 = all passed. Pixel checks against Python's reference drawing live in tests/test_sprigcore.py.
 #include "sprigcore.h"
 #include "../src/capture_drift.h"
+#include "../src/packet_times.h"
 
 #ifndef NOMINMAX
 #  define NOMINMAX
@@ -177,6 +178,17 @@ int main() {
         sc_playback_close(playback);
         CHECK(sc_playback_open(nullptr, SC_MIXER_MONITOR, nullptr, &playback) == SC_ERR_ARGUMENT);
         sc_mixer_destroy(mixer);
+    }
+    {  // An encoder's decode time after its picture time (AMD's on a Radeon R2) takes the picture time instead;
+       // right ones, B-frames' earlier ones and unknown times are left alone.
+        int64_t dts = 2;
+        CHECK(sc::even_out_dts(1, dts) && dts == 1);
+        dts = 1;
+        CHECK(!sc::even_out_dts(1, dts) && dts == 1);
+        dts = -1;
+        CHECK(!sc::even_out_dts(3, dts) && dts == -1);
+        dts = 5;
+        CHECK(!sc::even_out_dts(std::numeric_limits<int64_t>::min(), dts) && dts == 5);
     }
     {  // A device whose clock runs slow (the HD60 X: 47,450 a second of 48,000) is measured and evened out; a good
        // clock, a pause with no signal and wild bursts are left alone.

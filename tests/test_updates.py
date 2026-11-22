@@ -293,3 +293,38 @@ def test_settings_has_check_now_and_the_auto_switch(qt, monkeypatch):
     window.auto_updates.setChecked(False)
     assert window.apply()
     assert QSettings().value(updates.AUTO_CHECK, True, type=bool) is False
+
+
+def test_the_update_popup_holds_its_notes_and_buttons():
+    """It opened at the pop-up's smallest size, the notes over the buttons and no sloth (2026-11-22)."""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication, QWidget
+
+    from sprigcast import update
+    from sprigcast.app import updates
+
+    QApplication.instance() or QApplication([])
+    release = update.Release("9.0.0", "### Added\n\n- One thing\n- Another", "https://example.invalid", "x", 1, "y")
+    host = QWidget()
+    seen = {}
+
+    def fake_modal(dialog):
+        dialog.show()
+        QApplication.processEvents()
+        prompt = dialog.findChild(updates.UpdatePrompt)
+        seen["size"] = (dialog.width(), dialog.height())
+        seen["notes_below_title"] = prompt.notes.geometry().top() > 0
+        seen["buttons_below_notes"] = prompt.go_button.geometry().top() >= prompt.notes.geometry().bottom()
+        seen["html"] = prompt.notes.toHtml()
+        dialog.reject()
+
+    old = updates.modal
+    updates.modal = fake_modal
+    try:
+        updates.Updater(host, lambda: False, installed=True).show_prompt(release)
+    finally:
+        updates.modal = old
+    assert seen["size"][0] >= updates.UpdatePrompt.WIDTH and seen["size"][1] > updates.UpdatePrompt.NOTES_HEIGHT + 150
+    assert seen["buttons_below_notes"] and "Another" in seen["html"]

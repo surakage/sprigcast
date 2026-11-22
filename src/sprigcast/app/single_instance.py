@@ -2,6 +2,11 @@
 
 The first copy listens on a local socket named for this Windows user; a second copy that reaches it waits
 for the first to answer (it hangs up once its window is showing) and exits before loading anything.
+
+The socket only exists once the first copy has got that far, which took almost a minute on a slow PC with a hard
+drive (tester PC, 2026-11-22): launches clicked again meanwhile found nobody listening and all opened, up to five
+copies fighting over one graphics chip. So on Windows a copy first claims a named mutex the moment it starts
+(claim()); a copy that finds it taken waits for the one holding it (wait_for_first_copy()).
 """
 
 from __future__ import annotations
@@ -9,6 +14,7 @@ from __future__ import annotations
 import getpass
 import logging
 import sys
+import time
 from collections.abc import Callable
 
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
@@ -22,6 +28,69 @@ def server_name() -> str:
     except Exception:
         user = "user"
     return "SprigCast-" + "".join(c for c in user if c.isalnum()) or "SprigCast"
+
+
+ERROR_ALREADY_EXISTS = 183
+WAIT_OBJECT_0, WAIT_ABANDONED = 0x0, 0x80
+FIRST_COPY_WAIT_S = 90.0  # longest a launch waits for a copy that's still starting before it opens anyway
+_claim = None  # the mutex handle this copy holds, or the one it waits on
+
+
+def claim(name: str | None = None) -> bool:
+    """Windows: take this user's "SprigCast is running" mutex at once. False when another copy holds it
+    (running, starting, or closing for a restart). Elsewhere always True: the socket alone decides there."""
+    global _claim
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        handle = kernel32.CreateMutexW(None, True, "SprigCastOneCopy-" + (name or server_name()))
+        taken = ctypes.get_last_error() == ERROR_ALREADY_EXISTS
+    except Exception:  # noqa: BLE001 - no mutex: the socket check alone, as before
+        return True
+    if not handle:
+        return True
+    _claim = handle  # kept (owned or not) until this copy ends; Windows lets go of it then
+    return not taken
+
+
+def _wait_turn(ms: int) -> bool:
+    """True when the copy holding the mutex let go (closed) and this copy now holds it."""
+    if _claim is None:
+        return True
+    import ctypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+    return kernel32.WaitForSingleObject(_claim, ms) in (WAIT_OBJECT_0, WAIT_ABANDONED)
+
+
+def wait_for_first_copy(ask: Callable[[], bool] | None = None, turn: Callable[[int], bool] | None = None,
+                        longest_s: float = FIRST_COPY_WAIT_S, waiting: Callable[[], None] | None = None) -> bool:
+    """Another copy holds the mutex: True once it was asked to show its window (this copy should quit), False
+    when it closed meanwhile (a restart) or never answered in longest_s (this copy opens). `waiting` is called
+    each half second while the other copy is still starting."""
+    ask = ask or ask_running_copy
+    turn = turn or _wait_turn
+    told = False
+    deadline = time.monotonic() + longest_s
+    while True:
+        if ask():
+            return True
+        if turn(500):
+            return False
+        if time.monotonic() >= deadline:
+            log.warning("single copy check: another SprigCast didn't answer in %.0f s; opening anyway", longest_s)
+            return False
+        if not told:
+            told = True
+            log.info("single copy check: another SprigCast is starting; it comes forward once it's ready")
+        if waiting is not None:
+            waiting()  # the "still starting" notice stays drawn
 
 
 def ask_running_copy(name: str | None = None, wait_ms: int = 400) -> bool:

@@ -119,6 +119,8 @@ def test_live_shows_the_banner_and_the_garden_check_opens_the_last_stream(app, t
         w.last_resources = {"cpu": 4.6, "ram_mb": 209}
         w._refresh_garden()
         assert side.garden.numbers.text() == "CPU 4.6%  ·  209 MB  ·  0 dropped" and side.garden.level == "good"
+        w._disk_free_gb(w._recordings_folder())  # measured on a worker (as the window does at start)
+        w._disk_job.result(timeout=10)
         health.save(QSettings(), health.HealthRecord(started="2026-11-15 20:10", seconds=600))
         pop = w._open_health()  # Stream health: the Garden check, on the last streams
         assert pop.garden.page.records[0].seconds == 600 and pop.garden.stack.currentWidget() is pop.garden.page
