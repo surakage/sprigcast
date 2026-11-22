@@ -1,21 +1,21 @@
 # Changelog
 
-What changed in each SprigCast release, grouped by area. Numbers like (#184) are the pull requests on GitHub.
+What changed in each SprigCast beta and release. Full releases are whole numbers (Version 1); betas are the last
+full release plus decimals (Beta 0.3). Each new section is grouped as Added, Changed, Fixed and Removed. Numbers like (#184) are the pull requests on GitHub.
 
 "Tested" means tried on a real Windows PC. Everything else passed the automated tests but still needs a try.
 
-## Unreleased
+## Beta 0.3 (not released yet)
+
+The C++ engine now sends streams, writes recordings and keeps clips. Many of the Build and web page fixes were found
+with a big garden brought over from OBS (88 scenes, 61 web pages, about 78 nested sprigs).
+
+### Added
 
 - Backdrop has new settings for fine tuning. Background Brightness (blur and picture), Person Brightness and
   Person Gamma light the room and the person separately. Edge Size grows or shrinks the cut around the person (a
   lower value drops chair backs and boxes the model keeps), and Steadiness sets how much each mask keeps of the
   last one against flicker. Engine interface 44. Not tried on a PC yet.
-- The log's "pages:" line no longer repeats "script memory 150 MB for 1 page" for pages that share one page
-  process.
-- Twitch Enhanced Broadcasting uses less memory. Its two NVIDIA encoders (and any NVENC stream or recording
-  with B-frames or look-ahead) now open on the graphics device SprigCast already draws with, instead of each
-  making a CUDA context of its own (about 490 MB together when going live on the test PC). If an encoder
-  can't start that way it starts as before. `SPRIGCAST_NO_CARD_UPLOAD=1` turns it off. Not tried on a PC yet.
 - Sign in with TikTok (Settings → Stream → a TikTok place): shows which TikTok account is connected, as
   "Name (@username)". It reads no stream key, because TikTok doesn't share one with apps; paste the key from LIVE
   Producer as before. Sign out deletes the sign-in and asks TikTok to cancel it. Uses TikTok's sandbox for now,
@@ -34,9 +34,32 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
   folder: every library it includes (Qt, Chromium, FFmpeg, Python and the rest) with its license.
 - A test build says so wherever SprigCast shows or logs its version, with the build's number and commit (for
   example "0.2.0 test build 44932007527 (eafa358)"), so logs and problem reports name the build they came from.
-- Twitch Enhanced Broadcasting no longer sends the vertical canvas: Twitch closed that connection within a
-  second every time on the PC test. The "Additional canvas" setting is hidden and a saved choice is kept for
-  when it works. `SPRIGCAST_TWITCH_VERTICAL=1` brings it back to try.
+- Going live first checks that every place's server can be reached (2 seconds at most, nothing is sent and the
+  stream key isn't used). A place that would not connect is named in the Stream doctor's card before you are
+  live, and in the warnings an app gets. Not tried on a PC yet.
+- Two places that use the same stream key are named before you go live, since a stream key takes one stream at
+  a time. A place that can't connect also says when another place uses its key.
+- Backdrop filter for cameras and capture cards: blur the room behind you, swap it for a picture, or take it
+  out. A small person-finding model (MediaPipe Selfie Segmentation, Apache 2.0) runs inside the engine as
+  graphics card programs: no AI library, nothing on the processor, about 0.2 MB added to the engine. It makes a
+  mask up to 30 times a second (15 on a slow card) only while the picture shows; a card older than Direct3D 11,
+  or one that takes over 40 ms a mask, leaves the picture as it is and the Filters window says so. The blurred
+  room leaves the person out, so their colors don't glow around them. Native engine only. Not tried on a PC yet.
+- Web pages play MP4 videos: a page's H.264 MP4 (StreamBridge's Random Clip Player plays Twitch clips like that)
+  is turned into WebM the first time it's asked for, on the graphics card when it can (AV1), else VP8, and the
+  copy is kept for next time (1.5 GB at most). The page engine can't play H.264 itself, so these clips showed an
+  empty player. Streaming players (MSE) asking for H.264 still can't play and say so in the source's status.
+  Tried in the automated tests with a real page; not tried on a PC yet.
+- Freeze works on one item: a Freeze filter put on an item (not on its source) holds that item's picture where
+  it's placed, while the same source keeps moving everywhere else it shows. Engine side only for now (both
+  engines); the plugin, hotkeys and Control API follow. Not tried on a PC yet.
+
+### Changed
+
+- Twitch Enhanced Broadcasting uses less memory. Its two NVIDIA encoders (and any NVENC stream or recording
+  with B-frames or look-ahead) now open on the graphics device SprigCast already draws with, instead of each
+  making a CUDA context of its own (about 490 MB together when going live on the test PC). If an encoder
+  can't start that way it starts as before. `SPRIGCAST_NO_CARD_UPLOAD=1` turns it off. Not tried on a PC yet.
 - The README says what SprigCast needs now (any graphics card with OpenGL 3.3; the CPU encodes when there's no
   graphics-card encoder) and how to get past Windows' "protected your PC" warning while the installer isn't
   signed.
@@ -51,10 +74,6 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
   thread's ticks, which can come late without costing the stream a frame: the Stream doctor said "The preview
   runs at 42 of 60 fps" and stopped an app's go-live, and the report showed 54 fps at every bloom switch.
   Such a tick is logged as "late tick, no frame lost". Not tried on a PC yet.
-- The Stream doctor no longer writes an error to the log when its window is closed while it still listens.
-- Going live first checks that every place's server can be reached (2 seconds at most, nothing is sent and the
-  stream key isn't used). A place that would not connect is named in the Stream doctor's card before you are
-  live, and in the warnings an app gets. Not tried on a PC yet.
 - FFmpeg's log lines are written when they are said. Camera lines like "Could not set video options" no longer
   show up as errors minutes later when a place stops.
 - The log line about frames the engine had ready but that were taken too late now names the picture (canvas
@@ -67,12 +86,9 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 - A place switched off and back on while live sends the same encoded video as before (Twitch's quality or a
   shared encoder) instead of getting an encoder and a sender of its own, which overloaded the PC and made that
   place drop frames.
-- Two places that use the same stream key are named before you go live, since a stream key takes one stream at
-  a time. A place that can't connect also says when another place uses its key.
 - Twitch Enhanced Broadcasting's connection is packed and sent by the C++ engine, like every other place
   already was, instead of by a busy Python thread beside the window. `SPRIGCAST_NO_NATIVE_ESEND=1` turns it
   off. Not tried on a PC yet.
-- Switching clips off no longer writes an "sc_mixer_tap_pause: no such tap" warning to the log.
 - A chat box on the canvas draws new messages on a background worker instead of on the drawing thread.
 - Source record's picture (the bloom without the sources you leave out) is drawn by the C++ engine and goes
   straight to its file, instead of Python drawing the whole bloom a second time every frame.
@@ -88,24 +104,15 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
   clip is written there, so saving one never slows the window or the stream. With streams, recordings and clips
   all handled by the engine, no encoded video passes through Python any more while live.
   `SPRIGCAST_NO_NATIVE_CLIPS=1` turns it off. Not tried on a PC yet.
-
 - Recordings are written by the C++ engine: the file is packed and written on a thread of the engine's own, so
   the window being busy can't hold it up, and a slow disk can't hold up anything else. Pause, split into parts,
   chapter marks and "Same as stream" recordings work as before. `SPRIGCAST_NO_NATIVE_FILE=1` turns it off. Not
   tried on a PC yet.
-
 - Streams are sent by the C++ engine: each place's connection is made, packed and sent on a thread of the
   engine's own, so a busy moment in the window can no longer hold up what goes out to Twitch, YouTube, Kick and
   the others. Reconnecting, stream delay, skipping when the upload can't keep up, auto bitrate and the numbers
   in Stats work as before. Twitch Enhanced Broadcasting's own connection is still sent the old way for now.
   `SPRIGCAST_NO_NATIVE_LINK=1` turns it off. Not tried on a PC yet.
-- Backdrop filter for cameras and capture cards: blur the room behind you, swap it for a picture, or take it
-  out. A small person-finding model (MediaPipe Selfie Segmentation, Apache 2.0) runs inside the engine as
-  graphics card programs: no AI library, nothing on the processor, about 0.2 MB added to the engine. It makes a
-  mask up to 30 times a second (15 on a slow card) only while the picture shows; a card older than Direct3D 11,
-  or one that takes over 40 ms a mask, leaves the picture as it is and the Filters window says so. The blurred
-  room leaves the person out, so their colors don't glow around them. Native engine only. Not tried on a PC yet.
-
 - Nothing personal in the logs: every line of the day log, each stream report, crash.log and the console now
   goes through one scrubber that hides stream keys, sign-in tokens, the API password and device keys (the values
   this run has read and anything shaped like one), everything after the server in a stream or web address, the
@@ -113,46 +120,14 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
   Twitch Enhanced Broadcasting's stream sign-in got past the old check (it holds a "?" of its own) and was written
   in full to the log and the stream report when a stream dropped (2026-11-20). Logs already on the PC are cleaned
   at the next start. Not tried on a PC yet.
-
-- Web pages play MP4 videos: a page's H.264 MP4 (StreamBridge's Random Clip Player plays Twitch clips like that)
-  is turned into WebM the first time it's asked for, on the graphics card when it can (AV1), else VP8, and the
-  copy is kept for next time (1.5 GB at most). The page engine can't play H.264 itself, so these clips showed an
-  empty player. Streaming players (MSE) asking for H.264 still can't play and say so in the source's status.
-  Tried in the automated tests with a real page; not tried on a PC yet.
-
-- The window no longer stops answering for 2 to 3 seconds when the settings copy is made (30 seconds after
-  start and after every Settings Save): the copying program is now started from a side thread. Seen in a PC log
-  on three starts. Not tried on a PC yet.
-
-- Freeze works on one item: a Freeze filter put on an item (not on its source) holds that item's picture where
-  it's placed, while the same source keeps moving everywhere else it shows. Engine side only for now (both
-  engines); the plugin, hotkeys and Control API follow. Not tried on a PC yet.
-
-- Fixed a rare crash about 15 seconds after start ("access violation", seen about one start in 40 in the start-up
-  check on GitHub, never caught on a PC). When SprigCast noted where its window was busy, it could end up freeing
-  that moment's objects on the wrong thread; a 2-second timer of one of them (the card shadow's) then ticked on
-  nothing. The notes are now taken without holding on to anything, and the shadow keeps no timer. This could also
-  have hit any pop-up opened while the window was busy.
 - The start-up check's crash dump on GitHub also holds what the crash pointed at, which is how this one was found.
-
-- A Color is drawn by the new engine at its full size again. Its picture is a few pixels stretched over its size, and
-  the engine was never told the size, so it drew a dot: a Color inside a sprig showed only the checkerboard in Build
-  and nothing in Live. Not tried on a PC yet.
-- Live no longer shows the "Empty bloom" card of a bloom picked in Build over the on-air picture.
 - The start-up check on GitHub says where a crashed start was (module, nearest name, registers and stack) without
   anyone downloading the dump.
-
-Found with a big garden brought over from OBS (88 scenes, 61 web pages, about 78 nested sprigs). Not tried on a PC yet.
-
-- A web page read from memory (Build with a sprig open, the old engine, a projector) no longer jumps sideways on
-  every other picture. SprigCast and its page helper disagreed by 2016 bytes about where the second of a page's two
-  pictures starts, so it came out 504 pixels to the side and wrapped around (a 1920x1080 page).
 - The engine no longer draws a whole-canvas picture for a sprig that only wraps one page or picture of its own
   size, or one laid untouched over the whole canvas: it draws what the sprig holds, in the sprig's place. A bloom
   from OBS has about 27 of these per canvas, which kept the graphics card at 71% doing nothing.
 - Build's sprig list and "used in" counts walk the garden once, not once per sprig (0.8 to 1.1 s freezes with that
   garden).
-- Build's list: a click on a row at the moment the list is made again no longer raises an error.
 - The engine draws a canvas only when something takes its picture: a canvas with no preview, recording or stream
   on it isn't drawn at all, and one only a preview shows is drawn 30 times a second (15 with Preview while live:
   Light), not 60. Recordings and streams still get every frame.
@@ -163,10 +138,6 @@ Found with a big garden brought over from OBS (88 scenes, 61 web pages, about 78
 - A stinger waiting for its clip to open stays with the engine, which shows the old bloom until the clip is there.
   The wait used to hand the canvas and its stream frames to the older drawing code and back at every switch (frames
   of 55 to 114 ms and a jump of the picture with the imported garden).
-- A web page that was opened, closed and opened again in quick succession (switching blooms back and forth) could
-  stay empty for good, with "the engine stopped taking its pictures, a new texture" in the log once a second. The
-  page helper let go of the page's picture memory when the close was asked for, not when the page closed, so a
-  leftover could be used by the next opening without SprigCast being told where it was.
 - Pages brought over from OBS sleep while not on screen, like any SprigCast page. OBS keeps every page running
   unless told otherwise, and that was carried over. One note after the import says so.
 - A web page whose video can't play now says so in the source's status ("Video can't play: page uses H.264 (MP4)")
@@ -174,7 +145,43 @@ Found with a big garden brought over from OBS (88 scenes, 61 web pages, about 78
   MP4s (StreamBridge's Random Clip Player, alert boxes with video) showed nothing and said nothing. Also caught in
   iframes and in streaming players (MSE). Playing those videos needs a page engine built with the codecs: next.
 
-## 0.2.0 (2026-11-19)
+### Fixed
+
+- Switching gardens and paths from apps and hotkeys works while the "Help improve SprigCast?" card is up, and
+  a garden switch is faster (the garden is written once instead of four times). The card now waits until
+  SprigCast has settled after a stream. Not tried on a PC yet.
+- The log's "pages:" line no longer repeats "script memory 150 MB for 1 page" for pages that share one page
+  process.
+- The Stream doctor no longer writes an error to the log when its window is closed while it still listens.
+- Switching clips off no longer writes an "sc_mixer_tap_pause: no such tap" warning to the log.
+- The window no longer stops answering for 2 to 3 seconds when the settings copy is made (30 seconds after
+  start and after every Settings Save): the copying program is now started from a side thread. Seen in a PC log
+  on three starts. Not tried on a PC yet.
+- Fixed a rare crash about 15 seconds after start ("access violation", seen about one start in 40 in the start-up
+  check on GitHub, never caught on a PC). When SprigCast noted where its window was busy, it could end up freeing
+  that moment's objects on the wrong thread; a 2-second timer of one of them (the card shadow's) then ticked on
+  nothing. The notes are now taken without holding on to anything, and the shadow keeps no timer. This could also
+  have hit any pop-up opened while the window was busy.
+- A Color is drawn by the new engine at its full size again. Its picture is a few pixels stretched over its size, and
+  the engine was never told the size, so it drew a dot: a Color inside a sprig showed only the checkerboard in Build
+  and nothing in Live. Not tried on a PC yet.
+- Live no longer shows the "Empty bloom" card of a bloom picked in Build over the on-air picture.
+- A web page read from memory (Build with a sprig open, the old engine, a projector) no longer jumps sideways on
+  every other picture. SprigCast and its page helper disagreed by 2016 bytes about where the second of a page's two
+  pictures starts, so it came out 504 pixels to the side and wrapped around (a 1920x1080 page).
+- Build's list: a click on a row at the moment the list is made again no longer raises an error.
+- A web page that was opened, closed and opened again in quick succession (switching blooms back and forth) could
+  stay empty for good, with "the engine stopped taking its pictures, a new texture" in the log once a second. The
+  page helper let go of the page's picture memory when the close was asked for, not when the page closed, so a
+  leftover could be used by the next opening without SprigCast being told where it was.
+
+### Removed
+
+- Twitch Enhanced Broadcasting no longer sends the vertical canvas: Twitch closed that connection within a
+  second every time on the PC test. The "Additional canvas" setting is hidden and a saved choice is kept for
+  when it works. `SPRIGCAST_TWITCH_VERTICAL=1` brings it back to try.
+
+## Beta 0.2.0 (2026-11-19)
 
 The first named release since the build guide. SprigCast now looks and works like its own app instead of an OBS copy:
 a Live screen for running the show, a Build screen for making blooms, chat, a control API, and a lot of speed work.
@@ -769,7 +776,7 @@ Not steady enough to ship yet; each is listed in docs/REVISIT.md with what it ne
 - The test suite passes on Windows 11 too (#210, #214).
 - Recordings no longer skip their second frame, which also fixed a flaky test (#216, #218).
 
-## 0.1.0
+## Beta 0.1.0
 
 The build guide, milestones M0 to M11: GPU canvases for horizontal and vertical at once, blooms and sprigs, display,
 window and camera capture, image, color and text sources, audio mixer, recording, streaming to several places,

@@ -13,12 +13,26 @@ def test_build_label_names_a_test_build(tmp_path, monkeypatch):
     import sprigcast
 
     monkeypatch.setattr(sprigcast, "__file__", str(tmp_path / "__init__.py"))
-    assert sprigcast.build_label() == sprigcast.__version__  # a release (or source) has no build.json
+    shown = sprigcast.display_version()
+    assert sprigcast.build_label() == shown  # a release (or source) has no build.json
     (tmp_path / "build.json").write_text(json.dumps({"kind": "test", "run": "44932007527", "commit": "eafa358"}),
                                          encoding="utf-8-sig")
-    assert sprigcast.build_label() == f"{sprigcast.__version__} test build 44932007527 (eafa358)"
+    assert sprigcast.build_label() == f"{shown} test build 44932007527 (eafa358)"
     (tmp_path / "build.json").write_text("not json", encoding="utf-8")
-    assert sprigcast.build_label() == sprigcast.__version__
+    assert sprigcast.build_label() == shown
+
+
+def test_versions_show_as_betas_and_whole_numbered_releases():
+    from sprigcast import display_version
+
+    assert display_version("0.3.0") == "Beta 0.3"
+    assert display_version("0.3.1") == "Beta 0.3.1"
+    assert display_version("v0.2.0") == "Beta 0.2"
+    assert display_version("1.0.0") == "Version 1"
+    assert display_version("1.2.0") == "Beta 1.2"  # a beta toward Version 2
+    assert display_version("2.0.0") == "Version 2"
+    assert display_version("0.0.0") == "Beta 0.0"
+    assert display_version("0.3.0-dev") == "0.3.0-dev"
 
 
 def test_logs_and_reports_use_the_build_label(tmp_path, monkeypatch):
@@ -96,7 +110,7 @@ def test_about_names_a_test_build_and_links_the_licenses(monkeypatch):
     from sprigcast.app import about
 
     app = QApplication.instance() or QApplication([])  # noqa: F841
-    monkeypatch.setattr(sprigcast, "build_label", lambda: f"{sprigcast.__version__} test build 7 (abc1234)")
+    monkeypatch.setattr(sprigcast, "build_label", lambda: f"{sprigcast.display_version()} test build 7 (abc1234)")
     page = about.about_page()
     assert page.findChild(QLabel, "aboutBuild").text() == "Test build 7 (abc1234)"
     assert "LICENSE" in page.findChild(QLabel, "aboutLicenses").text()  # from source: the repo's license

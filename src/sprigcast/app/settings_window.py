@@ -839,7 +839,7 @@ class SettingsWindow(QDialog):
             self.check_updates_button.setEnabled(self.check_updates is not None)
             self.check_updates_button.clicked.connect(lambda: self.check_updates and self.check_updates())
             up_row.addWidget(self.check_updates_button)
-            up_row.addWidget(_hint(f"Version {build_label()}"), 1)
+            up_row.addWidget(_hint(build_label()), 1)
             up_box.addLayout(up_row)
 
             safety = QGroupBox("Going live")

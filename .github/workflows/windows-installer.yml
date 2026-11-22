@@ -203,7 +203,8 @@ jobs:
           if (-not (Test-Path $setup)) { throw "Tag $tag doesn't match the version that was built (see pyproject.toml)" }
           & packaging\build\python\python.exe packaging\release_notes.py $version notes.md
           if ($LASTEXITCODE -ne 0) { throw "CHANGELOG.md needs a section for $version" }
-          gh release create $tag $setup packaging\out\SHA256.txt --title "SprigCast $version" --notes-file notes.md --verify-tag --latest
+          $shown = (& packaging\build\python\python.exe -c "import sprigcast; print(sprigcast.display_version())").Trim()
+          gh release create $tag $setup packaging\out\SHA256.txt --title "SprigCast $shown" --notes-file notes.md --verify-tag --latest
       # A test-* tag (for example test-2026-11-21) publishes a pre-release for testers: a download link that
       # lasts, with docs/tester-guide.md as its text. The in-app updater skips pre-releases, so nobody is offered
       # a test build as an update. The build names itself a test build (sprigcast.build_label).
