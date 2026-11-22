@@ -105,3 +105,28 @@ def test_new_web_page_starts_light(app):
     assert v["audio_to_mixer"] and not v["keep_running"] and not v["custom_fps"]  # sound in SprigCast, sleeps
     assert d.url.text() == "" and not d.css.isVisibleTo(d)  # the usual CSS stays folded away
     assert not hasattr(d, "reload_button")
+    assert not hasattr(d, "interact_button")  # nothing to click in until it exists
+
+
+def test_interact_from_the_page_card_closes_with_it(app):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QWidget
+
+    from sprigcast.app.web_page_dialog import WebPageDialog
+
+    opened = []
+
+    def interact(card):
+        window = QWidget(card, Qt.WindowType.Window)  # like the interact window
+        opened.append((card, window))
+        window.show()
+        return window
+
+    d = WebPageDialog("Alerts", {"url": "https://example.com/alerts"}, on_interact=interact)
+    d.interact_button.click()
+    d.interact_button.click()  # the same window again: closed once
+    assert len(opened) == 2 and opened[0][0] is d
+    window = opened[-1][1]
+    assert window.isVisible()
+    d.done(0)
+    assert not window.isVisible()  # the page goes back off screen with the card

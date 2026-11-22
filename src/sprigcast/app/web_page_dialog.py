@@ -2,7 +2,7 @@
 rests when it's not on screen, and its look. Same keys as sources/browser.py DEFAULTS.
 
     ╭ Web page ─────────────────────────────╮
-    │ [ Link | File on this PC ]            │
+    │ [ Link | File on this PC ]  [Interact]│
     │ https://…                             │
     │ Size  1920 × 1080      Frame rate …   │
     │ Sound      ○ Its own strip in SprigCast│
@@ -69,10 +69,13 @@ def _title(text: str) -> QLabel:
 
 
 class WebPageDialog(CardDialog):
-    """New or change a web page. values() gives the settings; on_reload (when set) reloads it now."""
+    """New or change a web page. values() gives the settings; on_reload (when set) reloads it now, and
+    on_interact(dialog) (when set) opens the page on screen to click and type in. It may return that window,
+    which then closes with this card."""
 
     def __init__(self, title: str, settings: dict[str, Any], parent: QWidget | None = None,
-                 on_reload: Callable[[], None] | None = None, primary: str = "Save"):
+                 on_reload: Callable[[], None] | None = None, primary: str = "Save",
+                 on_interact: Callable[[QWidget], Any] | None = None):
         super().__init__(title, parent, width=560)
         s = {**DEFAULTS, **settings}
         self.switches: dict[str, Switch] = {}
@@ -89,6 +92,15 @@ class WebPageDialog(CardDialog):
             tab.setCursor(Qt.CursorShape.PointingHandCursor)
             tabs.addWidget(tab)
         tabs.addStretch(1)
+        self._interact_window: Any = None
+        if on_interact is not None:  # the page itself, to sign in, close a banner or press a button
+            interact = QPushButton("Interact")
+            interact.setStyleSheet(CHIP)
+            interact.setCursor(Qt.CursorShape.PointingHandCursor)
+            interact.setToolTip("Open the page to click, type and scroll in it")
+            interact.clicked.connect(lambda: self._interact(on_interact))
+            self.interact_button = interact
+            tabs.addWidget(interact)
         box.addLayout(tabs)
         self.url = self.line_edit("Paste the page's link, like an alert box or chat widget")
         url = str(s.get("url", "") or "")
@@ -210,6 +222,19 @@ class WebPageDialog(CardDialog):
         words.addWidget(_muted(note))
         row.addLayout(words, 1)
         box.addLayout(row)
+
+    def _interact(self, on_interact: Callable[[QWidget], Any]) -> None:
+        window = on_interact(self)
+        if window is not None and window is not self._interact_window:
+            self._interact_window = window
+            self.finished.connect(lambda *_: self._close_interact(window))
+
+    def _close_interact(self, window: Any) -> None:
+        try:
+            if window.isVisible():
+                window.close()  # puts the page back off screen before this card goes
+        except RuntimeError:  # already gone
+            pass
 
     def _show_where(self) -> None:
         link = self.link_tab.isChecked()
