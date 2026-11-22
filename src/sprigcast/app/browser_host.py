@@ -189,7 +189,10 @@ def shared_profile():
         _turn_on_features(_profile.settings())
         from sprigcast.app import page_video
 
-        page_video.install(_profile, base)  # MP4 clips this engine can't play, converted to WebM
+        videos = page_video.install(_profile, base)  # MP4 clips this engine can't play, converted to WebM
+        from sprigcast.app import page_requests
+
+        page_requests.install(_profile, page_video._interceptors[-1] if videos else None)  # what sign-ins send
     return _profile
 
 
