@@ -70,16 +70,17 @@ def test_notices_list_every_bundled_package_and_both_licenses(tmp_path):
     assert "GNU GENERAL PUBLIC LICENSE" in (home / notices.LICENSE).read_text(encoding="utf-8")
 
 
-def test_twitch_vertical_stays_off_until_asked_for(monkeypatch):
+def test_twitch_vertical_follows_the_place_and_can_be_switched_off(monkeypatch):
     from types import SimpleNamespace
 
     from sprigcast.output import enhanced
 
     place = SimpleNamespace(enhanced=True, enhanced_vertical=True)
     monkeypatch.delenv(enhanced.VERTICAL_ENV, raising=False)
-    assert not enhanced.sends_vertical(place)
-    monkeypatch.setenv(enhanced.VERTICAL_ENV, "1")
     assert enhanced.sends_vertical(place)
+    assert not enhanced.sends_vertical(SimpleNamespace(enhanced=True, enhanced_vertical=False))
+    monkeypatch.setenv(enhanced.VERTICAL_ENV, "0")
+    assert not enhanced.sends_vertical(place)
     assert not enhanced.sends_vertical(SimpleNamespace(enhanced=False, enhanced_vertical=True))
 
 
@@ -90,7 +91,7 @@ def test_stream_page_hides_the_vertical_row_and_keeps_a_saved_choice(monkeypatch
     from sprigcast.core.scene import Canvas, Output, SceneCollection
 
     app = QApplication.instance() or QApplication([])  # noqa: F841
-    monkeypatch.delenv("SPRIGCAST_TWITCH_VERTICAL", raising=False)
+    monkeypatch.setenv("SPRIGCAST_TWITCH_VERTICAL", "0")
     out = Output(id="out-twitch", type="stream", service="twitch", canvas="horizontal", key_ref="sprigcast/twitch",
                  enhanced=True, enhanced_vertical=True)
     col = SceneCollection(canvases=[Canvas(id="horizontal", width=1920, height=1080),

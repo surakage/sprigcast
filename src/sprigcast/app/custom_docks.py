@@ -94,6 +94,25 @@ def web_engine_available() -> bool:
 
 
 _profile = None
+_views: list = []  # every web panel's view, deleted before the profile at quit
+
+
+def release() -> None:
+    """At quit: each web panel's page, then its view, now. Left to deleteLater they outlived the profile, and
+    Chromium said "Release of profile requested but WebEnginePage still not deleted" (PC, 2026-11-22)."""
+    import shiboken6
+
+    while _views:
+        view = _views.pop()
+        try:
+            if not shiboken6.isValid(view):
+                continue
+            page = view.page()
+            if page is not None and shiboken6.isValid(page):
+                shiboken6.delete(page)
+            shiboken6.delete(view)
+        except Exception:  # noqa: BLE001  quitting: never stop it
+            log.debug("web panels: a view at quit", exc_info=True)
 
 
 def _shared_profile():
@@ -188,6 +207,13 @@ class WebDockBody(QWidget):
         else:
             self.view = QWebEngineView()
         self.view.setPage(QWebEnginePage(_shared_profile(), self.view))
+        _views.append(self.view)
+        if len(_views) == 1:
+            from PySide6.QtWidgets import QApplication
+
+            app = QApplication.instance()
+            if app is not None:
+                app.aboutToQuit.connect(release)
         if self.url and self.url != "about:blank":  # made ahead (the Chat panel's link): no page yet
             self.view.setUrl(QUrl(self.url))
         self._layout.removeWidget(self.placeholder)

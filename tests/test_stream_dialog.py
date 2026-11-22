@@ -88,7 +88,7 @@ def test_twitch_account_row(fake_keyring, monkeypatch):
 
 
 def test_multitrack_and_advanced_options(fake_keyring, monkeypatch):
-    monkeypatch.setenv("SPRIGCAST_TWITCH_VERTICAL", "1")  # the vertical row is hidden until it works
+    monkeypatch.delenv("SPRIGCAST_TWITCH_VERTICAL", raising=False)  # the vertical row shows
     app = QApplication.instance() or QApplication([])  # noqa: F841
     from sprigcast.app.stream_dialog import StreamPage
 

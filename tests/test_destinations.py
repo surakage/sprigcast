@@ -46,9 +46,10 @@ def test_readiness_and_summary(monkeypatch):
     assert "vertical canvas is off" in problem(tt, col, lambda ref: True)
     assert what_goes(tw, col) == "Horizontal · 1920×1080 · 60 fps · 6000 kbps"
     tw.enhanced, tw.enhanced_vertical = True, True
-    assert what_goes(tw, col) == "Enhanced · horizontal"  # Twitch's vertical is off until it works
-    monkeypatch.setenv("SPRIGCAST_TWITCH_VERTICAL", "1")
+    monkeypatch.delenv("SPRIGCAST_TWITCH_VERTICAL", raising=False)
     assert what_goes(tw, col) == "Enhanced · horizontal + vertical"
+    monkeypatch.setenv("SPRIGCAST_TWITCH_VERTICAL", "0")  # switched off again
+    assert what_goes(tw, col) == "Enhanced · horizontal"
 
 
 def test_live_panel_scene_buttons(app):
