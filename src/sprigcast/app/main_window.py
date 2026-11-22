@@ -1684,16 +1684,13 @@ class MainWindow(QMainWindow):
 
     def _sort_folder(self, folder_id: str, backwards: bool = False) -> None:
         """A folder's contents in name order (A–Z, or Z–A). They keep the places they held among all scenes, so
-        other lists stay put. Numbers count as numbers: "Chat 2" comes before "Chat 10"."""
-        import re
-
-        def key(scene) -> list:
-            return [(0, int(part), "") if part.isdigit() else (1, 0, part)
-                    for part in re.split(r"(\d+)", scene.name.casefold()) if part]
+        other lists stay put. Numbers count as numbers: "Chat 2" comes before "Chat 10", and a leading emoji or
+        symbol is skipped: "🟣 Elgato" sorts under E."""
+        from sprigcast.app.names import sort_key
 
         scenes = self.collection.scenes
         slots = [i for i, sc in enumerate(scenes) if sc.folder == folder_id]
-        ordered = sorted((scenes[i] for i in slots), key=key, reverse=backwards)
+        ordered = sorted((scenes[i] for i in slots), key=lambda sc: sort_key(sc.name), reverse=backwards)
         if [scenes[i].id for i in slots] == [sc.id for sc in ordered]:
             return  # in that order already: nothing to save or undo
         for slot, scene in zip(slots, ordered, strict=True):

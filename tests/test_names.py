@@ -67,3 +67,11 @@ def test_window_detail_drops_the_app_name():
     assert window_detail("Elden Ring", "ELDEN RING", "eldenring.exe") == ""
     assert window_app("Stream - Google Chrome", "chrome.exe") == "Chrome"
     assert window_app("Stream - Google Chrome", "chrome.exe", "Google Chrome") == "Google Chrome"
+
+
+def test_sort_skips_a_leading_emoji_and_counts_numbers():
+    from sprigcast.app.names import sort_key
+
+    names = ["Window Capture", "🟣 Webcam", "🟣 Elgato", "Chat 10", "chat 2", "★ Alerts"]
+    assert sorted(names, key=sort_key) == ["★ Alerts", "chat 2", "Chat 10", "🟣 Elgato", "🟣 Webcam", "Window Capture"]
+    assert sorted(names, key=sort_key, reverse=True)[0] == "Window Capture"
