@@ -426,8 +426,9 @@ SC_API int sc_engine_source_shared(sc_engine *engine, uint64_t id, const wchar_t
 SC_API int sc_engine_source_shared_hold(sc_engine *engine, uint64_t id, int held);
 /* Source `id` shows a window or a display, captured with Windows Graphics Capture on the engine's own device: every
  * frame the engine copies the newest picture on the card, so a screen's pictures never pass through memory or
- * Python. `window` is an HWND or `monitor` an HMONITOR (the other 0); both 0 stops the capture (the source keeps the
- * picture it has), and sc_engine_source_forget stops it too. flags: SC_SCREEN_*. interval_ms: at most one picture
+ * Python. `window` is an HWND or `monitor` an HMONITOR (the other 0). Both set: the display, cut each picture to where
+ * the window is on it, so its menus and pop-ups show too (SprigCast capturing itself). Both 0 stops the capture (the
+ * source keeps the picture it has), and sc_engine_source_forget stops it too. flags: SC_SCREEN_*. interval_ms: at most one picture
  * this often (0 = every one Windows draws). The same values again keep the capture running; new ones start it over.
  * The capture starts on the frame thread: sc_engine_capture_state says how it went. */
 enum {

@@ -133,6 +133,7 @@ def media_note(message: str) -> tuple[str, str] | None:
     return (note, src) if note else None
 
 
+ERRORS_LOGGED = 3  # a page's console errors logged after each load
 RENDERER_LIMIT = 2  # Chromium page processes for every browser source and web dock together
 
 
@@ -224,10 +225,13 @@ def _console_page_class():
 
         class ConsolePage(QWebEnginePage):
             console = None
+            console_error = None  # called with a page's console errors (the first few per load are logged)
 
             def javaScriptConsoleMessage(self, level, message, line, source):  # Qt's name
                 if self.console is not None and message.startswith(MEDIA_PREFIX):
                     self.console(message)
+                elif self.console_error is not None and level == QWebEnginePage.JavaScriptConsoleMessageLevel.ErrorMessageLevel:
+                    self.console_error(message)
 
         _ConsolePage = ConsolePage
     return _ConsolePage
@@ -339,6 +343,8 @@ class _Page:
         self.view.setStyleSheet("background: transparent")
         self.page = _console_page_class()(shared_profile(), self.view)
         self.page.console = self._console
+        self.page.console_error = self._console_error
+        self._errors_told = 0
         self._media_noted: set[str] = set()
         self.page.setBackgroundColor(Qt.GlobalColor.transparent)
         if hasattr(self.page, "permissionRequested"):  # Qt 6.8+: camera, mic, notifications... all no
@@ -347,6 +353,7 @@ class _Page:
             self.page.featurePermissionRequested.connect(self._deny)
         self.page.renderProcessTerminated.connect(self._crashed)
         self.page.loadFinished.connect(self._loaded)
+        self.page.loadStarted.connect(lambda: setattr(self, "_errors_told", 0))
         self.view.setPage(self.page)
         self._Script = QWebEngineScript
         self.interacting: InteractWindow | None = None
@@ -424,6 +431,14 @@ class _Page:
             scripts.insert(script)
 
     # Events ----------------------------------------------------------------------
+
+    def _console_error(self, message: str) -> None:
+        # A page that fails says why only in its console (Sound Alerts' sign-in, 2026-11-22: nothing in the log).
+        # The first ERRORS_LOGGED errors after each load; a page that keeps failing never fills the log.
+        if self._errors_told >= ERRORS_LOGGED:
+            return
+        self._errors_told += 1
+        log.info("browser source %s: the page says: %s", self.id, " ".join(str(message).split())[:240])
 
     def _console(self, message: str) -> None:
         note = media_note(message)

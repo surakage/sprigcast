@@ -992,9 +992,15 @@ class ControlServer(QObject):
                 future.add_done_callback(lambda f, s=socket, st=steps, later=step: self._later_done.emit((s, st, later, f)))
                 return
             if isinstance(step, Close):
-                log.info("control: closing a connection: %s%s", step.reason,
-                         f" ({len(self.pairing.devices)} paired device key(s), the password"
-                         f"{' and the api.json key' if self.local_key else ''} checked)" if step.code == 4009 else "")
+                # Which door and which app, on every refusal: the "app connected" line is folded after the first,
+                # so six wrong passwords in a row named nobody (PC 2026-11-22, it was StreamBridge's OBS default).
+                who = ""
+                if step.code == 4009:
+                    door = "SprigCast API" if isinstance(self.sessions.get(socket), NativeSession) else "OBS-style"
+                    who = (f" ({door} app, {self._labels.get(socket, (NAMELESS, 0))[0]}; "
+                           f"{len(self.pairing.devices)} paired device key(s), the password"
+                           f"{' and the api.json key' if self.local_key else ''} checked)")
+                log.info("control: closing a connection: %s%s", step.reason, who)
                 socket.close(QWebSocketProtocol.CloseCode(step.code), step.reason)
                 return
             socket.sendTextMessage(step)

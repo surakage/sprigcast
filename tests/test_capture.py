@@ -234,3 +234,31 @@ def test_privacy_lets_sprigcast_through_while_a_capture_shows_it(monkeypatch):
     assert privacy.set_shown_by_capture(True) and not privacy.hidden_now()
     assert not privacy.set_shown_by_capture(True)  # no change: nothing to apply again
     assert privacy.set_shown_by_capture(False) and privacy.hidden_now()
+
+
+def test_a_window_with_its_popups_is_cut_from_its_display():
+    from sprigcast.sources.capture import _package_target, box_on_display
+
+    # a window at (100, 50)-(900, 650) on a display whose corner is (1920, 0): its place on that display's picture
+    assert box_on_display((2020, 50, 2820, 650), (1920, 0), 1920, 1080) == (100, 50, 900, 650)
+    assert box_on_display((1800, -20, 2100, 400), (1920, 0), 1920, 1080) == (0, 0, 180, 400)  # part off it: cut
+    assert box_on_display((0, 0, 500, 500), (1920, 0), 1920, 1080) is None  # on another display
+    assert _package_target({"window_hwnd": 5}) == {"window_hwnd": 5}
+
+
+def test_own_window_capture_follows_its_display(monkeypatch):
+    import os
+
+    from sprigcast.sources import capture, win32_enum
+    from sprigcast.sources.win32_enum import WindowInfo
+
+    own = WindowInfo(7, "SprigCast", "SprigCast.exe", pid=os.getpid())
+    monkeypatch.setattr(win32_enum, "find_window", lambda *a, **k: own)
+    monkeypatch.setattr(capture, "_display_of", lambda hwnd: 42)
+    s = capture.WindowCaptureSource("w", {"title": "SprigCast", "process": "SprigCast.exe", "sprigcast": True})
+    assert s._target() == {"window_hwnd": 7, "display_handle": 42}
+    s.update({"title": "SprigCast", "process": "SprigCast.exe", "sprigcast": True, "popups": False})
+    assert s._target() == {"window_hwnd": 7}
+    other = capture.WindowCaptureSource("x", {"title": "Zed", "process": "zed.exe", "sprigcast": True})
+    monkeypatch.setattr(win32_enum, "find_window", lambda *a, **k: WindowInfo(3, "Zed", "zed.exe", pid=1))
+    assert other._target() == {"window_hwnd": 3}  # another app: its window alone

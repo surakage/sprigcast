@@ -144,3 +144,45 @@ def test_capture_dialogs_show_sprigcast(app):
     opened = WindowCaptureDialog({"title": "SprigCast", "process": "SprigCast.exe", "sprigcast": True}, others,
                                  False, list_windows=lambda: others, list_own=lambda: own)
     assert opened.window.count() == 2 and opened.values()[0]["process"] == "SprigCast.exe"
+
+
+def test_window_list_names_titles_and_searches(app):
+    from sprigcast.app.capture_dialog import WindowCaptureDialog
+    from sprigcast.app.window_list import APP_ROLE, DETAIL_ROLE, ROW_ROLE, WindowListPopup
+    from sprigcast.sources.win32_enum import WindowInfo
+
+    windows = [WindowInfo(i, f"Tab {i} — Mozilla Firefox", "firefox.exe", app="Firefox") for i in range(1, 6)]
+    windows += [WindowInfo(8, "Calculator", "ApplicationFrameHost.exe", app="Calculator"),
+                WindowInfo(9, "#general - Discord", "Discord.exe", app="Discord")]
+    d = WindowCaptureDialog({"title": "Tab 3 — Mozilla Firefox", "process": "firefox.exe"}, windows, False,
+                            list_windows=lambda: windows)
+    box = d.window
+    assert box.itemText(box.currentIndex()) == "Firefox  ·  Tab 3"
+    assert box.itemData(0, APP_ROLE) == "Calculator" and box.itemData(0, DETAIL_ROLE) == ""
+    popup = WindowListPopup(box)
+    assert popup.search is not None and popup.list.count() == 7
+    popup.search.setText("tab 5")
+    shown = [popup.list.item(r) for r in range(popup.list.count()) if not popup.list.item(r).isHidden()]
+    assert [i.data(DETAIL_ROLE) for i in shown] == ["Tab 5"]
+    popup._pick_current()
+    assert d.values()[0]["title"] == "Tab 5 — Mozilla Firefox"
+    assert shown[0].data(ROW_ROLE) == box.currentIndex()
+    few = WindowListPopup(WindowCaptureDialog({}, windows[:2], False).window)
+    assert few.search is None  # a short list needs no search
+    assert not d.popups_row.isVisibleTo(d)  # not SprigCast's own window: no pop-ups switch
+
+
+def test_own_window_offers_menus_and_popups(app):
+    import os
+
+    from sprigcast.app.capture_dialog import WindowCaptureDialog
+    from sprigcast.sources.win32_enum import WindowInfo
+
+    own = [WindowInfo(9, "SprigCast", "python.exe", app="SprigCast", pid=os.getpid())]
+    d = WindowCaptureDialog({"title": "SprigCast", "process": "python.exe", "sprigcast": True}, own, False,
+                            list_own=lambda: own)
+    assert d.popups_row.isVisibleTo(d) and d.values()[0]["popups"] is True
+    d.popups.setChecked(False)
+    assert d.values()[0]["popups"] is False
+    d.show_own.setChecked(False)
+    assert not d.popups_row.isVisibleTo(d) and "popups" not in d.values()[0]

@@ -14,6 +14,13 @@ window of the same app when the title changed, like a browser on a new tab; Exac
 through even with Settings → General → Privacy → Hide SprigCast from screen capture on; on a window capture it also
 lists SprigCast's own windows. Off, a screen capture of the screen SprigCast is on doesn't show itself in itself
 when that Privacy setting is on.
+
+"Menus and pop-ups" (on by default) shows while one of SprigCast's own windows is picked: its menus, Settings and
+other pop-ups are windows of their own, so a window capture alone never shows them. On, the screen is captured, cut
+to where the window is (sources/capture.py), so whatever opens over it shows too.
+
+The window list (app/window_list.py) names each window by its app and shows its title under it, with a search box
+when it's long.
 """
 
 from __future__ import annotations
@@ -25,7 +32,8 @@ from PySide6.QtWidgets import QComboBox, QFileIconProvider, QWidget
 
 from sprigcast.app import theme
 from sprigcast.app.card import CardDialog, field_label
-from sprigcast.app.game_dialog import WindowCombo, _row
+from sprigcast.app.game_dialog import _row
+from sprigcast.app.window_list import WindowCombo, add_window
 
 MATCHES = (("Exact title", "title"), ("Same app", "app"))  # A to Z
 
@@ -117,12 +125,34 @@ class WindowCaptureDialog(CardDialog):
         self.show_own.setAccessibleName("Show SprigCast")
         self.body.addLayout(_row("Show SprigCast", self.show_own))
         self.show_own.toggled.connect(lambda *_: self._reload())  # SprigCast's windows join or leave the list
+        self.popups = Switch()
+        self.popups.setChecked(bool(settings.get("popups", True)))
+        self.popups.setAccessibleName("Menus and pop-ups")
+        self.popups_row = QWidget()
+        popups_layout = _row("Menus and pop-ups", self.popups)
+        popups_layout.setContentsMargins(2, 0, 2, 0)
+        self.popups_row.setLayout(popups_layout)
+        self.body.addWidget(self.popups_row)
+        self.window.currentIndexChanged.connect(lambda *_: self._show_popups_row())
+        self.show_own.toggled.connect(lambda *_: self._show_popups_row())
         self.sound = Switch()
         self.sound.setChecked(has_sound)
         self.sound.setAccessibleName("Window sound")
         self.body.addLayout(_row("Window sound", self.sound))
         self.ok = self.add_buttons("Save")
         self.ok.setEnabled(self.window.count() > 0)
+        self._show_popups_row()
+
+    def picked_own(self) -> bool:
+        """The picked window is one of SprigCast's own."""
+        data = self.window.currentData()
+        if not data:
+            return False
+        return tuple(data) in self._own or str(data[1]).lower() == "sprigcast.exe"
+
+    def _show_popups_row(self) -> None:
+        if hasattr(self, "popups_row"):
+            self.popups_row.setVisible(self.show_own.isChecked() and self.picked_own())
 
     def _icon(self, w):
         from sprigcast.app.icons import icon
@@ -132,20 +162,27 @@ class WindowCaptureDialog(CardDialog):
 
     def _fill(self, windows: list, pick: tuple[str, str]) -> None:
         """The open windows A to Z (plus the saved one when it isn't open). pick: (title, process) to select."""
+        import os
+
         from sprigcast.app.icons import icon
-        from sprigcast.app.names import window_name
+        from sprigcast.app.names import window_app, window_detail, window_name
 
         title, process = pick
-        self.windows = sorted(windows, key=lambda w: window_name(w.title, w.process).lower())
+        self.windows = sorted(windows, key=lambda w: (window_app(w.title, w.process, getattr(w, "app", "")).lower(),
+                                                      w.title.lower()))
+        self._own = {(w.title, w.process) for w in self.windows if getattr(w, "pid", 0) == os.getpid()}
         box = self.window
         box.blockSignals(True)
         box.clear()
         for w in self.windows:
-            box.addItem(self._icon(w), window_name(w.title, w.process), (w.title, w.process))
+            app = window_app(w.title, w.process, getattr(w, "app", ""))
+            add_window(box, self._icon(w), app, window_detail(w.title, app, w.process), (w.title, w.process))
         if (title or process) and not any(
                 (process and w.process.lower() == process.lower()) or (not process and w.title == title)
                 for w in self.windows):
-            box.addItem(icon("panel", theme.MUTED), window_name(title, process), (title, process))  # closed now
+            app = window_name(title, process)
+            add_window(box, icon("panel", theme.MUTED), app, window_detail(title, app, process),
+                       (title, process))  # closed now
         at = 0
         for i in range(box.count()):
             t, p = box.itemData(i)
@@ -158,6 +195,7 @@ class WindowCaptureDialog(CardDialog):
         box.blockSignals(False)
         if hasattr(self, "ok"):
             self.ok.setEnabled(box.count() > 0)
+        self._show_popups_row()
 
     def _reload(self) -> None:
         lister = self._list_own if self.show_own.isChecked() and self._list_own is not None else self._list_windows
@@ -170,4 +208,6 @@ class WindowCaptureDialog(CardDialog):
         title, process = self.window.currentData() or ("", "")
         out = {"title": title, "process": process, "match": str(self.match.currentData() or "app"),
                "cursor": self.cursor.isChecked(), "sprigcast": self.show_own.isChecked()}
+        if self.show_own.isChecked() and self.picked_own():
+            out["popups"] = self.popups.isChecked()
         return out, self.sound.isChecked()

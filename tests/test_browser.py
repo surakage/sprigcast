@@ -451,3 +451,18 @@ def test_a_video_the_page_engine_cant_play_shows_in_the_status(tmp_path):
         assert host.page_note("s") == ""
     finally:
         host.shutdown()
+
+
+def test_page_console_errors_are_logged_a_few_per_load(caplog):
+    import logging
+    from types import SimpleNamespace
+
+    from sprigcast.app import browser_host
+
+    page = SimpleNamespace(id="browser-69", _errors_told=0)
+    caplog.set_level(logging.INFO, logger="sprigcast")
+    for i in range(6):
+        browser_host._Page._console_error(page, f"Error: Firebase:\n  auth failed {i}")
+    said = [r.getMessage() for r in caplog.records if "the page says" in r.getMessage()]
+    assert len(said) == browser_host.ERRORS_LOGGED
+    assert said[0] == "browser source browser-69: the page says: Error: Firebase: auth failed 0"

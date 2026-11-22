@@ -2177,9 +2177,8 @@ SC_API int sc_engine_source_capture(sc_engine *engine, uint64_t id, uint64_t win
                                     int interval_ms) {
     return engine_call(engine, "sc_engine_source_capture", [&]() -> int {
         if (!id) return fail(SC_ERR_ARGUMENT, "sc_engine_source_capture: no id");
-        if ((window && monitor) || interval_ms < 0 || interval_ms > 10000 ||
-            (flags & ~(SC_SCREEN_CURSOR | SC_SCREEN_BORDER | SC_SCREEN_OPAQUE)))
-            return fail(SC_ERR_ARGUMENT, "sc_engine_source_capture: a window and a display, or bad flags");
+        if (interval_ms < 0 || interval_ms > 10000 || (flags & ~(SC_SCREEN_CURSOR | SC_SCREEN_BORDER | SC_SCREEN_OPAQUE)))
+            return fail(SC_ERR_ARGUMENT, "sc_engine_source_capture: bad flags or interval");
         std::lock_guard<std::mutex> lock(engine->state);
         if (!window && !monitor) {
             engine->capture_wants.erase(id);

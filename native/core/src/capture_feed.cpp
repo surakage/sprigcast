@@ -97,7 +97,7 @@ struct Feed {
 
     // `picture` (w x h of it) into the engine's texture, and said in the header. False when the engine hasn't taken
     // the last one yet (or the texture can't be made): the picture is then kept to be shown a moment later.
-    bool publish(ID3D11Texture2D *picture, int w, int h) {
+    bool publish(ID3D11Texture2D *picture, int x, int y, int w, int h) {
         if (!sized(w, h)) return false;
         if (sc_page_target_begin(target, 0) != 1) return false;
         void *d = nullptr, *c = nullptr, *t = nullptr;
@@ -105,7 +105,8 @@ struct Feed {
             sc_page_target_end(target, 0);
             return false;
         }
-        const D3D11_BOX box = {0, 0, 0, static_cast<UINT>(w), static_cast<UINT>(h), 1};
+        const D3D11_BOX box = {static_cast<UINT>(x), static_cast<UINT>(y), 0, static_cast<UINT>(x + w),
+                               static_cast<UINT>(y + h), 1};
         context->CopySubresourceRegion(static_cast<ID3D11Texture2D *>(t), 0, 0, 0, 0, picture, 0, &box);
         if (sc_page_target_end(target, 1) != SC_OK) return false;
         const uint32_t head[5] = {static_cast<uint32_t>(w), static_cast<uint32_t>(h), ON_CARD, number,
@@ -127,8 +128,8 @@ struct Feed {
 
     // Windows' picture, while it is still Windows' to give: straight to the engine when it has room, else a copy
     // is kept (a still window draws once; that one picture mustn't be lost).
-    bool took(ID3D11Texture2D *picture, int w, int h) {
-        if (publish(picture, w, h)) {
+    bool took(ID3D11Texture2D *picture, int x, int y, int w, int h) {
+        if (publish(picture, x, y, w, h)) {
             is_waiting = false;
             return true;
         }
@@ -147,7 +148,8 @@ struct Feed {
             waiting_w = w;
             waiting_h = h;
         }
-        const D3D11_BOX box = {0, 0, 0, static_cast<UINT>(w), static_cast<UINT>(h), 1};
+        const D3D11_BOX box = {static_cast<UINT>(x), static_cast<UINT>(y), 0, static_cast<UINT>(x + w),
+                               static_cast<UINT>(y + h), 1};
         context->CopySubresourceRegion(waiting.Get(), 0, 0, 0, 0, picture, 0, &box);
         is_waiting = true;
         return true;
@@ -188,10 +190,12 @@ struct Feed {
         }
         // Looked at twice per picture wanted, at least every 8 ms: Windows hands pictures over only when asked.
         const int nap_ms = ask.interval_ms > 0 ? std::min(8, std::max(1, ask.interval_ms / 2)) : 4;
-        const sc::CapturePicture to = [this](ID3D11Texture2D *picture, int w, int h) { return took(picture, w, h); };
+        const sc::CapturePicture to = [this](ID3D11Texture2D *picture, int x, int y, int w, int h) {
+            return took(picture, x, y, w, h);
+        };
         while (!feed.stop.load()) {
             cap->take_to(to);
-            if (is_waiting && publish(waiting.Get(), waiting_w, waiting_h)) is_waiting = false;
+            if (is_waiting && publish(waiting.Get(), 0, 0, waiting_w, waiting_h)) is_waiting = false;
             if (cap->ended()) {
                 say(SC_SCREEN_ENDED);
                 break;
@@ -224,9 +228,9 @@ SC_API int sc_capture_feed_create(uint32_t luid_low, int32_t luid_high, uint64_t
     return sc::guarded("sc_capture_feed_create", [&]() -> int {
         if (!out || !block || !*block) return sc::fail(SC_ERR_ARGUMENT, "sc_capture_feed_create: no block name");
         *out = nullptr;
-        if (!window == !monitor || interval_ms < 0 || interval_ms > 10000 ||
+        if ((!window && !monitor) || interval_ms < 0 || interval_ms > 10000 ||
             (flags & ~(SC_SCREEN_CURSOR | SC_SCREEN_BORDER | SC_SCREEN_OPAQUE)))
-            return sc::fail(SC_ERR_ARGUMENT, "sc_capture_feed_create: one window or one display, or bad flags");
+            return sc::fail(SC_ERR_ARGUMENT, "sc_capture_feed_create: no window or display, or bad flags");
         sc::CaptureAsk ask;
         ask.window = window;
         ask.monitor = monitor;

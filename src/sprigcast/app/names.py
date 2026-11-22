@@ -67,6 +67,27 @@ def window_name(title: str, process: str = "") -> str:
     return short_name(part, "Window") if part else "Window"
 
 
+def window_app(title: str, process: str = "", app: str = "") -> str:
+    """The app a window belongs to, for the window lists: its own name ("Google Chrome", "Calculator"), else the
+    program's ('chrome.exe' -> 'Chrome')."""
+    return (app or "").strip() or window_name(title, process)
+
+
+_TAIL = re.compile(r"\s+[-\u2013\u2014|]\s+([^-\u2013\u2014|]+)$")
+
+
+def window_detail(title: str, app: str, process: str = "") -> str:
+    """Which window of that app: its title without the app's name on the end ("YouTube — Mozilla Firefox" ->
+    "YouTube"), or "" when the title is only the app's name."""
+    text = (title or "").strip()
+    words = {w for w in re.findall(r"[a-z0-9]+", f"{app} {re.sub(r'(?i)[.]exe$', '', process or '')}".lower())
+             if len(w) > 2}
+    tail = _TAIL.search(text)
+    if tail and words & set(re.findall(r"[a-z0-9]+", tail.group(1).lower())):
+        text = text[:tail.start()].strip()
+    return "" if text.lower() == (app or "").strip().lower() else text
+
+
 _CAPTURE = re.compile(r"capturing (\d+)x(\d+)(?: @ (\d+))?(?:, using (\d+))?(?:, shrunk to (\d+)x(\d+))?")
 
 
