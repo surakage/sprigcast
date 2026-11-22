@@ -1954,7 +1954,7 @@ class MainWindow(QMainWindow):
         top.addLayout(actions)
         from sprigcast.app.inspector_fields import UsedIn
 
-        self.prop_used_in = UsedIn(self._jump_to_bloom, style=os.environ.get("SPRIGCAST_INSPECTOR", "chips"), word=SHOW)
+        self.prop_used_in = UsedIn(self._jump_to_bloom, word=SHOW)
         sprig_box.addWidget(self.prop_used_in)
         self.prop_sprig.hide()
         top.addWidget(self.prop_sprig)
@@ -1972,12 +1972,10 @@ class MainWindow(QMainWindow):
 
         self.spin: dict[str, QDoubleSpinBox] = {}
 
-        centred = os.environ.get("SPRIGCAST_INSPECTOR", "chips") == "menu"
-
         def field(key: str, label: str, low: float, high: float, decimals: int = 0, suffix: str = "") -> NumberField:
             made = NumberField(label, low, high, decimals, suffix,
                                lambda value, k=key: self._on_transform_edited(k, value),
-                               label_width=34 if len(label) > 1 else 14, centred=centred)
+                               label_width=34 if len(label) > 1 else 14)
             self.spin[key] = made.box
             return made
 
@@ -2024,7 +2022,7 @@ class MainWindow(QMainWindow):
         crop_fields = []
         for i, label in enumerate(("Left", "Top", "Right", "Bottom")):
             made = NumberField(label, 0, 20000, 0, "", lambda value, side=i: self._on_crop_edited(side, int(value)),
-                               label_width=44, centred=centred)
+                               label_width=44)
             made.setToolTip("Or hold Alt and drag a side on the canvas")
             self.crop_spin[i] = made.box
             crop_fields.append(made)

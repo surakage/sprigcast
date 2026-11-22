@@ -1,8 +1,9 @@
-"""Build inspector pieces: number pills with their label inside, and a foldable rounded card.
+"""Build inspector pieces: number pills with their label inside, titled rounded cards, and the sprig's
+"Also in" pill.
 
-    ╭─ Place ───────────────── ▾ ╮
-    │ ( X   970 ) ( Y   560 )    │
-    │ ( W   900 ) ⛓ ( H   640 )  │
+    ╭ Position and size ─────────╮
+    │ ( X  970     ) ( Y  560  ) │
+    │ ( W  900  ) ⛓ ( H  640   ) │
     ╰────────────────────────────╯
 """
 
@@ -44,7 +45,7 @@ class NumberField(QFrame):
     """A rounded pill: a muted label on the left, the number after it, an optional unit at the end."""
 
     def __init__(self, label: str, low: float, high: float, decimals: int = 0, suffix: str = "",
-                 on_change: Callable[[float], None] | None = None, label_width: int = 0, centred: bool = False):
+                 on_change: Callable[[float], None] | None = None, label_width: int = 0):
         super().__init__()
         self.setObjectName("numField")
         self.setFixedHeight(FIELD_H)
@@ -69,8 +70,7 @@ class NumberField(QFrame):
         self.box.setMinimumWidth(40)  # the range's longest number made every pill wide enough for "-20000"
         self.box.setDecimals(decimals)
         # The number right after its label (it sat at the far end, looking pushed off to the side).
-        self.box.setAlignment((Qt.AlignmentFlag.AlignHCenter if centred else Qt.AlignmentFlag.AlignLeft)
-                              | Qt.AlignmentFlag.AlignVCenter)
+        self.box.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         if suffix:
             self.box.setSuffix(suffix)
         self.box.setStyleSheet(
@@ -237,103 +237,58 @@ class InspectorTabs(QWidget):
 
 
 class UsedIn(QWidget):
-    """The other blooms a sprig is in, without a wall of links.
+    """The other blooms a sprig is in, without a wall of links: one quiet pill, "Also in 5 blooms ▾" (or the
+    bloom's name when there's one), whose menu lists them. Picking one calls on_pick(bloom id)."""
 
-    chips: "Also in" over up to SHOWN chips, then a "+N more" chip with the rest in a menu.
-    menu: one quiet pill, "Also in 5 blooms ▾", with every bloom in its menu.
-    Clicking a bloom calls on_pick(bloom id)."""
-
-    SHOWN = 2
-
-    def __init__(self, on_pick: Callable[[str], None], style: str = "chips", word: str = "bloom"):
+    def __init__(self, on_pick: Callable[[str], None], word: str = "bloom"):
         super().__init__()
-        self.on_pick, self.style, self.word = on_pick, style, word
+        self.on_pick, self.word = on_pick, word
         self.setObjectName("usedIn")
         self.setStyleSheet("#usedIn { background: transparent; }")
-        self.col = QVBoxLayout(self)
-        self.col.setContentsMargins(0, 0, 0, 0)
-        self.col.setSpacing(6)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.button = QPushButton()
+        self.button.setStyleSheet(theme.button_style(13, "4px 12px") + f"QPushButton {{ color: {theme.MUTED};"
+                                  " font-size: 12px; font-weight: 600; }")
+        self.button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.button.clicked.connect(self._menu)
+        row.addWidget(self.button)
+        self.note = QLabel()
+        self.note.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+        row.addWidget(self.note)
+        row.addStretch(1)
         self.blooms: list[tuple[str, str]] = []
         self._text = ""
 
     def text(self) -> str:
-        """What it says, links as href="id" (for tests and the log)."""
+        """What it holds, blooms as href="id" (for tests)."""
         return self._text
 
-    def _clear(self) -> None:
-        while self.col.count():
-            item = self.col.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.hide()
-                widget.deleteLater()
-            elif item.layout() is not None:
-                inner = item.layout()
-                while inner.count():
-                    w = inner.takeAt(0).widget()
-                    if w is not None:
-                        w.hide()
-                        w.deleteLater()
-
     def set_blooms(self, blooms: list[tuple[str, str]]) -> None:
-        self.blooms = list(blooms)
-        self._clear()
-        if not blooms:
-            self._text = f"Only in this {self.word} so far."
-            note = QLabel(self._text)
-            note.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
-            self.col.addWidget(note)
-            return
-        self._text = "Also in " + ", ".join(f'<a href="{i}">{n}</a>' for i, n in blooms)
-        if self.style == "menu":
-            row = QHBoxLayout()
-            row.setContentsMargins(0, 0, 0, 0)
-            many = f"{len(blooms)} {self.word}s" if len(blooms) > 1 else blooms[0][1]
-            button = self._chip(f"Also in {many}  ▾", quiet=True)
-            button.clicked.connect(lambda: self._menu(button, self.blooms))
-            row.addWidget(button)
-            row.addStretch(1)
-            self.col.addLayout(row)
-            return
-        title = QLabel("Also in")
-        title.setStyleSheet(f"color: {theme.MUTED}; font-size: 12px; font-weight: 600; background: transparent;")
-        self.col.addWidget(title)
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(6)
-        shown = blooms if len(blooms) <= self.SHOWN + 1 else blooms[:self.SHOWN]
-        for bloom_id, name in shown:
-            chip = self._chip(name)
-            chip.setToolTip(f"Edit {name}")
-            chip.clicked.connect(lambda _=False, b=bloom_id: self.on_pick(b))
-            row.addWidget(chip, 0)
-        rest = blooms[len(shown):]
-        if rest:
-            more = self._chip(f"+{len(rest)} more", quiet=True)
-            more.clicked.connect(lambda: self._menu(more, rest))
-            row.addWidget(more, 0)
-        row.addStretch(1)
-        self.col.addLayout(row)
-
-    def _chip(self, text: str, quiet: bool = False) -> QPushButton:
         from PySide6.QtGui import QFontMetrics
 
-        chip = QPushButton()
-        colour = theme.MUTED if quiet else theme.ACCENT
-        chip.setStyleSheet(theme.button_style(13, "4px 11px") + f"QPushButton {{ color: {colour}; font-size: 12px;"
-                           " font-weight: 600; }")
-        chip.setCursor(Qt.CursorShape.PointingHandCursor)
-        metrics = QFontMetrics(chip.font())
-        chip.setText(metrics.elidedText(text, Qt.TextElideMode.ElideRight, 78) if not quiet else text)
-        return chip
+        self.blooms = list(blooms)
+        self.button.setVisible(bool(blooms))
+        self.note.setVisible(not blooms)
+        if not blooms:
+            self._text = f"Only in this {self.word} so far."
+            self.note.setText(self._text)
+            return
+        self._text = "Also in " + ", ".join(f'<a href="{i}">{n}</a>' for i, n in blooms)
+        if len(blooms) == 1:
+            name = QFontMetrics(self.button.font()).elidedText(blooms[0][1], Qt.TextElideMode.ElideRight, 150)
+            self.button.setText(f"Also in {name}  ▾")
+        else:
+            self.button.setText(f"Also in {len(blooms)} {self.word}s  ▾")
+        self.button.setToolTip("\n".join(n for _, n in blooms))
 
-    def _menu(self, under: QPushButton, blooms: list[tuple[str, str]]) -> None:
+    def _menu(self) -> None:
         from PySide6.QtCore import QPoint
         from PySide6.QtWidgets import QMenu
 
         menu = QMenu(self)
-        for bloom_id, name in blooms:
+        for bloom_id, name in self.blooms:
             menu.addAction(name).triggered.connect(lambda _=False, b=bloom_id: self.on_pick(b))
         theme.ui_burst()
-        menu.exec(under.mapToGlobal(QPoint(0, under.height() + 4)))
+        menu.exec(self.button.mapToGlobal(QPoint(0, self.button.height() + 4)))
         menu.deleteLater()

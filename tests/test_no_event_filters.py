@@ -124,3 +124,19 @@ def test_garden_check_parts_are_made_as_children_of_where_they_end_up(app):
     assert page.checks.itemAt(0).widget().parent() is page._checked  # in its "Things we checked" card
     assert page.overload_bar.parent().parent() is page._now and page.done.parent() is page  # in "Stream health"
     assert page.close_button.parent() is page
+
+
+def test_also_in_is_one_pill_whatever_the_count():
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.inspector_fields import UsedIn
+
+    QApplication.instance() or QApplication([])
+    picked = []
+    used = UsedIn(picked.append, word="bloom")
+    used.set_blooms([])
+    assert used.text() == "Only in this bloom so far." and not used.button.isVisibleTo(used)
+    used.set_blooms([("b1", "Gameplay")])
+    assert used.button.text().startswith("Also in Gameplay")
+    used.set_blooms([(f"b{i}", f"Bloom {i}") for i in range(5)])
+    assert used.button.text().startswith("Also in 5 blooms") and 'href="b4"' in used.text()
