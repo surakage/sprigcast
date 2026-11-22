@@ -1938,10 +1938,10 @@ class MainWindow(QMainWindow):
         self.prop_sprig.setObjectName("propSprig")
         self.prop_sprig.setStyleSheet("#propSprig { background: transparent; }")
         sprig_box = QVBoxLayout(self.prop_sprig)
-        sprig_box.setContentsMargins(0, 2, 0, 0)
+        sprig_box.setContentsMargins(0, 10, 0, 6)  # even room: buttons, 12 px, the pill, 18 px, the cards
         sprig_box.setSpacing(8)
         actions = QHBoxLayout()  # Open sprig (sprigs only) and Filters, side by side
-        actions.setContentsMargins(0, 10, 0, 0)
+        actions.setContentsMargins(0, 12, 0, 0)
         actions.setSpacing(8)
         self.prop_open_sprig = QPushButton(f"Open {PART}")
         self.prop_open_sprig.setIcon(icons.icon("sprig", theme.ACCENT_TEXT, 16))
@@ -4046,6 +4046,7 @@ class MainWindow(QMainWindow):
                 }.get(config.kind, "Source") + " settings"
             )
             self.prop_status.setText(self._status_text(item.source))
+            self.prop_status.setVisible(bool(self.prop_status.text()))  # no empty line's gap
             problem = plain_problem(self.source_statuses.get(item.source, ""), config.kind)
             self.prop_problem.setVisible(problem is not None)
             if problem is not None:
