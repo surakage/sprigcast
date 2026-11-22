@@ -17,6 +17,11 @@ and says how to send a problem report.
 The installer isn't signed yet, so Windows may show "Windows protected your PC". Choose **More info**, then
 **Run anyway**. The file's fingerprint is in `SHA256.txt` on the same release page.
 
+## Community
+
+Join the [SprigCast Discord](https://discord.gg/fgMD33XrhM) to ask questions, report bugs, share ideas and show off
+your stream.
+
 ## What it needs
 
 - Windows 10 (version 1809 or newer) or Windows 11, 64-bit

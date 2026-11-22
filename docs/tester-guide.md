@@ -54,13 +54,14 @@ Please send one for anything that feels off, even small things like a stutter, a
 
 - **Help → Report a problem.** Write what you were doing and roughly when, then press **Send report**. Leave
   "Include the log and PC details" ticked. Press **See what's sent** first if you'd like to look inside. You get
-  a number like **SC-7F3K2M**. Send that number to me so I can find your report.
+  a number like **SC-7F3K2M**. Post that number in **#bug-reports** on the
+  [SprigCast Discord](https://discord.gg/fgMD33XrhM) so I can find your report.
 - **After a crash**, SprigCast offers to send a report the next time it starts. Please say yes.
 - **Help improve SprigCast (optional):** after your first stream, SprigCast asks whether to send a summary
   after each stream. Saying yes is the most helpful thing you can do: I see how every stream went without you
   writing anything. You can change it any time in **Settings → General → Logs**.
 - **Can't send from the app?** Use **Help → Export report**. It saves a .zip to your Desktop that you can send
-  me any way you like.
+  me any way you like, or attach it to your post in #bug-reports.
 
 **What's in a report:** SprigCast's logs, how each stream went, and your PC's details (Windows version,
 processor, graphics card, memory). **Removed before anything is sent:** stream keys, passwords, sign-in tokens,
