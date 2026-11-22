@@ -278,3 +278,28 @@ def test_the_live_banner_keeps_its_size_however_often_it_is_asked(app):
         card.set_notice(text, "bad")
     assert card.notice.size() == first and first.height() < 100
     card.close()
+
+
+def test_the_live_banner_wraps_and_keeps_its_size_in_a_narrow_window(app):
+    """Live 2026-11-22: snapping SprigCast to half the screen made the banner wrap, and then grow with every resize."""
+    from sprigcast.app.live_stage import StageCard
+
+    card = StageCard()
+    card.resize(900, 420)
+    card.show()
+    text = "Bitrate lowered to 3,600 kbps: Twitch, Kick, Facebook and YouTube (horizontal)"
+    card.set_notice(text)
+    sizes = []
+    for width in (420, 380, 420, 380, 420, 380, 420):
+        card.resize(width, 420)
+        app.processEvents()
+        card.set_notice(text)
+        sizes.append((width, card.notice.height()))
+    narrow = {h for w, h in sizes if w == 380}
+    wide = {h for w, h in sizes if w == 420}
+    assert len(narrow) == 1 and len(wide) == 1  # the same size each time it comes back to a width
+    assert card.notice.width() <= 380 - 40 and 32 < max(narrow) < 120  # wrapped onto a few lines, inside the card
+    card.resize(900, 420)
+    app.processEvents()
+    assert card.notice.height() == 32  # wide again: one line
+    card.close()
