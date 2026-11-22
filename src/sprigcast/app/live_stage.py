@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QRect, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -1208,8 +1208,12 @@ class StageCard(QFrame):
         if not text:
             self.notice.hide()
             return
+        shown = (("⟳  " if level == "bad" else "↓  ") + text, level)
+        if self.notice.isVisible() and getattr(self, "_notice_shown", None) == shown:
+            return  # asked every second while live: the same words keep their size and place
+        self._notice_shown = shown
         colour = theme.BAD if level == "bad" else theme.WARN
-        self.notice.setText(("⟳  " if level == "bad" else "↓  ") + text)
+        self.notice.setText(shown[0])
         self.notice.setStyleSheet(f"QLabel {{ background: {theme.CHROME}; color: {colour}; border: 1px solid {colour};"
                                   " border-radius: 16px; padding: 0 18px; font-weight: 600; }")
         self.notice.setWordWrap(True)
@@ -1222,9 +1226,13 @@ class StageCard(QFrame):
         """One line when it fits; a long one wraps onto more lines instead of being cut off."""
         label = self.notice
         room = max(160, self.width() - 80)
-        natural = label.fontMetrics().horizontalAdvance(label.text()) + 36 + 4  # padding 18 each side, border
+        metrics = label.fontMetrics()
+        natural = metrics.horizontalAdvance(label.text()) + 36 + 4  # padding 18 each side, border
         width = min(natural, room)
-        height = max(32, label.heightForWidth(width) + 12) if natural > room else 32
+        # Measured from the words, not label.heightForWidth: that counts the fixed height set last time, so a
+        # wrapped banner grew by 12 px every second while live until it covered the preview (live 2026-11-22).
+        lines = metrics.boundingRect(QRect(0, 0, width - 40, 10_000), Qt.TextFlag.TextWordWrap, label.text()).height()
+        height = max(32, lines + 14) if natural > room else 32
         label.setFixedSize(width, height)  # 32 high with radius 16; taller wraps keep the same round ends
         label.move((self.width() - width) // 2, 56)  # just inside the top of the canvases
 

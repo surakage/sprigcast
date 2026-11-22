@@ -37,10 +37,13 @@ def test_notice_says_when_a_place_reconnects_or_its_bitrate_is_lowered():
     pilot.update(0.0, 2.0)
     pilot.update(1.0, 2.0)  # behind two readings in a row: a step down
     lowered = _streamer("YouTube", autopilot=pilot)
-    assert notice([("horizontal", lowered)]) == ("warning", f"YouTube: bitrate lowered to {pilot.current_kbps} kbps")
+    assert notice([("horizontal", lowered)]) == ("warning", f"Bitrate lowered to {pilot.current_kbps:,} kbps: YouTube")
     dropped = _streamer("Twitch", connected=False, reconnects=2, status="reconnecting (try 2)")
     level, text = notice([("horizontal", dropped), ("horizontal", lowered)])
-    assert level == "bad" and text.startswith("Reconnecting to Twitch… try 2  ·  YouTube: bitrate lowered")
+    assert level == "bad" and text.startswith("Reconnecting to Twitch… try 2  ·  Bitrate lowered to")
+    shared = [("horizontal", _streamer(f"{name} (horizontal)", autopilot=pilot)) for name in ("Twitch", "Kick", "YouTube")]
+    assert notice(shared) == ("warning", f"Bitrate lowered to {pilot.current_kbps:,} kbps: Twitch, Kick and YouTube"
+                                         " (horizontal)")  # one phrase for a shared encoder, the canvas said once
     first = _streamer("Kick", connected=False, status="connecting")  # going live, not a reconnect
     assert notice([("vertical", first)]) == ("", "")
 
@@ -257,3 +260,46 @@ def test_garden_rows_change_in_place_while_live(app):
     snaps.append(GardenSnapshot(rows=[]))
     page.refresh()
     assert page.rows.count() == 1 and page.rows.itemAt(0).widget().text() == "No places to stream yet."
+
+
+def test_the_live_banner_keeps_its_size_however_often_it_is_asked(app):
+    """Live 2026-11-22: a wrapped banner grew 12 px every second until it covered the preview."""
+    from sprigcast.app.live_stage import StageCard
+
+    card = StageCard()
+    card.resize(700, 420)
+    card.show()
+    text = "Bitrate lowered to 3,600 kbps: Twitch, Kick, Facebook and YouTube (horizontal)  ·  Reconnecting to Kick… try 2"
+    card.set_notice(text, "bad")
+    first = card.notice.size()
+    for _ in range(10):
+        card.set_notice(text, "bad")
+        card._notice_shown = None  # measured again each time, as a new text would be
+        card.set_notice(text, "bad")
+    assert card.notice.size() == first and first.height() < 100
+    card.close()
+
+
+def test_the_live_banner_wraps_and_keeps_its_size_in_a_narrow_window(app):
+    """Live 2026-11-22: snapping SprigCast to half the screen made the banner wrap, and then grow with every resize."""
+    from sprigcast.app.live_stage import StageCard
+
+    card = StageCard()
+    card.resize(900, 420)
+    card.show()
+    text = "Bitrate lowered to 3,600 kbps: Twitch, Kick, Facebook and YouTube (horizontal)"
+    card.set_notice(text)
+    sizes = []
+    for width in (420, 380, 420, 380, 420, 380, 420):
+        card.resize(width, 420)
+        app.processEvents()
+        card.set_notice(text)
+        sizes.append((width, card.notice.height()))
+    narrow = {h for w, h in sizes if w == 380}
+    wide = {h for w, h in sizes if w == 420}
+    assert len(narrow) == 1 and len(wide) == 1  # the same size each time it comes back to a width
+    assert card.notice.width() <= 380 - 40 and 32 < max(narrow) < 120  # wrapped onto a few lines, inside the card
+    card.resize(900, 420)
+    app.processEvents()
+    assert card.notice.height() == 32  # wide again: one line
+    card.close()
