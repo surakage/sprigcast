@@ -2,6 +2,11 @@ name: Windows installer
 
 on:
   workflow_dispatch:
+    inputs:
+      tester_tag:
+        description: "Publish a tester pre-release under this new test-* tag (for example test-2026-11-23). Leave empty for a plain build."
+        required: false
+        default: ""
   push:
     tags: ["v*", "test-*"]
 
@@ -208,14 +213,23 @@ jobs:
       # A test-* tag (for example test-2026-11-21) publishes a pre-release for testers: a download link that
       # lasts, with docs/tester-guide.md as its text. The in-app updater skips pre-releases, so nobody is offered
       # a test build as an update. The build names itself a test build (sprigcast.build_label).
+      # Run by hand with tester_tag set, the same pre-release is published and the run makes the tag itself at the
+      # commit it built, so nobody has to push a tag (a tag made with the run's own token starts no second build).
       - name: Publish the test pre-release
-        if: startsWith(github.ref, 'refs/tags/test-')
+        if: startsWith(github.ref, 'refs/tags/test-') || (github.event_name == 'workflow_dispatch' && inputs.tester_tag != '')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          TESTER_TAG: ${{ inputs.tester_tag }}
         run: |
           $tag = "${{ github.ref_name }}"
+          $target = @("--verify-tag")
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = $env:TESTER_TAG.Trim()
+            if ($tag -notmatch '^test-[A-Za-z0-9._-]+$') { throw "tester_tag must look like test-2026-11-23, not '$tag'" }
+            $target = @("--target", "${{ github.sha }}")
+          }
           $label = (& packaging\build\python\python.exe -c "import sprigcast; print(sprigcast.build_label())").Trim()
           $setup = Get-ChildItem packaging\out\SprigCast-Setup-*.exe | Select-Object -First 1
           if (-not $setup) { throw "No installer was built" }
-          gh release create $tag $setup.FullName packaging\out\SHA256.txt --title "SprigCast test build ($label)" --notes-file docs\tester-guide.md --verify-tag --prerelease
+          gh release create $tag $setup.FullName packaging\out\SHA256.txt --title "SprigCast test build ($label)" --notes-file docs\tester-guide.md @target --prerelease

@@ -6,7 +6,7 @@ When they do, your reports are what get them fixed.
 
 ## 1. Download and install
 
-1. Download **SprigCast-Setup-0.2.0.exe** under **Assets** at the bottom of the test release page (this page, if
+1. Download **SprigCast-Setup-….exe** (for example SprigCast-Setup-0.3.0.exe) under **Assets** at the bottom of the test release page (this page, if
    you're reading it on GitHub). The newest test build is always listed at
    https://github.com/surakage/sprigcast/releases .
 2. Run it. SprigCast isn't signed yet, so Windows will probably say **"Windows protected your PC"**. Click
