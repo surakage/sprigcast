@@ -56,6 +56,9 @@ Stream keys are kept in Windows Credential Manager, never in a file, and never i
 - After an unexpected close, SprigCast offers **safe mode** (the older, simpler engine, no plugins) on the
   next start.
 
+Still stuck? Ask in **#help** on the [SprigCast Discord](https://discord.gg/fgMD33XrhM). If you sent a report, paste
+its number there.
+
 Reports are kept for 30 days, then deleted. See the
 [privacy policy](https://slothbloom.com/privacy#sprigcast-reports).
 
