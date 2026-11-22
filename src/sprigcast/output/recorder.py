@@ -415,15 +415,35 @@ def pick_codec() -> str:
         _picked = None
     if _picked is None:
         forced = os.environ.get("SPRIGCAST_ENCODER", "").strip()
-        order = ([forced] if forced in CODEC_LABELS else []) + list(HARDWARE_CODECS)
+        order = ([forced] if forced in CODEC_LABELS else []) + ([] if draws_only() else list(HARDWARE_CODECS))
         _picked = next((c for c in order if encoder_works(c)), "libx264")
         log.info("video encoder: %s", codec_label(_picked))
     return _picked
 
 
+_draws_only: bool | None = None
+
+
+def draws_only() -> bool:
+    """Older AMD built-in graphics (Radeon R2-R7, HD xxxxG/D): its encoder isn't tried, x264 encodes and the chip
+    only draws. The chip shares the PC's memory: the AMF check held the whole app 45 s at start on a tester's R2
+    while it drew, and the AMF stream showed viewers nothing until x264 took over (2026-11-22). Read once."""
+    global _draws_only
+    if _draws_only is None:
+        try:
+            from sprigcast.app import lowend
+
+            _draws_only = bool(lowend.older_amd_gpu(lowend.gpu_names()))
+        except Exception:
+            _draws_only = False
+    return _draws_only
+
+
 def codec_label(codec: str) -> str:
     if codec == "libx264" and _picked not in (None, "libx264"):
         return "x264 (CPU, picked in Settings)"  # a graphics-card encoder was found here (tester, 2026-11-22)
+    if codec == "libx264" and _draws_only:
+        return "x264 (CPU, the built-in graphics only draws)"
     return CODEC_LABELS.get(codec) or ENCODER_NAMES.get(codec, codec)
 
 

@@ -236,3 +236,33 @@ def test_light_settings_move_the_older_amd_pc_to_x264():
     assert col.stream_encoder.encoder == col.recording.encoder.encoder == "libx264"
     assert "Encoded with x264 on the CPU: the built-in graphics only draws" not in lowend.light_changes(
         col, cpu_encodes=True)[0]
+
+
+def test_older_amd_graphics_skips_the_amd_encoder_check(monkeypatch):
+    from sprigcast.output import recorder
+
+    tried = []
+    monkeypatch.setattr(recorder, "_picked", None)
+    monkeypatch.setattr(recorder, "_draws_only", None)
+    monkeypatch.setattr(recorder, "nvenc_works", lambda: False)
+    monkeypatch.setattr(recorder, "encoder_works", lambda codec: tried.append(codec) or codec == "libx264")
+    monkeypatch.setattr(lowend, "gpu_names", lambda: ("AMD Radeon(TM) R2 Graphics",))
+    monkeypatch.delenv("SPRIGCAST_ENCODER", raising=False)
+    assert recorder.pick_codec() == "libx264" and tried == []
+    assert recorder.codec_label("libx264") == "x264 (CPU, the built-in graphics only draws)"
+    monkeypatch.setattr(recorder, "_picked", None)
+    monkeypatch.setattr(recorder, "_draws_only", None)
+    monkeypatch.setattr(lowend, "gpu_names", lambda: ("Intel(R) HD Graphics 4600",))
+    tried.clear()
+    recorder.pick_codec()
+    assert "h264_amf" in tried and "h264_qsv" in tried
+
+
+def test_auto_already_on_x264_needs_no_encoder_row():
+    p = optimize.PcProfile(**{**MIKEDOG, "codec": "libx264"}, upload_kbps=10000)
+    p.extra["gpus"], p.extra["hdd"] = ("AMD Radeon(TM) R2 Graphics",), False
+    assert "no graphics-card encoder, so the CPU encodes" not in p.weak_reasons
+    plan = optimize.plan(p, _collection())
+    assert not [c for c in plan.changes if "built-in graphics only draws" in c.label]
+    assert "Encoded with x264 on the CPU: the built-in graphics only draws" not in lowend.light_changes(
+        _collection(), cpu_encoding=True, cpu_encodes=True)[0]

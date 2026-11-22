@@ -99,16 +99,25 @@ def older_gpu(gpus: tuple[str, ...] | list[str]) -> str:
     return next((g for g in gpus if OLDER_GPU.search(g)), "")
 
 
+def older_amd_gpu(gpus: tuple[str, ...] | list[str]) -> str:
+    """Older AMD built-in graphics (a Radeon R2-R7 or HD xxxxG/D APU) with no graphics card, or ""."""
+    gpu = older_gpu(gpus)
+    return gpu if "radeon" in gpu.lower() else ""
+
+
 def cpu_encodes(facts: PcFacts) -> bool:
-    """Older AMD built-in graphics with an AMF encoder: x264 on the CPU streams, the chip only draws.
+    """Older AMD built-in graphics: x264 on the CPU streams and records, the chip only draws.
 
     The chip shares the PC's memory, so drawing and encoding on it starve each other: a tester's Radeon R2
     (AMD E2-7110) lost its AMF stream after a graphics reset and viewers saw nothing until x264 took over
     (2026-11-22). At 720p30 superfast the CPU carries it. Intel's Quick Sync is a block of its own beside the
-    drawing part and stays."""
-    from sprigcast.output.recorder import family
+    drawing part and stays. recorder.pick_codec doesn't try the AMD encoder there either."""
+    return bool(older_amd_gpu(facts.gpus))
 
-    return bool(older_gpu(facts.gpus)) and family(facts.codec) == "amf"
+
+def to_cpu(enc: EncoderSettings, found: str) -> bool:
+    """Whether this encoder setting still encodes on the graphics chip (``found``: what "auto" picks)."""
+    return enc.encoder != "libx264" and not (enc.encoder == "auto" and found == "libx264")
 
 
 def short_gpu(name: str) -> str:
@@ -151,7 +160,7 @@ def weak_reasons(facts: PcFacts) -> list[str]:
         reasons.append(f"{facts.threads} CPU thread{'s' if facts.threads != 1 else ''}")
     if 0 < facts.memory_gb < 9:
         reasons.append(f"{round(facts.memory_gb)} GB of memory")
-    if facts.codec == "libx264":
+    if facts.codec == "libx264" and not cpu_encodes(facts):  # older AMD graphics: said by older_reasons
         reasons.append("no graphics-card encoder, so the CPU encodes")
     return reasons + older_reasons(facts)
 
@@ -366,7 +375,7 @@ def light_changes(collection: SceneCollection, apply: bool = False, pending_fps:
         if apply:
             collection.recording.bitrate_kbps = LIGHT_RECORDING_KBPS
     moved = [e for e in (collection.stream_encoder, collection.recording.encoder)
-             if cpu_encodes and e.encoder != "libx264"]
+             if cpu_encodes and to_cpu(e, "libx264" if cpu_encoding else "")]
     if moved:
         lines.append("Encoded with x264 on the CPU: the built-in graphics only draws")
         if apply:

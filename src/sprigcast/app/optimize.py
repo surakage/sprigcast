@@ -775,6 +775,7 @@ def _encoder_wanted(p: PcProfile, t: Target, enc: EncoderSettings) -> dict:
 
 
 def encoder_rule(p: PcProfile, c: SceneCollection) -> list[Change]:
+    from sprigcast.app import lowend
     from sprigcast.output.recorder import X264_PRESETS, codec_short
 
     t = target(p, _encodes(p, c))
@@ -788,7 +789,7 @@ def encoder_rule(p: PcProfile, c: SceneCollection) -> list[Change]:
     for wanted_for, enc, on in (("Stream", c.stream_encoder, p.wants_stream),
                                 ("Recording", c.recording.encoder, p.wants_record)):
         wanted = _encoder_wanted(p, t, enc) if on else {}
-        if on and p.cpu_encodes and enc.encoder != "libx264":
+        if on and p.cpu_encodes and lowend.to_cpu(enc, p.codec):
             wanted["encoder"] = "libx264"
         if not wanted:
             continue
@@ -804,7 +805,8 @@ def encoder_rule(p: PcProfile, c: SceneCollection) -> list[Change]:
 
         if "encoder" in wanted:  # older AMD built-in graphics: the chip only draws (lowend.cpu_encodes)
             changes.append(Change("Encoder", f"{wanted_for} encoder: x264 on the CPU, the built-in graphics only "
-                                  f"draws, {', '.join(bits)}", codec_short(p.codec), apply))
+                                  f"draws, {', '.join(bits)}",
+                                  codec_short(p.codec if enc.encoder == "auto" else enc.encoder), apply))
             continue
         changes.append(Change("Encoder", f"{wanted_for} encoder ({codec_short(p.used_codec)}): {', '.join(bits)}",
                               f"{preset_name(enc.preset)} preset, {enc.b_frames} B-frames", apply))
