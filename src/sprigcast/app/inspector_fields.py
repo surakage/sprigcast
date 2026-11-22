@@ -1,8 +1,9 @@
-"""Build inspector pieces: number pills with their label inside, and a foldable rounded card.
+"""Build inspector pieces: number pills with their label inside, titled rounded cards, and the sprig's
+"Also in" pill.
 
-    ╭─ Place ───────────────── ▾ ╮
-    │ ( X   970 ) ( Y   560 )    │
-    │ ( W   900 ) ⛓ ( H   640 )  │
+    ╭ Position and size ─────────╮
+    │ ( X  970     ) ( Y  560  ) │
+    │ ( W  900  ) ⛓ ( H  640   ) │
     ╰────────────────────────────╯
 """
 
@@ -44,7 +45,7 @@ class NumberField(QFrame):
     """A rounded pill: a muted label on the left, the number after it, an optional unit at the end."""
 
     def __init__(self, label: str, low: float, high: float, decimals: int = 0, suffix: str = "",
-                 on_change: Callable[[float], None] | None = None):
+                 on_change: Callable[[float], None] | None = None, label_width: int = 0):
         super().__init__()
         self.setObjectName("numField")
         self.setFixedHeight(FIELD_H)
@@ -58,12 +59,18 @@ class NumberField(QFrame):
         row.setSpacing(8)
         self.label = QLabel(label)
         self.label.setStyleSheet(f"color: {theme.MUTED}; font-weight: 600; font-size: 12px;")
+        if label_width:
+            self.label.setFixedWidth(label_width)  # every value in a card starts at the same place
         row.addWidget(self.label)
+        if not label:
+            self.label.hide()
         self.box = _NumberBox()
         self.box.frame = self
         self.box.setRange(low, high)
+        self.box.setMinimumWidth(40)  # the range's longest number made every pill wide enough for "-20000"
         self.box.setDecimals(decimals)
-        self.box.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        # The number right after its label (it sat at the far end, looking pushed off to the side).
+        self.box.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         if suffix:
             self.box.setSuffix(suffix)
         self.box.setStyleSheet(
@@ -191,7 +198,7 @@ class InspectorTabs(QWidget):
             page.setStyleSheet("#inspPage { background: transparent; }")
             box = QVBoxLayout(page)
             box.setContentsMargins(0, 0, 0, 0)
-            box.setSpacing(18)
+            box.setSpacing(12)
             self.pages[name] = page
             self.stack.addWidget(page)
         col.addWidget(bar)
@@ -201,17 +208,17 @@ class InspectorTabs(QWidget):
         self.show_tab(saved if saved in names else names[0], remember=False)
 
     def group(self, tab: str, title: str | None) -> QWidget:
-        """A group of rows on `tab`, under a small quiet title (none for the tab's first group)."""
-        holder = QWidget()
+        """A titled rounded card of rows on `tab`."""
+        holder = QFrame()
         holder.setObjectName("inspGroup")
-        holder.setStyleSheet("#inspGroup { background: transparent; }")
+        holder.setStyleSheet(f"#inspGroup {{ background: {theme.SECTION}; border: 1px solid {theme.EDGE_STRONG};"
+                             " border-radius: 18px; }")
         box = QVBoxLayout(holder)
-        box.setContentsMargins(0, 0, 0, 0)
+        box.setContentsMargins(12, 12, 12, 12)
         box.setSpacing(10)
         if title:
-            label = QLabel(title.upper())
-            label.setStyleSheet(f"color: {theme.MUTED}; font-size: 11px; font-weight: 700; letter-spacing: 1px;"
-                                " background: transparent;")
+            label = QLabel(title)
+            label.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-weight: 600; background: transparent;")
             box.addWidget(label)
         self.pages[tab].layout().addWidget(holder)
         return holder
@@ -227,3 +234,61 @@ class InspectorTabs(QWidget):
         self.buttons[name].setVisible(on)
         if not on and self.buttons[name].isChecked():
             self.show_tab(self.names[0], remember=False)
+
+
+class UsedIn(QWidget):
+    """The other blooms a sprig is in, without a wall of links: one quiet pill, "Also in 5 blooms ▾" (or the
+    bloom's name when there's one), whose menu lists them. Picking one calls on_pick(bloom id)."""
+
+    def __init__(self, on_pick: Callable[[str], None], word: str = "bloom"):
+        super().__init__()
+        self.on_pick, self.word = on_pick, word
+        self.setObjectName("usedIn")
+        self.setStyleSheet("#usedIn { background: transparent; }")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.button = QPushButton()
+        self.button.setStyleSheet(theme.button_style(13, "4px 12px") + f"QPushButton {{ color: {theme.MUTED};"
+                                  " font-size: 12px; font-weight: 600; }")
+        self.button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.button.clicked.connect(self._menu)
+        row.addWidget(self.button)
+        self.note = QLabel()
+        self.note.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+        row.addWidget(self.note)
+        row.addStretch(1)
+        self.blooms: list[tuple[str, str]] = []
+        self._text = ""
+
+    def text(self) -> str:
+        """What it holds, blooms as href="id" (for tests)."""
+        return self._text
+
+    def set_blooms(self, blooms: list[tuple[str, str]]) -> None:
+        from PySide6.QtGui import QFontMetrics
+
+        self.blooms = list(blooms)
+        self.button.setVisible(bool(blooms))
+        self.note.setVisible(not blooms)
+        if not blooms:
+            self._text = f"Only in this {self.word} so far."
+            self.note.setText(self._text)
+            return
+        self._text = "Also in " + ", ".join(f'<a href="{i}">{n}</a>' for i, n in blooms)
+        if len(blooms) == 1:
+            name = QFontMetrics(self.button.font()).elidedText(blooms[0][1], Qt.TextElideMode.ElideRight, 150)
+            self.button.setText(f"Also in {name}  ▾")
+        else:
+            self.button.setText(f"Also in {len(blooms)} {self.word}s  ▾")
+        self.button.setToolTip("\n".join(n for _, n in blooms))
+
+    def _menu(self) -> None:
+        from PySide6.QtCore import QPoint
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+        for bloom_id, name in self.blooms:
+            menu.addAction(name).triggered.connect(lambda _=False, b=bloom_id: self.on_pick(b))
+        theme.ui_burst()
+        menu.exec(self.button.mapToGlobal(QPoint(0, self.button.height() + 4)))
+        menu.deleteLater()

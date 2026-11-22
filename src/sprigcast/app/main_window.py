@@ -1872,7 +1872,7 @@ class MainWindow(QMainWindow):
             tab = tab_of.get(title)
             if tab is None:
                 return QVBoxLayout(QWidget(self._prop_spare))
-            body = self.inspector_tabs.group(tab, None if title == "Place" else title)
+            body = self.inspector_tabs.group(tab, "Position and size" if title == "Place" else title)
             self.prop_section_toggles[title] = (self.inspector_tabs.buttons[tab], body)
             return body.layout()
 
@@ -1935,21 +1935,26 @@ class MainWindow(QMainWindow):
         top.addWidget(self.prop_vcam)
         # A sprig placement: open it, and see (and jump to) every bloom it's in.
         self.prop_sprig = QWidget()
+        self.prop_sprig.setObjectName("propSprig")
+        self.prop_sprig.setStyleSheet("#propSprig { background: transparent; }")
         sprig_box = QVBoxLayout(self.prop_sprig)
-        sprig_box.setContentsMargins(0, 10, 0, 0)
+        sprig_box.setContentsMargins(0, 10, 0, 6)  # even room: buttons, 12 px, the pill, 18 px, the cards
         sprig_box.setSpacing(8)
-        self.prop_open_sprig = QPushButton(f"Open {PART} to edit inside")
+        actions = QHBoxLayout()  # Open sprig (sprigs only) and Filters, side by side
+        actions.setContentsMargins(0, 12, 0, 0)
+        actions.setSpacing(8)
+        self.prop_open_sprig = QPushButton(f"Open {PART}")
         self.prop_open_sprig.setIcon(icons.icon("sprig", theme.ACCENT_TEXT, 16))
         self.prop_open_sprig.setStyleSheet(theme.PRIMARY_STYLE + "QPushButton { border-radius: 17px; padding: 9px 14px; }")
         self.prop_open_sprig.setCursor(Qt.CursorShape.PointingHandCursor)
         self.prop_open_sprig.setToolTip(f"Edit what's inside this {PART} (or double-click it)")
         self.prop_open_sprig.clicked.connect(self._open_part_item)
-        sprig_box.addWidget(self.prop_open_sprig)
-        self.prop_used_in = QLabel()
-        self.prop_used_in.setWordWrap(True)
-        self.prop_used_in.setTextFormat(Qt.TextFormat.RichText)
-        self.prop_used_in.setStyleSheet(theme.MUTED_STYLE)
-        self.prop_used_in.linkActivated.connect(self._jump_to_bloom)
+        self.prop_open_sprig.hide()
+        actions.addWidget(self.prop_open_sprig, 1)
+        top.addLayout(actions)
+        from sprigcast.app.inspector_fields import UsedIn
+
+        self.prop_used_in = UsedIn(self._jump_to_bloom, word=SHOW)
         sprig_box.addWidget(self.prop_used_in)
         self.prop_sprig.hide()
         top.addWidget(self.prop_sprig)
@@ -1969,7 +1974,8 @@ class MainWindow(QMainWindow):
 
         def field(key: str, label: str, low: float, high: float, decimals: int = 0, suffix: str = "") -> NumberField:
             made = NumberField(label, low, high, decimals, suffix,
-                               lambda value, k=key: self._on_transform_edited(k, value))
+                               lambda value, k=key: self._on_transform_edited(k, value),
+                               label_width=34 if len(label) > 1 else 14)
             self.spin[key] = made.box
             return made
 
@@ -2015,7 +2021,8 @@ class MainWindow(QMainWindow):
         self.crop_spin: dict[int, QDoubleSpinBox] = {}
         crop_fields = []
         for i, label in enumerate(("Left", "Top", "Right", "Bottom")):
-            made = NumberField(label, 0, 20000, 0, "", lambda value, side=i: self._on_crop_edited(side, int(value)))
+            made = NumberField(label, 0, 20000, 0, "", lambda value, side=i: self._on_crop_edited(side, int(value)),
+                               label_width=44)
             made.setToolTip("Or hold Alt and drag a side on the canvas")
             self.crop_spin[i] = made.box
             crop_fields.append(made)
@@ -2048,7 +2055,10 @@ class MainWindow(QMainWindow):
         chips.addStretch(1)
         look.addLayout(chips)
         # Filters (looks, shapes, keys...) is one button under the name, the way in to every filter.
-        top.addWidget(self.prop_filters, 0, Qt.AlignmentFlag.AlignLeft)
+        actions.addWidget(self.prop_filters, 0)
+        self._filters_stretch = QWidget()  # keeps Filters at the left while Open sprig is hidden
+        self._filters_stretch.setStyleSheet("background: transparent;")
+        actions.addWidget(self._filters_stretch, 1)
         device = section("Device")
         device_row = QHBoxLayout()
         device_row.addWidget(self.prop_extra)
@@ -4036,6 +4046,7 @@ class MainWindow(QMainWindow):
                 }.get(config.kind, "Source") + " settings"
             )
             self.prop_status.setText(self._status_text(item.source))
+            self.prop_status.setVisible(bool(self.prop_status.text()))  # no empty line's gap
             problem = plain_problem(self.source_statuses.get(item.source, ""), config.kind)
             self.prop_problem.setVisible(problem is not None)
             if problem is not None:
@@ -4046,13 +4057,15 @@ class MainWindow(QMainWindow):
             self.prop_vcam.setVisible(self._vcam_tip_due(config))
             part = self.collection.part_of(config) if config.kind == PART_KIND else None
             self.prop_sprig.setVisible(part is not None)
+            self.prop_open_sprig.setVisible(part is not None)
+            self._filters_stretch.setVisible(part is None)
             if part is not None:
                 here = self._scene()
                 others = [s for s in self.collection.part_uses(part.id) if here is None or s.id != here.id]
-                self.prop_used_in.setText(
-                    f"Also in {self._bloom_links(others)}" if others else f"Only in this {SHOW} so far.")
+                self.prop_used_in.set_blooms([(s.id, s.name) for s in others])
         else:
             self.prop_sprig.hide()
+            self.prop_open_sprig.hide()
             self.prop_problem.hide()
             self.prop_vcam.hide()
             self.prop_name.clear()
