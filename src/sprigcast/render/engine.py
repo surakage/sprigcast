@@ -35,7 +35,16 @@ from sprigcast.core.events import (
 from sprigcast.core.filters import SOUND_LEVELS, AudioChain, video_effects, with_item
 from sprigcast.core import drawn, pacing, retire
 from sprigcast.core.mailbox import Mailbox
-from sprigcast.core.scene import PART_KIND, STATE_FADE_S, Scene, SceneCollection, SceneItem, drawing_fps, item_key
+from sprigcast.core.scene import (
+    PART_KIND,
+    STATE_FADE_S,
+    Filter,
+    Scene,
+    SceneCollection,
+    SceneItem,
+    drawing_fps,
+    item_key,
+)
 from sprigcast.core.source import Source, create_source, source_class
 from sprigcast.render import move
 from sprigcast.render.stinger import StingerPlayer, open_stinger
@@ -102,6 +111,11 @@ def engine_rate(pace: tuple | None, before: tuple | None) -> tuple[float, float,
     if pace is None or before is None or pace[0] <= before[0] or pace[1] < before[1]:
         return None
     return (pace[1] - before[1]) / (pace[0] - before[0]), float(pace[3]), max(0, int(pace[2] - before[2]))
+
+
+# An item of a view drawn with looks of its own (Engine.set_view_effects): its effects list only has to be non-empty
+# for the engines to look the item up under its item key.
+VIEW_LOOK = Filter(id="view-look", kind="view_look", name="View look", enabled=False)
 
 
 class Frame:
@@ -268,6 +282,12 @@ class Engine:
         self._engine_views: dict = {}
         self._shot_views: frozenset[str] = frozenset()  # views only a screenshot reads (set_view shot=True)
         self._riders: dict[str, list[str]] = {}
+        # The Filters window's own looks for its views (set_view_effects): item key -> VideoEffects, over the
+        # filters' table, so its Before and After show its unapplied filters without touching the source's.
+        self.view_effects: dict = {}
+        self._view_fx_seen: dict = self.view_effects
+        self._base_effects: dict = {}
+        self._view_scenes: dict = {}  # view name -> (what it was made from, (canvas, scene)): one scene a view
         self._served_views: set[str] = set()
         self._ticks = 0  # ticks drawn (each counts itself up early on): what a hold or a screenshot waits for
         # Freezes. Snap's (see hold): source id -> (token, first tick, until perf_counter), replaced whole under
@@ -418,6 +438,12 @@ class Engine:
         self.views = views
         self._stirred = True
 
+    def set_view_effects(self, effects: dict) -> None:
+        """Looks for items of views only (core/scene.py item_key of "view:<name>" and the source -> VideoEffects),
+        replaced whole: the Filters window draws its Before and After with them. Any thread."""
+        self.view_effects = dict(effects)
+        self._stirred = True
+
     def native_view_ready(self, name: str) -> bool | None:
         """Whether the native engine draws this shot view now (native_shot can read it). None: it never will (no
         native engine, or the view isn't one it takes), so a screenshot needn't wait for it."""
@@ -444,11 +470,28 @@ class Engine:
             return canvas, next((sc for sc in collection.scenes if sc.id == ref), None)
         if kind == "scene":
             return canvas, ref if isinstance(ref, Scene) else None
-        if kind == "source" and any(src.id == ref for src in collection.sources):
-            w, h = (sizes or {}).get(ref) or (canvas.width, canvas.height)
+        if kind in ("source", "draft"):
+            # "draft": (source id, longest side) drawn small with its own looks (set_view_effects): the Filters
+            # window. The same scene object while nothing changes, so the native engine isn't handed a new
+            # snapshot every frame for it.
+            source_id, long_side = ref if kind == "draft" else (ref, 0)
+            if not any(src.id == source_id for src in collection.sources):
+                return canvas, None
+            w, h = (sizes or {}).get(source_id) or (canvas.width, canvas.height)
+            made_from = (kind, canvas.id, canvas.width, canvas.height, source_id, long_side, w, h)
+            cached = self._view_scenes.get(name)
+            if cached is not None and cached[0] == made_from:
+                return cached[1]
+            if long_side:
+                k = min(1.0, long_side / max(canvas.width, canvas.height))
+                canvas = canvas.model_copy(update={"width": max(2, round(canvas.width * k) // 2 * 2),
+                                                   "height": max(2, round(canvas.height * k) // 2 * 2)})
             k = min(canvas.width / max(1, w), canvas.height / max(1, h))
-            item = SceneItem(source=ref, x=(canvas.width - w * k) / 2, y=(canvas.height - h * k) / 2, scale=k)
-            return canvas, Scene(id=f"view:{name}", name=name, canvas=canvas_id, items=[item])
+            item = SceneItem(source=source_id, x=(canvas.width - w * k) / 2, y=(canvas.height - h * k) / 2, scale=k,
+                             effects=[VIEW_LOOK] if kind == "draft" else [])
+            made = canvas, Scene(id=f"view:{name}", name=name, canvas=canvas_id, items=[item])
+            self._view_scenes = {**self._view_scenes, name: (made_from, made)}
+            return made
         return canvas, None
 
     def _native_views(self, taps: dict, sizes: dict) -> tuple[dict, dict]:
@@ -1493,7 +1536,9 @@ class Engine:
                     freeze = freeze_of(item.effects)
                     if freeze is not None:
                         item_freezes[item_key(scene.id, item.source)] = (("filter", freeze[0]), freeze[1])
-        compositor.effects = effects
+        self._base_effects = effects
+        self._view_fx_seen = view_fx = self.view_effects
+        compositor.effects = {**effects, **view_fx} if view_fx else effects
         self._freeze_filters = freezes
         self._item_freezes = item_freezes
 
@@ -2590,6 +2635,10 @@ class Engine:
             taps = {canvas_id: list(callbacks) for canvas_id, callbacks in self._taps.items() if callbacks}
         sizes = {source_id: source.size for source_id, source in self._sources.items()}
         self._served_views = set()
+        view_fx = self.view_effects
+        if view_fx is not self._view_fx_seen and hasattr(compositor, "effects"):  # the Filters window's looks
+            self._view_fx_seen = view_fx
+            compositor.effects = {**self._base_effects, **view_fx} if view_fx else self._base_effects
         if native is not None:
             self._engine_views, self._riders = self._native_views(taps, sizes)
             from sprigcast.render.native_bridge import native_soon, native_transition

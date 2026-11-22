@@ -1597,3 +1597,42 @@ def test_source_records_copy_stays_pythons_when_switched_off(monkeypatch):
     engine.add_frame_tap("clean:h", got.append, nv12_size=(64, 36))
     _run(engine, fake, seconds=0.1)
     assert "clean:h" in fake.rendered and "~clean:h" not in engine._native.views
+
+
+def test_the_filters_window_views_draw_small_with_looks_of_their_own():
+    """PC 2026-11-22: the Filters window's After showed nothing with Backdrop. Its Before and After are two small
+    views the engine draws, with the window's unapplied filters as their items' looks, and the same scene each
+    frame (no new snapshot for them every tick)."""
+    from sprigcast.core.filters import VideoEffects, video_effects
+    from sprigcast.core.scene import Filter, item_key
+
+    engine, fake = _engine(), FakeCompositor()
+    fake.effects = {}
+    engine._collection.sources.append(SourceConfig(id="cam", kind="color", name="Cam",
+                                                   settings={"width": 8, "height": 8}))
+    looked = []
+    sync = engine._native.sync
+
+    def keep(collection, effects, *a, **k):
+        looked.append(effects)
+        sync(collection, effects, *a, **k)
+
+    engine._native.sync = keep
+    blur = video_effects([Filter(id="m", kind="blur", name="Mist", settings={"size": 9})])
+    engine.set_view_effects({item_key("view:filters-after", "cam"): blur,
+                             item_key("view:filters-before", "cam"): VideoEffects()})
+    got = []
+    for name in ("filters-before", "filters-after"):
+        engine.set_view(name, "h", "draft", ("cam", 32))
+        engine.add_frame_tap(f"view:{name}", got.append, nv12_size=(32, 18))
+    _run(engine, fake, seconds=0.25)
+    canvas, scene = engine._native.views["filters-after"]
+    assert (canvas.width, canvas.height) == (32, 18)  # small: the window's picture, not the canvas's size
+    assert scene.items[0].effects and scene.items[0].source == "cam"
+    assert looked[-1][item_key("view:filters-after", "cam")] is blur
+    sizes = {sid: s.size for sid, s in engine._sources.items()}
+    assert engine._view_scene("filters-after", sizes)[1] is scene  # the same scene while nothing changed
+    assert any(f.canvas_id == "view:filters-after" for f in got) and any(f.canvas_id == "view:filters-before" for f in got)
+    engine.set_view_effects({})
+    _run(engine, fake, seconds=0.05)
+    assert item_key("view:filters-after", "cam") not in looked[-1]

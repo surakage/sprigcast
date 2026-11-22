@@ -168,13 +168,16 @@ def test_before_and_after_asks_for_both_pictures():
     assert sound.preview is None  # sound filters have no picture
 
 
-def test_after_comes_from_the_native_engine_for_native_only_filters():
+def test_before_and_after_come_from_the_native_engine():
+    """PC 2026-11-22: After showed nothing with Backdrop (asking for Before let go of After's view) and the preview
+    was choppy. With the native engine both sides are small views it draws every frame, After with the window's
+    unapplied filters."""
     _app()
     import numpy as np
 
     from sprigcast.app.filters_dialog import EngineGrab, nv12_to_rgba
-    from sprigcast.core import filters
-    from sprigcast.core.scene import Canvas, SceneCollection, SourceConfig
+    from sprigcast.core.filters import VideoEffects
+    from sprigcast.core.scene import Canvas, SceneCollection, SourceConfig, item_key
     from sprigcast.render.engine import Frame
 
     grey = np.full(64 * 36 * 3 // 2, 128, np.uint8)
@@ -183,8 +186,9 @@ def test_after_comes_from_the_native_engine_for_native_only_filters():
     assert rgba.shape == (36, 64, 4) and abs(int(rgba[0, 0, 0]) - 128) <= 2 and rgba[0, 0, 3] == 255
 
     class FakeEngine:
-        def __init__(self):
-            self.views, self.taps, self.grabs = {}, {}, []
+        def __init__(self, native=True):
+            self._native = object() if native else None
+            self.views, self.taps, self.grabs, self.looks = {}, {}, [], {}
 
         def grab_source(self, sid, back, raw, limit, filters=None):
             self.grabs.append((sid, raw))
@@ -196,6 +200,9 @@ def test_after_comes_from_the_native_engine_for_native_only_filters():
             else:
                 self.views[name] = (canvas_id, kind, ref)
 
+        def set_view_effects(self, effects):
+            self.looks = dict(effects)
+
         def add_frame_tap(self, key, cb, nv12_size=None):
             self.taps[key] = (cb, nv12_size)
 
@@ -204,27 +211,33 @@ def test_after_comes_from_the_native_engine_for_native_only_filters():
 
     col = SceneCollection(canvases=[Canvas(id="horizontal", name="Horizontal", width=1920, height=1080)],
                           sources=[SourceConfig(id="cam", kind="camera", name="Cam",
-                                                filters=[Filter(id="b", kind="native_test", name="Backdrop")])])
+                                                filters=[Filter(id="b", kind="background_effect", name="Backdrop")])])
     engine = FakeEngine()
     grab = EngineGrab(engine, col)
-    got = []
-    grab("cam", got.append, False, 480)
-    assert engine.grabs == [("cam", False)]  # not native-only yet: Python's compositor as usual
-    filters.NATIVE_DRAWN.add("native_test")
-    try:
-        grab("cam", got.append, False, 480)
-        assert engine.views["filters-window"] == ("horizontal", "source", "cam")
-        cb, size = engine.taps["view:filters-window"]
-        assert size == (480, 270)
-        cb(Frame("view:filters-window", 480, 270, bytes(480 * 270 * 3 // 2), fmt="nv12"))
-        grab("cam", got.append, False, 480)
-        assert got[-1].shape == (270, 480, 4)
-        grab("cam", got.append, True, 480)  # Before: always without filters, from Python's compositor
-        assert engine.grabs[-1] == ("cam", True)
-        grab.stop()
-        assert not engine.taps and not engine.views
-    finally:
-        filters.NATIVE_DRAWN.discard("native_test")
+    assert grab.every_ms < 100  # smooth
+    got = {True: [], False: []}
+    draft = [Filter(id="b", kind="background_effect", name="Backdrop", settings={"blur": 0.57})]
+    for _ in range(3):  # the window asks for both, Before first, again and again: the views stay
+        grab("cam", got[True].append, True, 480)
+        grab("cam", got[False].append, False, 480, filters=draft)
+        for name in ("filters-before", "filters-after"):
+            cb, size = engine.taps[f"view:{name}"]
+            assert size == (480, 270) and engine.views[name] == ("horizontal", "draft", ("cam", 480))
+            cb(Frame(f"view:{name}", 480, 270, bytes(480 * 270 * 3 // 2), fmt="nv12"))
+    assert engine.grabs == []  # nothing from Python's compositor
+    assert got[True][-1].shape == got[False][-1].shape == (270, 480, 4)
+    assert engine.looks[item_key("view:filters-before", "cam")] == VideoEffects()
+    assert engine.looks[item_key("view:filters-after", "cam")].bg_mode  # the draft's Backdrop
+    grab("cam", got[False].append, False, 480, filters=draft)
+    grab("cam", got[False].append, False, 480, filters=draft)
+    assert got[False][-1] is got[False][-2]  # no new frame: not converted again
+    grab.stop()
+    assert not engine.taps and not engine.views and engine.looks == {}
+    python = FakeEngine(native=False)
+    old = EngineGrab(python, col)
+    old("cam", got[True].append, True, 480)
+    old("cam", got[False].append, False, 480, filters=draft)
+    assert python.grabs == [("cam", True), ("cam", False)] and old.every_ms == 200
 
 
 def test_preview_first_then_apply_or_cancel():  # noqa: PLR0915
