@@ -94,3 +94,21 @@ def test_asked_once_after_the_first_real_stream():
     assert not share_reports.enabled(settings)
     assert share_reports.maybe_ask(None, 300, settings, ask=lambda: asks.append(1) or True) is None
     assert asks == [1]
+
+
+def test_the_answer_is_logged(caplog, monkeypatch):
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+
+    def press():
+        card = QApplication.activeModalWidget()
+        card._shown_at = None  # past the moment a press is ignored
+        card._press(card._buttons[-1])
+
+    QTimer.singleShot(50, press)
+    with caplog.at_level("INFO", logger="sprigcast.app.share_reports"):
+        assert share_reports.maybe_ask(None, 300, FakeSettings()) is True
+    assert f"answered: {share_reports.YES}" in caplog.text

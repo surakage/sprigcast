@@ -438,3 +438,57 @@ def test_a_backup_is_never_a_garden_and_remove_tidies_up(setup):
     shelf.remove("garden", other.id)
     assert not backups.last_good(file).exists() and not backups.copies(file) and not thumbs.exists()
     assert list((folder / "removed").glob("*.json"))  # the garden itself is kept
+
+
+def test_a_question_card_lets_apps_switch_and_a_settings_window_is_named(window, monkeypatch):
+    """The "Help improve SprigCast?" card blocked garden.switch from apps (PC test, 2026-11-21); a window that does
+    hold the garden is named in the answer."""
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app import gardens_menu, share_reports
+    from sprigcast.app.message import MessageCard
+
+    w = window
+    w.gardens.do("garden", "new", "Other")
+    seen = {}
+
+    def while_open():
+        top = QApplication.activeModalWidget()
+        seen["free"] = bool(top is not None and top.property(gardens_menu.FREE_OF_GARDEN))
+        seen["switch"] = w.gardens.do("garden", "switch", "Other")
+        seen["garden"] = w.gardens.shelf.garden().name
+        top.reject()
+
+    QTimer.singleShot(50, while_open)
+
+    class Settings:
+        def value(self, key, default=None, type=None):  # noqa: A002
+            return default
+
+        def setValue(self, key, value):  # noqa: N802
+            pass
+
+    share_reports.maybe_ask(w, 300, Settings())
+    assert seen == {"free": True, "switch": None, "garden": "Other"}
+    # A pop-up that holds the garden (Settings): refused, and the answer says which one.
+    card = MessageCard("Settings", "", w)
+    monkeypatch.setattr(QApplication, "activeModalWidget", staticmethod(lambda: card))
+    assert w.gardens.do("garden", "switch", "Main") == "Close the open window first (Settings)."
+    card.deleteLater()
+
+
+def test_a_garden_switch_writes_the_garden_out_once(window, monkeypatch):
+    """garden.switch wrote the incoming garden out as text four times on the window's thread (one of them
+    304 ms on the PC with a big garden, 2026-11-21): now once, for both gardens' files and undo."""
+    from sprigcast.core.scene import SceneCollection
+
+    w = window
+    w.gardens.do("garden", "new", "Other")
+    written = []
+    real = SceneCollection.to_text
+    monkeypatch.setattr(SceneCollection, "to_text", lambda self: written.append(self) or real(self))
+    assert w.gardens.do("garden", "switch", "Other") is None
+    assert len(written) == 2  # the garden left (saved) and the one coming in
+    assert w._undo_current == real(w.collection) and not w._undo
+    assert w.scenes_path.read_text(encoding="utf-8") == real(w.collection)

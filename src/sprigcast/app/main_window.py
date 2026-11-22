@@ -3537,14 +3537,16 @@ class MainWindow(QMainWindow):
         self._undo.append(self._undo_current)
         self._restore_state(self._redo.pop())
 
-    def _restore_state(self, text: str) -> None:
-        """Put the whole collection back as it was (in place: everything holding it sees the change)."""
+    def _restore_state(self, text: str, saved: bool = True) -> None:
+        """Put the whole collection back as it was (in place: everything holding it sees the change).
+        saved=False: the caller saves it (a garden switch saves the same text to the new garden's file)."""
         restored = SceneCollection.model_validate_json(text)
         for name in type(self.collection).model_fields:
             setattr(self.collection, name, getattr(restored, name))
         self._undo_current = text
         self._undo_at = 0.0
-        self.collection.save(self.scenes_path)
+        if saved:
+            self.collection.save(self.scenes_path, text)  # the text it was read from: not written out again
         self._send_whole()
         ids = {s.id for s in self.collection.scenes}
         if self.selected_scene_id not in ids:
@@ -7304,21 +7306,28 @@ class MainWindow(QMainWindow):
 
         share_reports.send_after_stream(getattr(report, "path", None), seconds, collection=self.collection)
         if seconds >= share_reports.MIN_SECONDS and not share_reports.asked():
-            QTimer.singleShot(2500, self, lambda: self._ask_to_share(seconds))
+            QTimer.singleShot(share_reports.ASK_AFTER_MS, self, lambda: self._ask_to_share(seconds))
         health, self._health = getattr(self, "_health", None), None
         self.live_stage.card.set_notice("", "")
         if health is not None and seconds >= 10:  # not for a start that never got going
             health.finish(QSettings())
         self._show_last_stream()
 
-    def _ask_to_share(self, seconds: float) -> None:
-        """The one-time "Help improve SprigCast?" card, when nothing else is open and we're still offline."""
+    def _ask_to_share(self, seconds: float, tries: int = 0) -> None:
+        """The one-time "Help improve SprigCast?" card, once SprigCast has settled after the stream and the person
+        is looking at it: shown 2.5 s after a stream, the window didn't answer for 808 ms while it came up (PC,
+        2026-11-21). Not while live or recording, with another pop-up open, or with another app in front."""
         from PySide6.QtWidgets import QApplication
 
         from sprigcast.app import share_reports
 
-        if self.streaming is not None or QApplication.activeModalWidget() is not None:
+        if self.streaming is not None or share_reports.asked():
             return  # asked after a later stream instead
+        quiet = self.recording is None and QApplication.activeModalWidget() is None and self.isActiveWindow()
+        if not quiet:
+            if tries < share_reports.ASK_TRIES:
+                QTimer.singleShot(share_reports.ASK_AFTER_MS, self, lambda: self._ask_to_share(seconds, tries + 1))
+            return
         if share_reports.maybe_ask(self, seconds):
             self.statusBar().showMessage("Thank you! A summary goes to the developer after each stream.", 8000)
 
