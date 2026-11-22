@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 43  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 44  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 PUSH_OFF, PUSH_TALK, PUSH_MUTE = 0, 1, 2  # sc_mixer_push_set modes
 DLL_NAME = "sprigcore.dll"
 
@@ -105,7 +105,8 @@ class Effects(ctypes.Structure):
         ("spin_turns", ctypes.c_float), ("spin_seconds", ctypes.c_float), ("spin_run", ctypes.c_int),
         ("halo_count", ctypes.c_int), ("halos", Halo * 4),
         ("bg_mode", ctypes.c_int), ("bg_blur", ctypes.c_float), ("bg_edge", ctypes.c_float),
-        ("bg_picture", ctypes.c_uint64),
+        ("bg_picture", ctypes.c_uint64), ("bg_edge_size", ctypes.c_float), ("bg_steady", ctypes.c_float),
+        ("bg_gamma", ctypes.c_float), ("bg_light", ctypes.c_float), ("bg_room_light", ctypes.c_float),
     ]
 
 

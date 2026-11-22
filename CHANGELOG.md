@@ -6,6 +6,10 @@ What changed in each SprigCast release, grouped by area. Numbers like (#184) are
 
 ## Unreleased
 
+- Backdrop has new settings for fine tuning. Background Brightness (blur and picture), Person Brightness and
+  Person Gamma light the room and the person separately. Edge Size grows or shrinks the cut around the person (a
+  lower value drops chair backs and boxes the model keeps), and Steadiness sets how much each mask keeps of the
+  last one against flicker. Engine interface 44. Not tried on a PC yet.
 - The log's "pages:" line no longer repeats "script memory 150 MB for 1 page" for pages that share one page
   process.
 - Twitch Enhanced Broadcasting uses less memory. Its two NVIDIA encoders (and any NVENC stream or recording
