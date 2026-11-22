@@ -8201,7 +8201,8 @@ class MainWindow(QMainWindow):
         fps = wizard.plan.apply(wizard.chosen)
         for change in wizard.chosen:
             log.info("optimize: applied %s (was %s)", change.label, change.now)
-        waits = lowend.store_fps(fps, self.collection) if fps else False
+        sizes = wizard.plan.sizes(wizard.chosen)
+        waits = lowend.store_fps(fps, self.collection, sizes) if fps or sizes else False
         try:
             lowend.store_tier(lowend.tier(lowend.pc_facts()))
         except Exception as exc:  # noqa: BLE001 (only the label on Settings → General)
@@ -8210,7 +8211,7 @@ class MainWindow(QMainWindow):
         self._keep_path_file()  # the path's own file too, at once
         self._after_settings()
         self.statusBar().showMessage(
-            "Optimized for this PC." + (" Restart SprigCast for the new frame rate." if waits else ""), 15000)
+            "Optimized for this PC." + (" Restart SprigCast for the new canvas settings." if waits else ""), 15000)
         return True
 
     def _health_records(self) -> list:
