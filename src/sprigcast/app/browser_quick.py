@@ -44,6 +44,8 @@ Item {
     signal loaded(bool ok)
     signal crashed(int status, int code)
     signal mediaNote(string message)
+    signal consoleError(string message)
+    signal loadStarted()
     signal measured(string text)
     property var scripts: []
     // Set from Python through these: Python can't hold the WebEngineView itself (PySide6 has no
@@ -85,12 +87,14 @@ Item {
         settings.focusOnNavigationEnabled: false
         onPermissionRequested: function(permission) { permission.deny() }
         onLoadingChanged: function(info) {
-            if (info.status === WebEngineView.LoadSucceededStatus) root.loaded(true)
+            if (info.status === WebEngineView.LoadStartedStatus) root.loadStarted()
+            else if (info.status === WebEngineView.LoadSucceededStatus) root.loaded(true)
             else if (info.status === WebEngineView.LoadFailedStatus) root.loaded(false)
         }
         onRenderProcessTerminated: function(status, code) { root.crashed(status, code) }
         onJavaScriptConsoleMessage: function(level, message, line, source) {
             if (message.startsWith("sprigcast:media ")) root.mediaNote(message)
+            else if (level === WebEngineView.ErrorMessageLevel) root.consoleError(message)
         }
     }
 }
@@ -175,6 +179,9 @@ class QuickPage:
         self.root.crashed.connect(self._crashed)
         self._media_noted: set[str] = set()
         self.root.mediaNote.connect(self._media_note)
+        self._errors_told = 0
+        self.root.consoleError.connect(lambda message: browser_host_console_error(self, message))
+        self.root.loadStarted.connect(lambda: setattr(self, "_errors_told", 0))
         self._measure_got = None
         self.root.measured.connect(lambda text: self._measure_got and self._measure_got(str(text or "")))
         self.control.sceneChanged.connect(self._changed)
@@ -400,6 +407,7 @@ class QuickPage:
 
         browser_host.forget_notes(self)
         browser_host.stir(self)
+        log.info("browser source %s: loading the page again", self.id)
         self._call("reloadPage")
 
     def want_memory(self) -> None:
@@ -617,3 +625,10 @@ class _Canvas(QWidget):
             self.owner.page.dirty = True
             return True
         return super().event(event)
+
+
+def browser_host_console_error(page, message: str) -> None:
+    """A page's console error, logged as widget pages do (browser_host._Page._console_error)."""
+    from sprigcast.app import browser_host
+
+    browser_host._Page._console_error(page, message)

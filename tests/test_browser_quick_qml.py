@@ -86,3 +86,15 @@ def test_the_card_page_passes_on_a_video_that_cant_play():
     out = subprocess.run([sys.executable, "-c", NOTE_SCRIPT], env=env, capture_output=True, text=True, timeout=120,
                          check=False)
     assert out.stdout.strip().endswith("['sprigcast:media h264 x']"), out.stderr[-2000:]
+
+
+def test_the_card_page_passes_on_console_errors():
+    """A card page's console errors reach Python (the Sound Alerts sign-in error left nothing in the log)."""
+    script = (NOTE_SCRIPT.replace("root.mediaNote.connect", "root.consoleError.connect")
+              .replace("console.log('other');console.info('sprigcast:media h264 x')",
+                       "console.log('fine');console.error('Firebase: Error (auth/x)')"))
+    env = {**os.environ, "QT_QPA_PLATFORM": "offscreen", "QTWEBENGINE_CHROMIUM_FLAGS": "--no-sandbox",
+           "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src")}
+    out = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True, timeout=120,
+                         check=False)
+    assert out.stdout.strip().endswith("['Firebase: Error (auth/x)']"), out.stderr[-2000:]
