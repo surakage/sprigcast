@@ -79,6 +79,7 @@ def _tile(label: str, parent: QWidget | None = None) -> tuple[QFrame, QLabel]:
     box = QVBoxLayout(tile)
     box.setContentsMargins(14, 10, 14, 12)
     box.setSpacing(2)
+    tile.setMinimumHeight(62)  # never squashed to a bar when the pop-up is short
     small = QLabel(label, tile)
     small.setObjectName("tileName")
     big = QLabel("–", tile)
@@ -93,6 +94,17 @@ def _section(text: str, parent: QWidget | None = None) -> QLabel:
     label = QLabel(text, parent)
     label.setObjectName("gardenSection")  # styled by the page (ROW_STYLE)
     return label
+
+
+def _card(title: str, parent: QWidget) -> tuple[QFrame, QVBoxLayout]:
+    """A titled section card, like Settings' sections: the title inside, the body under it."""
+    card = QFrame(parent)
+    card.setObjectName("gardenCard")  # styled by the page (ROW_STYLE)
+    box = QVBoxLayout(card)
+    box.setContentsMargins(16, 12, 16, 14)
+    box.setSpacing(8)
+    box.addWidget(_section(title, card))
+    return card, box
 
 
 def _restyle(widget: QWidget, name: str, value: str) -> None:
@@ -146,8 +158,12 @@ class GardenCheckPage(QWidget):
         words.addWidget(self.mood)
         words.addStretch(1)
         head.addLayout(words, 1)
-        self.close_button = theme.make_cross(QPushButton(self), 30, extra="min-height: 0;")
+        from sprigcast.app.transitions_panel import LIFT
+
+        # The same × as every other pop-up (transitions_panel.cross_button), made as the page's child (see _tile).
+        self.close_button = theme.make_cross(QPushButton(self), 30, extra=LIFT)
         self.close_button.setToolTip("Close")
+        self.close_button.setAccessibleName("Close")
         head.addWidget(self.close_button, 0, Qt.AlignmentFlag.AlignTop)
         root.addLayout(head)
 
@@ -166,21 +182,20 @@ class GardenCheckPage(QWidget):
             grid.addWidget(tile, i // 4, i % 4)
             self.values[key] = value
         body.addLayout(grid)
-        body.addSpacing(4)
-        body.addWidget(_section("Stream health", now))
+        health, health_box = _card("Stream health", now)
+        self._health_card = health  # the rows are made as its children
         self.rows = QVBoxLayout()
         self.rows.setSpacing(0)
-        body.addLayout(self.rows)
-        body.addWidget(self._overload_bar(now))
-        body.addSpacing(4)
-        body.addWidget(_section("Things we checked", now))
-        self.checks = QGridLayout()
-        self.checks.setHorizontalSpacing(8)
-        self.checks.setVerticalSpacing(8)
-        checks_row = QHBoxLayout()
-        checks_row.addLayout(self.checks)
-        checks_row.addStretch(1)
-        body.addLayout(checks_row)
+        health_box.addLayout(self.rows)
+        health_box.addWidget(self._overload_bar(health))
+        body.addWidget(health)
+        checked, checked_box = _card("Things we checked", now)
+        self._checked = checked
+        from sprigcast.app.live_panel import FlowLayout
+
+        self.checks = FlowLayout(spacing=8)  # wraps like words: a second row never lands on the first
+        checked_box.addLayout(self.checks)
+        body.addWidget(checked)
         body.addStretch(1)
         self.stack.addWidget(now)
         # The last few streams: made when first shown (made with the rest, it was 148 ms of the PC's 207 ms open
@@ -302,11 +317,11 @@ class GardenCheckPage(QWidget):
                 widget.setParent(None)
                 widget.deleteLater()
         for i, (name, detail, row_level, word) in enumerate(s.rows):
-            row = self._row(name, detail, row_level, word, first=i == 0, parent=self._now)
+            row = self._row(name, detail, row_level, word, first=i == 0, parent=self._health_card)
             self._row_parts.append(row.parts)
             self.rows.addWidget(row)  # shown with the rest when the layout next runs: once, not once per row
         if not s.rows:
-            none = QLabel("No places to stream yet.", self._now)
+            none = QLabel("No places to stream yet.", self._health_card)
             none.setStyleSheet(f"color: {theme.MUTED}; background: transparent; padding: 6px 0;")
             self.rows.addWidget(none)
 
@@ -318,12 +333,42 @@ class GardenCheckPage(QWidget):
             if widget is not None:
                 widget.setParent(None)
                 widget.deleteLater()
-        for i, (label, ok, tip) in enumerate(s.checks):
-            chip = QLabel(("✓  " if ok else "!  " if ok is False else "–  ") + label, self._now)
+        for label, ok, tip in s.checks:
+            chip = QLabel(("✓  " if ok else "!  " if ok is False else "–  ") + label, self._checked)
             chip.setObjectName("checkChip")  # styled by the page (ROW_STYLE), not a style sheet of its own
             chip.setProperty("state", "ok" if ok else "warn" if ok is False else "quiet")
             chip.setToolTip(tip)
-            self.checks.addWidget(chip, i // 4, i % 4)
+            self.checks.addWidget(chip)
+        self._fit()
+
+    def _fit(self) -> None:
+        """The pop-up grows to hold what was just filled in: it was sized while empty, and squashed the tiles,
+        the rows and the second row of chips (PC 2026-11-22). Measured on the "now" view itself after a layout
+        pass: the chips wrap, so their height hangs on the width, which Qt's size hints up the chain miss."""
+        window = self.window()
+        if window is self:
+            return
+
+        def grow() -> None:
+            if not shiboken6.isValid(self) or self.stack.currentIndex() != 0:
+                return
+            now = self._now
+            need = now.layout().totalHeightForWidth(now.width()) if now.layout().hasHeightForWidth() else -1
+            need = max(need, now.layout().totalMinimumSize().height())
+            short = need - now.height()
+            if short > 0:
+                window.resize(window.width(), window.height() + short)
+                now.layout().activate()
+            # Then exactly to the last card: Qt's estimate for the wrapped chips can run a little tall.
+            slack = now.height() - self._checked.geometry().bottom() - 1
+            if slack > 0:
+                window.resize(window.width(), window.height() - slack)
+            window.setMinimumHeight(window.height())  # dragged smaller later, nothing is squashed
+
+        width = max(window.width(), window.sizeHint().width())
+        if window.width() < width:
+            window.resize(width, window.height())
+        QTimer.singleShot(0, self, grow)
 
     def _overload_bar(self, parent: QWidget | None = None) -> QFrame:
         """Shown while the encoder can't keep up: says so, with one tap to make encoding lighter."""
@@ -425,6 +470,7 @@ ROW_STYLE = (
     f"#tileName {{ color: {theme.MUTED}; font-size: 12px; background: transparent; }}"
     "#tileValue { font-size: 18px; font-weight: 700; background: transparent; }"
     + "".join(f'#tileValue[tone="{tone}"] {{ color: {colour}; }}' for tone, colour in TONES.items())
+    + f"#gardenCard {{ background: {theme.SECTION}; border: 1px solid {theme.SECTION_EDGE}; border-radius: 16px; }}"
     + f"#gardenSection {{ color: {theme.TEXT_BRIGHT}; font-size: 15px; font-weight: 700; background: transparent; }}"
     "#gardenMood { font-weight: 600; background: transparent; }"
     + "".join(f'#gardenMood[level="{lv}"] {{ color: {colour}; }}' for lv, colour in LEVEL_COLOURS.items())

@@ -346,7 +346,11 @@ def make_cross(button, size: int = 30, styled: bool = True, extra: str = ""):
     button.setFixedSize(size, size)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     if styled:
-        button.setStyleSheet(button_style(size // 2 - 1, "0px", extra=extra))
+        # The size is pinned in the style too: the app's QPushButton min-height (18 px) otherwise won over
+        # setFixedSize and squeezed every × to 20 px tall, a flat rectangle instead of a circle (user 2026-11-22).
+        inner = size - 2  # inside the 1 px edge
+        pin = f"min-height: {inner}px; max-height: {inner}px; min-width: {inner}px; max-width: {inner}px;"
+        button.setStyleSheet(button_style(size // 2 - 1, "0px", extra=f"{extra} {pin}"))
     return button
 
 
