@@ -31,7 +31,7 @@ def licenses_url() -> str:
 
 
 def about_page() -> QWidget:
-    from sprigcast import __version__, build_label
+    from sprigcast import build_label, display_version
     from sprigcast.app.empty import ArtPicture
     from sprigcast.app.main import brand_mark
 
@@ -51,15 +51,15 @@ def about_page() -> QWidget:
     name = QLabel("SprigCast")
     name.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-size: 24px; font-weight: 700;")
     name_row.addWidget(name)
-    version = QLabel(__version__)
+    version = QLabel(display_version())
     version.setObjectName("aboutVersion")
     version.setStyleSheet(f"color: {theme.MUTED}; font-size: 13px; padding-top: 6px;")
     name_row.addWidget(version)
     name_row.addStretch(1)
     layout.addLayout(name_row)
     label = build_label()
-    if label != __version__:  # a test build: its run number and commit, for reports
-        build = QLabel(label.removeprefix(__version__).strip().capitalize())
+    if label != display_version():  # a test build: its run number and commit, for reports
+        build = QLabel(label.removeprefix(display_version()).strip().capitalize())
         build.setObjectName("aboutBuild")
         build.setAlignment(Qt.AlignmentFlag.AlignCenter)
         build.setStyleSheet(f"color: {theme.MUTED};")

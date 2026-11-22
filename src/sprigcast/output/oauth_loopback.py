@@ -108,7 +108,7 @@ def result_page(ok: bool, label: str = "", reason: str = "") -> str:
     where = html.escape(label) if label else ""
     if ok:
         title = f"Signed in to {where}" if where else "You're signed in"
-        text = "SprigCast is fetching your stream key now."
+        text = "SprigCast is finishing your sign-in now."  # not every sign-in fetches a key (TikTok, Stream details)
         mark = ("#1d3428", "#4fd88f", TICK)
     else:
         title = "Sign-in didn't finish"

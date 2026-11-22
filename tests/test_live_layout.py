@@ -162,3 +162,34 @@ def test_edit_drags_blooms_into_order_without_switching(app, tmp_path, monkeypat
         assert panel.drop_index(next(iter(panel._groups)), -5) == 0
     finally:
         w.close()
+
+
+def test_switching_a_canvas_off_centres_the_other_and_gives_it_the_stage(app, tmp_path, monkeypatch):
+    """PC, 2026-11-22: with vertical switched off, horizontal stayed leaning right with an empty gap beside it."""
+    from PySide6.QtTest import QTest
+
+    w = _window(tmp_path, monkeypatch)
+    try:
+        w.resize(1600, 900)
+        w.show()
+        w._set_mode("live")
+        QTest.qWait(50)
+        h, v = w.previews["horizontal"], w.previews["vertical"]
+        assert h.align == "right" and v.align == "left"  # both: they lean together
+        assert w.show_canvases("horizontal")
+        QTest.qWait(50)
+        assert h.align == "center"
+        assert w.canvas_columns["horizontal"].width() >= w.splitter.width() - 2  # the whole stage
+        assert w.show_canvases("both")
+        QTest.qWait(50)
+        assert h.align == "right" and v.align == "left"
+        assert w.canvas_columns["vertical"].isVisibleTo(w.splitter) and w.canvas_columns["vertical"].width() > 50
+        assert w.show_canvases("vertical")  # the other way round too
+        QTest.qWait(50)
+        assert v.align == "center" and not w.canvas_columns["horizontal"].isVisibleTo(w.splitter)
+        assert w.canvas_columns["vertical"].width() >= w.splitter.width() - 2
+        assert w.show_canvases("both")
+        QTest.qWait(50)
+        assert h.align == "right" and v.align == "left"
+    finally:
+        w.close()

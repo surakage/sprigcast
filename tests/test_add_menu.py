@@ -220,3 +220,31 @@ def test_a_sound_inspector_changes_its_source(tmp_path, monkeypatch):
         assert page.apps_card.title() == "Source" and not page.apps_card.isHidden()
     finally:
         w.close()
+
+
+def test_a_sprigs_icon_follows_its_leaves(tmp_path, monkeypatch):
+    """User's PC, 2026-11-21: a leaf was added to an empty sprig and its icon in Sprigs still showed the +."""
+    from sprigcast.app.main_window import ROLE_ID, ROLE_SOURCE_KIND
+    from sprigcast.core.scene import SourceConfig
+
+    col, w = _window(tmp_path, monkeypatch)
+    try:
+        w.selected_scene_id = "p"
+        w._refresh_scenes()
+
+        def icon_kind():
+            stack = [w.scene_tree.topLevelItem(i) for i in range(w.scene_tree.topLevelItemCount())]
+            while stack:
+                row = stack.pop()
+                stack.extend(row.child(i) for i in range(row.childCount()))
+                if row.data(0, ROLE_ID) == "p":
+                    return row.data(0, ROLE_SOURCE_KIND)
+
+        assert icon_kind() == "empty"
+        w._add_item(SourceConfig(id="cam", kind="camera", name="Facecam", settings={"name": "Facecam", "path": ""}))
+        assert icon_kind() == "camera"
+        w.source_list.setCurrentRow(0)
+        w._remove_item()
+        assert icon_kind() == "empty"
+    finally:
+        w.close()

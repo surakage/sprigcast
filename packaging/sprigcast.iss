@@ -4,6 +4,9 @@
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
+#ifndef AppShown
+  #define AppShown AppVersion
+#endif
 ; SprigCast holds this mutex while it runs (APP_MUTEX in app/main.py).
 #define AppMutexName "SprigCastAppMutex"
 
@@ -32,7 +35,7 @@ AppMutex={#AppMutexName}
 CloseApplications=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-AppVerName=SprigCast {#AppVersion}
+AppVerName=SprigCast {#AppShown}
 AppCopyright=Slothbloom
 AppPublisherURL=https://github.com/surakage/sprigcast
 AppSupportURL=https://github.com/surakage/sprigcast/issues
@@ -51,7 +54,7 @@ DisableReadyPage=yes
 [Messages]
 SetupWindowTitle=%1 Setup
 WelcomeLabel1=Welcome to SprigCast
-WelcomeLabel2=A light, open-source studio for streaming and recording, with horizontal and vertical canvases at once.%n%nVersion {#AppVersion}
+WelcomeLabel2=A light, open-source studio for streaming and recording, with horizontal and vertical canvases at once.%n%n{#AppShown}
 WizardSelectDir=Install location
 SelectDirDesc=Where SprigCast goes.
 SelectDirLabel3=SprigCast installs for your account only, so it needs no administrator rights.
@@ -192,7 +195,7 @@ begin
   if WizardForm.PrevAppDir <> '' then
   begin
     WizardForm.WelcomeLabel1.Caption := 'Update SprigCast';
-    WizardForm.WelcomeLabel2.Caption := 'Version {#AppVersion}. Your blooms, sprigs and settings stay as they are.';
+    WizardForm.WelcomeLabel2.Caption := '{#AppShown}. Your blooms, sprigs and settings stay as they are.';
   end;
 
   ExtrasPage := CreateCustomPage(wpSelectDir, 'Extras', 'Pick what to add.');

@@ -56,6 +56,9 @@ Stream keys are kept in Windows Credential Manager, never in a file, and never i
 - After an unexpected close, SprigCast offers **safe mode** (the older, simpler engine, no plugins) on the
   next start.
 
+Still stuck? Ask in **#help** on the [SprigCast Discord](https://discord.gg/fgMD33XrhM). If you sent a report, paste
+its number there.
+
 Reports are kept for 30 days, then deleted. See the
 [privacy policy](https://slothbloom.com/privacy#sprigcast-reports).
 
@@ -65,7 +68,7 @@ Thank you! A few things make your reports most useful:
 
 - Say what you were doing, and roughly when.
 - Send a report even for small things: a stutter, a sound gap, a button that felt slow.
-- Under **Settings → General → Help improve SprigCast** you can choose to send a summary after every stream.
+- Under **Settings → General → Logs**, tick **Send stream summaries to the developer** to send a summary after every stream.
   It's off unless you turn it on, and holds nothing personal (see step 5).
 
 ## 7. Updates and uninstalling

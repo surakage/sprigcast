@@ -150,6 +150,10 @@ def test_release_notes_come_from_the_changelog():
     assert notes.section(text, "0.3.0") == "- New."
     assert notes.section(text, "0.2.0") == "- Old."
     assert notes.section(text, "0.2") is None
+    beta = "## Beta 0.4 (not released yet)\n\n### Added\n\n- Newer.\n\n## Version 1 (2027-01-01)\n\n- Whole.\n"
+    assert notes.section(beta, "0.4.0") == "### Added\n\n- Newer."
+    assert notes.section(beta, "1.0.0") == "- Whole."
+    assert notes.section(beta, "0.4.1") is None
     changelog = (Path(__file__).parent.parent / "CHANGELOG.md").read_text(encoding="utf-8")
     assert notes.section(changelog, __version__), "every released version needs a CHANGELOG section"
 

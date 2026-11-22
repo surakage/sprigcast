@@ -23,9 +23,10 @@ struct SegmentViews {
 using DrawSmall = std::function<void(ID3D11RenderTargetView *target, int width, int height, const float (&map)[4])>;
 
 // The mask for picture `key` (pic_w x pic_h), made again when one is due. `blur` 0..1 with `room`: also the room
-// blurred. False when this card can't (the picture is then drawn as it is). The device's lock must be held; the
+// blurred. `steady` 0..1: how much of the last mask each new one keeps, against flicker. False when this card can't (the picture is then drawn as it is). The device's lock must be held; the
 // render target and viewport are left unset (the caller sets its own again).
-bool segment(sc_device &dev, uint64_t key, int pic_w, int pic_h, bool room, float blur, const DrawSmall &draw,
+bool segment(sc_device &dev, uint64_t key, int pic_w, int pic_h, bool room, float blur, float steady,
+             const DrawSmall &draw,
              SegmentViews &out);
 
 // Called as a scene is drawn: no picture asked for a mask for REST_S, so the finder lets go of all it holds on

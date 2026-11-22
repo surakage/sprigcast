@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 43
+#define SC_INTERFACE_VERSION 44
 
 enum {
     SC_OK = 0,
@@ -171,6 +171,11 @@ typedef struct sc_effects {
     float bg_blur;         /* blur: 0..1 */
     float bg_edge;         /* how soft the person's edge is: 0..1 */
     uint64_t bg_picture;   /* picture: set with sc_mask_set; 0 = see-through behind the person */
+    float bg_edge_size;    /* -1..1: the person's edge moved out (grow) or in (shrink); 0 = the model's own (v44) */
+    float bg_steady;       /* 0..1: how much of the last mask each new one keeps, against flicker */
+    float bg_gamma;        /* the person's gamma, as Tone's slider: -3..3, 0 = untouched */
+    float bg_light;        /* the person's brightness: -1..1 */
+    float bg_room_light;   /* what shows behind them (blur or picture): brightness -1..1 */
 } sc_effects;
 
 /* The Background filter (segmenter.h): the room behind a person found by a small model on the graphics card. */

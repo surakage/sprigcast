@@ -272,6 +272,29 @@ def test_sign_out_on_a_place_signs_the_platform_out(fake_keyring, monkeypatch):
     assert not d.sign_out_button.isVisibleTo(d) and d.sign_in_button.text() == "Sign in"
 
 
+def test_signing_out_of_tiktok_forgets_the_name_on_the_place(fake_keyring, monkeypatch):
+    """TikTok's sign-in only names the account, so a name kept on the place after Sign out would be wrong."""
+    QApplication.instance() or QApplication([])
+    from sprigcast.app import accounts_page
+    from sprigcast.app.stream_dialog import StreamPage
+    from sprigcast.output import service_signin, stream_details
+
+    monkeypatch.setattr(service_signin, "available", lambda s: s == "tiktok")
+    signed_in = {"tiktok": "Sloth (@sloth)"}
+    monkeypatch.setattr(stream_details, "account", lambda s: signed_in.get(s, ""))
+    monkeypatch.setattr(accounts_page, "sign_out", lambda s: signed_in.update({s: ""}) or "")
+    col = SceneCollection(
+        canvases=[Canvas(id="vertical", width=1080, height=1920)],
+        outputs=[Output(id="t", type="stream", service="tiktok", canvas="vertical", key_ref="sprigcast/t",
+                        account="Sloth (@sloth)")],
+    )
+    d = StreamPage(col)
+    assert d.signin_state.text() == "Signed in as Sloth (@sloth)" and not d.sign_in_button.isVisibleTo(d)
+    d.sign_out_button.click()
+    assert d.signin_state.text() == "Not signed in" and d.sign_in_button.text() == "Sign in"
+    assert d.sign_in_button.isVisibleTo(d) and not d.sign_out_button.isVisibleTo(d)
+
+
 def test_twitch_place_shows_sign_out_once_connected(fake_keyring, monkeypatch):
     QApplication.instance() or QApplication([])
     from sprigcast.app import accounts_page

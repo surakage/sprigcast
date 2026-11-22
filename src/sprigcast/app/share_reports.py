@@ -35,6 +35,8 @@ EXPLAIN = ("After each stream, send a summary to the SprigCast developer: how ea
            "details and SprigCast's log.\n\nStream keys, passwords, names and addresses are removed first. "
            "Reports are kept 30 days. You can change this in Settings → General.")
 YES, NO = "Send after each stream", "No thanks"
+ASK_AFTER_MS = 10_000  # after a stream: once ending it has settled (encoders closed, the report written)
+ASK_TRIES = 30  # looked at again this often (every ASK_AFTER_MS) while SprigCast isn't in front: 5 minutes
 
 
 def _settings(settings=None):
@@ -132,11 +134,15 @@ def maybe_ask(window, seconds: float, settings=None, ask=None) -> bool | None:
             from sprigcast.app.message import MessageCard
             from sprigcast.app.modal import modal
 
+            from sprigcast.app.gardens_menu import FREE_OF_GARDEN
+
             card = MessageCard(QUESTION, EXPLAIN, window, "ask")
+            card.setProperty(FREE_OF_GARDEN, True)  # only a question: apps may still switch gardens and paths
             card.add_button(NO)
             yes = card.add_button(YES, primary=True)
             log.info("asked: %s", QUESTION)
             modal(card)
+            log.info("answered: %s", card.clicked.text() if card.clicked is not None else "closed")
             return card.clicked is yes
 
     answer = bool(ask())

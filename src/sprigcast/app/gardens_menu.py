@@ -57,6 +57,28 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+
+# A pop-up that only asks a question and keeps nothing of the garden ("Help improve SprigCast?") sets this on
+# itself: gardens and paths can still be switched from apps and hotkeys while it is open (PC test, 2026-11-21).
+FREE_OF_GARDEN = "free_of_garden"
+
+
+def open_windows_holding_garden() -> list[str]:
+    """The titles of the pop-ups open now that may hold the garden on screen (Settings saves into it), topmost
+    first. A pop-up marked FREE_OF_GARDEN doesn't count."""
+    found = []
+    top = QApplication.activeModalWidget()
+    others = [w for w in QApplication.topLevelWidgets() if w is not top and w.isVisible() and w.isModal()]
+    for widget in ([top] if top is not None else []) + others:
+        if widget.property(FREE_OF_GARDEN):
+            continue
+        heading = getattr(widget, "heading", None)
+        title = heading.text() if heading is not None and hasattr(heading, "text") else ""
+        if not title or "<" in title:
+            title = widget.windowTitle()
+        found.append("" if not title or title.startswith("SprigCast") else title)  # the app's own name says nothing
+    return found
+
 SHELF_HOTKEYS = ("garden:", "path:")  # hotkeys that switch gardens and paths
 WORDS = {"garden": (COLLECTION, COLLECTIONS), "path": (PROFILE, PROFILES)}
 
@@ -116,8 +138,9 @@ class GardenControl:
         """Why a hotkey or the API can't change gardens or paths right now (None when it can)."""
         if self.working:
             return "Wait for the pack to finish."
-        if QApplication.activeModalWidget() is not None:  # e.g. Settings, which saves into the garden on screen
-            return "Close the open window first."
+        holding = open_windows_holding_garden()
+        if holding:  # e.g. Settings, which saves into the garden on screen
+            return f"Close the open window first ({holding[0]})." if holding[0] else "Close the open window first."
         return None
 
     def switch(self, kind: str, wanted: str) -> str | None:
@@ -132,10 +155,12 @@ class GardenControl:
             return None
         return self._switch_garden(entry.id) if kind == "garden" else self._switch_path(entry.id)
 
-    def _forget_undo(self) -> None:
+    def _forget_undo(self, text: str | None = None) -> None:
+        """text: the garden as it is now, when already written out (a switch just did): not written out again,
+        304 ms on the window's thread for a big garden while live (PC, 2026-11-21)."""
         self.w._undo.clear()
         self.w._redo.clear()
-        self.w._undo_current = self.w.collection.to_text()
+        self.w._undo_current = text if text is not None else self.w.collection.to_text()
 
     def _switch_path(self, entry_id: str) -> str | None:
         w = self.w
@@ -168,8 +193,10 @@ class GardenControl:
         w.scenes_path = self.shelf.garden_file(entry)
         w.selected_folder_id = None
         w.live_panel.thumbs.clear()
-        w._restore_state(incoming.to_text())  # saves, hands it to the renderer, redraws
-        self._forget_undo()
+        text = incoming.to_text()  # written out once: read back, saved and kept for undo from this one text
+        w._restore_state(text, saved=False)  # hands it to the renderer, redraws
+        w.collection.save(w.scenes_path, text)
+        self._forget_undo(text)
         w._load_thumbs()
         w.live_panel.show_scenes(w.collection)
         w.hotkeys.apply(w.collection.hotkeys)

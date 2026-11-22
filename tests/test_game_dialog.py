@@ -88,12 +88,12 @@ def test_display_capture_dialog(app):
 
     monitors = [MonitorInfo(1, "a", 1920, 1080, True), MonitorInfo(2, "b", 2560, 1440, False)]
     d = DisplayCaptureDialog({"monitor": 2, "cursor": True}, monitors)
-    assert d.values() == {"monitor": 2, "cursor": True} and d.monitor().width == 2560
+    assert d.values() == {"monitor": 2, "cursor": True, "sprigcast": False} and d.monitor().width == 2560
     d.cursor.setChecked(False)
     d.screen.setCurrentIndex(0)
-    assert d.values() == {"monitor": 1, "cursor": False}
+    assert d.values() == {"monitor": 1, "cursor": False, "sprigcast": False}
     gone = DisplayCaptureDialog({"monitor": 3}, monitors)  # unplugged: kept, pointer on by default
-    assert gone.values() == {"monitor": 3, "cursor": True} and gone.monitor() is None
+    assert gone.values() == {"monitor": 3, "cursor": True, "sprigcast": False} and gone.monitor() is None
 
 
 def test_window_capture_dialog(app):
@@ -107,7 +107,8 @@ def test_window_capture_dialog(app):
     assert texts == sorted(texts, key=str.lower) and [d.match.itemText(i) for i in range(2)] == \
         ["Exact title", "Same app"]
     changes, sound = d.values()
-    assert changes == {"title": "New tab - Firefox", "process": "firefox.exe", "match": "app", "cursor": True}
+    assert changes == {"title": "New tab - Firefox", "process": "firefox.exe", "match": "app", "cursor": True,
+                       "sprigcast": False}
     assert not sound
     d.match.setCurrentIndex(d.match.findData("title"))
     d.sound.setChecked(True)
@@ -117,3 +118,29 @@ def test_window_capture_dialog(app):
 
     closed = WindowCaptureDialog({"title": "Hades", "process": "hades.exe", "match": "title"}, windows, True)
     assert closed.values()[0]["title"] == "Hades" and closed.values()[0]["match"] == "title"
+
+
+def test_capture_dialogs_show_sprigcast(app):
+    from sprigcast.app.capture_dialog import DisplayCaptureDialog, WindowCaptureDialog
+    from sprigcast.sources.win32_enum import MonitorInfo, WindowInfo
+
+    d = DisplayCaptureDialog({"monitor": 1, "sprigcast": True}, [MonitorInfo(1, "a", 1920, 1080, True)])
+    assert d.values()["sprigcast"] and d.show_own.accessibleName() == "Show SprigCast"
+    d.show_own.setChecked(False)
+    assert d.values()["sprigcast"] is False
+
+    others = [WindowInfo(1, "Zed", "zed.exe")]
+    own = others + [WindowInfo(9, "SprigCast", "SprigCast.exe")]
+    w = WindowCaptureDialog({"title": "Zed", "process": "zed.exe"}, others, False, list_windows=lambda: others,
+                            list_own=lambda: own)
+    assert w.window.count() == 1 and not w.values()[0]["sprigcast"]
+    w.show_own.setChecked(True)  # SprigCast's own windows join the list
+    assert w.window.count() == 2 and w.values()[0]["sprigcast"]
+    w.window.setCurrentIndex(w.window.findText("SprigCast", flags=__import__("PySide6.QtCore").QtCore.Qt.MatchFlag.MatchContains))
+    assert w.values()[0]["process"] == "SprigCast.exe"
+    w.show_own.setChecked(False)
+    assert [w.window.itemData(i)[1] for i in range(w.window.count())] == ["zed.exe", "SprigCast.exe"]  # kept
+
+    opened = WindowCaptureDialog({"title": "SprigCast", "process": "SprigCast.exe", "sprigcast": True}, others,
+                                 False, list_windows=lambda: others, list_own=lambda: own)
+    assert opened.window.count() == 2 and opened.values()[0]["process"] == "SprigCast.exe"
