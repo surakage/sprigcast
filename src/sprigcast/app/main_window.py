@@ -2752,9 +2752,11 @@ class MainWindow(QMainWindow):
         first = self.build_canvas if build else self.collection.canvases[0].id
         if self.splitter.indexOf(self.canvas_columns[first]) != 0:
             self.splitter.insertWidget(0, self.canvas_columns[first])
-        if build:
-            self._share_stage()  # now, so the swap doesn't show a frame of the old sizes
-            QTimer.singleShot(0, self, self._share_stage)
+        # Now, so the swap doesn't show a frame of the old sizes, and again once the columns have their new sizes.
+        # Live too: switching a canvas off (Settings, the canvas menu) left the other one leaning to the side
+        # where its twin had been, with the twin's space empty (PC, 2026-11-22).
+        self._share_stage()
+        QTimer.singleShot(0, self, self._share_stage)
         primary = self.collection.canvases[0].id
         self.link_button.setVisible(self.build_canvas != primary)
         canvas = self.collection.canvas(self.build_canvas)
