@@ -76,8 +76,9 @@ def list_monitors() -> list[MonitorInfo]:
     return monitors
 
 
-def list_windows() -> list[WindowInfo]:
-    """Visible, titled, top-level windows that are not tool windows or cloaked UWP shells."""
+def list_windows(include_own: bool = False) -> list[WindowInfo]:
+    """Visible, titled, top-level windows that are not tool windows or cloaked UWP shells.
+    include_own: SprigCast's own windows too (a window capture with Show SprigCast on)."""
     if sys.platform != "win32":
         return []
     from ctypes import wintypes
@@ -116,7 +117,7 @@ def list_windows() -> list[WindowInfo]:
             return True
         pid = wintypes.DWORD(0)
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if pid.value == own_pid:
+        if pid.value == own_pid and not include_own:
             return True
         length = user32.GetWindowTextLengthW(hwnd)
         buf = ctypes.create_unicode_buffer(length + 1)
@@ -129,10 +130,10 @@ def list_windows() -> list[WindowInfo]:
     return windows
 
 
-def find_window(title: str, process: str = "", exact: bool = False) -> WindowInfo | None:
+def find_window(title: str, process: str = "", exact: bool = False, include_own: bool = False) -> WindowInfo | None:
     """Best match for a saved window: same process and title, then same process, then same title.
     exact: only the same title (in the same process, when one is saved), never another window of that app."""
-    windows = list_windows()
+    windows = list_windows(include_own=True) if include_own else list_windows()
     same_title = (lambda w: w.title == title and (not process or w.process.lower() == process.lower()))
     rules = (same_title,) if exact else (
         same_title,

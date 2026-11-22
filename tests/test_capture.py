@@ -199,3 +199,38 @@ def test_a_closed_window_shows_nothing_not_its_last_picture():
     source._closed()
     source._frames.put(picture)  # back before anything was shown: its new picture, and no clearing after
     assert source.video_frame() is not None and source.video_frame() is None
+
+
+def test_window_capture_show_sprigcast_finds_own_windows(monkeypatch):
+    from sprigcast.sources import win32_enum
+    from sprigcast.sources.capture import WindowCaptureSource
+    from sprigcast.sources.win32_enum import WindowInfo
+
+    own = WindowInfo(7, "SprigCast", "SprigCast.exe")
+    monkeypatch.setattr(win32_enum, "list_windows", lambda include_own=False: [own] if include_own else [])
+    settings = {"title": "SprigCast", "process": "SprigCast.exe"}
+    assert WindowCaptureSource("w", settings)._target() is None  # off: never captures itself
+    assert WindowCaptureSource("w", {**settings, "sprigcast": True})._target() == {"window_hwnd": 7}
+    assert WindowCaptureSource("w", {**settings, "sprigcast": True, "match": "title"})._target() == \
+        {"window_hwnd": 7}
+
+
+def test_privacy_lets_sprigcast_through_while_a_capture_shows_it(monkeypatch):
+    import pytest
+
+    pytest.importorskip("PySide6.QtCore")
+    from sprigcast.app import privacy
+    from types import SimpleNamespace
+
+    from sprigcast.core.scene import SourceConfig
+
+    monkeypatch.setattr(privacy, "hidden", lambda: True)
+    monkeypatch.setattr(privacy, "_shown_by_capture", False)
+    collection = SimpleNamespace(sources=[SourceConfig(id="d", kind="display_capture", name="Screen",
+                                                        settings={"monitor": 1})])
+    assert not privacy.shows_sprigcast(collection) and privacy.hidden_now()
+    collection.sources[0].settings["sprigcast"] = True
+    assert privacy.shows_sprigcast(collection)
+    assert privacy.set_shown_by_capture(True) and not privacy.hidden_now()
+    assert not privacy.set_shown_by_capture(True)  # no change: nothing to apply again
+    assert privacy.set_shown_by_capture(False) and privacy.hidden_now()

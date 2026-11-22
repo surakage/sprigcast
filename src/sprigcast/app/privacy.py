@@ -21,8 +21,31 @@ WDA_NONE = 0x0
 WDA_EXCLUDEFROMCAPTURE = 0x11
 
 
+_shown_by_capture = False  # a screen or window capture has "Show SprigCast" on: never hidden while it does
+
+
 def hidden() -> bool:
+    """The Privacy setting itself."""
     return QSettings().value(HIDE_FROM_CAPTURE, False, type=bool)
+
+
+def hidden_now() -> bool:
+    """The setting, unless a screen or window capture asks to show SprigCast (to record the program itself)."""
+    return hidden() and not _shown_by_capture
+
+
+def shows_sprigcast(collection) -> bool:
+    """A screen or window capture in this collection has Show SprigCast on."""
+    return any(s.kind in ("display_capture", "window_capture") and s.settings.get("sprigcast", False)
+               for s in collection.sources)
+
+
+def set_shown_by_capture(on: bool) -> bool:
+    """Record whether a capture shows SprigCast. True when that changed (the open windows need it applied)."""
+    global _shown_by_capture
+    changed = bool(on) != _shown_by_capture
+    _shown_by_capture = bool(on)
+    return changed
 
 
 def supported() -> bool:
@@ -36,7 +59,7 @@ def apply_to(widget, on: bool | None = None) -> bool:
     """Hide (or show) this window in captures, following the setting unless `on` is given. True when Windows took it."""
     if not supported() or widget is None:
         return False
-    on = hidden() if on is None else on
+    on = hidden_now() if on is None else on
     try:
         import ctypes
 

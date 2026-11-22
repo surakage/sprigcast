@@ -422,10 +422,11 @@ class WindowCaptureSource(_CaptureSource):
         title, process = str(self.settings.get("title", "")), str(self.settings.get("process", ""))
         if not title and not process:  # a Window Capture just added from + Add: nothing picked yet
             return None
+        own = {"include_own": True} if self.settings.get("sprigcast", False) else {}  # Show SprigCast: its windows too
         if self.settings.get("match") == "title":  # Find it again by: Exact title
-            window = find_window(title, process, exact=True)
+            window = find_window(title, process, exact=True, **own)
         else:  # Same app (the default): a browser whose title changes is still found
-            window = find_window(title, process)
+            window = find_window(title, process, **own)
         if window is None:
             return None
         return {"window_hwnd": window.hwnd}
