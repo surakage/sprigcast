@@ -480,8 +480,10 @@ class StreamReport:
         try:
             import psutil
 
+            from sprigcast.app.resources import memory_text
+
             proc = self._process
-            extra.append(f"SprigCast {proc.memory_info().rss / 2**20:.0f} MB, "
+            extra.append(f"SprigCast {memory_text(proc)}, "
                          f"CPU {proc.cpu_percent() / (os.cpu_count() or 1):.0f}% of the PC, "
                          f"PC CPU {psutil.cpu_percent():.0f}%")
         except Exception:

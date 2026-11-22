@@ -52,7 +52,9 @@ class StatsPanel(QWidget):
         if self._process is not None:
             cpu = self._process.cpu_percent() / max(1, psutil.cpu_count() or 1)
             rows.append(_row("SprigCast CPU", f"{cpu:.0f}% of the whole PC"))
-            rows.append(_row("SprigCast memory", f"{self._process.memory_info().rss / 1e6:.0f} MB"))
+            from sprigcast.app.resources import memory_text
+
+            rows.append(_row("SprigCast memory", memory_text(self._process)))
             rows.append(_row("PC CPU", f"{psutil.cpu_percent():.0f}%"))
         try:
             folder = recordings_folder if recordings_folder.exists() else recordings_folder.anchor or Path.home()
