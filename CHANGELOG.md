@@ -12,6 +12,9 @@ with a big garden brought over from OBS (88 scenes, 61 web pages, about 78 neste
 
 ### Added
 
+- The license files are also at the top of SprigCast's folder (Programs\SprigCast), where people look for them, not
+  only in its python folder. `app.info`, the hello and connection.json have `build`: the version as SprigCast
+  shows it, naming a test build.
 - Backdrop has new settings for fine tuning. Background Brightness (blur and picture), Person Brightness and
   Person Gamma light the room and the person separately. Edge Size grows or shrinks the cut around the person (a
   lower value drops chair backs and boxes the model keeps), and Steadiness sets how much each mask keeps of the

@@ -668,9 +668,9 @@ class ControlServer(QObject):
         that find it by themselves. Never the password or a key (apps ask the user for the password)."""
         if self.connection_path is None or not self.listening:
             return
-        from sprigcast import __version__
+        from sprigcast import __version__, build_label
 
-        info = {"app": "SprigCast", "version": __version__, "port": self.port, "path": NATIVE_PATH,
+        info = {"app": "SprigCast", "version": __version__, "build": build_label(), "port": self.port, "path": NATIVE_PATH,
                 "obsCompatible": bool(self.obs_door), "passwordSet": bool(self.password), "pid": os.getpid()}
         self._write(self.connection_path, info)
 

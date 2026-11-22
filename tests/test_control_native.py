@@ -40,6 +40,10 @@ def test_actions_describe_themselves():
     assert "bloom.lineUp" not in listed and "studio.set" not in listed  # no Studio mode
     assert listed["bloom.show"]["fields"]["shape"].startswith("?")
     assert _ok(api, "app.info")["shapes"] == ["horizontal", "vertical"]
+    from sprigcast import display_version
+
+    info = _ok(api, "app.info")
+    assert info["build"].startswith(display_version(info["version"]))  # "Beta 0.3", or "Beta 0.3 test build …"
     assert _fails(api, "nope.nothing") == "unknown_action"
 
 
