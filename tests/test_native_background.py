@@ -73,10 +73,19 @@ def test_the_filter_folds_into_effects():
     assert video_effects([bg(enabled=False)]).bg_mode == 0
 
 
+def test_the_fine_tuning_settings_fold_into_effects():
+    fx = video_effects([bg(mode="blur", edge_size=-40, steady=80, gamma=0.5, light=10, room_light=-30)])
+    assert (fx.bg_edge_size, fx.bg_steady, fx.bg_gamma, fx.bg_light, fx.bg_room_light) == (-0.4, 0.8, 0.5, 0.1, -0.3)
+    plain = video_effects([bg()])
+    assert (plain.bg_edge_size, plain.bg_steady, plain.bg_gamma, plain.bg_light, plain.bg_room_light) == (0, 0.3, 0, 0, 0)
+    assert video_effects([bg(mode="remove", room_light=50)]).bg_room_light == 0.0  # nothing shows behind
+
+
 def test_the_filter_is_listed_with_its_settings():
     info = filters.filter_kind(BACKGROUND)
     assert info is not None and info.label == "Backdrop" and info.media == "video"
-    assert [f.key for f in info.fields] == ["mode", "blur", "picture_file", "edge"]
+    assert [f.key for f in info.fields] == ["mode", "blur", "picture_file", "room_light", "light", "gamma",
+                                              "edge_size", "edge", "steady"]
     assert [v for v, _label in info.fields[0].choices] == ["blur", "picture", "remove"]  # A to Z
     assert isinstance(info.status("cam"), str)
 
@@ -89,10 +98,13 @@ def test_the_old_plugins_kind_stays_retired():
 
 def test_snapshot_carries_the_background_and_lists_its_picture():
     scene = Scene(id="b", name="b", canvas="h", items=[SceneItem(source="cam")])
-    fx = VideoEffects(bg_mode=3, bg_blur=0.5, bg_edge=0.2, bg_picture="room.png")
+    fx = VideoEffects(bg_mode=3, bg_blur=0.5, bg_edge=0.2, bg_picture="room.png", bg_edge_size=-0.5, bg_steady=0.6,
+                      bg_gamma=1.0, bg_light=0.25, bg_room_light=-0.5)
     built = native_snapshot.build([native_snapshot.SceneDraw("b", scene, (8, 8))], {"cam": fx})
     e = built.struct.effects[0]
     assert (e.bg_mode, round(e.bg_blur, 3), round(e.bg_edge, 3)) == (3, 0.5, 0.2)
+    assert [round(v, 3) for v in (e.bg_edge_size, e.bg_steady, e.bg_gamma, e.bg_light, e.bg_room_light)] == [
+        -0.5, 0.6, 1.0, 0.25, -0.5]
     assert e.bg_picture == sprigcore.key("backdrop:room.png")
     assert built.backdrops == {"room.png"} and built.masks == set()
 
@@ -166,6 +178,29 @@ def test_picture_fills_the_room(device):
     src = pic.astype(np.float32) / 255
     assert np.abs(got[10, 10, :3] - np.array([200, 20, 160]) / 255).max() < 0.02
     assert np.abs(got[130, 128, :3] - src[130, 128, :3]).max() < 0.02
+
+
+@needs_engine
+def test_edge_size_moves_the_cut_and_the_person_and_room_take_their_own_light(device):
+    """User 2026-11-22: fine tuning for Backdrop. Edge Size moves where the mask is cut; Gamma and Brightness touch
+    the person only; Background Brightness only what shows behind them."""
+    pic = person()
+    mask = TOOL.run_program(TOOL.read_program(str(MODEL)), pic[..., :3].astype(np.float32) / 255)
+    grown = draw(device, VideoEffects(bg_mode=1, bg_edge=0.0, bg_edge_size=1.0), pic)[..., 3]
+    shrunk = draw(device, VideoEffects(bg_mode=1, bg_edge=0.0, bg_edge_size=-1.0), pic)[..., 3]
+    assert grown.sum() > shrunk.sum()
+    assert grown[mask > 0.2].mean() > 0.9 and shrunk[mask < 0.8].mean() < 0.1  # cut at 0.1 and 0.9
+
+    src = pic.astype(np.float32) / 255
+    room = np.zeros((90, 160, 4), np.uint8)
+    room[...] = (100, 100, 100, 255)
+    got = draw(device, VideoEffects(bg_mode=3, bg_edge=0.0, bg_picture="room.png", bg_light=0.2,
+                                    bg_room_light=-0.2), pic, backdrop=room)
+    assert np.abs(got[130, 128, :3] - np.clip(src[130, 128, :3] + 0.2, 0, 1)).max() < 0.02  # the person, brighter
+    assert np.abs(got[10, 10, :3] - (100 / 255 - 0.2)).max() < 0.02  # the room behind, darker
+    gamma = draw(device, VideoEffects(bg_mode=2, bg_edge=0.0, bg_gamma=1.0), pic)
+    want = src[130, 128, :3] ** 0.5  # Tone's slider: +1 is an exponent of 1/2
+    assert np.abs(gamma[130, 128, :3] - want).max() < 0.02
 
 
 @needs_engine

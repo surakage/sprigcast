@@ -24,9 +24,10 @@ cbuffer Draw : register(b0) {
     float4 uv_rect;
     float4 sil_radius4;    // xy
     float4 sil_color;
-    float4 p7;             // bg_mode, bg_edge, has_backdrop, unused
+    float4 p7;             // bg_mode, bg_edge, has_backdrop, bg_room_light
     float4 seg_map;        // the picture's u, v into the person mask's: scale.xy, offset.zw
     float4 back_map;       // the quad's local 0..1 into the background picture's u, v: scale.xy, offset.zw
+    float4 p8;             // bg_cut (the mask's edge, 0.5 = the model's own), bg_gamma, bg_light, unused
 };
 
 Texture2D tex : register(t0);
@@ -79,6 +80,10 @@ SamplerState clamp_s : register(s1);   // looks and shape pictures
 #define sil_radius sil_radius4.xy
 #define bg_mode ((int)p7.x)
 #define bg_edge p7.y
+#define bg_room_light p7.w
+#define bg_cut p8.x
+#define bg_gamma p8.y
+#define bg_light p8.z
 #define has_backdrop (p7.z > 0.5)
 
 struct VOut {
@@ -289,7 +294,7 @@ float4 blurred(float2 st, float2 r) {
 float person(float2 st) {
     float m = person_mask.SampleLevel(clamp_s, st * seg_map.xy + seg_map.zw, 0);
     float e = lerp(0.04, 0.4, bg_edge);
-    return smoothstep(0.5 - e, 0.5 + e, m);
+    return smoothstep(bg_cut - e, bg_cut + e, m);
 }
 
 float key_keep(float3 rgb) {
@@ -382,11 +387,13 @@ float4 ps_main(VOut i) : SV_Target {
     }
     if (bg_mode > 0) {  // the Background filter: the person stays, the room goes, blurs or becomes a picture
         float m = person(st);
+        c.rgb = saturate(pow(max(c.rgb, 0.0), float3(bg_gamma, bg_gamma, bg_gamma)) + bg_light);
         if (bg_mode == 1 || !has_backdrop) {
             c.a *= m;
         } else {
             float2 bt = bg_mode == 2 ? st * seg_map.xy + seg_map.zw : i.local * back_map.xy + back_map.zw;
             float4 b = backdrop.SampleLevel(clamp_s, bt, 0);
+            b.rgb = saturate(b.rgb + bg_room_light);
             c = lerp(b, c, m);
         }
     }

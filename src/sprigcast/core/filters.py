@@ -277,7 +277,12 @@ _KINDS[BACKGROUND] = FilterKind(BACKGROUND, "Backdrop", "video", [
     Field("blur", "Blur", 60, 1, 100, 1, "%", show_when=("mode", ("blur",))),
     Field("picture_file", "Picture", "", file_types="Images (*.png *.webp *.jpg *.jpeg)",
           show_when=("mode", ("picture",))),
+    Field("room_light", "Background Brightness", 0, -100, 100, 1, "%", show_when=("mode", ("blur", "picture"))),
+    Field("light", "Person Brightness", 0, -100, 100, 1, "%"),
+    Field("gamma", "Person Gamma", 0.0, -3.0, 3.0, 0.01),
+    Field("edge_size", "Edge Size", 0, -100, 100, 1, "%"),
     Field("edge", "Soft Edges", 30, 0, 100, 1, "%"),
+    Field("steady", "Steadiness", 30, 0, 100, 1, "%"),
 ], status=_background_status)
 NATIVE_DRAWN.add(BACKGROUND)  # its After picture in the Filters window comes from the native engine
 
@@ -343,6 +348,11 @@ class VideoEffects:
     bg_blur: float = 0.6  # 0 .. 1
     bg_edge: float = 0.3  # 0 .. 1, how soft the person's edge is
     bg_picture: str = ""  # mode "picture": the picture's path ("" = see-through behind the person)
+    bg_edge_size: float = 0.0  # -1 .. 1: the person's edge grown (+) or shrunk (-)
+    bg_steady: float = 0.3  # 0 .. 1: how much of the last mask each new one keeps
+    bg_gamma: float = 0.0  # the person's gamma, as Tone's slider (-3 .. 3)
+    bg_light: float = 0.0  # the person's brightness, -1 .. 1
+    bg_room_light: float = 0.0  # the blurred room's or picture's brightness, -1 .. 1
     active: bool = field(default=False, compare=False)
 
 
@@ -464,6 +474,11 @@ def video_effects(filters) -> VideoEffects:
             fx.bg_blur = max(0.0, min(1.0, float(s["blur"]) / 100))
             fx.bg_edge = max(0.0, min(1.0, float(s["edge"]) / 100))
             fx.bg_picture = str(s["picture_file"]).strip() if mode == "picture" else ""
+            fx.bg_edge_size = max(-1.0, min(1.0, float(s["edge_size"]) / 100))
+            fx.bg_steady = max(0.0, min(1.0, float(s["steady"]) / 100))
+            fx.bg_gamma = max(-3.0, min(3.0, float(s["gamma"])))
+            fx.bg_light = max(-1.0, min(1.0, float(s["light"]) / 100))
+            fx.bg_room_light = max(-1.0, min(1.0, float(s["room_light"]) / 100)) if mode != "remove" else 0.0
         elif flt.kind == "shape":
             shape = str(s["shape"])
             if shape not in SHAPE_IDS or (shape == "image" and not str(s["mask_file"]).strip()):

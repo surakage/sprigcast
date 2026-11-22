@@ -40,6 +40,7 @@ struct DrawConstants {
     float p7[4];
     float seg_map[4];
     float back_map[4];
+    float p8[4];
 };
 static_assert(sizeof(DrawConstants) % 16 == 0, "constant buffers come in 16-byte steps");
 
@@ -303,13 +304,13 @@ struct Renderer {
 
     // The person in this picture (the Background filter), the model run again when a mask is due: the picture is
     // drawn small, untouched, into the finder's own target, then this renderer's target is set again.
-    bool find_person(uint64_t source, const Piece &p, bool room, float blur, SegmentViews &out) {
+    bool find_person(uint64_t source, const Piece &p, bool room, float blur, float steady, SegmentViews &out) {
         int pic_w = p.detail > 0 ? p.size_w : (p.planar ? p.pic_w : p.tex_w);
         int pic_h = p.detail > 0 ? p.size_h : (p.planar ? p.pic_h : p.tex_h);
         ID3D11RenderTargetView *was = target;
         const int was_w = target_w, was_h = target_h;
         const uint64_t key = source ^ (room ? 0x9E3779B97F4A7C15ull : 0);
-        bool ok = segment(dev, key, pic_w, pic_h, room, blur,
+        bool ok = segment(dev, key, pic_w, pic_h, room, blur, steady,
                           [&](ID3D11RenderTargetView *prep, int w, int h, const float (&map)[4]) {
                               bind_target(prep, w, h);
                               Corner q[4] = {{map[2] * w, map[3] * h, 0, 0},
@@ -415,7 +416,8 @@ struct Renderer {
                 if (found != comp.masks.end()) picture = &found->second;
             }
             SegmentViews seg;
-            if (find_person(source, p, fx.bg_mode == SC_BACKGROUND_BLUR, fx.bg_blur, seg)) {
+            if (find_person(source, p, fx.bg_mode == SC_BACKGROUND_BLUR, fx.bg_blur,
+                            std::clamp(fx.bg_steady, 0.0f, 1.0f), seg)) {
                 person = seg.mask;
                 behind = fx.bg_mode == SC_BACKGROUND_BLUR ? seg.room : (picture ? picture->view.Get() : nullptr);
                 set4(k.seg_map, seg.map[0], seg.map[1], seg.map[2], seg.map[3]);
@@ -425,7 +427,12 @@ struct Renderer {
                     const double sx = qa < pa ? qa / pa : 1.0, sy = qa < pa ? 1.0 : pa / qa;
                     set4(k.back_map, sx, sy, (1.0 - sx) / 2, (1.0 - sy) / 2);
                 }
-                set4(k.p7, fx.bg_mode, std::clamp(fx.bg_edge, 0.0f, 1.0f), behind ? 1 : 0, 0);
+                // Tone's gamma slider: positive brightens (an exponent under 1).
+                const float g = std::clamp(fx.bg_gamma, -3.0f, 3.0f);
+                set4(k.p7, fx.bg_mode, std::clamp(fx.bg_edge, 0.0f, 1.0f), behind ? 1 : 0,
+                     std::clamp(fx.bg_room_light, -1.0f, 1.0f));
+                set4(k.p8, 0.5f - 0.4f * std::clamp(fx.bg_edge_size, -1.0f, 1.0f), g >= 0 ? 1.0f / (1.0f + g) : 1.0f - g,
+                     std::clamp(fx.bg_light, -1.0f, 1.0f), 0);
             }
         }
 

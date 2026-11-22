@@ -136,6 +136,7 @@ struct Segment {
     Target prep, big;          // the picture drawn small for the model, and twice that for the blurred room
     Texture mask, across, room;
     bool fresh = true;          // no mask yet: the next one is taken whole
+    float steady = 0.3f;        // how much of the last mask each new one keeps (the filter's Steadiness)
     double last_run = -1e9, last_used = 0;
 };
 
@@ -336,7 +337,7 @@ struct Segmenter {
         m.c[0] = program.in_w;
         m.b[3] = program.in_h;
         m.d[3] = pixels;
-        m.f[0] = s.fresh ? 1.0f : 0.7f;  // most of the new mask: steady edges, little lag
+        m.f[0] = s.fresh ? 1.0f : 1.0f - 0.9f * s.steady;  // the new mask's share: steadier edges, a little lag
         set_constants(c, m);
         dispatch(c, E_MASK, pixels);
         s.fresh = false;
@@ -382,7 +383,8 @@ struct Segmenter {
     }
 };
 
-bool segment(sc_device &dev, uint64_t key, int pic_w, int pic_h, bool room, float blur, const DrawSmall &draw,
+bool segment(sc_device &dev, uint64_t key, int pic_w, int pic_h, bool room, float blur, float steady,
+             const DrawSmall &draw,
              SegmentViews &out) {
     if (!dev.segmenter) dev.segmenter = std::make_shared<Segmenter>();
     Segmenter &sg = *dev.segmenter;
@@ -409,6 +411,7 @@ bool segment(sc_device &dev, uint64_t key, int pic_w, int pic_h, bool room, floa
 
     Segment &s = sg.segments[key];
     s.last_used = now;
+    s.steady = std::clamp(steady, 0.0f, 1.0f);
     ID3D11Device *d = dev.device.Get();
     const int mw = sg.program.in_w, mh = sg.program.in_h;
     if (s.pic_w != pic_w || s.pic_h != pic_h || !s.mask.texture) {
