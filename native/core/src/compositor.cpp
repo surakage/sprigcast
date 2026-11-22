@@ -308,7 +308,11 @@ struct Renderer {
         int pic_h = p.detail > 0 ? p.size_h : (p.planar ? p.pic_h : p.tex_h);
         ID3D11RenderTargetView *was = target;
         const int was_w = target_w, was_h = target_h;
-        const uint64_t key = source ^ (room ? 0x9E3779B97F4A7C15ull : 0);
+        // The room blurred by this much: a picture of the same source with another blur (the Filters window's After
+        // while its blur is being tried, PC 2026-11-22) keeps a room of its own, not one the two fight over.
+        uint32_t blur_bits = 0;
+        std::memcpy(&blur_bits, &blur, sizeof blur_bits);
+        const uint64_t key = source ^ (room ? 0x9E3779B97F4A7C15ull ^ (uint64_t{blur_bits} << 21) : 0);
         bool ok = segment(dev, key, pic_w, pic_h, room, blur,
                           [&](ID3D11RenderTargetView *prep, int w, int h, const float (&map)[4]) {
                               bind_target(prep, w, h);
