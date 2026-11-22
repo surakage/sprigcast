@@ -343,6 +343,17 @@ def close_reason(user: bool, app=None) -> str:
     return "SprigCast closed itself (Quit, Clear all my data, or an app's request)"
 
 
+def _show_sprigcast_to_captures(window) -> None:
+    """A screen or window capture's Show SprigCast reaches SprigCast's open windows as soon as it's set (and when
+    it's taken off or its capture removed, the Privacy setting is back). Checked on every send to the engine."""
+    from sprigcast.app import privacy
+
+    if privacy.set_shown_by_capture(privacy.shows_sprigcast(window.collection)) and privacy.supported() \
+            and privacy.hidden():
+        privacy.apply_to(window)
+        window._privacy_to_open_windows()
+
+
 class MainWindow(QMainWindow):
     _record_finished = Signal(object, bool)  # a recording's files are closed (from the thread that waited)
     _clip_written = Signal(list, list)  # a clip's files are written (files, problems), from the thread that wrote
@@ -3398,6 +3409,7 @@ class MainWindow(QMainWindow):
     def _send_to_engine(self) -> None:
         """The collection to the engine: only the blooms on air when nothing else changed since the last send (a
         switch: the engine skips comparing every source in the switch frame), else a whole copy."""
+        _show_sprigcast_to_captures(self)
         dump = self.collection.model_dump()
         last = getattr(self, "_engine_dump", None)
         if last is not None and dump["active_scenes"] != last["active_scenes"]:
@@ -5472,7 +5484,8 @@ class MainWindow(QMainWindow):
         if not windows and not settings.get("title"):
             msgbox.information(self, "SprigCast", "Window capture is only available on Windows.")
             return None
-        dialog = WindowCaptureDialog(settings, windows, has_sound, self, list_windows=list_windows)
+        dialog = WindowCaptureDialog(settings, windows, has_sound, self, list_windows=list_windows,
+                                     list_own=lambda: list_windows(include_own=True))
         return dialog.values() if modal(dialog) else None
 
     def _add_display(self, monitor=None) -> None:
@@ -7843,7 +7856,8 @@ class MainWindow(QMainWindow):
             self._privacy_set = True
             from sprigcast.app import privacy
 
-            if privacy.hidden():  # Settings → General → Privacy
+            privacy.set_shown_by_capture(privacy.shows_sprigcast(self.collection))
+            if privacy.hidden_now():  # Settings → General → Privacy (unless a capture shows SprigCast)
                 privacy.apply_to(self, True)
             QTimer.singleShot(1500, self, self.reopen_projectors)  # once the window is up and drawn
 
