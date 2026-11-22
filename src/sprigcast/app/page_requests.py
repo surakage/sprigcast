@@ -8,7 +8,9 @@ looks at the host; for a sign-in host (Firebase Auth / Google token servers) it 
       (Referer https://source.soundalerts.com, Origin -, initiator https://source.soundalerts.com, kind XHR)
 
 Only addresses' scheme and host are written (no paths of the page, no query values: those hold API keys and ids).
-At most PER_PAGE lines per page address and TOTAL in all, so a page that keeps trying never fills the log.
+The first PER_PAGE lines per page address, then a line whenever what a page's sign-ins send changes (the case
+that matters hours in: Referer / Origin going missing), CHANGES_TOTAL of those in all; a page that keeps
+trying the same way never fills the log.
 SPRIGCAST_PAGE_REQUESTS_OFF=1 leaves it out.
 """
 
@@ -22,6 +24,7 @@ log = logging.getLogger(__name__)
 SIGN_IN_HOSTS = ("identitytoolkit.googleapis.com", "securetoken.googleapis.com", "firebaseinstallations.googleapis.com")
 PER_PAGE = 4
 TOTAL = 40
+CHANGES_TOTAL = 200
 _watchers: list = []  # the profile doesn't own its watcher
 
 
@@ -36,13 +39,20 @@ def origin_of(address: str) -> str:
 
 
 class Counter:
-    """How many lines each page address has had."""
+    """Which lines are worth writing: each page address's first ones, then any that send something new."""
 
     def __init__(self):
         self.by_page: dict[str, int] = {}
+        self.last: dict[str, tuple] = {}  # page address -> what its last sign-in request sent
         self.total = 0
+        self.changes = 0
 
-    def take(self, page: str) -> bool:
+    def take(self, page: str, sent: tuple = ()) -> bool:
+        changed = page in self.last and self.last[page] != sent
+        self.last[page] = sent
+        if changed and self.changes < CHANGES_TOTAL:
+            self.changes += 1
+            return True
         if self.total >= TOTAL or self.by_page.get(page, 0) >= PER_PAGE:
             return False
         self.by_page[page] = self.by_page.get(page, 0) + 1
@@ -71,13 +81,15 @@ def install(profile, inner=None) -> bool:
                     host = url.host()
                     if host in SIGN_IN_HOSTS:
                         page = info.firstPartyUrl().toString()
-                        if counter.take(origin_of(page)):
-                            headers = {bytes(k).decode("latin-1").lower(): bytes(v).decode("latin-1")
-                                       for k, v in info.httpHeaders().items()}
+                        headers = {bytes(k).decode("latin-1").lower(): bytes(v).decode("latin-1")
+                                   for k, v in info.httpHeaders().items()}
+                        referer, origin = headers.get("referer", ""), headers.get("origin", "")
+                        initiator = info.initiator().toString()
+                        sent = (origin_of(referer), origin_of(origin), origin_of(initiator))
+                        if counter.take(origin_of(page), sent):
                             log.info(line(bytes(info.requestMethod()).decode("latin-1"), host, url.path(), page,
-                                          headers.get("referer", ""), headers.get("origin", ""),
-                                          info.initiator().toString(), info.resourceType().name.removeprefix(
-                                              "ResourceType")))
+                                          referer, origin, initiator,
+                                          info.resourceType().name.removeprefix("ResourceType")))
                 except Exception:  # noqa: BLE001
                     log.debug("page sign-in request", exc_info=True)
                 if inner is not None:
