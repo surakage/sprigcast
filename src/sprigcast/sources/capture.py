@@ -79,6 +79,7 @@ class _CaptureSource(Source):
         self._helper_refused = False  # the helper couldn't: the engine captures it itself (ENGINE_AGAIN_SECONDS)
         self._helper_refused_at = 0.0
         self._cleared = False  # the window closed: show nothing (once), not its last picture, until it's back
+        self._follow: tuple[int, int] | None = None  # (window, display) of a window captured with its pop-ups
         self._serial = 0
 
     # Subclasses say what to capture. Return None when the target is not available right now.
@@ -202,8 +203,15 @@ class _CaptureSource(Source):
             return  # over the frame-rate limit: skip the copy altogether
         # frame.frame_buffer is a view into memory the capture library reuses, and its rows may be
         # padded, so copy it (into one of three reused buffers) before handing it to the render thread.
-        self._size = (int(frame.width), int(frame.height))
-        self._frames.put(frame.frame_buffer)
+        picture = frame.frame_buffer
+        if self._follow is not None:  # a window with its pop-ups: the display, cut to where the window is
+            box = window_box(*self._follow, int(frame.width), int(frame.height))
+            if box is None:
+                return  # minimized or off this display: the last picture stays
+            left, top, right, bottom = box
+            picture = picture[top:bottom, left:right]
+        self._size = (int(picture.shape[1]), int(picture.shape[0]))
+        self._frames.put(picture)
 
     def _engine_flags(self) -> int:
         flags = sprigcore.SCREEN_CURSOR if self.settings.get("cursor", True) else 0
@@ -223,7 +231,8 @@ class _CaptureSource(Source):
         """Capture ``target`` in the engine until it ends: "ended" (the window closed: find it again), "refused"
         (the engine can't: use the package) or "stopped" (stop, restart or a new target)."""
         window = int(target.get("window_hwnd") or 0)
-        monitor = 0 if window else _monitor_handle(int(target.get("monitor_index", 1)))
+        monitor = int(target.get("display_handle") or 0) or (
+            0 if window else _monitor_handle(int(target.get("monitor_index", 1))))
         if not window and not monitor:
             self.status = "waiting for target"
             return "ended"
@@ -270,7 +279,8 @@ class _CaptureSource(Source):
         find it again), "refused" (the helper can't: the engine captures), "unlinked" (the engine isn't drawing:
         the package captures) or "stopped" (stop, restart or a new target)."""
         window = int(target.get("window_hwnd") or 0)
-        monitor = 0 if window else _monitor_handle(int(target.get("monitor_index", 1)))
+        monitor = int(target.get("display_handle") or 0) or (
+            0 if window else _monitor_handle(int(target.get("monitor_index", 1))))
         if not window and not monitor:
             self.status = "waiting for target"
             return "ended"
@@ -368,7 +378,7 @@ class _CaptureSource(Source):
                 try:
                     capture = windows_capture_cls(
                         cursor_capture=bool(self.settings.get("cursor", True)), draw_border=draw_border,
-                        **({"minimum_update_interval": pace} if pace else {}), **target
+                        **({"minimum_update_interval": pace} if pace else {}), **_package_target(target)
                     )
                     capture.event(on_frame_arrived)
                     capture.event(on_closed)
@@ -429,7 +439,27 @@ class WindowCaptureSource(_CaptureSource):
             window = find_window(title, process, **own)
         if window is None:
             return None
+        self._follow = None
+        if self.settings.get("sprigcast", False) and self.settings.get("popups", True) and _is_own(window):
+            display = _display_of(window.hwnd)
+            if display:
+                # SprigCast's own window: its menus and pop-ups are windows of their own, so a window capture
+                # never sees them. The display is captured instead, cut to where the window is.
+                self._follow = (window.hwnd, display)
+                return {"window_hwnd": window.hwnd, "display_handle": display}
         return {"window_hwnd": window.hwnd}
+
+    _display_checked = 0.0
+
+    def _should_retarget(self) -> bool:
+        follow = self._follow
+        if follow is None:
+            return False
+        now = time.monotonic()
+        if now - self._display_checked < 2.0:
+            return False
+        self._display_checked = now
+        return _display_of(follow[0]) not in (0, follow[1])  # moved to another display: capture that one
 
 
 @register("game_capture")
@@ -487,6 +517,79 @@ class GameCaptureSource(WindowCaptureSource):
 
         found = fullscreen_window()
         return found is not None and self._game is not None and found[0] != self._game[0]
+
+
+def _is_own(window) -> bool:
+    import os
+
+    return int(getattr(window, "pid", 0) or 0) == os.getpid()
+
+
+def _display_of(hwnd: int) -> int:
+    """The HMONITOR a window is on (most of it), or 0."""
+    import ctypes
+
+    try:
+        user32 = ctypes.windll.user32
+        user32.MonitorFromWindow.restype = ctypes.c_void_p
+        return int(user32.MonitorFromWindow(ctypes.c_void_p(hwnd), 2) or 0)  # MONITOR_DEFAULTTONEAREST
+    except (AttributeError, OSError):
+        return 0
+
+
+def window_box(hwnd: int, display: int, width: int, height: int) -> tuple[int, int, int, int] | None:
+    """(left, top, right, bottom) of a window on its display's picture, cut to the picture; None while it's
+    minimized or off it. The window's visible frame (DWM's), less the display's corner, in real pixels."""
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        user32, dwm = ctypes.windll.user32, ctypes.windll.dwmapi
+        if not user32.IsWindow(hwnd) or user32.IsIconic(hwnd):
+            return None
+        r = wintypes.RECT()
+        if dwm.DwmGetWindowAttribute(wintypes.HWND(hwnd), 9, ctypes.byref(r), ctypes.sizeof(r)) != 0:  # frame bounds
+            user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(r))
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT), ("rcWork", wintypes.RECT),
+                        ("dwFlags", wintypes.DWORD)]
+
+        mi = MONITORINFO()
+        mi.cbSize = ctypes.sizeof(mi)
+        if not user32.GetMonitorInfoW(ctypes.c_void_p(display), ctypes.byref(mi)):
+            return None
+    except (AttributeError, OSError):
+        return None
+    return box_on_display((r.left, r.top, r.right, r.bottom), (mi.rcMonitor.left, mi.rcMonitor.top), width, height)
+
+
+def box_on_display(window: tuple[int, int, int, int], corner: tuple[int, int], width: int,
+                   height: int) -> tuple[int, int, int, int] | None:
+    """A window's rectangle moved to its display's picture and cut to it; None when under 2 pixels is left."""
+    left, top = max(0, window[0] - corner[0]), max(0, window[1] - corner[1])
+    right, bottom = min(width, window[2] - corner[0]), min(height, window[3] - corner[1])
+    return (left, top, right, bottom) if right - left >= 2 and bottom - top >= 2 else None
+
+
+def _package_target(target: dict[str, Any]) -> dict[str, Any]:
+    """The windows-capture package's words for a target: a window with its pop-ups is its display there."""
+    display = int(target.get("display_handle") or 0)
+    if not display:
+        return target
+    import ctypes
+    from ctypes import wintypes
+
+    found: list[int] = []
+    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HMONITOR, wintypes.HDC, ctypes.POINTER(wintypes.RECT),
+                                       wintypes.LPARAM)
+
+    def each(monitor, _dc, _rect, _data):
+        found.append(int(monitor or 0))
+        return True
+
+    ctypes.windll.user32.EnumDisplayMonitors(None, None, callback_type(each), 0)
+    return {"monitor_index": found.index(display) + 1} if display in found else {"window_hwnd": target["window_hwnd"]}
 
 
 def _monitor_handle(index: int) -> int:

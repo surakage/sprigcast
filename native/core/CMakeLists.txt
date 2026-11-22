@@ -37,7 +37,7 @@ target_include_directories(sprigcore PRIVATE ${CMAKE_BINARY_DIR}/generated)
 # FFmpeg headers only (the libraries are loaded at run time from PyAV: native/third_party/ffmpeg/README.md).
 target_include_directories(sprigcore SYSTEM PRIVATE ../third_party/ffmpeg/include)
 target_compile_definitions(sprigcore PRIVATE UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
-target_link_libraries(sprigcore PRIVATE d3d11 dxgi d3dcompiler winmm ole32 windowsapp)
+target_link_libraries(sprigcore PRIVATE d3d11 dxgi d3dcompiler winmm ole32 windowsapp dwmapi)
 
 # The shaders, compiled when the engine is built (tools/shader_bake.cpp): compiling them at run time held frames up
 # to 3.4 s on slow PCs. Built and run on Windows; elsewhere (a syntax check) they compile at run time as before.

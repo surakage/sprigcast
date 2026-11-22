@@ -15,7 +15,8 @@ namespace sc {
 
 struct CaptureAsk {
     uint64_t window = 0;   // an HWND, or 0
-    uint64_t monitor = 0;  // an HMONITOR, or 0 (one of the two is set)
+    uint64_t monitor = 0;  // an HMONITOR, or 0 (one of the two is set). Both: the display, cut to the window's
+                           // place on it, so what opens over the window (its menus and pop-ups) shows too
     int flags = 0;         // SC_CAPTURE_*
     int interval_ms = 0;   // at most one picture this often (0 = every one Windows draws)
 };
@@ -45,7 +46,7 @@ struct CaptureStart {
 // Asks the capture thread to start a capture of `ask` on `device` (the engine's). Returns at once.
 std::shared_ptr<CaptureStart> start_capture(const ComPtr<ID3D11Device> &device, const CaptureAsk &ask);
 
-using CapturePicture = std::function<bool(ID3D11Texture2D *picture, int width, int height)>;
+using CapturePicture = std::function<bool(ID3D11Texture2D *picture, int x, int y, int width, int height)>;
 
 class ScreenCapture {
 public:

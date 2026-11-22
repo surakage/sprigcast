@@ -6,6 +6,7 @@ On other platforms both functions return empty lists, so the rest of the app sti
 from __future__ import annotations
 
 import ctypes
+import functools
 import sys
 from dataclasses import dataclass
 
@@ -29,6 +30,8 @@ class WindowInfo:
     title: str
     process: str  # executable name, e.g. "obs64.exe"
     path: str = ""  # full path to the executable (for its icon)
+    app: str = ""  # the app's own name for itself ("Firefox", "Calculator"), when it has one
+    pid: int = 0
 
     @property
     def label(self) -> str:
@@ -74,6 +77,42 @@ def list_monitors() -> list[MonitorInfo]:
 
     user32.EnumDisplayMonitors(None, None, callback_type(callback), 0)
     return monitors
+
+
+@functools.lru_cache(maxsize=64)
+def app_name(path: str) -> str:
+    """The name an app gives itself in its file details ("Firefox", "Google Chrome"); "" when it gives none.
+    Read once per program (cached): a few small reads of the file's version block."""
+    if sys.platform != "win32" or not path:
+        return ""
+    from ctypes import wintypes
+
+    version = ctypes.windll.version
+    try:
+        size = version.GetFileVersionInfoSizeW(path, None)
+        if not size:
+            return ""
+        block = ctypes.create_string_buffer(size)
+        if not version.GetFileVersionInfoW(path, 0, size, block):
+            return ""
+        pointer, length = ctypes.c_void_p(), wintypes.UINT(0)
+        pairs = []
+        if version.VerQueryValueW(block, "\\VarFileInfo\\Translation", ctypes.byref(pointer), ctypes.byref(length)):
+            words = ctypes.cast(pointer, ctypes.POINTER(ctypes.c_ushort * (length.value // 2))).contents
+            pairs = [(words[i], words[i + 1]) for i in range(0, len(words) - 1, 2)]
+        for lang, page in [*pairs, (0x0409, 0x04B0), (0x0409, 0x04E4)]:
+            for key in ("FileDescription", "ProductName"):
+                where = f"\\StringFileInfo\\{lang:04x}{page:04x}\\{key}"
+                if version.VerQueryValueW(block, where, ctypes.byref(pointer), ctypes.byref(length)) and length.value:
+                    text = ctypes.wstring_at(pointer.value, length.value).rstrip("\0").strip()
+                    if text:
+                        return text[:60]
+    except (OSError, AttributeError, ValueError):
+        return ""
+    return ""
+
+
+FRAME_HOST = "applicationframehost.exe"  # Windows' frame around Store apps (Settings, Calculator, Photos...)
 
 
 def list_windows(include_own: bool = False) -> list[WindowInfo]:
@@ -123,8 +162,32 @@ def list_windows(include_own: bool = False) -> list[WindowInfo]:
         buf = ctypes.create_unicode_buffer(length + 1)
         user32.GetWindowTextW(hwnd, buf, length + 1)
         path = process_path(pid.value)
-        windows.append(WindowInfo(hwnd=int(hwnd), title=buf.value, process=path.rsplit("\\", 1)[-1], path=path))
+        process = path.rsplit("\\", 1)[-1]
+        app, icon_path = "", path
+        if process.lower() == FRAME_HOST:
+            # A Store app inside Windows' frame: its name is the window's title, its icon the app's own program
+            icon_path = hosted_path(hwnd, pid.value) or path
+            app = buf.value
+        else:
+            app = app_name(path)
+        windows.append(WindowInfo(hwnd=int(hwnd), title=buf.value, process=process, path=icon_path, app=app,
+                                  pid=int(pid.value)))
         return True
+
+    def hosted_path(frame, frame_pid: int) -> str:
+        """The program of the Store app a frame holds (its first child window from another process)."""
+        found: list[str] = []
+
+        def child(hwnd, _data):
+            other = wintypes.DWORD(0)
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(other))
+            if other.value and other.value != frame_pid:
+                found.append(process_path(other.value))
+                return False
+            return True
+
+        user32.EnumChildWindows(frame, callback_type(child), 0)
+        return next((p for p in found if p), "")
 
     user32.EnumWindows(callback_type(callback), 0)
     return windows

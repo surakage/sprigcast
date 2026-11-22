@@ -54,3 +54,16 @@ def test_only_a_sound_name_sprigcast_made_follows_the_device():
     assert sound_name_is_ours("Desktop audio", "audio_output", "default")
     assert not sound_name_is_ours("[AIC] Microphone", "audio_input", "UG-08S")
     assert not sound_name_is_ours("Mic (Microphone (Voicemod))", "audio_input", "UG-08S")
+
+
+def test_window_detail_drops_the_app_name():
+    from sprigcast.app.names import window_app, window_detail
+
+    assert window_detail("YouTube — Mozilla Firefox", "Firefox", "firefox.exe") == "YouTube"
+    assert window_detail("#general | My Server - Discord", "Discord", "Discord.exe") == "#general | My Server"
+    assert window_detail("main.py - sprigcast - Visual Studio Code", "Visual Studio Code", "Code.exe") == \
+        "main.py - sprigcast"
+    assert window_detail("Calculator", "Calculator", "ApplicationFrameHost.exe") == ""
+    assert window_detail("Elden Ring", "ELDEN RING", "eldenring.exe") == ""
+    assert window_app("Stream - Google Chrome", "chrome.exe") == "Chrome"
+    assert window_app("Stream - Google Chrome", "chrome.exe", "Google Chrome") == "Google Chrome"

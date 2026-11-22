@@ -707,7 +707,6 @@ int main() {
     // Screen capture in the engine: a display captured on the engine's device and read back, a window whose capture
     // ends when it closes. CI may have no desktop to capture: then the capture says it couldn't, and nothing breaks.
     {
-        CHECK(sc_engine_source_capture(eng, 21, 1, 2, 0, 0) == SC_ERR_ARGUMENT);  // a window and a display
         CHECK(sc_engine_source_capture(eng, 21, 0, 1, 64, 0) == SC_ERR_ARGUMENT);  // unknown flags
         int state = -1, w = 0, h = 0;
         uint64_t frames = 0;
@@ -749,7 +748,7 @@ int main() {
             CHECK(sc_engine_device(eng, &engine_device, &engine_rebuilds) == SC_OK && engine_device);
             CHECK(sc_d3d_device_luid(engine_device, &low, &high) == SC_OK);
             sc_capture_feed *feed = nullptr;
-            CHECK(sc_capture_feed_create(low, high, 1, 2, 0, 0, L"sprigcore-feed-check", &feed) == SC_ERR_ARGUMENT);
+            CHECK(sc_capture_feed_create(low, high, 0, 0, 0, 0, L"sprigcore-feed-check", &feed) == SC_ERR_ARGUMENT);
             CHECK(sc_capture_feed_create(low, high, 0, reinterpret_cast<uint64_t>(monitor), SC_SCREEN_CURSOR, 16,
                                          L"sprigcore-feed-check", &feed) == SC_OK && feed);
             sc_capture_feed *twice = nullptr;  // a block of that name is there already
@@ -795,6 +794,27 @@ int main() {
                 CHECK(state == SC_SCREEN_ENDED);  // closed: SprigCast looks for it again
             }
             CHECK(sc_engine_source_forget(eng, 22) == SC_OK);
+        }
+        // A window with its pop-ups: the display, cut to where the window is, so the picture is the window's size.
+        HWND framed = CreateWindowExW(0, L"STATIC", L"sprigcore pop-up check", WS_POPUP | WS_VISIBLE, 60, 60, 240, 160,
+                                      nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (framed) {
+            HMONITOR on = MonitorFromWindow(framed, MONITOR_DEFAULTTOPRIMARY);
+            CHECK(sc_engine_source_capture(eng, 24, reinterpret_cast<uint64_t>(framed), reinterpret_cast<uint64_t>(on),
+                                           0, 0) == SC_OK);
+            for (int i = 0; i < 100; ++i) {
+                MSG msg;
+                while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) DispatchMessageW(&msg);
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                sc_engine_capture_state(eng, 24, &state, &w, &h, &frames);
+                if (state != SC_SCREEN_STARTING && (state != SC_SCREEN_RUNNING || frames > 0)) break;
+            }
+            std::printf("window with pop-ups: state %d, %dx%d, %llu pictures\n", state, w, h,
+                        static_cast<unsigned long long>(frames));
+            CHECK(state == SC_SCREEN_RUNNING || state == SC_SCREEN_ENDED || state == SC_SCREEN_REFUSED);
+            if (state == SC_SCREEN_RUNNING && frames > 0) CHECK(w <= 240 * 3 && h <= 160 * 3 && w >= 2 && h >= 2);
+            DestroyWindow(framed);
+            CHECK(sc_engine_source_forget(eng, 24) == SC_OK);
         }
         CHECK(sc_engine_source_forget(eng, 21) == SC_OK);
     }

@@ -21,10 +21,11 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from PySide6.QtCore import QFileInfo, QSize, Qt
-from PySide6.QtWidgets import QComboBox, QFileIconProvider, QHBoxLayout, QLabel, QWidget
+from PySide6.QtWidgets import QFileIconProvider, QHBoxLayout, QLabel, QWidget
 
 from sprigcast.app import theme
 from sprigcast.app.card import CardDialog, field_label
+from sprigcast.app.window_list import WindowCombo, add_window
 
 AUTO, HOTKEY = "Auto: any full-screen game", "Game in front, on a hotkey"
 OFF = {"see_through": False, "fps_limit": 0, "border": False}  # the old "More" options, back to their defaults
@@ -38,18 +39,6 @@ def _row(label: str, widget: QWidget) -> QHBoxLayout:
     row.addWidget(text, 1)
     row.addWidget(widget)
     return row
-
-
-class WindowCombo(QComboBox):
-    """Re-reads the open windows each time it opens."""
-
-    def __init__(self, on_open: Callable[[], None]):
-        super().__init__()
-        self._on_open = on_open
-
-    def showPopup(self) -> None:  # noqa: N802
-        self._on_open()
-        super().showPopup()
 
 
 class GameCaptureDialog(CardDialog):
@@ -71,7 +60,6 @@ class GameCaptureDialog(CardDialog):
         self.capture.setFixedHeight(BOX_HEIGHT)
         self.capture.setIconSize(QSize(18, 18))
         self.capture.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.capture.setMaxVisibleItems(14)
         self.body.addWidget(self.capture)
         self.hotkey_note = QLabel("Set its key in Tools → Hotkeys.")
         self.hotkey_note.setStyleSheet(theme.MUTED_STYLE + "; font-size: 12px;")
@@ -97,21 +85,24 @@ class GameCaptureDialog(CardDialog):
     def _fill(self, windows: list, pick: tuple[str, str, str]) -> None:
         """Auto, the open windows A to Z, then With a hotkey. pick: (mode, title, process) to select."""
         from sprigcast.app.icons import icon
-        from sprigcast.app.names import window_name
+        from sprigcast.app.names import window_app, window_detail, window_name
 
         mode, title, process = pick
-        self.windows = sorted(windows, key=lambda w: window_name(w.title, w.process).lower())
+        self.windows = sorted(windows, key=lambda w: (window_app(w.title, w.process, getattr(w, "app", "")).lower(),
+                                                      w.title.lower()))
         box = self.capture
         box.blockSignals(True)
         box.clear()
         box.addItem(icon("gamepad", theme.ACCENT), AUTO, ("any", "", ""))
         box.insertSeparator(box.count())
         for w in self.windows:
-            box.addItem(self._icon(w), window_name(w.title, w.process), ("window", w.title, w.process))
+            app = window_app(w.title, w.process, getattr(w, "app", ""))
+            add_window(box, self._icon(w), app, window_detail(w.title, app, w.process), ("window", w.title, w.process))
         if mode == "window" and (title or process) and not any(
                 process and w.process.lower() == process.lower() for w in self.windows):
-            box.addItem(icon("panel", theme.MUTED), window_name(title, process),
-                        ("window", title, process))  # not open right now: keep it
+            app = window_name(title, process)
+            add_window(box, icon("panel", theme.MUTED), app, window_detail(title, app, process),
+                       ("window", title, process))  # not open right now: keep it
         box.insertSeparator(box.count())
         box.addItem(icon("keyboard", theme.MUTED), HOTKEY, ("hotkey", "", ""))
         at = 0

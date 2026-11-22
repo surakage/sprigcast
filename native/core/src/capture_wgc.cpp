@@ -8,6 +8,8 @@
 
 #include "wgc.h"
 
+#include <dwmapi.h>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -42,6 +44,29 @@ namespace {
 
 constexpr auto PICTURE_FORMAT = wdx::DirectXPixelFormat::B8G8R8A8UIntNormalized;
 constexpr int POOL_PICTURES = 2;
+
+// Where a window sits on a display's picture, in the picture's pixels: the window's visible frame (no invisible
+// resize border) less the display's corner, cut to the picture. Asked per picture as the window moves and resizes.
+// Both are read per-monitor aware, so they are real pixels whatever the calling program's own DPI setting (the
+// capture helper is a separate program). False while the window is minimized or off this display.
+bool window_on_display(HWND window, HMONITOR display, int pic_w, int pic_h, D3D11_BOX &box) {
+    if (!IsWindow(window) || IsIconic(window)) return false;
+    const DPI_AWARENESS_CONTEXT was = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    RECT r = {};
+    bool ok = SUCCEEDED(DwmGetWindowAttribute(window, DWMWA_EXTENDED_FRAME_BOUNDS, &r, sizeof r)) ||
+              GetWindowRect(window, &r);
+    MONITORINFO mi = {};
+    mi.cbSize = sizeof mi;
+    ok = ok && GetMonitorInfoW(display, &mi);
+    if (was) SetThreadDpiAwarenessContext(was);
+    if (!ok) return false;
+    const long left = std::max(0L, r.left - mi.rcMonitor.left), top = std::max(0L, r.top - mi.rcMonitor.top);
+    const long right = std::min<long>(pic_w, r.right - mi.rcMonitor.left);
+    const long bottom = std::min<long>(pic_h, r.bottom - mi.rcMonitor.top);
+    if (right - left < 2 || bottom - top < 2) return false;
+    box = {static_cast<UINT>(left), static_cast<UINT>(top), 0, static_cast<UINT>(right), static_cast<UINT>(bottom), 1};
+    return true;
+}
 
 std::string hr_text(const char *what, HRESULT hr) {
     char code[16];
@@ -179,6 +204,7 @@ std::shared_ptr<CaptureStart> start_capture(const ComPtr<ID3D11Device> &device, 
 
 struct ScreenCapture::Impl {
     HWND window = nullptr;           // a window capture's window: closed, the capture ends (Closed may not come)
+    HMONITOR display = nullptr;      // set with window: the display is captured, cut to where the window is
     ID3D11Device *device = nullptr;  // the engine's: captures are dropped before it goes (engine.cpp drop_gpu)
     wdx::Direct3D11::IDirect3DDevice d3d{nullptr};
     wgc::GraphicsCaptureItem item{nullptr};
@@ -263,9 +289,9 @@ CapturePtr ScreenCapture::start(const ComPtr<ID3D11Device> &device, const Captur
                                 std::string &why) {
     refusal = CaptureRefusal::NONE;
     why.clear();
-    if (!ask.window == !ask.monitor) {
+    if (!ask.window && !ask.monitor) {
         refusal = CaptureRefusal::NOT_HERE;
-        why = "a capture needs one window or one display";
+        why = "a capture needs a window or a display";
         return nullptr;
     }
     CapturePtr made(new ScreenCapture());
@@ -287,13 +313,13 @@ CapturePtr ScreenCapture::start(const ComPtr<ID3D11Device> &device, const Captur
         const winrt::guid item_guid = winrt::guid_of<wgc::GraphicsCaptureItem>();
         GUID riid;
         std::memcpy(&riid, &item_guid, sizeof riid);
-        hr = ask.window ? interop->CreateForWindow(reinterpret_cast<HWND>(static_cast<uintptr_t>(ask.window)), riid,
+        hr = !ask.monitor ? interop->CreateForWindow(reinterpret_cast<HWND>(static_cast<uintptr_t>(ask.window)), riid,
                                                    winrt::put_abi(c.item))
                         : interop->CreateForMonitor(reinterpret_cast<HMONITOR>(static_cast<uintptr_t>(ask.monitor)),
                                                     riid, winrt::put_abi(c.item));
         if (FAILED(hr) || !c.item) {
             refusal = CaptureRefusal::TARGET_GONE;
-            why = hr_text(ask.window ? "the window can't be captured" : "the display can't be captured", hr);
+            why = hr_text(!ask.monitor ? "the window can't be captured" : "the display can't be captured", hr);
             return nullptr;
         }
         ComPtr<IDXGIDevice> dxgi;
@@ -340,12 +366,14 @@ CapturePtr ScreenCapture::start(const ComPtr<ID3D11Device> &device, const Captur
         c.usual_ms = ask.interval_ms;
         c.opaque = (ask.flags & SC_SCREEN_OPAQUE) != 0;
         c.window = reinterpret_cast<HWND>(static_cast<uintptr_t>(ask.window));
+        if (ask.window && ask.monitor) c.display = reinterpret_cast<HMONITOR>(static_cast<uintptr_t>(ask.monitor));
         if (ask.interval_ms > 0)
             c.step = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                 std::chrono::milliseconds(ask.interval_ms));
         c.session.StartCapture();
         c.counted = true;
-        log_line(SC_LOG_INFO, std::string("capture: started a ") + (ask.window ? "window" : "display") + " (" +
+        log_line(SC_LOG_INFO, std::string("capture: started a ") +
+                                  (c.display ? "window with its pop-ups" : ask.window ? "window" : "display") + " (" +
                                   std::to_string(++open_captures) + " open)");
     } catch (const winrt::hresult_error &x) {
         refusal = x.code() == E_ACCESSDENIED ? CaptureRefusal::NOT_HERE : CaptureRefusal::TARGET_GONE;
@@ -398,14 +426,23 @@ bool ScreenCapture::take_any(sc_device *engine, uint64_t id, bool copy, const Ca
         }
         D3D11_TEXTURE2D_DESC pd = {};
         picture->GetDesc(&pd);
-        const int w = std::min(size.Width, static_cast<int32_t>(pd.Width));
-        const int h = std::min(size.Height, static_cast<int32_t>(pd.Height));
+        int w = std::min(size.Width, static_cast<int32_t>(pd.Width));
+        int h = std::min(size.Height, static_cast<int32_t>(pd.Height));
+        D3D11_BOX box = {0, 0, 0, static_cast<UINT>(std::max(w, 0)), static_cast<UINT>(std::max(h, 0)), 1};
+        if (c.display && w > 0 && h > 0) {  // the window's place on the display (minimized: the last picture stays)
+            if (!window_on_display(c.window, c.display, w, h, box)) {
+                newest.Close();
+                return false;
+            }
+            w = static_cast<int>(box.right - box.left);
+            h = static_cast<int>(box.bottom - box.top);
+        }
         if (w < 1 || h < 1) {
             newest.Close();
             return false;
         }
         if (to) {  // the capture helper's own copy (capture_feed.cpp)
-            if (!(*to)(picture.Get(), w, h)) {
+            if (!(*to)(picture.Get(), static_cast<int>(box.left), static_cast<int>(box.top), w, h)) {
                 newest.Close();
                 return false;
             }
@@ -437,7 +474,6 @@ bool ScreenCapture::take_any(sc_device *engine, uint64_t id, bool copy, const Ca
                 s.data_w = w;
                 s.data_h = h;
             }
-            const D3D11_BOX box = {0, 0, 0, static_cast<UINT>(w), static_cast<UINT>(h), 1};
             dev.context->CopySubresourceRegion(s.texture.Get(), 0, 0, 0, 0, picture.Get(), 0, &box);
             s.pic_w = s.layout_w = w;
             s.pic_h = s.layout_h = h;
