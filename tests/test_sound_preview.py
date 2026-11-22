@@ -40,25 +40,28 @@ class Speakers:
 
 
 def test_preview_runs_the_draft_filters_not_the_real_ones():
+    # Its own sound id: peek.WATCHERS is shared, and a mixer another test left running with a sound called "mic"
+    # handed this preview its silent blocks too, so the newest level read -90 dB in a full run (2026-11-22).
+    sid = "preview-test-mic"
     made = []
-    preview = Preview("mic", [Filter(id="g", kind="gain", name="Gain", settings={"db": -6})], device="Headphones",
+    preview = Preview(sid, [Filter(id="g", kind="gain", name="Gain", settings={"db": -6})], device="Headphones",
                       speakers=lambda d: made.append(Speakers(d)) or made[-1], threaded=False)
     preview.start()
     try:
-        assert "mic" in peek.WATCHERS
-        peek.hand(peek.WATCHERS["mic"], _tone())
+        assert sid in peek.WATCHERS
+        peek.hand(peek.WATCHERS[sid], _tone())
         preview.work()
         before, after, levels = preview.snapshot()
         assert abs(levels[0] - 20 * np.log10(0.5)) < 0.1 and abs(levels[1] - levels[0] + 6) < 0.1
         assert np.max(np.abs(after)) == pytest.approx(np.max(np.abs(before)) * 10 ** (-6 / 20), rel=1e-3)
         preview.set_filters([Filter(id="g", kind="gain", name="Gain", settings={"db": -12})])  # an edit: heard next
         preview.set_listen("after")
-        peek.hand(peek.WATCHERS["mic"], _tone())
+        peek.hand(peek.WATCHERS[sid], _tone())
         preview.work()
         assert made and made[0].device == "Headphones" and made[0].started
         assert np.max(np.abs(made[0].blocks[-1])) == pytest.approx(0.5 * 10 ** (-12 / 20), rel=1e-3)
         preview.set_listen("before")
-        peek.hand(peek.WATCHERS["mic"], _tone())
+        peek.hand(peek.WATCHERS[sid], _tone())
         preview.work()
         assert np.max(np.abs(made[0].blocks[-1])) == pytest.approx(0.5, rel=1e-3)
         preview.set_listen("off")
@@ -66,7 +69,7 @@ def test_preview_runs_the_draft_filters_not_the_real_ones():
         assert made[0].stopped
     finally:
         preview.stop()
-    assert "mic" not in peek.WATCHERS
+    assert sid not in peek.WATCHERS
 
 
 def test_the_mixer_hands_the_sound_before_its_filters_and_keeps_its_own():
