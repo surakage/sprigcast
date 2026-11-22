@@ -147,6 +147,9 @@ with a big garden brought over from OBS (88 scenes, 61 web pages, about 78 neste
 
 ### Fixed
 
+- Switching gardens and paths from apps and hotkeys works while the "Help improve SprigCast?" card is up, and
+  a garden switch is faster (the garden is written once instead of four times). The card now waits until
+  SprigCast has settled after a stream. Not tried on a PC yet.
 - The log's "pages:" line no longer repeats "script memory 150 MB for 1 page" for pages that share one page
   process.
 - The Stream doctor no longer writes an error to the log when its window is closed while it still listens.
