@@ -468,7 +468,7 @@ class StreamPage(QWidget):
                 self.extra_canvas.addItem(f"{canvas.id.capitalize()} ({canvas.width}×{canvas.height})", canvas.id)
         self.extra_canvas.currentIndexChanged.connect(self._edited)
         form.addRow("Additional canvas", self.extra_canvas)
-        # Twitch's vertical (dual format) doesn't work yet, so the row only shows when it's switched on to try.
+        # Twitch's vertical (dual format): hidden when it's switched off (SPRIGCAST_TWITCH_VERTICAL=0).
         from sprigcast.output.enhanced import vertical_allowed
 
         form.setRowVisible(self.extra_canvas, vertical_allowed())
@@ -867,11 +867,15 @@ class StreamPage(QWidget):
         output.bitrate_kbps = self.bitrate.value()
         output.bandwidth_test = service.bandwidth_test and self.bandwidth_test.isChecked()
         output.twitch_account = output.service == "twitch" and self.use_account.isChecked()
+        was = (output.enhanced, output.enhanced_vertical)
         output.enhanced = output.service == "twitch" and self.enhanced.isChecked()
         from sprigcast.output.enhanced import vertical_allowed
 
         if vertical_allowed():  # while the row is hidden, a saved choice stays as it was
             output.enhanced_vertical = output.enhanced and bool(self.extra_canvas.currentData())
+        if (output.enhanced, output.enhanced_vertical) != was:  # found off with nothing in the log (PC, 2026-11-22)
+            log.info("place %s: Enhanced Broadcasting %s%s", output.id, "on" if output.enhanced else "off",
+                     " with the vertical canvas" if output.enhanced and output.enhanced_vertical else "")
         output.enhanced_max_tracks = 0 if self.enhanced_tracks_auto.isChecked() else self.enhanced_tracks.value()
         output.enhanced_max_kbps = 0 if self.enhanced_kbps_auto.isChecked() else self.enhanced_kbps.value()
         output.ignore_recommendations = self.ignore_recommendations.isChecked()

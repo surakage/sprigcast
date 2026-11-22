@@ -36,15 +36,18 @@ TWITCH_CONFIG_URL = "https://ingest.twitch.tv/api/v3/GetClientConfiguration"
 SCHEMA_VERSION = "2025-01-25"
 CLIENT_NAME = "sprigcast"
 REQUEST_TIMEOUT = 5  # seconds, like OBS
-# Sending the vertical canvas to Twitch too (dual format) is switched off for now: on the 2026-11-21 PC test
-# Twitch closed the connection within a second, seven times in a row (WSAECONNABORTED), and it hasn't worked
-# yet. A saved "Additional canvas" is kept but not used; SPRIGCAST_TWITCH_VERTICAL=1 brings it back to try.
+# Sending the vertical canvas to Twitch too (dual format), when the place's "Additional canvas" is set. The one
+# try on 2026-11-21 dropped seven times in its first two minutes: it went through Python's own FLV muxer, which
+# wrote the vertical as a second classic video stream ("more than one video stream"), with every place encoding
+# 1080p at 267 ms a frame. The engine now packs and sends Enhanced streams itself (writer.cpp ESend), every
+# quality after the first as a multitrack track, as the two horizontal qualities have gone out since.
+# SPRIGCAST_TWITCH_VERTICAL=0 turns it off again (the row hides, a saved choice is kept but not used).
 VERTICAL_ENV = "SPRIGCAST_TWITCH_VERTICAL"
 
 
 def vertical_allowed() -> bool:
-    """Whether Twitch Enhanced may send the vertical canvas too (off until it works; see VERTICAL_ENV)."""
-    return os.environ.get(VERTICAL_ENV, "").strip() == "1"
+    """Whether Twitch Enhanced may send the vertical canvas too (see VERTICAL_ENV)."""
+    return os.environ.get(VERTICAL_ENV, "").strip() != "0"
 
 
 def sends_vertical(output) -> bool:
