@@ -528,6 +528,7 @@ class _Page:
     def reload(self) -> None:
         forget_notes(self)
         stir(self)
+        log.info("browser source %s: loading the page again", self.id)
         self.page.triggerAction(self.page.WebAction.ReloadAndBypassCache)
 
     def grab(self) -> np.ndarray:
