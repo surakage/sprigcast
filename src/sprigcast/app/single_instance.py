@@ -70,9 +70,10 @@ def _wait_turn(ms: int) -> bool:
 
 
 def wait_for_first_copy(ask: Callable[[], bool] | None = None, turn: Callable[[int], bool] | None = None,
-                        longest_s: float = FIRST_COPY_WAIT_S) -> bool:
+                        longest_s: float = FIRST_COPY_WAIT_S, waiting: Callable[[], None] | None = None) -> bool:
     """Another copy holds the mutex: True once it was asked to show its window (this copy should quit), False
-    when it closed meanwhile (a restart) or never answered in longest_s (this copy opens)."""
+    when it closed meanwhile (a restart) or never answered in longest_s (this copy opens). `waiting` is called
+    each half second while the other copy is still starting."""
     ask = ask or ask_running_copy
     turn = turn or _wait_turn
     told = False
@@ -88,6 +89,8 @@ def wait_for_first_copy(ask: Callable[[], bool] | None = None, turn: Callable[[i
         if not told:
             told = True
             log.info("single copy check: another SprigCast is starting; it comes forward once it's ready")
+        if waiting is not None:
+            waiting()  # the "still starting" notice stays drawn
 
 
 def ask_running_copy(name: str | None = None, wait_ms: int = 400) -> bool:

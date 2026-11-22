@@ -225,7 +225,53 @@ def import_av() -> bool:
     return True
 
 
+ALREADY_OPEN_MS = 5000  # the "already open" notice closes by itself after this
+
+
+def say_already_open(app) -> None:
+    """A second launch: say SprigCast is already open (its window comes to the front), then this copy ends."""
+    from PySide6.QtCore import QTimer
+
+    from sprigcast.app.starting import StartingCard
+
+    card = StartingCard(brand_mark(), "SprigCast is already open", "It only runs once. Its window is in front.",
+                        dots=False, ok=True)
+    card.destroyed.connect(app.quit)
+    QTimer.singleShot(ALREADY_OPEN_MS, card.done)
+    card.show()
+    card.activateWindow()
+    app.exec()
+
+
+def second_launch(app) -> bool:
+    """Another copy holds the single-copy mutex. While it's still starting, say so (and wait); once it answers,
+    say it's already open. True: this copy ends. False: the other copy closed (a restart), so this one opens."""
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app import single_instance
+    from sprigcast.app.starting import StartingCard
+
+    notice = None
+
+    def waiting() -> None:
+        nonlocal notice
+        if notice is None:
+            notice = StartingCard(brand_mark(), "SprigCast is still starting", "It opens by itself. Please wait")
+            notice.show()
+        QApplication.processEvents()  # only this notice is on screen yet: keeps its dots moving
+
+    answered = single_instance.wait_for_first_copy(waiting=waiting)
+    if notice is not None:
+        notice.done()
+    if answered:
+        say_already_open(app)
+    return answered
+
+
 def run() -> None:
+    import time
+
+    began = time.perf_counter()
     QCoreApplication.setApplicationName("SprigCast")
     QCoreApplication.setOrganizationName("Slothbloom")
     from sprigcast.app import single_instance
@@ -297,6 +343,21 @@ def run() -> None:
     # A copy even if closing is cut short; made aside, so the window and the show don't wait for the file
     QTimer.singleShot(30_000, lambda: settings_keeper.keep_aside_soon(config_dir()))
     app.setWindowIcon(app_icon())
+    app_at = time.perf_counter() - began
+    from sprigcast.app import autostart
+
+    starting = None
+    if first_copy and not autostart.start_minimized(sys.argv):
+        from sprigcast.app.starting import show_starting
+
+        starting = show_starting(brand_mark())  # on screen now: a slow PC's start can take most of a minute
+
+    def stop_starting() -> None:
+        nonlocal starting
+        if starting is not None:
+            starting.done()
+            starting = None
+
     from sprigcast.core.painted import brand_fonts
 
     brand_fonts()  # Nunito for the text plugins (timer, clock, Now playing)
@@ -304,18 +365,27 @@ def run() -> None:
 
     if first_copy:
         if single_instance.ask_running_copy():  # already open (no mutex: not Windows): that window comes forward
+            say_already_open(app)
             sys.exit(0)
-    elif single_instance.wait_for_first_copy():  # open or still starting: that window comes forward instead
+    elif second_launch(app):  # open or still starting: that window comes forward instead
         sys.exit(0)
+    elif not autostart.start_minimized(sys.argv):  # the other copy closed (a restart): this one is the start now
+        from sprigcast.app.starting import show_starting
+
+        starting = show_starting(brand_mark())
     shown: list = []  # the window, once it exists (a second launch before then just waits)
     server = single_instance.listen(lambda: shown and single_instance.bring_forward(shown[0]), app)
     crashed = crash_report.check(config_dir(), logbook.crash_log())  # did the last run close cleanly?
     app.aboutToQuit.connect(lambda: crash_report.closed_cleanly(config_dir()))
     # Windows' Restart Manager (the installer) and signing out ask through the session: the close log line says so
     app.commitDataRequest.connect(lambda _manager: app.setProperty("sprigcast_session_end", True))
-    from sprigcast.app import autostart, safe_mode
+    from sprigcast.app import safe_mode
 
-    safe = safe_mode.choose(sys.argv, crashed, autostart.start_minimized(sys.argv), safe_mode.ask)
+    def ask_safe(*args, **kwargs):
+        stop_starting()  # never over the question
+        return safe_mode.ask(*args, **kwargs)
+
+    safe = safe_mode.choose(sys.argv, crashed, autostart.start_minimized(sys.argv), ask_safe)
     if safe and sprigcore.engine_choice() == "native":
         sprigcore.use_python_engine()  # nothing has started yet: this start draws, captures and mixes the old way
         logging.warning("safe mode: the Python engine for this start")
@@ -367,6 +437,7 @@ def run() -> None:
     except Exception as exc:
         from sprigcast.app import message as msgbox
 
+        stop_starting()
         msgbox.critical(None, "SprigCast", f"Could not load scenes:\n{exc}")
         sys.exit(1)
 
@@ -390,7 +461,9 @@ def run() -> None:
         shelf.sync_path(collection)  # the garden holds the newest copy of the path in use
     except OSError as exc:
         logging.warning("could not save the path: %s", exc)
+    garden_at = time.perf_counter() - began
     window = MainWindow(collection, scenes_path, plugins_dir, shelf=shelf)
+    window_at = time.perf_counter() - began
     window.start_in_live()  # always opens on Live, not the screen it closed on
     try:
         from sprigcast.app.leftovers import clean_up_recordings
@@ -415,10 +488,14 @@ def run() -> None:
     if safe:
         window.setWindowTitle(f"{window.windowTitle()} (safe mode)")
     autostart.refresh()
+    # Said each start: the tester's PC took close to a minute and nothing told where (2026-11-22)
+    logging.info("start-up: window up after %.1f s (app made at %.1f s, garden loaded at %.1f s, window made at "
+                 "%.1f s)", time.perf_counter() - began, app_at, garden_at, window_at)
     if autostart.start_minimized(sys.argv):
         window.show_minimized_drawn()  # drawn once first: opening it later shows it at once
     else:
         window.show()
+        stop_starting()  # the window takes its place
         from PySide6.QtCore import QTimer
 
         QTimer.singleShot(1500, window.first_run_optimizer)  # once: Optimize for this PC
