@@ -434,6 +434,13 @@ class WindowHost:
             out["availableDiskSpace"] = psutil.disk_usage(out["recordDirectory"]).free / (1024 * 1024)
         except Exception:
             pass
+        native = getattr(getattr(self.w, "engine", None), "_native", None)
+        if native is not None and not getattr(native, "failed", False):
+            try:  # the native engine's own counts: frames, and canvases really drawn (a still bloom isn't redrawn)
+                counts = native.engine.stats()
+                out["engineTicks"], out["canvasDraws"] = int(counts["ticks"]), int(counts["canvas_draws"])
+            except Exception:  # noqa: BLE001
+                pass
         status = self.stream_status()
         if status:
             out["outputSkippedFrames"], out["outputTotalFrames"] = status["skipped"], status["frames"] + status["skipped"]
