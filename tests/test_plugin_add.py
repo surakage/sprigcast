@@ -73,7 +73,7 @@ def test_at_rest_the_show_lets_go_of_what_it_held(window, monkeypatch):
 
     w, _col = window
     trims = []
-    monkeypatch.setattr(pacing, "trim_working_set_later", lambda done=None: done(trims.append(1) or True))
+    monkeypatch.setattr(pacing, "trim_working_set_later", lambda done=None, compact=False: done(trims.append(1) or True))
     painted._ART[("x", 1, 1)] = object()
     w.recording = object()  # still recording: nothing is let go
     w._rest_if_idle()

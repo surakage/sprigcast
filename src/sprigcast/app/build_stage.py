@@ -505,6 +505,11 @@ class InsideList(QListWidget):
         handled = theme.view_activation(self, event)  # no repaint when a pop-up takes the focus
         return super().event(event) if handled is None else handled
 
+    def startDrag(self, actions) -> None:  # noqa: N802 (Qt naming)
+        from sprigcast.app.drag import start_drag
+
+        start_drag(self, actions)  # not Qt's own: it held Python's lock for the whole drag (app/drag.py)
+
     def dragEnterEvent(self, event) -> None:  # noqa: N802
         if event.mimeData().hasFormat(SPRIG_MIME):
             event.acceptProposedAction()
