@@ -30,6 +30,7 @@ int planar_target(sc_device &dev, Source &s, int w, int h) {
     fresh.nv12_y = s.nv12_y;
     fresh.nv12_uv = s.nv12_uv;
     fresh.nv12_staging = s.nv12_staging;
+    fresh.nv12_next = s.nv12_next;
     s = fresh;
     D3D11_TEXTURE2D_DESC td = {};
     td.Width = static_cast<UINT>(w);

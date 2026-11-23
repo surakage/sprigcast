@@ -11,6 +11,7 @@
 #include <windows.h>
 #include <wrl/client.h>
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <exception>
@@ -52,9 +53,9 @@ struct Source {
     ComPtr<ID3D11Texture2D> nv12;
     // NV12 pictures from memory go up through these in turn (sc::upload_nv12): the card may still be copying
     // from the last one, and waiting for it held the frame 2 s at a time on a Radeon R2 (tester, 2026-11-22).
-    ComPtr<ID3D11Texture2D> nv12_staging[3];
+    std::array<ComPtr<ID3D11Texture2D>, 3> nv12_staging;
     int nv12_next = 0;
-    ComPtr<ID3D11Texture2D> up_staging[3];  // the same for other pictures from memory (sc_source_upload)
+    std::array<ComPtr<ID3D11Texture2D>, 3> up_staging;  // the same for other pictures from memory (sc_source_upload)
     int up_next = 0;
     ComPtr<ID3D11ShaderResourceView> nv12_y, nv12_uv;
     bool premultiplied = false;   // RGBA with premultiplied alpha (a browser page drawn on the card)
