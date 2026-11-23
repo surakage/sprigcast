@@ -5981,20 +5981,17 @@ class MainWindow(QMainWindow):
         if config.kind == "app_audio":
             self._pick_app_sound_apps(config.id)
             return False
-        if config.kind == "color":
-            current = QColor(str(config.settings.get("color", "#000000"))[:7])
-            color = QColorDialog.getColor(current, self, "Color", QColorDialog.ColorDialogOption.ShowAlphaChannel)
-            if not color.isValid():
+        if config.kind in ("color", "image"):
+            # Its colour or file, and another one in some blooms (Color / File per bloom).
+            from sprigcast.app.by_bloom import PictureCard, bloom_list
+
+            dialog = PictureCard(config.kind, config.name, config.settings, bloom_list(self.collection), self)
+            if not modal(dialog):
                 return False
-            config.settings = {
-                **config.settings,
-                "color": f"#{color.red():02x}{color.green():02x}{color.blue():02x}{color.alpha():02x}",
-            }
-        elif config.kind == "image":
-            path, _ = QFileDialog.getOpenFileName(self, "Choose image", "", "Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif)")
-            if not path:
+            changes = dialog.values()
+            if config.kind == "image" and not changes.get("path"):
                 return False
-            config.settings = {**config.settings, "path": path}
+            config.settings = {**config.settings, **changes}
         elif config.kind == "display_capture":
             changes = self._display_dialog(config.settings)
             if changes is None:
@@ -6067,7 +6064,10 @@ class MainWindow(QMainWindow):
             elif config.kind == "media":
                 from sprigcast.app.media_dialog import MediaDialog
 
-                dialog = MediaDialog(config.name, config.settings, self, only=config.settings.get("only"))
+                from sprigcast.app.by_bloom import bloom_list
+
+                dialog = MediaDialog(config.name, config.settings, self, only=config.settings.get("only"),
+                                     blooms=bloom_list(self.collection))
             elif config.kind == "text":
                 from sprigcast.app.text_leaf_dialog import TextLeafDialog
 
