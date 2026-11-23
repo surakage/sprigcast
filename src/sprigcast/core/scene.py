@@ -54,6 +54,20 @@ def new_filter_id(taken=()) -> str:
             return fid
 
 
+CANVAS_SHARED_KINDS = ("background_effect", "freeze")  # change the source itself: one for both canvases
+
+
+def canvas_shared(kind: str) -> bool:
+    """A filter kind that stays the same on both canvases: sound filters, and the ones that change the source
+    itself (a Background cut-out is worked out once per picture; a Freeze holds the source's picture)."""
+    if kind in CANVAS_SHARED_KINDS:
+        return True
+    from sprigcast.core.filters import filter_kind
+
+    info = filter_kind(kind)
+    return info is not None and info.media == "audio"
+
+
 class Filter(BaseModel):
     """An effect on a source (color correction, chroma key, noise gate...). See core/filters.py."""
 
@@ -72,6 +86,10 @@ class SourceConfig(BaseModel):
     name: str
     settings: dict[str, Any] = Field(default_factory=dict)
     filters: list[Filter] = Field(default_factory=list)  # applied top to bottom
+    # A canvas's own picture filters (Filters → "Same on both canvases" off): canvas id -> the list its placements
+    # there are drawn with, in place of `filters`. One source still runs once; only the drawing differs. Sound
+    # filters and the ones that change the source itself (CANVAS_SHARED_KINDS) stay in `filters`, for both.
+    canvas_filters: dict[str, list[Filter]] = Field(default_factory=dict)
 
     @field_validator("filters", mode="before")
     @classmethod
@@ -958,6 +976,44 @@ class SceneCollection(BaseModel):
             one.settings = settings
         if on:
             self.share_filters(source)
+
+    # Filters per canvas -------------------------------------------------------------------------------------
+
+    def canvas_of_scene(self, scene_id: str) -> str | None:
+        scene = self._by_id()[1].get(scene_id)
+        return scene.canvas if scene is not None else None
+
+    def main_canvas(self) -> str:
+        """The canvas a source's own `filters` are for: the first one (Horizontal)."""
+        return self.canvases[0].id if self.canvases else "horizontal"
+
+    def canvases_showing(self, source: SourceConfig) -> list[str]:
+        """The canvases with a bloom or sprig layout that places this source, in canvas order."""
+        used = {sc.canvas for sc in self.scenes if any(i.source == source.id for i in sc.items)}
+        return [c.id for c in self.canvases if c.id in used]
+
+    def filters_for(self, source: SourceConfig, canvas_id: str | None) -> list[Filter]:
+        """The filters a placement on this canvas is drawn with (its canvas's own, else the source's)."""
+        own = source.canvas_filters.get(canvas_id) if canvas_id else None
+        if own is None:
+            return source.filters
+        return [f for f in source.filters if canvas_shared(f.kind)] + own
+
+    def set_canvas_filters(self, source: SourceConfig, canvas_id: str, on: bool) -> None:
+        """Give a canvas its own picture filters, starting as a copy of the source's (on), or drop them (off)."""
+        lists = {k: v for k, v in source.canvas_filters.items() if k != canvas_id}
+        if on:
+            taken = {f.id for s in self.sources for f in s.filters} | {
+                f.id for s in self.sources for fl in s.canvas_filters.values() for f in fl}
+            copies = []
+            for flt in source.filters:
+                if canvas_shared(flt.kind):
+                    continue
+                fid = new_filter_id(taken)
+                taken.add(fid)
+                copies.append(flt.model_copy(deep=True, update={"id": fid}))
+            lists[canvas_id] = copies
+        source.canvas_filters = lists
 
     @staticmethod
     def hidden_here(source: SourceConfig) -> set[str]:

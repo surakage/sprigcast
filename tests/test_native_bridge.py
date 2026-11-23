@@ -144,7 +144,7 @@ class FakeNative:
         pass
 
     def sync(self, collection, effects, state_view, fading, transitions=None, wipe_picture=None, views=None,
-             held=None, move_pieces=None, holds=None):
+             held=None, move_pieces=None, holds=None, split=frozenset()):
         self.synced += 1
         self.holds = dict(holds or {})
         self.move_pieces = move_pieces

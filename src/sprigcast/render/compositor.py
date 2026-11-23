@@ -935,6 +935,7 @@ class Compositor:
         self.item_holds: dict[str, object] = {}
         self.item_held: dict[str, tuple[object, moderngl.Texture | None]] = {}
         self.effects: dict[str, VideoEffects] = {}  # source id -> its video filters, set by the engine
+        self.split_sources: frozenset[str] = frozenset()  # sources with a canvas's own filters (item keyed)
         self._spins: dict[tuple[str, int], float] = {}  # (source id, run) -> when its barrel roll started
         self.downscale: dict[str, str] = {}  # canvas id -> how outputs smaller than it are scaled (Canvas.downscale)
         self.time = 0.0  # seconds, drives the Scroll filter
@@ -1299,7 +1300,7 @@ class Compositor:
                 continue
             quad = item.quad(size)
             if quad:
-                own = item_key(scene.id, item.source) if item.effects else None
+                own = item_key(scene.id, item.source) if item.effects or item.source in self.split_sources else None
                 yield (item.source, scene.canvas, quad, fades.get(item.source, 1.0) if fades else 1.0,
                        own if own in self.effects else item.source, own if own in self.item_holds else None)
 

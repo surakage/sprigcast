@@ -109,7 +109,8 @@ def item_struct(item: SceneItem, fade: float, effects: int, part: str | None) ->
 
 
 def build(scenes: list[SceneDraw], effects: dict[str, VideoEffects],
-          parts: dict[tuple[str, str], str] | None = None, holds: dict[str, str] | None = None) -> Built:
+          parts: dict[tuple[str, str], str] | None = None, holds: dict[str, str] | None = None,
+          split: frozenset = frozenset()) -> Built:
     """The snapshot of `scenes`. effects: source id -> its filters. parts: (source id, scene key) -> the key of
     the sprig drawing that placement shows (a sprig placed in a bloom). holds: item key -> the still copy that
     item is drawn from (an item frozen on its own, render/native_bridge.py): a plain picture in the item's place,
@@ -123,7 +124,8 @@ def build(scenes: list[SceneDraw], effects: dict[str, VideoEffects],
         for item in draw.scene.items:
             if not item.visible:
                 continue
-            fx = (effects.get(item_key(draw.scene.id, item.source)) if item.effects else None) or \
+            own = item.effects or item.source in split  # its own effects, or its canvas's own filters
+            fx = (effects.get(item_key(draw.scene.id, item.source)) if own else None) or \
                 effects.get(item.source)  # an item's own effects, else its source's
             index = -1
             if fx is not None and fx != NO_EFFECTS:

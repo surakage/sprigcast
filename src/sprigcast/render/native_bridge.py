@@ -449,7 +449,8 @@ class NativeCanvases:
 
     def sync(self, collection: SceneCollection, effects: dict, state_view, fading: bool,
              transitions: dict | None = None, wipe_picture=None, views: dict | None = None,
-             held: dict | None = None, move_pieces=None, holds: dict | None = None) -> None:
+             held: dict | None = None, move_pieces=None, holds: dict | None = None,
+             split: frozenset = frozenset()) -> None:
         """Hand over a new snapshot when what's on air, the filters, a sprig's state or a transition changed
         (every frame while a sprig's state fades). transitions: canvas id -> render/engine.py Running;
         wipe_picture(path) gives a wipe image as a grey RGB array. held: canvas id -> the bloom it keeps showing
@@ -488,7 +489,7 @@ class NativeCanvases:
                                              {cid: r.outgoing for cid, r in running.items()}, views, held)
         ended = [self._item_holds.pop(k)[1] for k, (token, _id) in list(self._item_holds.items())
                  if holds.get(k) != token]
-        built = native_snapshot.build(draws, effects, parts, self._hold_items(draws, parts, holds))
+        built = native_snapshot.build(draws, effects, parts, self._hold_items(draws, parts, holds), split)
         self._guard("snapshot", native_snapshot.hand_over, self.engine, built, self.resources)
         for held_id in ended:  # let go once no snapshot draws from them: no frame without the item's picture
             self._guard("forget", self.engine.forget, held_id)
