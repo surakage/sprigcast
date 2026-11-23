@@ -8513,6 +8513,22 @@ class MainWindow(QMainWindow):
         folder.mkdir(parents=True, exist_ok=True)
         open_folder(folder)
 
+    def _remind_light(self) -> None:
+        """A light PC where Optimize was closed and nothing light was ever applied: say so at each start, with
+        the one tap, until it is."""
+        from sprigcast.app import lowend
+
+        try:
+            why = lowend.light_unset()
+        except Exception as exc:  # noqa: BLE001 (only a reminder)
+            log.debug("light reminder: %s", exc)
+            return
+        if not why:
+            return
+        log.info("light reminder: this PC has %s and no light settings yet", ", ".join(why))
+        self._saved_note("This PC runs smoother with lighter settings", detail="Optimize sets them in a minute",
+                         link="Optimize", on_click=lambda: self.open_optimizer(), kind="warn", ms=30000)
+
     def first_run_optimizer(self) -> None:
         """Once on a fresh install: Get started (which makes the blooms too), then Optimize for this PC
         (it also covers the old light-settings suggestion), each offered only once."""
@@ -8526,6 +8542,7 @@ class MainWindow(QMainWindow):
             if is_fresh(self.collection):  # only the example blooms: a new install
                 answers = self.open_getting_started()
         if settings.value(optimize.DONE, False, type=bool):
+            self._remind_light()
             return
         settings.setValue(optimize.DONE, True)
         if answers is not None:

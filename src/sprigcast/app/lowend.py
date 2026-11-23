@@ -448,6 +448,27 @@ def tier(facts: PcFacts) -> str:
     return "balanced"
 
 
+def light_unset() -> list[str]:
+    """Why this PC wants light settings when neither Optimize nor Light settings were ever applied here (nothing
+    stored), else []. Quick: no encoder is tried. A tester on a 2014 all-in-one closed Optimize at the first
+    start and streamed a 1080p canvas his graphics chip couldn't draw (2026-11-22)."""
+    import os
+
+    if stored_tier() is not None:
+        return []
+    try:
+        import psutil
+
+        memory_gb = psutil.virtual_memory().total / 2**30
+    except Exception:
+        memory_gb = 0.0
+    try:
+        gpus = gpu_names()
+    except Exception:
+        gpus = ()
+    return weak_reasons(PcFacts(os.cpu_count() or 1, memory_gb, "", cpu_name(), gpus))
+
+
 def stored_tier() -> str | None:
     from PySide6.QtCore import QSettings
 

@@ -611,6 +611,53 @@ int make_target(ID3D11Device *device, int width, int height, Target &out, DXGI_F
 
 }  // namespace sc
 
+// A picture from memory onto a source's texture through the next of its staging textures the card isn't still
+// reading (Map without waiting, then a copy on the card). UpdateSubresource straight into a texture the card was
+// drawing from waited for it: 2.1 s a picture, 110 times in a stream on a tester's Radeon R2 (2026-11-22).
+// False when all three are busy: this picture is let go and the one showing stays.
+bool sc::upload_through_staging(sc_device &dev, Source &s, const uint8_t *data, int stride, int w, int h,
+                                DXGI_FORMAT format, int row_bytes) {
+    D3D11_MAPPED_SUBRESOURCE m = {};
+    HRESULT hr = DXGI_ERROR_WAS_STILL_DRAWING;
+    ComPtr<ID3D11Texture2D> staging;
+    for (int tries = 0; tries < 3 && hr == DXGI_ERROR_WAS_STILL_DRAWING; ++tries) {
+        ComPtr<ID3D11Texture2D> &slot = s.up_staging[s.up_next];
+        s.up_next = (s.up_next + 1) % 3;
+        D3D11_TEXTURE2D_DESC have = {};
+        if (slot) slot->GetDesc(&have);
+        if (!slot || static_cast<int>(have.Width) != w || static_cast<int>(have.Height) != h || have.Format != format) {
+            D3D11_TEXTURE2D_DESC td = {};
+            td.Width = static_cast<UINT>(w);
+            td.Height = static_cast<UINT>(h);
+            td.MipLevels = 1;
+            td.ArraySize = 1;
+            td.Format = format;
+            td.SampleDesc.Count = 1;
+            td.Usage = D3D11_USAGE_STAGING;
+            td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            slot.Reset();
+            if (FAILED(dev.device->CreateTexture2D(&td, nullptr, &slot))) {  // as before, straight in
+                dev.context->UpdateSubresource(s.texture.Get(), 0, nullptr, data, static_cast<UINT>(stride), 0);
+                return true;
+            }
+        }
+        staging = slot;
+        hr = dev.context->Map(staging.Get(), 0, D3D11_MAP_WRITE, D3D11_MAP_FLAG_DO_NOT_WAIT, &m);
+    }
+    if (hr == DXGI_ERROR_WAS_STILL_DRAWING) return false;
+    if (FAILED(hr)) {
+        dev.context->UpdateSubresource(s.texture.Get(), 0, nullptr, data, static_cast<UINT>(stride), 0);
+        return true;
+    }
+    auto *out = static_cast<uint8_t *>(m.pData);
+    for (int row = 0; row < h; ++row)
+        std::memcpy(out + static_cast<size_t>(row) * m.RowPitch, data + static_cast<size_t>(row) * stride,
+                    static_cast<size_t>(row_bytes));
+    dev.context->Unmap(staging.Get(), 0);
+    dev.context->CopyResource(s.texture.Get(), staging.Get());
+    return true;
+}
+
 int sc::upload_bytes(const sc_upload &how, size_t &bytes) {
     const int fmt = how.format, w = how.width, h = how.height, stride = how.stride;
     if (fmt < SC_FMT_RGBA || fmt > SC_FMT_NV12) return fail(SC_ERR_ARGUMENT, "Upload: unknown format");
@@ -801,9 +848,10 @@ SC_API int sc_source_upload(sc_device *device, uint64_t id, const uint8_t *data,
                     dst[x * 4 + 3] = 255;
                 }
             }
-            device->context->UpdateSubresource(s.texture.Get(), 0, nullptr, rgba.data(), static_cast<UINT>(w * 4), 0);
+            if (!sc::upload_through_staging(*device, s, rgba.data(), w * 4, w, h, dxgi, w * 4)) return SC_OK;
         } else {
-            device->context->UpdateSubresource(s.texture.Get(), 0, nullptr, data, static_cast<UINT>(stride), 0);
+            if (!sc::upload_through_staging(*device, s, data, stride, w, h, dxgi, planar ? w : w * 4))
+                return SC_OK;
         }
         s.format = fmt;
         s.premultiplied = false;
