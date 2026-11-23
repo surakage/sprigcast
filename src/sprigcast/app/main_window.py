@@ -7806,7 +7806,7 @@ class MainWindow(QMainWindow):
             self._sweep_if_due()
         pacing.trim_working_set_later(lambda trimmed: log.info(
             "at rest: let go of what the show held%s; memory: %s",
-            " (and handed unused pages back to Windows)" if trimmed else "", pacing.memory_line()))
+            " (and handed unused pages back to Windows)" if trimmed else "", pacing.memory_line()), compact=True)
 
     REST_AFTER_QUIET_S = 10.0
 

@@ -923,11 +923,25 @@ def trim_working_set(keep_mb: float = TRIM_KEEP_MB, kernel32=None) -> bool:
         return False
 
 
-def trim_working_set_later(done=None) -> None:
+def trim_working_set_later(done=None, compact: bool = False) -> None:
     """trim_working_set on a thread of its own: Windows walking the app's pages took 60-66 ms (PC 2026-11-18),
-    the window waiting all that time when it ran there. done(trimmed) is called on that thread."""
+    the window waiting all that time when it ran there. done(trimmed) is called on that thread. compact (at rest
+    after a show, nothing going out): first the heaps give back the large free stretches they keep
+    (memory_map.compact_heaps), which commit counts though Task Manager doesn't."""
 
     def trim() -> None:
+        if compact:
+            given, began = 0, time.perf_counter()
+            if sys.platform == "win32":
+                try:
+                    from sprigcast.core.memory_map import compact_heaps
+
+                    given = compact_heaps()
+                except Exception as exc:  # noqa: BLE001 (letting go is a nicety, never in the way)
+                    log.debug("heap compact: %s", exc)
+            if given >= 1024 * 1024:
+                log.info("at rest: the heaps gave back %.0f MB they were keeping (%.0f ms)", given / (1024 * 1024),
+                         (time.perf_counter() - began) * 1000)
         trimmed = trim_working_set()
         if done is not None:
             done(trimmed)

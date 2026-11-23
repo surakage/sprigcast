@@ -339,8 +339,10 @@ class LibraryTree(QTreeWidget):
             self.let_go.emit()
 
     def startDrag(self, actions) -> None:  # noqa: N802 (Qt naming)
+        from sprigcast.app.drag import start_drag
+
         try:
-            super().startDrag(actions)
+            start_drag(self, actions)  # not Qt's own: it held Python's lock for the whole drag
         finally:
             self.holding = False
             self.drag_ended.emit()

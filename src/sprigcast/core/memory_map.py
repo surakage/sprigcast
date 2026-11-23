@@ -117,6 +117,59 @@ def windows_heaps() -> frozenset[int]:
     return frozenset(h for h in handles[:count] if h)
 
 
+def windows_heap_use() -> list[tuple[int, int, int]]:
+    """(heap base, bytes handed out, bytes committed) for each of this process's heaps (HeapSummary: no walk, no
+    heap lock held for long). A heap that commits far more than it hands out is holding freed memory
+    (compact_heaps may give it back); one where the two are close is holding what was asked of it."""
+    import ctypes
+    from ctypes import wintypes
+
+    class Summary(ctypes.Structure):  # HEAP_SUMMARY
+        _fields_ = [("cb", wintypes.DWORD), ("cbAllocated", ctypes.c_size_t), ("cbCommitted", ctypes.c_size_t),
+                    ("cbReserved", ctypes.c_size_t), ("cbMaxReserve", ctypes.c_size_t)]
+
+    kernel32 = ctypes.WinDLL("kernel32")  # type: ignore[attr-defined]
+    summary = kernel32.HeapSummary
+    summary.restype, summary.argtypes = wintypes.BOOL, [ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p]
+    out = []
+    for heap in sorted(windows_heaps()):
+        info = Summary()
+        info.cb = ctypes.sizeof(Summary)
+        if summary(ctypes.c_void_p(heap), 0, ctypes.byref(info)):
+            out.append((heap, int(info.cbAllocated), int(info.cbCommitted)))
+    return out
+
+
+def heap_line(use, top: int = 4) -> str:
+    """"heaps 640 MB committed, 410 MB in use (biggest: 520 MB committed / 330 MB in use, ...)": whether the
+    memory a bloom switch leaves committed is freed-but-kept (committed well above in use) or still held."""
+    if not use:
+        return ""
+    committed = sum(c for _, _, c in use)
+    used = sum(a for _, a, _ in use)
+    biggest = sorted(use, key=lambda u: -u[2])[:top]
+    each = ", ".join(f"{c / MB:.0f}/{a / MB:.0f}" for _, a, c in biggest if c >= MB)
+    return (f"heaps {committed / MB:.0f} MB committed, {used / MB:.0f} MB in use"
+            + (f" (biggest committed/in use: {each} MB)" if each else ""))
+
+
+def compact_heaps() -> int:
+    """At rest: ask each heap to give back its large free stretches (HeapCompact; what the C runtime's _heapmin
+    does). Returns the bytes of commit given back, as far as HeapSummary can tell. After a stream the PC sat 1.3 GB
+    committed above where it started though Task Manager showed 174 MB (stream review 2026-11-23), the biggest
+    block an anonymous read-write one growing with each bloom switch (84 -> 174 MB)."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32")  # type: ignore[attr-defined]
+    compact = kernel32.HeapCompact
+    compact.restype, compact.argtypes = ctypes.c_size_t, [ctypes.c_void_p, wintypes.DWORD]
+    before = sum(c for _, _, c in windows_heap_use())
+    for heap in windows_heaps():
+        compact(ctypes.c_void_p(heap), 0)
+    return max(0, before - sum(c for _, _, c in windows_heap_use()))
+
+
 def module_name(base: int) -> str | None:
     """The file name of the module loaded at `base` (an image's allocation base is its module handle)."""
     import ctypes
@@ -236,6 +289,12 @@ def memory_map_line(reason: str = "") -> str | None:
         blocks = big_blocks(regions, heaps)
         if blocks:
             parts.append("big blocks " + blocks)
+        try:
+            heap_use = heap_line(windows_heap_use())
+        except Exception:  # noqa: BLE001
+            heap_use = ""
+        if heap_use:
+            parts.append(heap_use)
         try:
             modules = program_files(regions, module_name)
         except Exception:  # noqa: BLE001 (the rest of the line still counts)
