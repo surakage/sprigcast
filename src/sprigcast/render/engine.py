@@ -1541,18 +1541,35 @@ class Engine:
                 continue
             new_chain = AudioChain(filters)
             source.audio_chain = new_chain if new_chain.processors else None
-        self._filtered = frozenset(effects)  # sources with video filters (a Move draws such a sprig whole)
+        filtered = frozenset(effects)  # sources with video filters
         item_freezes = {}
-        for scene in self._collection.scenes:  # effects on one item only, under its item key
+        split, by_canvas = set(), {}
+        col = self._collection
+        for scene in col.scenes:  # effects on one item only (or one canvas's own filters), under its item key
             for item in scene.items:
+                config = wanted.get(item.source)
+                own_canvas = config is not None and scene.canvas in config.canvas_filters
+                if not item.effects and not own_canvas:
+                    continue
+                key = item_key(scene.id, item.source)
+                if own_canvas:  # "Same on both canvases" off: this canvas's own list, folded once per canvas
+                    split.add(item.source)
+                    base = by_canvas.get((item.source, scene.canvas))
+                    if base is None:
+                        base = by_canvas[(item.source, scene.canvas)] = video_effects(
+                            col.filters_for(config, scene.canvas))
+                    effects[key] = base  # even with nothing on: not the source's own filters
+                else:
+                    base = effects.get(item.source) or video_effects(())
                 if item.effects:
                     own = video_effects(item.effects)
                     if own.active:
-                        base = effects.get(item.source) or video_effects(())
-                        effects[item_key(scene.id, item.source)] = with_item(base, own)
+                        effects[key] = with_item(base, own)
                     freeze = freeze_of(item.effects)
                     if freeze is not None:
-                        item_freezes[item_key(scene.id, item.source)] = (("filter", freeze[0]), freeze[1])
+                        item_freezes[key] = (("filter", freeze[0]), freeze[1])
+        self._filtered = filtered | split  # (a Move draws such a sprig whole)
+        compositor.split_sources = frozenset(split)
         self._base_effects = effects
         self._view_fx_seen = view_fx = self.view_effects
         compositor.effects = {**effects, **view_fx} if view_fx else effects
@@ -2671,7 +2688,7 @@ class Engine:
             native.sync(self._collection, getattr(compositor, "effects", {}), self._state_view, bool(self._state_fades),
                         {cid: r for cid, r in self._transitions.items() if cid not in self._waking}, self._wipe_map,
                         views=self._engine_views, held=kept, move_pieces=self._move_layout,
-                        holds=self._item_frozen)
+                        holds=self._item_frozen, split=getattr(compositor, "split_sources", frozenset()))
             native.check(now)
             sprigcore_drain()
             self._mark("native engine")

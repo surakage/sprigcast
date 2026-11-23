@@ -63,7 +63,7 @@ from sprigcast.core.filters import (
     shown_name,
     switch,
 )
-from sprigcast.core.scene import Filter, SourceConfig, new_filter_id
+from sprigcast.core.scene import Filter, SourceConfig, canvas_shared, new_filter_id
 
 
 def _unshown(flt: Filter) -> dict:
@@ -1100,6 +1100,38 @@ class SoundView(QWidget):
         p.end()
 
 
+class CanvasSwitch(QWidget):
+    """Horizontal | Vertical over the filter list, when each canvas has its own filters."""
+
+    def __init__(self, canvases: list[str], picked: Callable[[str], None], parent: QWidget | None = None):
+        super().__init__(parent)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self.buttons: dict[str, QPushButton] = {}
+        for n, canvas in enumerate(canvases):
+            button = QPushButton(canvas.capitalize())
+            button.setCheckable(True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            first, last = n == 0, n == len(canvases) - 1
+            corners = (("border-top-left-radius: 15px; border-bottom-left-radius: 15px;" if first else "")
+                       + ("border-top-right-radius: 15px; border-bottom-right-radius: 15px;" if last else ""))
+            button.setStyleSheet(
+                f"QPushButton {{ background: {theme.RAISED}; color: {theme.TEXT}; border: none; {corners}"
+                f" min-height: 30px; padding: 0 14px; }}"
+                f"QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
+                f"QPushButton:checked {{ background: {theme.ACCENT}; color: {theme.ACCENT_TEXT}; font-weight: 650; }}")
+            button.clicked.connect(lambda _=False, c=canvas: (self.pick(c), picked(c)))
+            lay.addWidget(button, 1)
+            self.buttons[canvas] = button
+        if canvases:
+            self.pick(canvases[0])
+
+    def pick(self, canvas: str | None) -> None:
+        for name, button in self.buttons.items():
+            button.setChecked(name == canvas)
+
+
 class FiltersDialog(CardWindow):
     """Edits `source.filters` in place and calls on_change(save=False) after every edit, so the
     preview updates live. Closing calls on_change(save=True).
@@ -1133,6 +1165,14 @@ class FiltersDialog(CardWindow):
         self.sounds = [(sid, name) for sid, name in (sounds or []) if sid != source.id]
         # A placed sprig has a placement on each canvas: its filters follow there, unless it keeps its own.
         self.collection = collection if collection is not None and collection.filter_twins(source) else None
+        # A source placed on both canvases (one page, capture or video: it runs once) may have each canvas's
+        # own picture filters ("Same on both canvases" off). self.canvas is the canvas the list edits.
+        showing = (collection.canvases_showing(source) if collection is not None and self.collection is None
+                   and self.media == "video" and collection.part_of(source) is None else [])
+        self.canvas_col = collection if len(showing) > 1 else None
+        self.canvases = showing if self.canvas_col is not None else []
+        self.main_canvas = collection.main_canvas() if self.canvas_col is not None else None
+        self.canvas = self.main_canvas
         self._on_change = on_change
 
         def changed(save: bool = False) -> None:
@@ -1201,11 +1241,17 @@ class FiltersDialog(CardWindow):
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.same = QCheckBox("Same on both canvases")
         self.same.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.same.setVisible(self.collection is not None)
-        self.same.setChecked(self.collection is None or self.collection.shares_filters(source))
+        self.same.setVisible(self.collection is not None or self.canvas_col is not None)
+        if self.canvas_col is not None:
+            self.same.setChecked(not any(c in source.canvas_filters for c in self.canvases))
+        else:
+            self.same.setChecked(self.collection is None or self.collection.shares_filters(source))
         self.same.toggled.connect(self._same_toggled)
+        self.canvas_switch = CanvasSwitch(self.canvases, self._pick_canvas)
+        self.canvas_switch.setVisible(self.canvas_col is not None and not self.same.isChecked())
         left = QVBoxLayout()
         left.setSpacing(10)
+        left.addWidget(self.canvas_switch)
         left.addWidget(self.list, 1)
         left.addWidget(self.empty, 1)
         left.addWidget(add)
@@ -1248,7 +1294,7 @@ class FiltersDialog(CardWindow):
         right.setSpacing(14)
         if picture:
             self.preview = BeforeAfter(source.id, grab,
-                                       draft=lambda: [f.model_copy(deep=True) for f in self.source.filters])
+                                       draft=lambda: [f.model_copy(deep=True) for f in self._drawn_filters()])
             right.addWidget(self.preview)
         if live_sound:
             try:
@@ -1299,9 +1345,32 @@ class FiltersDialog(CardWindow):
     def _draft(self) -> list[Filter]:
         return [f.model_copy(deep=True) for f in self.source.filters]
 
+    def _editing(self) -> list[Filter]:
+        """The list this window edits: the source's own, or the picked canvas's own list."""
+        if self.canvas is not None and self.canvas != self.main_canvas and self.canvas in self.source.canvas_filters:
+            return self.source.canvas_filters[self.canvas]
+        return self.source.filters
+
+    def _drawn_filters(self) -> list[Filter]:
+        """What the picked canvas draws the source with (its own list and the shared ones)."""
+        if self.canvas_col is None:
+            return self.source.filters
+        return self.canvas_col.filters_for(self.source, self.canvas)
+
+    def _own_canvas(self) -> bool:
+        return self._editing() is not self.source.filters
+
+    def _pick_canvas(self, canvas_id: str) -> None:
+        self.canvas = canvas_id
+        self._refresh(0)
+        if self.preview is not None:
+            self.preview.ask()
+
     def apply(self) -> None:
         """Put the previewed filters on the source (and so on the stream), save, and close."""
         self.real.filters = [f.model_copy(deep=True) for f in self.source.filters]
+        self.real.canvas_filters = {c: [f.model_copy(deep=True) for f in fl]
+                                    for c, fl in self.source.canvas_filters.items()}
         if self.collection is not None:
             self.collection.share_filters(self.real)
         self.applied = True
@@ -1317,7 +1386,7 @@ class FiltersDialog(CardWindow):
             info = filter_kind(flt.kind)
             return info.media if info is not None else own  # from a plugin that isn't loaded
 
-        return [f for f in self.source.filters if media(f) == self.media]
+        return [f for f in self._editing() if media(f) == self.media]
 
     def _refresh(self, select: int | None = None) -> None:
         self.list.blockSignals(True)
@@ -1340,7 +1409,10 @@ class FiltersDialog(CardWindow):
 
     def _fill_add_menu(self) -> None:
         """The Add filter picker's tiles: this window's kind of filter, plugins too."""
-        self.picker.fill(filter_kinds(self.media), {f.kind for f in self.source.filters}, self.media)
+        kinds = filter_kinds(self.media)
+        if self._own_canvas():  # a canvas's own list: not the ones that change the source itself
+            kinds = [k for k in kinds if not canvas_shared(k.kind)]
+        self.picker.fill(kinds, {f.kind for f in self._editing()}, self.media)
 
     def _open_picker(self) -> None:
         self._fill_add_menu()
@@ -1348,12 +1420,12 @@ class FiltersDialog(CardWindow):
 
     def add(self, kind: str) -> Filter:
         info = filter_kind(kind)
-        names = {f.name for f in self.source.filters}
+        names = {f.name for f in self._editing()}
         name, n = info.label, 2
         while name in names:
             name, n = f"{info.label} {n}", n + 1
         flt = Filter(id=new_filter_id(), kind=kind, name=name, settings=dict(info.defaults))
-        self.source.filters.append(flt)
+        self._editing().append(flt)
         self._refresh(len(self._shown()) - 1)
         self.on_change(save=False)
         return flt
@@ -1366,7 +1438,7 @@ class FiltersDialog(CardWindow):
         row, flt = self.list.currentRow(), self._current()
         if flt is None:
             return
-        self.source.filters.remove(flt)
+        self._editing().remove(flt)
         self._refresh(row)
         self.on_change(save=False)
 
@@ -1376,7 +1448,7 @@ class FiltersDialog(CardWindow):
         new = row + delta
         if self._current() is None or not 0 <= new < len(shown):
             return
-        filters = self.source.filters
+        filters = self._editing()
         a, b = filters.index(shown[row]), filters.index(shown[new])
         filters[a], filters[b] = filters[b], filters[a]
         self._refresh(new)
@@ -1392,7 +1464,7 @@ class FiltersDialog(CardWindow):
         by_id = {f.id: f for f in self._shown()}
         order = [by_id[i] for i in (self.list.item(r).data(Qt.ItemDataRole.UserRole)
                                     for r in range(self.list.count())) if i in by_id]
-        filters = self.source.filters
+        filters = self._editing()
         slots = [n for n, f in enumerate(filters) if f.id in by_id]
         if len(order) != len(slots) or [filters[n] for n in slots] == order:
             return
@@ -1401,6 +1473,16 @@ class FiltersDialog(CardWindow):
         self.on_change(save=False)
 
     def _same_toggled(self, on: bool) -> None:
+        if self.canvas_col is not None:
+            for canvas in self.canvases:
+                if canvas != self.main_canvas:
+                    self.canvas_col.set_canvas_filters(self.source, canvas, not on)
+            self.canvas_switch.setVisible(not on)
+            self.canvas_switch.pick(self.main_canvas)
+            self.canvas = self.main_canvas
+            self._refresh(0)
+            self.on_change(save=False)
+            return
         if self.collection is not None:
             self.collection.set_shares_filters(self.real, on)
             if self.preview_first:

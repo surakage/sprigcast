@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -1184,13 +1185,32 @@ class ControlApi:
                 return placed
         raise RequestError(Status.RESOURCE_NOT_FOUND, f"No source called {uuid or name!r}.")
 
+    def _filter_target(self, data: dict[str, Any]) -> tuple[SourceConfig, list]:
+        """The source a filter request names and the filter list it means. "Name (Vertical)" (a canvas in
+        brackets), when no source has that name, is the source's vertical placements: their own filters when
+        that canvas has its own ("Same on both canvases" off), else the shared ones."""
+        try:
+            source = self._filter_source(data)
+            return source, source.filters
+        except RequestError as missing:
+            name = data.get("sourceName") if data.get("sourceUuid") is None else None
+            match = re.fullmatch(r"(.+) \(([^()]+)\)", name.strip()) if isinstance(name, str) else None
+            canvas = next((c.id for c in self.col.canvases if match and c.id.lower() == match.group(2).lower()), None)
+            if canvas is None:
+                raise missing from None
+            source = self._filter_source({"sourceName": match.group(1)})
+            return source, source.canvas_filters.get(canvas, source.filters)
+
     def _source_filter(self, data: dict[str, Any]) -> tuple[SourceConfig, Any]:
-        source = self._filter_source(data)
+        return self._source_filter_in(data)[:2]
+
+    def _source_filter_in(self, data: dict[str, Any]) -> tuple[SourceConfig, Any, list]:
+        source, filters = self._filter_target(data)
         wanted = _require(data, "filterName", str)
-        found = next((f for f in source.filters if f.name == wanted), None)
+        found = next((f for f in filters if f.name == wanted), None)
         if found is None:
             raise RequestError(Status.RESOURCE_NOT_FOUND, f"{source.name!r} has no filter {wanted!r}.")
-        return source, found
+        return source, found, filters
 
     @staticmethod
     def _filter_obs(index: int, f) -> dict[str, Any]:
@@ -1198,12 +1218,12 @@ class ControlApi:
                 "filterEnabled": f.enabled, "filterSettings": dict(f.settings)}
 
     def req_GetSourceFilterList(self, data):
-        source = self._filter_source(data)
-        return {"filters": [self._filter_obs(i, f) for i, f in enumerate(source.filters)]}
+        _source, filters = self._filter_target(data)
+        return {"filters": [self._filter_obs(i, f) for i, f in enumerate(filters)]}
 
     def req_GetSourceFilter(self, data):
-        source, found = self._source_filter(data)
-        info = self._filter_obs(source.filters.index(found), found)
+        _source, found, filters = self._source_filter_in(data)
+        info = self._filter_obs(filters.index(found), found)
         info.pop("filterName")
         return info
 
@@ -1224,11 +1244,11 @@ class ControlApi:
         self.host.commit("filters")
 
     def req_SetSourceFilterName(self, data):
-        source, found = self._source_filter(data)
+        source, found, filters = self._source_filter_in(data)
         name = _require(data, "newFilterName", str).strip()
         if not name:
             raise RequestError(Status.REQUEST_FIELD_EMPTY, "newFilterName is empty.")
-        if any(f.name == name and f is not found for f in source.filters):
+        if any(f.name == name and f is not found for f in filters):
             raise RequestError(Status.RESOURCE_ALREADY_EXISTS, f"{source.name!r} already has a filter {name!r}.")
         found.name = name
         self.col.share_filters(source)

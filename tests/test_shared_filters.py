@@ -103,7 +103,8 @@ def test_the_filters_window_ticks_both_and_has_the_option(app):
     plain = FiltersDialog(col.source("cam"), lambda **_: None, collection=col)
     try:
         assert not dialog.same.isHidden() and dialog.same.isChecked() and dialog.same.text() == "Same on both canvases"
-        assert plain.same.isHidden()
+        # a plain source on both canvases has the choice too (each canvas's own filters: test_canvas_filters.py)
+        assert plain.same.isHidden() == (len(col.canvases_showing(col.source("cam"))) < 2)
         dialog.list.item(0).setCheckState(Qt.CheckState.Unchecked)
         assert not v.filters[0].enabled
         dialog.same.setChecked(False)
