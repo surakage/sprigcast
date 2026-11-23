@@ -22,6 +22,8 @@ from sprigcast.output.recorder import Recorder, rate_limits, video_options
 log = logging.getLogger(__name__)
 
 RETRY_FIRST, RETRY_MAX = 2.0, 30.0
+REFUSED_SAY = 3  # tries in a row the server ends as they start before the streamer is told plainly
+REFUSED_MAX = 300.0  # then the tries slow to one every 5 minutes
 OFFLINE_RETRY = 5.0  # the PC can't look the server up (its internet is down): ask again this often, not slower
 CONNECT_TIMEOUT, SEND_TIMEOUT = 10.0, 20.0  # seconds: connecting, and any one send stalled on the network
 GRACE_SECONDS = 5.0  # right after connecting, frames queued during the handshake are still going out
@@ -215,6 +217,35 @@ def retry_plan(message: str, bytes_out: int, delay: float) -> tuple[str, float, 
     return hint, delay, min(delay * 2, RETRY_MAX)
 
 
+def note_refusal(st, message: str, sent: bool, delay: float, after: float) -> tuple[float, float]:
+    """After a failed try: count the tries in a row that sent nothing (the server ended them as they started).
+    From the REFUSED_SAY-th the streamer is told plainly (st.refused, health.notice), it is logged once, and the
+    tries slow down towards REFUSED_MAX. Facebook ended a stream after 2 h and then turned away 80 tries every
+    30 s for 40 minutes with only "reconnecting" to show for it (stream review 2026-11-23). A try that sent
+    something, or a PC that is offline, starts the count again. Returns (wait now, next backoff)."""
+    if sent or offline(message):
+        st.refused = 0
+        return delay, after
+    st.refused = getattr(st, "refused", 0) + 1
+    if st.refused < REFUSED_SAY:
+        return delay, after
+    if st.refused == REFUSED_SAY:
+        log.warning("stream %s: the server ended %d tries in a row as they started; the stream may have ended on "
+                    "the site or its stream key changed. Trying less often now", st.name, st.refused)
+    wait = max(delay, RETRY_MAX)
+    return wait, min(wait * 2, REFUSED_MAX)
+
+
+def refused_status(st, message: str, delay: float) -> str:
+    """The status once note_refusal has given up retrying quickly."""
+    return (f"disconnected: {message}; {st.name} has turned away {st.refused} tries in a row. Check the stream "
+            f"key, or whether the stream ended there; trying again in {_wait(delay)}")
+
+
+def _wait(seconds: float) -> str:
+    return f"{seconds / 60:.0f} min" if seconds >= 90 else f"{seconds:.0f} s"
+
+
 def same_key_warnings(targets) -> list[str]:
     """Before going live: places that would send to the same server with the same stream key. A service takes one
     stream per key, so all but one would fail to connect with nothing clearer than "I/O error" (YouTube horizontal
@@ -308,6 +339,7 @@ class Streamer(Recorder):
         privacy.remember_secret(key, self._url)  # never in a log line
         self.connected = False
         self.reconnects = 0
+        self.refused = 0  # tries in a row the server ended as they started (note_refusal)
         self.status = "connecting"
         self._health: tuple | None = None
         self._held: tuple[str, str, float] | None = None  # (level, reason, shown until)
@@ -610,7 +642,9 @@ class Streamer(Recorder):
                     delay = RETRY_FIRST  # it had been running fine: start the backoff again
                 self.reconnects += 1
                 hint, delay, after = retry_plan(message, self.bytes_out, delay)
-                self.status = dropped_status(self, message, hint, delay, self.bytes_out > sent)
+                delay, after = note_refusal(self, message, self.bytes_out > sent, delay, after)
+                self.status = (refused_status(self, message, delay) if self.refused >= REFUSED_SAY else
+                               dropped_status(self, message, hint, delay, self.bytes_out > sent))
                 if self._stop.wait(delay):
                     self.status = "stopped"
                     return

@@ -138,13 +138,19 @@ def notice(streamers) -> tuple[str, str]:
     Places sharing one encoder are lowered together, so they share one phrase: "Bitrate lowered to 3,600 kbps:
     Twitch, Kick and YouTube (horizontal)", not the same words once per place (live 2026-11-22: four of them made a
     banner as big as the preview)."""
+    from sprigcast.output.stream import REFUSED_SAY
+
     parts, level = [], ""
     lowered: dict[int, list[str]] = {}
     for _, st in streamers:
         status = str(getattr(st, "status", ""))
         if not getattr(st, "connected", True) and getattr(st, "reconnects", 0) and \
                 status.startswith(("reconnecting", "disconnected")):
-            parts.append(f"Reconnecting to {st.name}… try {st.reconnects}")
+            if getattr(st, "refused", 0) >= REFUSED_SAY:  # say it plainly, not "try 80"
+                parts.append(f"{st.name} keeps turning the stream away. Check its stream key, or whether the "
+                             "stream ended there")
+            else:
+                parts.append(f"Reconnecting to {st.name}… try {st.reconnects}")
             level = "bad"
             continue
         pilot = getattr(st, "autopilot", None)
