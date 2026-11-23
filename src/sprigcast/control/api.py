@@ -279,6 +279,9 @@ class ControlApi:
         if source is None and uuid is not None and isinstance(uuid, str):
             alias = self.col.source_by_id(uuid)  # its id as it was spelled before, or is now
             source = next((s for s in self._inputs() if alias is not None and s.id == alias.id), None)
+        if source is None and uuid is None and isinstance(name, str):
+            shared = self.col.named_for_canvas(name)  # a copy it took the place of (Garden check → Share)
+            source = shared[0] if shared is not None else None
         if source is None:
             raise RequestError(Status.RESOURCE_NOT_FOUND, f"No source called {value!r}.")
         return source
@@ -332,6 +335,17 @@ class ControlApi:
         if scene.kind == "part":
             return [s for s in self.col.shapes(scene) if s.id != scene.id]
         return [s for s in self.col.linked_with(scene.id) if s.id != scene.id]
+
+    def _canvas_name(self, source_id: str, name: str) -> str | None:
+        """The canvas a copy's old name means for this source (Garden check → Share), or None."""
+        source = next((s for s in self.col.sources if s.id == source_id), None)
+        return source.canvas_names.get(name) if source is not None else None
+
+    def _apart_on(self, source_id: str, canvases: set[str]) -> bool:
+        """A source that took the place of a copy on one of these canvases: each canvas's placement is shown and
+        hidden on its own, as the two copies were."""
+        source = next((s for s in self.col.sources if s.id == source_id), None)
+        return source is not None and bool(canvases & set(source.canvas_names.values()))
 
     def _same_thing(self, a: str, b: str) -> bool:
         """True when two sources show the same thing (one sprig placed in two shapes has two placements)."""
@@ -783,7 +797,8 @@ class ControlApi:
         scene = self._layout(data)
         name = _require(data, "sourceName", str)
         offset = int(data.get("searchOffset", 0))
-        found = [i for i in range(len(scene.items)) if self._source_name(scene.items[i].source) == name]
+        found = [i for i in range(len(scene.items)) if self._source_name(scene.items[i].source) == name
+                 or self._canvas_name(scene.items[i].source, name) == scene.canvas]
         if offset < -1:
             raise RequestError(Status.REQUEST_FIELD_OUT_OF_RANGE, "searchOffset must be -1 or more.")
         if not found or offset >= len(found):
@@ -805,6 +820,8 @@ class ControlApi:
         on = bool(_require(data, "sceneItemEnabled", bool))
         item.visible = on
         for twin in self._twins(scene):
+            if self._apart_on(item.source, {scene.canvas, twin.canvas}):
+                continue  # it was a copy per canvas, shown and hidden on its own: still so
             for other in twin.items:
                 if self._same_thing(other.source, item.source):
                     other.visible = on
@@ -1194,6 +1211,10 @@ class ControlApi:
             return source, source.filters
         except RequestError as missing:
             name = data.get("sourceName") if data.get("sourceUuid") is None else None
+            shared = self.col.named_for_canvas(name) if isinstance(name, str) else None
+            if shared is not None:  # a copy's old name: the source on that canvas
+                source, canvas = shared
+                return source, source.canvas_filters.get(canvas, source.filters)
             match = re.fullmatch(r"(.+) \(([^()]+)\)", name.strip()) if isinstance(name, str) else None
             canvas = next((c.id for c in self.col.canvases if match and c.id.lower() == match.group(2).lower()), None)
             if canvas is None:

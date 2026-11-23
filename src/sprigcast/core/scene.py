@@ -57,6 +57,22 @@ def new_filter_id(taken=()) -> str:
 CANVAS_SHARED_KINDS = ("background_effect", "freeze")  # change the source itself: one for both canvases
 
 
+SHAREABLE_KINDS = ("browser", "image", "camera")  # set up twice the same way, they can be one (shareable_copies)
+_SETUP_LOOSE = ("keep_running", "never_rest")  # differences that don't stop two copies being one
+
+
+def _same_setup(a: SourceConfig, b: SourceConfig) -> bool:
+    """Two sources that would show the same picture: the same settings (but for staying awake), and the same
+    filters of the kinds that change the source itself or its sound (those can't differ by canvas)."""
+    def setup(s: SourceConfig) -> dict:
+        return {k: v for k, v in s.settings.items() if k not in _SETUP_LOOSE}
+
+    def fixed(s: SourceConfig) -> list:
+        return [(f.kind, f.enabled, f.settings) for f in s.filters if canvas_shared(f.kind)]
+
+    return setup(a) == setup(b) and fixed(a) == fixed(b)
+
+
 def canvas_shared(kind: str) -> bool:
     """A filter kind that stays the same on both canvases: sound filters, and the ones that change the source
     itself (a Background cut-out is worked out once per picture; a Freeze holds the source's picture)."""
@@ -90,6 +106,10 @@ class SourceConfig(BaseModel):
     # there are drawn with, in place of `filters`. One source still runs once; only the drawing differs. Sound
     # filters and the ones that change the source itself (CANVAS_SHARED_KINDS) stay in `filters`, for both.
     canvas_filters: dict[str, list[Filter]] = Field(default_factory=dict)
+    # Copies it took the place of (Garden check → Share): their names and ids, each for the one canvas the copy
+    # was on. An app that names the copy reaches this source there only (show, hide, filters).
+    canvas_names: dict[str, str] = Field(default_factory=dict)  # copy's name -> canvas id
+    former_ids: dict[str, str] = Field(default_factory=dict)  # copy's id -> canvas id
 
     @field_validator("filters", mode="before")
     @classmethod
@@ -1015,6 +1035,65 @@ class SceneCollection(BaseModel):
             lists[canvas_id] = copies
         source.canvas_filters = lists
 
+    # Copies that can share one source ------------------------------------------------------------------------
+
+    def shareable_copies(self) -> list[tuple[SourceConfig, SourceConfig, str]]:
+        """(copy, original, canvas): a page, picture or camera set up twice the same way, the copy only on one
+        canvas the original isn't on (a "(Vertical)" copy). Shared, it runs once (Garden check → Share)."""
+        placed: dict[str, set[str]] = {}
+        for scene in self.scenes:
+            for item in scene.items:
+                placed.setdefault(item.source, set()).add(scene.canvas)
+        main = self.main_canvas()
+        out, taken = [], set()
+        for original in self.sources:
+            if original.kind not in SHAREABLE_KINDS or original.id in taken or not placed.get(original.id):
+                continue
+            for copy in self.sources:
+                if copy is original or copy.kind != original.kind or copy.id in taken:
+                    continue
+                where = placed.get(copy.id, set())
+                if len(where) != 1:
+                    continue
+                canvas = next(iter(where))
+                if (canvas == main or canvas in placed[original.id] or canvas in original.canvas_filters
+                        or copy.canvas_filters or not _same_setup(copy, original)):
+                    continue
+                out.append((copy, original, canvas))
+                taken.add(copy.id)
+        return out
+
+    def share_copy(self, copy: SourceConfig, original: SourceConfig, canvas: str) -> None:
+        """The copy's placements show the original instead, each where it was; its filters become the original's
+        own filters on that canvas; its name and id still reach the original there; the copy goes."""
+        for scene in self.scenes:
+            for item in scene.items:
+                if item.source == copy.id:
+                    item.source = original.id
+        own = [f for f in copy.filters if not canvas_shared(f.kind)]
+        if own:  # kept apart, with their ids, so a trigger that switched one still switches only that one
+            original.canvas_filters = {**original.canvas_filters, canvas: own}
+        original.canvas_names = {**original.canvas_names, copy.name: canvas, **{
+            name: c for name, c in copy.canvas_names.items()}}
+        original.former_ids = {**original.former_ids, copy.id: canvas, **copy.former_ids}
+        def swapped(ids: list[str]) -> list[str]:
+            return list(dict.fromkeys(original.id if i == copy.id else i for i in ids))
+
+        self.recording.source_record_hide = swapped(self.recording.source_record_hide)
+        if self.audio.global_sources is not None:
+            self.audio.global_sources = swapped(self.audio.global_sources)
+        if copy.settings.get("keep_running") and not original.settings.get("keep_running"):
+            original.settings = {**original.settings, "keep_running": True}
+        self.sources = [s for s in self.sources if s.id != copy.id]
+
+    def named_for_canvas(self, name: str) -> tuple[SourceConfig, str] | None:
+        """The source a copy's old name reaches now, and the canvas it means (share_copy)."""
+        for source in self.sources:
+            canvas = source.canvas_names.get(name)
+            if canvas is not None:
+                return source, canvas
+        return None
+
     @staticmethod
     def hidden_here(source: SourceConfig) -> set[str]:
         """Sources inside a part that one placement of it hides (its own tweak; other placements still show them)."""
@@ -1668,6 +1747,9 @@ class SceneCollection(BaseModel):
         spelled with this prefix and that has the same number: camera-3 finds capture-3, and the other way, so an
         app keeps working whichever spelling it saved."""
         found = next((s for s in self.sources if s.id == wanted), None)
+        if found is not None:
+            return found
+        found = next((s for s in self.sources if wanted in s.former_ids), None)  # a copy it took the place of
         if found is not None:
             return found
         prefix, _, number = wanted.rpartition("-")

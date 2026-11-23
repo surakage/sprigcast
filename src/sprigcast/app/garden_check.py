@@ -130,7 +130,9 @@ class GardenCheckPage(QWidget):
              ("dropped", "Frames dropped"), ("render", "Render time"), ("upload", "Upload"), ("recording", "Recording"))
 
     def __init__(self, snapshot: Callable[[], GardenSnapshot], records: list, open_logs: Callable[[], None] | None = None,
-                 parent: QWidget | None = None, make_lighter: Callable[[], str] | None = None, fill: bool = True):
+                 parent: QWidget | None = None, make_lighter: Callable[[], str] | None = None, fill: bool = True,
+                 copies: Callable[[], list[tuple[str, str, str]]] | None = None,
+                 share: Callable[[str], None] | None = None):
         """fill False: the numbers, rows and checks are filled when "now" is first shown (opened on the last
         streams, filling them as well was 150 ms of the open on the PC while live, 2026-11-18)."""
         super().__init__(parent)
@@ -138,6 +140,8 @@ class GardenCheckPage(QWidget):
 
         self.snapshot = snapshot
         self.make_lighter = make_lighter  # the one tap: returns what it did, in words
+        # Copies that can share one source: [(copy id, copy name, original name)], and Share for one of them.
+        self.copies, self.share = copies, share
         self.setMinimumWidth(620)
         self.setStyleSheet(ROW_STYLE)  # the stream health rows' look, once for all of them
         root = QVBoxLayout(self)
@@ -196,6 +200,10 @@ class GardenCheckPage(QWidget):
         self.checks = FlowLayout(spacing=8)  # wraps like words: a second row never lands on the first
         checked_box.addLayout(self.checks)
         body.addWidget(checked)
+        shared, self._copies_box = _card("Copies that can share one page", now)
+        self._copies_card = shared
+        shared.hide()
+        body.addWidget(shared)
         body.addStretch(1)
         self.stack.addWidget(now)
         # The last few streams: made when first shown (made with the rest, it was 148 ms of the PC's 207 ms open
@@ -339,6 +347,46 @@ class GardenCheckPage(QWidget):
             chip.setProperty("state", "ok" if ok else "warn" if ok is False else "quiet")
             chip.setToolTip(tip)
             self.checks.addWidget(chip)
+        self._make_copies()
+        self._fit()
+
+    def _make_copies(self) -> None:
+        """The copies card: each copy with Share, made when the page fills and after each Share."""
+        box = self._copies_box
+        while box.count() > 1:  # the title stays
+            item = box.takeAt(1)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        try:
+            copies = self.copies() if self.copies is not None and self.share is not None else []
+        except Exception:  # noqa: BLE001 - the card just isn't shown
+            copies = []
+        self._copies_card.setVisible(bool(copies))
+        for copy_id, name, original in copies:
+            row = QWidget(self._copies_card)
+            line = QHBoxLayout(row)
+            line.setContentsMargins(0, 4, 0, 4)
+            line.setSpacing(10)
+            what = QLabel(name, row)
+            what.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-weight: 600; background: transparent;")
+            same = QLabel(f"Same page as {original}", row)
+            same.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+            button = QPushButton("Share", row)
+            button.setStyleSheet(theme.SMALL_PILL_STYLE)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setAccessibleName(f"Share {name}")
+            button.clicked.connect(lambda _=False, c=copy_id: self._share(c))
+            line.addWidget(what)
+            line.addWidget(same, 1)
+            line.addWidget(button)
+            box.addWidget(row)
+
+    def _share(self, copy_id: str) -> None:
+        if self.share is not None:
+            self.share(copy_id)
+        self._make_copies()
         self._fit()
 
     def _fit(self) -> None:
@@ -360,7 +408,8 @@ class GardenCheckPage(QWidget):
                 window.resize(window.width(), window.height() + short)
                 now.layout().activate()
             # Then exactly to the last card: Qt's estimate for the wrapped chips can run a little tall.
-            slack = now.height() - self._checked.geometry().bottom() - 1
+            last = self._copies_card if self._copies_card.isVisibleTo(now) else self._checked
+            slack = now.height() - last.geometry().bottom() - 1
             if slack > 0:
                 window.resize(window.width(), window.height() - slack)
             window.setMinimumHeight(window.height())  # dragged smaller later, nothing is squashed
@@ -491,7 +540,9 @@ ROW_STYLE = (
 
 def garden_check_popup(snapshot: Callable[[], GardenSnapshot], records: list, parent: QWidget | None = None,
                        open_logs: Callable[[], None] | None = None, view: str = "now",
-                       make_lighter: Callable[[], str] | None = None):
+                       make_lighter: Callable[[], str] | None = None,
+                       copies: Callable[[], list[tuple[str, str, str]]] | None = None,
+                       share: Callable[[str], None] | None = None):
     """The pop-up, refreshed once a second while it's open. `view`: "now" or "health" (the last streams)."""
     from sprigcast.app.transitions_panel import PopUp
 
@@ -501,7 +552,7 @@ def garden_check_popup(snapshot: Callable[[], GardenSnapshot], records: list, pa
     # Made as the stack's child from the start: made on its own and put in after, Qt went through every tile and
     # label again to hand them the pop-up's look (62 ms in add_tab on the PC while live, 2026-11-19).
     pop.garden = GardenCheckPage(snapshot, records, open_logs, make_lighter=make_lighter, fill=False,
-                                 parent=pop.stack)
+                                 parent=pop.stack, copies=copies, share=share)
     pop.add_tab("garden", "Garden check", pop.garden)
     pop.show_tab("garden")
     pop.garden.done.clicked.connect(pop.accept)

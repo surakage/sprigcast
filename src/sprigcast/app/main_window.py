@@ -8285,9 +8285,26 @@ class MainWindow(QMainWindow):
         # one opens with open(), and went without (Garden check 76 ms, Last stream 57 ms on the PC, 2026-11-18).
         theme.ui_burst()
         pop = garden_check_popup(self._garden_snapshot, self._health_records(), self, self._open_logs,
-                                 "health" if tab == "health" else "now", make_lighter=self._make_encoding_lighter)
+                                 "health" if tab == "health" else "now", make_lighter=self._make_encoding_lighter,
+                                 copies=self._shareable_copies, share=self._share_copy)
         pop.open()
         return pop
+
+    def _shareable_copies(self) -> list[tuple[str, str, str]]:
+        """Garden check: copies of a page, picture or camera that can share one (copy id, its name, the original's)."""
+        return [(copy.id, copy.name, original.name) for copy, original, _ in self.collection.shareable_copies()]
+
+    def _share_copy(self, copy_id: str) -> None:
+        """Garden check → Share: the copy's places show the original (one page instead of two)."""
+        found = next(((c, o, canvas) for c, o, canvas in self.collection.shareable_copies() if c.id == copy_id), None)
+        if found is None:
+            return
+        copy, original, canvas = found
+        self.collection.share_copy(copy, original, canvas)
+        log.info("garden check: source %s now shows %s on the %s canvas (one source instead of two)",
+                 copy.id, original.id, canvas)
+        self._changed()
+        self._refresh_all()
 
     def _disk_free_gb(self, folder: Path) -> float | None:
         """Free space where recordings go, as last measured (None until the first answer). Measured on a worker,
