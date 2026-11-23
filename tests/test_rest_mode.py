@@ -2,6 +2,8 @@
 Camera watched). Idle, it sits at normal priority, so a game played without streaming gets the PC; Windows' power
 saving comes back only while the window is out of sight."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from sprigcast.app import priority
@@ -46,7 +48,14 @@ def test_the_window_rests_after_a_quiet_while_and_wakes_when_anything_goes_out(c
         _going_out = MainWindow._going_out
         _wake_up = MainWindow._wake_up
         _check_rest = MainWindow._check_rest
+        _rest_when_settled = MainWindow._rest_when_settled
+        SETTLED_S = MainWindow.SETTLED_S
         recording = streaming = replay = None
+        collection = SimpleNamespace(active_scenes={"h": "gaming"})
+        rests = 0
+
+        def _rest_if_idle(self):
+            self.rests += 1
         camera = Camera()
         _quiet_since = None
         minimized = False
@@ -79,3 +88,51 @@ def test_the_window_rests_after_a_quiet_while_and_wakes_when_anything_goes_out(c
     clock["now"] += 100
     w._check_rest()
     assert not priority.resting()
+
+
+def test_memory_is_given_back_a_minute_after_start_and_after_each_bloom_switch(calls, monkeypatch):
+    from sprigcast.app.main_window import MainWindow
+
+    class Window:
+        REST_AFTER_QUIET_S, SETTLED_S = MainWindow.REST_AFTER_QUIET_S, MainWindow.SETTLED_S
+        _going_out, _wake_up = MainWindow._going_out, MainWindow._wake_up
+        _check_rest, _rest_when_settled = MainWindow._check_rest, MainWindow._rest_when_settled
+        recording = streaming = replay = camera = None
+        collection = SimpleNamespace(active_scenes={"h": "gaming"})
+        _quiet_since = None
+        rests = 0
+
+        def _rest_if_idle(self):
+            self.rests += 1
+
+        def _busy_with_outputs(self):
+            return MainWindow._busy_with_outputs(self)
+
+        def isMinimized(self):
+            return False
+
+        def isVisible(self):
+            return True
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr("sprigcast.app.main_window.time.monotonic", lambda: clock["now"])
+    w = Window()
+    for _ in range(40):  # 80 s after start, a check every 2 s
+        w._check_rest()
+        clock["now"] += 2
+    assert w.rests == 1  # once, a minute in
+    w.collection.active_scenes = {"h": "brb"}
+    for _ in range(25):
+        w._check_rest()
+        clock["now"] += 2
+    assert w.rests == 1  # 50 s after the switch: not yet
+    for _ in range(10):
+        w._check_rest()
+        clock["now"] += 2
+    assert w.rests == 2  # a minute after it: once more
+    w.streaming = object()  # live: never while something goes out
+    w.collection.active_scenes = {"h": "gaming"}
+    for _ in range(60):
+        w._check_rest()
+        clock["now"] += 2
+    assert w.rests == 2
