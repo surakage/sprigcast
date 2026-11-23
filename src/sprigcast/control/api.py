@@ -1429,7 +1429,11 @@ class ControlApi:
             raise RequestError(Status.RESOURCE_NOT_FOUND, f"No place {place!r} (see GetStreamPlaces).")
         if self.host.stream_status() is not None:
             raise RequestError(Status.OUTPUT_RUNNING, "End the stream to change where it goes.")
-        output.enabled = bool(_require(data, "enabled", bool))
+        enabled = bool(_require(data, "enabled", bool))
+        if output.enabled != enabled:
+            log.info("places: an app switched %s (%s) %s for the next Go live", output.id, output.service or "custom",
+                     "on" if enabled else "off")
+        output.enabled = enabled
         self.host.commit("places")
 
     # Events --------------------------------------------------------------------------

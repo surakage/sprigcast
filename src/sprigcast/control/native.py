@@ -1427,6 +1427,7 @@ class NativeApi:
             raise ApiError("not_allowed", problem)
         if not output.enabled:
             output.enabled = True
+            log.info("places: an app switched %s (%s) on (place.start)", output.id, output.service or "custom")
             self.host.commit("places")
         return {"places": self._places_now()}
 
@@ -1531,6 +1532,9 @@ class NativeApi:
         if self.host.stream_status() is not None:
             raise ApiError("busy", "End the stream to change where it goes.")
         if on is not None:
+            if output.enabled != on:
+                log.info("places: an app switched %s (%s) %s for the next Go live", output.id,
+                         output.service or "custom", "on" if on else "off")
             output.enabled = on
         if test is not None:
             output.bandwidth_test = test

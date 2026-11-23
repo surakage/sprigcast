@@ -6849,9 +6849,12 @@ class MainWindow(QMainWindow):
             self._place_switched_live(output_id, on)
             return
         for output in self.collection.outputs:
-            if output.id == output_id:
+            if output.id == output_id and output.enabled != on:
                 output.enabled = on
+                log.info("places: %s (%s) switched %s for the next Go live", output_id, output.service or "custom",
+                         "on" if on else "off")  # (a place back on with no line to say how: PC 2026-11-23)
         self.collection.save(self.scenes_path)
+        self._keep_path_file()
         self._refresh_stream_boxes()
 
     def _on_live_clicked(self) -> None:
