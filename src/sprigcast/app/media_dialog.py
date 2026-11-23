@@ -112,7 +112,7 @@ class MediaDialog(CardDialog):
     """New or change a video or sound file. values() gives the settings to save."""
 
     def __init__(self, title: str, settings: dict[str, Any], parent: QWidget | None = None, primary: str = "Save",
-                 only: str | None = None):
+                 only: str | None = None, blooms: list[tuple[str, str]] | None = None):
         super().__init__(title, parent, width=540)
         s = {**MediaSource.defaults, **settings}
         # + Add's Audio File and Video File leaves pick only their own kind of file (user, 2026-11-20)
@@ -135,6 +135,13 @@ class MediaDialog(CardDialog):
         row.addWidget(browse)
         box.addLayout(row)
         self.body.addWidget(where)
+        # Another file in some blooms (a video only: a sound file plays where it's placed).
+        self.by_bloom = None
+        if blooms and self.only != "sound":
+            from sprigcast.app.by_bloom import ByBloom
+
+            self.by_bloom = ByBloom("media", blooms, s, file_filter(self.only))
+            self.body.addWidget(self.by_bloom)
 
         # How it plays.
         play, box = _section("Playback")
@@ -260,4 +267,5 @@ class MediaDialog(CardDialog):
             "volume_db": float(self.volume.value()),
             "muted": self.mute.isChecked(),
             "monitor": self.hear.value(),
+            **(self.by_bloom.values() if self.by_bloom is not None else {}),
         }

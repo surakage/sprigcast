@@ -16,6 +16,10 @@ FORMAT_VERSION = 2
 
 
 DOWNSCALE_FILTERS = ("bilinear", "area", "bicubic", "lanczos")
+# A video, image or colour can change by bloom: settings["per_bloom_on"] turns it on and settings["per_bloom"]
+# holds {bloom id: {"path": ...} or {"color": ...}}. A bloom with nothing set shows the source's own setting.
+PER_BLOOM_ON, PER_BLOOM = "per_bloom_on", "per_bloom"
+PER_BLOOM_KEYS = {"media": "path", "image": "path", "color": "color"}
 
 
 class Canvas(BaseModel):
@@ -645,6 +649,23 @@ class SceneCollection(BaseModel):
         """True for a global device while global devices are switched off: not opened, not listed."""
         return (not self.audio.global_devices and source.kind in AUDIO_DEVICE_KINDS
                 and source.id in self.global_device_ids())
+
+    def bloom_settings(self, source: SourceConfig) -> dict:
+        """The settings a source plays with right now: its own, or the file or colour set for the bloom on air
+        (the first switched-on canvas whose bloom has one), when it changes by bloom."""
+        settings = source.settings
+        key = PER_BLOOM_KEYS.get(source.kind)
+        if not key or not settings.get(PER_BLOOM_ON):
+            return settings
+        per = settings.get(PER_BLOOM) or {}
+        for canvas in self.canvases:
+            if not canvas.enabled:
+                continue
+            bloom = self.bloom_key(self.active_scenes.get(canvas.id))
+            value = (per.get(bloom) or {}).get(key) if bloom else None
+            if value not in (None, ""):
+                return settings if settings.get(key) == value else {**settings, key: value}
+        return settings
 
     def sources_in_use(self) -> list[SourceConfig]:
         """Every source the engine should open (all of them, less global devices that are off)."""

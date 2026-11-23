@@ -281,7 +281,9 @@ def test_this_pc_card_priority_sleep_and_preview(app):
     from sprigcast.app import lowend
     from sprigcast.app.settings_window import preview_choice, sleep_policy
 
+    assert preview_choice() == "smooth"  # never chosen, on a PC not found light
     lowend.store_tier("light")
+    assert preview_choice() == "light"  # never chosen, on a light PC: 15 fps next to the stream
     w = _window(_collection())
     assert w.tier.text() == "Light" and w.optimize_button.isEnabled() and w.priority.count() > 0
     asked = []

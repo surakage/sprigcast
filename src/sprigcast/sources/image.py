@@ -118,6 +118,10 @@ class ImageSource(Source):
         super().update(settings)
         if settings.get("path") != old:
             self._measure()
+            if DECODE_ASIDE and not self.asleep:  # another picture by bloom: decoded off the render thread
+                from sprigcast.core import workers
+
+                self._decoding = workers.picture(load_rgba, self._path(), name="picture decode")
 
     def wake(self) -> None:
         self._pending = True  # the texture was dropped while nothing showed this image

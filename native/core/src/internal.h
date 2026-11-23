@@ -21,6 +21,7 @@
 #include <new>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -226,6 +227,10 @@ int render_transition(sc_canvas &canvas, uint64_t from, uint64_t to, double time
 int render_move(sc_canvas &canvas, const MovePlan &plan, double time, float progress);
 // Whether the snapshot has this scene.
 bool has_scene(sc_device &dev, uint64_t scene);
+// True when scene `scene` would be drawn just as it was last frame: none of its items (sprigs inside it too) shows
+// a source in `changed` (a new picture this frame) or has a filter that moves on its own (Scroll, a barrel roll,
+// the Background filter). A scene the snapshot doesn't have is never still.
+bool scene_still(sc_device &dev, uint64_t scene, const std::unordered_set<uint64_t> &changed);
 
 // Draws `picture` into the rectangle x, y, w, h of a target `tw` x `th` (the phase 1 drawing: bilinear, "over"
 // blending, or a plain copy with blend = false). The device's lock must be held.

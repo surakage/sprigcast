@@ -238,9 +238,18 @@ def sleep_policy() -> str:
 
 
 def preview_choice() -> str:
-    """How the previews draw while live or recording: "smooth", "light" or "off"."""
-    value = QSettings().value(PREVIEW_LIVE, "smooth")
-    return value if value in PREVIEW_CHOICES else "smooth"
+    """How the previews draw while live or recording: "smooth", "light" or "off". Never chosen: "light" on a PC
+    Optimize found light (half the preview's copies, next to the stream the PC is already busy with), else
+    "smooth"."""
+    value = QSettings().value(PREVIEW_LIVE, "")
+    if value in PREVIEW_CHOICES:
+        return value
+    try:
+        from sprigcast.app import lowend
+
+        return "light" if lowend.stored_tier() == "light" else "smooth"
+    except Exception:  # noqa: BLE001
+        return "smooth"
 
 
 def expert_on() -> bool:

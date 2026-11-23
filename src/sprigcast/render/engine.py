@@ -1015,7 +1015,22 @@ class Engine:
         self._collection = new
         self._warm_stingers(new)
         self.mixer.bloom_out = new.sounds_off_here()  # sound per bloom, as blooms switch
+        self._follow_blooms()
         self._reload_on_air(went_on_air)
+
+    def _follow_blooms(self) -> None:
+        """A video, image or colour set to change by bloom takes the bloom now on air's file or colour."""
+        from sprigcast.core.scene import PER_BLOOM_ON
+
+        for config in self._collection.sources:
+            if not config.settings.get(PER_BLOOM_ON):
+                continue
+            source = self._sources.get(config.id)
+            settings = self._collection.bloom_settings(config)
+            if source is not None and source.settings != settings:
+                log.info("source %s: the bloom on air sets its %s", config.id,
+                         "color" if config.kind == "color" else "file")
+                self._safely(config.id, source, "update", source.update, settings)
 
     def _update_settings(self, settings: dict[str, dict]) -> None:
         """UpdateSourceSettings: these sources' settings in the engine's copy of the collection, and to the sources."""
@@ -1026,8 +1041,9 @@ class Engine:
                 continue
             config.settings = dict(new)
             source = self._sources.get(source_id)
-            if source is not None and source.settings != config.settings:
-                self._safely(source_id, source, "update", source.update, config.settings)
+            wanted = self._collection.bloom_settings(config)
+            if source is not None and source.settings != wanted:
+                self._safely(source_id, source, "update", source.update, wanted)
         self._plan = None  # a placement's hidden items are settings too (see _sprig_plan)
 
     @staticmethod
@@ -1362,15 +1378,16 @@ class Engine:
                 self._slept_at.pop(source_id, None)
                 compositor.forget(source_id)
         for source_id, config in wanted.items():
+            settings = self._collection.bloom_settings(config)  # a file or colour per bloom, when set
             existing = self._sources.get(source_id)
-            if existing is not None and self._needs_new(existing, config.settings):
+            if existing is not None and self._needs_new(existing, settings):
                 self._retire(self._sources.pop(source_id))  # a new one opens while the old one closes
                 existing = None
             if existing is None and source_class(config.kind) is None and source_id in self._stopped_unknown:
                 continue  # its plugin was removed: said so once already
             if existing is None:
                 try:
-                    source = create_source(config.kind, config.id, config.settings)
+                    source = create_source(config.kind, config.id, settings)
                     if hasattr(source, "canvas_fps"):  # captures ask Windows for no more pictures than this
                         source.canvas_fps = drawing_fps(self._collection.canvases)
                     if getattr(source, "wants_engine", False):  # plugins that tap frames or sound (Instant replay)
@@ -1385,8 +1402,8 @@ class Engine:
                     self.events.put(EngineError(f"Source {config.name!r} failed to start: {exc}"))
                     continue
                 self._sources[source_id] = source
-            elif existing.settings != config.settings:
-                self._safely(source_id, existing, "update", existing.update, config.settings)
+            elif existing.settings != settings:
+                self._safely(source_id, existing, "update", existing.update, settings)
         self._sync_filters(compositor, wanted)
         self._sync_detail()
         compositor.downscale = {c.id: c.downscale for c in self._collection.canvases}
