@@ -617,7 +617,7 @@ int make_target(ID3D11Device *device, int width, int height, Target &out, DXGI_F
 // False when all three are busy: this picture is let go and the one showing stays.
 bool sc::upload_through_staging(sc_device &dev, Source &s, const uint8_t *data, int stride, int w, int h,
                                 DXGI_FORMAT format, int row_bytes) {
-    D3D11_MAPPED_SUBRESOURCE m;
+    D3D11_MAPPED_SUBRESOURCE m = {};
     HRESULT hr = DXGI_ERROR_WAS_STILL_DRAWING;
     ComPtr<ID3D11Texture2D> staging;
     for (int tries = 0; tries < 3 && hr == DXGI_ERROR_WAS_STILL_DRAWING; ++tries) {

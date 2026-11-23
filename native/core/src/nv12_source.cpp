@@ -223,7 +223,7 @@ int upload_nv12(sc_device &dev, uint64_t id, const uint8_t *data, const sc_uploa
             Source &s = dev.comp.sources[id];
             // The next staging texture the card isn't still reading: tried without waiting. All three busy, this
             // picture is skipped and the last one stays up, instead of holding the frame until the card catches up.
-            D3D11_MAPPED_SUBRESOURCE m;
+            D3D11_MAPPED_SUBRESOURCE m = {};
             HRESULT hr = DXGI_ERROR_WAS_STILL_DRAWING;
             for (int tries = 0; tries < 3 && hr == DXGI_ERROR_WAS_STILL_DRAWING; ++tries) {
                 ComPtr<ID3D11Texture2D> &slot = s.nv12_staging[s.nv12_next];
