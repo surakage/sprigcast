@@ -7838,6 +7838,21 @@ class MainWindow(QMainWindow):
             self._quiet_since = now
         if now - self._quiet_since >= self.REST_AFTER_QUIET_S:
             priority.rest(save_power=self.isMinimized() or not self.isVisible())
+        self._rest_when_settled(now)
+
+    SETTLED_S = 60.0
+
+    def _rest_when_settled(self, now: float) -> None:
+        """Nothing going out: a minute after start, and a minute after each bloom switch, give memory back as after
+        a stream. From start to a switch back the app grew 380-430 MB and kept it, since only a stream or recording
+        stopping gave it back (Dew's A/B, 2026-11-23)."""
+        blooms = tuple(sorted(getattr(self.collection, "active_scenes", {}).items()))
+        if blooms != getattr(self, "_settle_blooms", None):
+            self._settle_blooms, self._settled_at, self._settle_due = blooms, now, True
+        if (getattr(self, "_settle_due", False) and now - self._settled_at >= self.SETTLED_S
+                and now - self._quiet_since >= self.SETTLED_S):
+            self._settle_due = False
+            self._rest_if_idle()
 
     def _busy_with_outputs(self) -> bool:
         return self.recording is not None or self.streaming is not None or self.replay is not None
