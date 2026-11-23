@@ -99,6 +99,27 @@ def older_gpu(gpus: tuple[str, ...] | list[str]) -> str:
     return next((g for g in gpus if OLDER_GPU.search(g)), "")
 
 
+def older_amd_gpu(gpus: tuple[str, ...] | list[str]) -> str:
+    """Older AMD built-in graphics (a Radeon R2-R7 or HD xxxxG/D APU) with no graphics card, or ""."""
+    gpu = older_gpu(gpus)
+    return gpu if "radeon" in gpu.lower() else ""
+
+
+def cpu_encodes(facts: PcFacts) -> bool:
+    """Older AMD built-in graphics: x264 on the CPU streams and records, the chip only draws.
+
+    The chip shares the PC's memory, so drawing and encoding on it starve each other: a tester's Radeon R2
+    (AMD E2-7110) lost its AMF stream after a graphics reset and viewers saw nothing until x264 took over
+    (2026-11-22). At 720p30 superfast the CPU carries it. Intel's Quick Sync is a block of its own beside the
+    drawing part and stays. recorder.pick_codec doesn't try the AMD encoder there either."""
+    return bool(older_amd_gpu(facts.gpus))
+
+
+def to_cpu(enc: EncoderSettings, found: str) -> bool:
+    """Whether this encoder setting still encodes on the graphics chip (``found``: what "auto" picks)."""
+    return enc.encoder != "libx264" and not (enc.encoder == "auto" and found == "libx264")
+
+
 def short_gpu(name: str) -> str:
     return re.sub(r"\((?:R|TM)\)", "", name).replace("  ", " ").strip()
 
@@ -139,7 +160,7 @@ def weak_reasons(facts: PcFacts) -> list[str]:
         reasons.append(f"{facts.threads} CPU thread{'s' if facts.threads != 1 else ''}")
     if 0 < facts.memory_gb < 9:
         reasons.append(f"{round(facts.memory_gb)} GB of memory")
-    if facts.codec == "libx264":
+    if facts.codec == "libx264" and not cpu_encodes(facts):  # older AMD graphics: said by older_reasons
         reasons.append("no graphics-card encoder, so the CPU encodes")
     return reasons + older_reasons(facts)
 
@@ -277,6 +298,19 @@ def older_changes(collection: SceneCollection, apply: bool = False, hdd: bool = 
                                 "fps": min(LIGHT_FPS, int(src.settings.get("fps", 30)))}
         count = f"{len(cameras)} camera{'s' if len(cameras) != 1 else ''}"
         rows.append(("Video", f"{count} read at {LIGHT_SHORT_SIDE}p {LIGHT_FPS} fps", "Bigger or faster", cameras_light))
+    from sprigcast.sources.media import is_sound_file
+
+    videos = [src for src in collection.sources if older and src.kind == "media" and src.settings.get("path")
+              and not is_sound_file(str(src.settings.get("path"))) and not src.settings.get("hw_decode")]
+    if videos:
+        # Decoded on the CPU, each picture went up to the graphics card whole: on the tester's Radeon R2 that held
+        # the frame for seconds 155 times in 45 minutes (2026-11-22). Decoded on the card, it stays there.
+        def videos_on_card(sources=videos):
+            for src in sources:
+                src.settings = {**src.settings, "hw_decode": True}
+        count = f"{len(videos)} video{'s' if len(videos) != 1 else ''}"
+        rows.append(("Video", f"{count} decoded on the graphics card (no picture copied up to it each frame)",
+                     "Decoded on the CPU", videos_on_card))
     if hdd and (r.container != "mkv" or r.source_record):
         def hdd_light():
             r.container = "mkv"
@@ -290,12 +324,14 @@ def older_changes(collection: SceneCollection, apply: bool = False, hdd: bool = 
 
 
 def light_changes(collection: SceneCollection, apply: bool = False, pending_fps: dict[str, int] | None = None,
-                  cpu_encoding: bool = False, older: bool = False, hdd: bool = False) -> tuple[list[str], dict[str, int]]:
+                  cpu_encoding: bool = False, older: bool = False, hdd: bool = False,
+                  cpu_encodes: bool = False) -> tuple[list[str], dict[str, int]]:
     """What light settings would change, as short lines, and the canvas frame rates to switch to.
 
     With ``apply`` the collection is changed too, except the canvas frame rates: those change at the
     next start (Settings → Video), so the caller stores them. ``pending_fps`` is what is already waiting.
     ``older`` adds the savings for an older PC and ``hdd`` those for recording to a hard drive (older_changes).
+    ``cpu_encodes`` moves streams and recordings to x264 on the CPU (see cpu_encodes()).
     """
     lines: list[str] = []
     if older or hdd:
@@ -338,6 +374,14 @@ def light_changes(collection: SceneCollection, apply: bool = False, pending_fps:
         lines.append(f"Recording bitrate {LIGHT_RECORDING_KBPS} kbps")
         if apply:
             collection.recording.bitrate_kbps = LIGHT_RECORDING_KBPS
+    moved = [e for e in (collection.stream_encoder, collection.recording.encoder)
+             if cpu_encodes and to_cpu(e, "libx264" if cpu_encoding else "")]
+    if moved:
+        lines.append("Encoded with x264 on the CPU: the built-in graphics only draws")
+        if apply:
+            for e in moved:
+                e.encoder = "libx264"
+    cpu_encoding = cpu_encoding or cpu_encodes
     preset = CPU_PRESET if cpu_encoding else LIGHT_PRESET
     stream = _light_encoder(collection.stream_encoder, apply, preset)
     recording = _light_encoder(collection.recording.encoder, apply, preset)

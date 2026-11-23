@@ -35,7 +35,7 @@ def test_each_reason_the_old_engine_draws_on_a_pc_with_a_graphics_card(monkeypat
     assert engine_warning.text() == "Old engine in use (engine file missing)"
     _pc(monkeypatch)
     sprigcore.note_engine_failed("a lost graphics card")
-    assert engine_warning.text() == "Old engine in use (engine stopped)"
+    assert engine_warning.text() == "Engine stopped. The old engine draws until you restart SprigCast"
 
 
 def test_the_label_shows_only_while_the_warning_holds(monkeypatch):
@@ -46,4 +46,5 @@ def test_the_label_shows_only_while_the_warning_holds(monkeypatch):
     assert label.isHidden() and label.text() == ""
     sprigcore.note_engine_failed("a frame stuck for 3 s")  # the engine stops while SprigCast runs
     label.refresh()
-    assert not label.isHidden() and label.text() == "Old engine in use (engine stopped)"
+    assert not label.isHidden() and label.text() == (
+        "Engine paused: the graphics card fell behind. The old engine draws until you restart SprigCast")

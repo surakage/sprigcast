@@ -115,3 +115,12 @@ def test_about_names_a_test_build_and_links_the_licenses(monkeypatch):
     page = about.about_page()
     assert page.findChild(QLabel, "aboutBuild").text() == "Test build 7 (abc1234)"
     assert "LICENSE" in page.findChild(QLabel, "aboutLicenses").text()  # from source: the repo's license
+
+
+def test_x264_picked_in_settings_isnt_called_no_gpu_encoder(monkeypatch):
+    from sprigcast.output import recorder
+
+    monkeypatch.setattr(recorder, "_picked", "h264_amf")
+    assert recorder.codec_label("libx264") == "x264 (CPU, picked in Settings)"
+    monkeypatch.setattr(recorder, "_picked", "libx264")
+    assert recorder.codec_label("libx264") == "x264 (CPU, no GPU encoder found)"

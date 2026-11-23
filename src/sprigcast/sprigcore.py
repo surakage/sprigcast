@@ -478,7 +478,11 @@ def old_engine_warning() -> str:
         return "Turned off"
     if not available():
         return "Engine file missing"
-    return "Engine stopped" if _engine_failed else ""
+    if not _engine_failed:
+        return ""
+    if "stuck" in _engine_failed or "fell behind" in _engine_failed:
+        return "Engine paused: the graphics card fell behind"
+    return "Engine stopped"
 
 
 _software: list[bool] = []  # worked out once: whether Windows has only a software renderer

@@ -184,3 +184,85 @@ def test_engine_reports_graphics_trouble_as_a_graphics_error(monkeypatch):
     eng._run()
     event = eng.events.get_nowait()
     assert isinstance(event, EngineError) and event.graphics and "OpenGL 3.3" in event.message
+
+
+def test_older_pc_decodes_videos_on_the_graphics_card():
+    col = _collection()
+    col.sources += [SourceConfig(id="v", kind="media", name="Intro", settings={"path": "C:/clips/intro.mp4"}),
+                    SourceConfig(id="s", kind="media", name="Ding", settings={"path": "C:/sounds/ding.mp3"})]
+    rows = [r for r in lowend.older_changes(col) if "graphics card" in r[1]]
+    assert [r[1] for r in rows] == ["1 video decoded on the graphics card (no picture copied up to it each frame)"]
+    lowend.older_changes(col, apply=True)
+    assert col.sources[-2].settings["hw_decode"] and not col.sources[-1].settings.get("hw_decode")
+    assert not [r for r in lowend.older_changes(col) if "graphics card" in r[1]]
+    assert not [r for r in lowend.older_changes(col, older=False) if "graphics card" in r[1]]
+
+
+MIKEDOG = dict(threads=2, memory_gb=4.0, codec="h264_amf", cpu_name="AMD E2-7110 APU with AMD Radeon R2 Graphics")
+
+
+def test_older_amd_graphics_streams_with_x264_and_keeps_it():
+    p = optimize.PcProfile(**MIKEDOG, upload_kbps=10000)
+    p.extra["gpus"], p.extra["hdd"] = ("AMD Radeon(TM) R2 Graphics",), False
+    assert p.cpu_encodes and not p.hardware and p.used_codec == "libx264"
+    col = _collection()
+    plan = optimize.plan(p, col)
+    assert plan.recommended == (720, 30)
+    moved = [c for c in plan.changes if c.label.startswith("Stream encoder")]
+    assert [c.label for c in moved] == [
+        "Stream encoder: x264 on the CPU, the built-in graphics only draws, superfast preset"]
+    assert moved[0].now == "AMF"
+    plan.apply()
+    assert col.stream_encoder.encoder == "libx264" and col.stream_encoder.preset == lowend.CPU_PRESET
+    again = optimize.plan(p, col)
+    assert not [c for c in again.changes if c.label.startswith("Stream encoder")]
+
+
+def test_intel_quick_sync_and_graphics_cards_keep_their_encoder():
+    p = optimize.PcProfile(**AIO_2013)
+    p.extra["gpus"] = AIO_GPUS
+    assert not p.cpu_encodes and p.hardware
+    card = optimize.PcProfile(**{**MIKEDOG, "codec": "h264_amf"})
+    card.extra["gpus"] = ("AMD Radeon(TM) R2 Graphics", "AMD Radeon RX 580")
+    assert not card.cpu_encodes
+
+
+def test_light_settings_move_the_older_amd_pc_to_x264():
+    col = _collection()
+    lines, _ = lowend.light_changes(col, cpu_encodes=True)
+    assert "Encoded with x264 on the CPU: the built-in graphics only draws" in lines
+    assert any("superfast" in line for line in lines)
+    lowend.light_changes(col, apply=True, cpu_encodes=True)
+    assert col.stream_encoder.encoder == col.recording.encoder.encoder == "libx264"
+    assert "Encoded with x264 on the CPU: the built-in graphics only draws" not in lowend.light_changes(
+        col, cpu_encodes=True)[0]
+
+
+def test_older_amd_graphics_skips_the_amd_encoder_check(monkeypatch):
+    from sprigcast.output import recorder
+
+    tried = []
+    monkeypatch.setattr(recorder, "_picked", None)
+    monkeypatch.setattr(recorder, "_draws_only", None)
+    monkeypatch.setattr(recorder, "nvenc_works", lambda: False)
+    monkeypatch.setattr(recorder, "encoder_works", lambda codec: tried.append(codec) or codec == "libx264")
+    monkeypatch.setattr(lowend, "gpu_names", lambda: ("AMD Radeon(TM) R2 Graphics",))
+    monkeypatch.delenv("SPRIGCAST_ENCODER", raising=False)
+    assert recorder.pick_codec() == "libx264" and tried == []
+    assert recorder.codec_label("libx264") == "x264 (CPU, the built-in graphics only draws)"
+    monkeypatch.setattr(recorder, "_picked", None)
+    monkeypatch.setattr(recorder, "_draws_only", None)
+    monkeypatch.setattr(lowend, "gpu_names", lambda: ("Intel(R) HD Graphics 4600",))
+    tried.clear()
+    recorder.pick_codec()
+    assert "h264_amf" in tried and "h264_qsv" in tried
+
+
+def test_auto_already_on_x264_needs_no_encoder_row():
+    p = optimize.PcProfile(**{**MIKEDOG, "codec": "libx264"}, upload_kbps=10000)
+    p.extra["gpus"], p.extra["hdd"] = ("AMD Radeon(TM) R2 Graphics",), False
+    assert "no graphics-card encoder, so the CPU encodes" not in p.weak_reasons
+    plan = optimize.plan(p, _collection())
+    assert not [c for c in plan.changes if "built-in graphics only draws" in c.label]
+    assert "Encoded with x264 on the CPU: the built-in graphics only draws" not in lowend.light_changes(
+        _collection(), cpu_encoding=True, cpu_encodes=True)[0]

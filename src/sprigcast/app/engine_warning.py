@@ -20,6 +20,8 @@ CHECK_MS = 5_000  # the engine can stop while SprigCast runs: looked at again th
 
 def text() -> str:
     why = sprigcore.old_engine_warning()
+    if why.startswith(("Engine stopped", "Engine paused")):  # it stopped during this run: say so plainly, and what brings it back
+        return f"{why}. The old engine draws until you restart SprigCast"
     return f"Old engine in use ({why.lower()})" if why else ""
 
 
@@ -37,7 +39,7 @@ def install(window) -> QLabel:
             label.setText(now)
             label.setVisible(bool(now))
             if now:
-                log.warning("%s: this PC's graphics card could run the new engine", now)
+                log.warning("window says: %s", now)
 
     timer = QTimer(label)
     timer.setInterval(CHECK_MS)
