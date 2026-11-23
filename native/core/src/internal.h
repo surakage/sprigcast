@@ -49,7 +49,13 @@ struct Source {
     // An NV12 picture copied on the card (sc::source_nv12): the texture is also a target the repack draws into,
     // and the NV12 picture is copied here first (a decoder's array slice can't be read in place).
     ComPtr<ID3D11RenderTargetView> target;
-    ComPtr<ID3D11Texture2D> nv12, nv12_staging;
+    ComPtr<ID3D11Texture2D> nv12;
+    // NV12 pictures from memory go up through these in turn (sc::upload_nv12): the card may still be copying
+    // from the last one, and waiting for it held the frame 2 s at a time on a Radeon R2 (tester, 2026-11-22).
+    ComPtr<ID3D11Texture2D> nv12_staging[3];
+    int nv12_next = 0;
+    ComPtr<ID3D11Texture2D> up_staging[3];  // the same for other pictures from memory (sc_source_upload)
+    int up_next = 0;
     ComPtr<ID3D11ShaderResourceView> nv12_y, nv12_uv;
     bool premultiplied = false;   // RGBA with premultiplied alpha (a browser page drawn on the card)
 };
@@ -126,6 +132,8 @@ int make_target(ID3D11Device *device, int width, int height, Target &out,
                 DXGI_FORMAT format = DXGI_FORMAT_R8G8B8A8_UNORM);
 // Checks an upload's description; gives the bytes its data spans (the last row needs only its own pixels).
 int upload_bytes(const sc_upload &how, size_t &bytes);
+bool upload_through_staging(sc_device &dev, Source &s, const uint8_t *data, int stride, int w, int h,
+                            DXGI_FORMAT format, int row_bytes);
 // An NV12 picture on the card (a texture, or slice `slice` of a decoder's texture array) as source `id`, without
 // passing through memory: copied, then repacked into the compositor's I420 layout (line for line the same as an
 // I420 upload of it). `how` gives the picture's size (format SC_FMT_NV12, height = picture height * 3 / 2), its

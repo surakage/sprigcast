@@ -221,25 +221,36 @@ int upload_nv12(sc_device &dev, uint64_t id, const uint8_t *data, const sc_uploa
         {
             std::lock_guard<std::mutex> lock(dev.lock);
             Source &s = dev.comp.sources[id];
-            D3D11_TEXTURE2D_DESC have = {};
-            if (s.nv12_staging) s.nv12_staging->GetDesc(&have);
-            if (!s.nv12_staging || static_cast<int>(have.Width) != w || static_cast<int>(have.Height) != h) {
-                D3D11_TEXTURE2D_DESC td = {};
-                td.Width = static_cast<UINT>(w);
-                td.Height = static_cast<UINT>(h);
-                td.MipLevels = 1;
-                td.ArraySize = 1;
-                td.Format = DXGI_FORMAT_NV12;
-                td.SampleDesc.Count = 1;
-                td.Usage = D3D11_USAGE_STAGING;
-                td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-                s.nv12_staging.Reset();
-                HRESULT hr = dev.device->CreateTexture2D(&td, nullptr, &s.nv12_staging);
-                if (FAILED(hr)) return fail_hr(SC_ERR_DEVICE, "Creating an NV12 upload texture", hr);
-            }
-            staging = s.nv12_staging;
+            // The next staging texture the card isn't still reading: tried without waiting. All three busy, this
+            // picture is skipped and the last one stays up, instead of holding the frame until the card catches up.
             D3D11_MAPPED_SUBRESOURCE m;
-            HRESULT hr = dev.context->Map(staging.Get(), 0, D3D11_MAP_WRITE, 0, &m);
+            HRESULT hr = DXGI_ERROR_WAS_STILL_DRAWING;
+            for (int tries = 0; tries < 3 && hr == DXGI_ERROR_WAS_STILL_DRAWING; ++tries) {
+                ComPtr<ID3D11Texture2D> &slot = s.nv12_staging[s.nv12_next];
+                s.nv12_next = (s.nv12_next + 1) % 3;
+                D3D11_TEXTURE2D_DESC have = {};
+                if (slot) slot->GetDesc(&have);
+                if (!slot || static_cast<int>(have.Width) != w || static_cast<int>(have.Height) != h) {
+                    D3D11_TEXTURE2D_DESC td = {};
+                    td.Width = static_cast<UINT>(w);
+                    td.Height = static_cast<UINT>(h);
+                    td.MipLevels = 1;
+                    td.ArraySize = 1;
+                    td.Format = DXGI_FORMAT_NV12;
+                    td.SampleDesc.Count = 1;
+                    td.Usage = D3D11_USAGE_STAGING;
+                    td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+                    slot.Reset();
+                    HRESULT made = dev.device->CreateTexture2D(&td, nullptr, &slot);
+                    if (FAILED(made)) return fail_hr(SC_ERR_DEVICE, "Creating an NV12 upload texture", made);
+                }
+                staging = slot;
+                hr = dev.context->Map(staging.Get(), 0, D3D11_MAP_WRITE, D3D11_MAP_FLAG_DO_NOT_WAIT, &m);
+            }
+            if (hr == DXGI_ERROR_WAS_STILL_DRAWING) {
+                done = true;  // the card is behind: this picture is let go, the one showing stays
+                return SC_OK;
+            }
             if (FAILED(hr)) return fail_hr(SC_ERR_DEVICE, "Map (NV12 upload)", hr);
             auto *out = static_cast<uint8_t *>(m.pData);
             for (int row = 0; row < h + h / 2; ++row)  // the CbCr plane follows the Y plane, same pitch

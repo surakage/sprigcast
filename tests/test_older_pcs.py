@@ -266,3 +266,12 @@ def test_auto_already_on_x264_needs_no_encoder_row():
     assert not [c for c in plan.changes if "built-in graphics only draws" in c.label]
     assert "Encoded with x264 on the CPU: the built-in graphics only draws" not in lowend.light_changes(
         _collection(), cpu_encoding=True, cpu_encodes=True)[0]
+
+
+def test_a_light_pc_never_optimized_is_reminded(monkeypatch):
+    monkeypatch.setattr(lowend, "stored_tier", lambda: None)
+    monkeypatch.setattr(lowend, "gpu_names", lambda: ("AMD Radeon(TM) R2 Graphics",))
+    monkeypatch.setattr(lowend, "cpu_name", lambda: MIKEDOG["cpu_name"])
+    assert lowend.light_unset()
+    monkeypatch.setattr(lowend, "stored_tier", lambda: "light")
+    assert lowend.light_unset() == []
