@@ -48,6 +48,18 @@ from sprigcast.output.stream import (
 log = logging.getLogger(__name__)
 
 
+RECENT_STOP_S = 90.0  # a place started again this soon after stopping: its site may still be ending the last one
+_ended_at: dict[str, float] = {}  # a place's url (with its key; never logged) -> when its connection last closed
+
+
+def _closed(name: str, url: str, began: float, how: str) -> None:
+    """One line when a connection has closed: how long saying goodbye took (FCUnpublish and deleteStream go out
+    as the connection closes). Twitch kept a tester's stream showing live after Stop, and a start 85 s later
+    never connected (2026-11-22)."""
+    _ended_at[url] = time.monotonic()
+    log.info("stream %s: connection closed (%s) after %.1f s", name, how, time.perf_counter() - began)
+
+
 SHARE_WITHIN = 0.4  # destinations whose bitrates are this close (of the higher one) share one encoder
 NETWORK_BEHIND_S = 0.25  # a send buffer this full means the upload is what's waited on (not the encoder, not Python)
 LONE_LOWERS = 0.8  # one link alone behind may lower a shared bitrate this far (of what's set), no further
@@ -594,7 +606,9 @@ class StreamLink:
             self._backlog_bytes = 0
             self.shared.links_changed()
             if sender is not None:
+                closing = time.perf_counter()
                 sender.close()
+                _closed(self.name, self._url, closing, "engine")
 
     def _connect(self):
         out = self._open_container(self._url)
@@ -680,10 +694,13 @@ class StreamLink:
                 self._delay_line = None
             self._drain()
             if out is not None:
+                closing = time.perf_counter()
                 try:
                     out.close()
+                    _closed(self.name, self._url, closing, "goodbye sent")
                 except Exception as exc:
                     log.info("link %s: closing: %s", self.name, self.redact(str(exc)))
+                    _closed(self.name, self._url, closing, "goodbye failed")
 
     def _drain(self) -> None:
         while True:
@@ -701,6 +718,11 @@ class StreamLink:
         delay = RETRY_FIRST
         while not self._stop.is_set():
             self.status = "connecting" if not self.reconnects else f"reconnecting (try {self.reconnects})"
+            ended = _ended_at.get(self._url)
+            if not self.reconnects and ended is not None and time.monotonic() - ended < RECENT_STOP_S:
+                self.status = "connecting (the site may still be ending your last stream)"
+                log.info("stream %s: started %.0f s after its last connection closed", self.name,
+                         time.monotonic() - ended)
             began, sent = time.monotonic(), self.bytes_out
             try:
                 self._session()

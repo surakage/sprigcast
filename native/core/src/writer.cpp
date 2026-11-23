@@ -743,6 +743,8 @@ struct Link {
     std::string url, format;
     double bytes_per_s = 750000, delay_s = 0, max_backlog = 4, resume_backlog = 2, behind_s = 0.25;
     double connect_s = 10, send_s = 20;
+    std::atomic<bool> writing{false};    // inside av_interleaved_write_frame (link_interrupted)
+    std::atomic<double> stop_seen{0};    // when a stop first met a packet halfway out
     int slow_ms = 0;  // SPRIGCAST_LINK_SLOW_MS (tests): each packet takes this long to send (a slow upload)
 
     using Packet = Encoded;
@@ -814,8 +816,18 @@ struct Link {
 
 int link_interrupted(void *opaque) {
     auto *l = static_cast<Link *>(opaque);
-    if (now_s() > l->deadline.load()) return 1;
-    return (l->stop.load() && !l->closing.load()) ? 1 : 0;
+    const double now = now_s();
+    if (now > l->deadline.load()) return 1;
+    if (!l->stop.load() || l->closing.load()) return 0;
+    // Stopped halfway through a packet: let it finish (briefly) so the goodbye that follows starts on a whole
+    // message. Cut mid-message, the server reads FCUnpublish and deleteStream as part of the video and keeps the
+    // stream live: Twitch showed a tester live after Stop, and a start 85 s later never connected (2026-11-22).
+    if (l->writing.load()) {
+        double expected = 0;
+        l->stop_seen.compare_exchange_strong(expected, now);
+        return now - l->stop_seen.load() > 2.0 ? 1 : 0;
+    }
+    return 1;
 }
 
 void Core::offer_links(const Out &o) {
@@ -967,7 +979,9 @@ void Link::session(AVFormatContext *&ctx) {
             const double began = now_s();
             deadline = began + send_s;
             if (slow_ms > 0) std::this_thread::sleep_for(std::chrono::milliseconds(slow_ms));
+            writing = true;
             w = ff.av_interleaved_write_frame(ctx, pkt);
+            writing = false;
             spent = now_s() - began;
             ff.av_packet_unref(pkt);
             sent = true;
