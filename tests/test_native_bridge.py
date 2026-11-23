@@ -1381,12 +1381,15 @@ def test_a_still_bloom_is_kept_and_a_moving_one_is_drawn_every_frame():
         bridge.upload("pic", frame, "RGBA", (32, 18))
         bridge.set_outputs("h", [((32, 18), False)])
         time.sleep(0.3)
+        bridge.engine.redraws_take()
         ticks, draws = span(1.0, moving=False)
         assert ticks > 10 and draws <= 3  # kept: drawn again at most once a second
+        assert set(bridge.engine.redraws_take()) <= {4}  # only the once-a-second refresh
         bridge.engine.redraws_take()  # start the count afresh
         ticks, draws = span(1.0, moving=True)
         assert ticks > 10 and draws >= ticks - 3  # a picture that changes: drawn every frame, as before
         by = bridge.engine.redraws_take()
+        assert abs(sum(by.values()) - draws) <= 2  # every draw is put down to something
         assert next(iter(by)) == sprigcore.key("pic") and by[sprigcore.key("pic")] >= ticks // 2  # the one to blame
         assert bridge.engine.redraws_take() == {}  # taken: the count starts again
         bridge.take_outputs("h", ((32, 18), False))

@@ -556,6 +556,7 @@ struct sc_engine {
         bool valid = false;
         uint64_t scene = 0;
         int64_t drawn = 0;  // qpc() when it was last really drawn
+        uint64_t why = 0;   // what made it need drawing, while it waits for a frame someone takes (SC_REDRAW_*, a source)
     };
     Still still[SC_ENGINE_CANVASES];
     // Canvases drawn again because of this source (its new picture, or a filter that moves), since Python last asked
@@ -1664,10 +1665,19 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         // picture is the one it has, and drawing it again would only use the graphics card. It is drawn again once
         // a second all the same, so nothing missed here could stay wrong for long. Looked at on the frames it isn't
         // taken too, so a change on one of those isn't missed.
+        // Every redraw is put down to something (sc_engine_redraws_take): a source, or one of SC_REDRAW_*. A change
+        // on a frame nobody takes is remembered until the frame that is drawn, so it isn't lost on the way.
         uint64_t why = 0;
-        const bool kept = still.valid && !all_changed && !run.on && still.scene == cfg.scene &&
-                          (!cfg.scene || sc::scene_still(*e.dev, cfg.scene, changed, &why));
-        if (!kept) still.valid = false;
+        bool kept = false;
+        if (!still.valid) why = still.why ? still.why : SC_REDRAW_STARTED;
+        else if (all_changed) why = SC_REDRAW_EVERYTHING;
+        else if (run.on || still.scene != cfg.scene) why = SC_REDRAW_SWITCH;
+        else if (!(kept = !cfg.scene || sc::scene_still(*e.dev, cfg.scene, changed, &why)) && !why)
+            why = SC_REDRAW_OTHER;  // sprigs nested too deep, or a bloom the snapshot doesn't have
+        if (!kept && still.valid) {
+            still.valid = false;
+            still.why = why;
+        }
         // A canvas nobody takes a picture of this frame isn't drawn: one no preview, recording or stream uses (the
         // other canvas of a garden shown on one), and one only a preview takes on the frames between its pictures
         // (a preview takes 30 a second or fewer; the engine draws 60). The imported garden's two canvases were
@@ -1675,11 +1685,13 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         if (!read_asked[i] && !canvas_taken(e, i, watches[i], outputs[i], previews, now)) continue;
         if (still.valid && now - still.drawn < qpf()) continue;
         ++e.canvas_draws;
-        if (why) {
+        if (kept) why = SC_REDRAW_SECOND;  // still, drawn again on its once-a-second refresh
+        {
             std::lock_guard<std::mutex> lock(e.state);
             if (e.redrawn_by.size() < 4096 || e.redrawn_by.count(why)) ++e.redrawn_by[why];
         }
         still.valid = false;  // until this frame's drawing is done (a transition's never counts)
+        still.why = run.on ? SC_REDRAW_SWITCH : 0;
         if (run.on) {
             const double progress = (seconds - run.start) / std::max(0.001, static_cast<double>(run.how.seconds));
             if (progress < 1.0 && run.how.mode == SC_TRANSITION_MOVE) {

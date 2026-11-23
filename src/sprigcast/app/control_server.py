@@ -37,6 +37,10 @@ from sprigcast.core.quiet import Every
 if TYPE_CHECKING:
     from sprigcast.app.main_window import MainWindow
 
+# app.stats redrawsBy: the engine's reasons for drawing a canvas that aren't a source (SC_REDRAW_* in sprigcore.h)
+REDRAW_REASONS = {1: "Everything changed", 2: "Bloom switch or transition", 3: "Canvas started", 4: "Once-a-second refresh",
+                  5: "Nested too deep"}
+
 log = logging.getLogger(__name__)
 
 _CONNECT_LOG = Every(600)
@@ -444,6 +448,7 @@ class WindowHost:
                     from sprigcast import sprigcore
 
                     names = {sprigcore.key(s.id): s.name for s in getattr(self.w.collection, "sources", [])}
+                    names.update(REDRAW_REASONS)
                     by: dict[str, int] = {}
                     for k, n in take().items():
                         by[names.get(k, "Other")] = by.get(names.get(k, "Other"), 0) + n
