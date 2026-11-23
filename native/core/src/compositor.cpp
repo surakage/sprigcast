@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstring>
 #include <set>
+#include <unordered_set>
 
 using namespace sc;
 
@@ -783,6 +784,43 @@ int sc::render_scene(sc_device &dev, ID3D11RenderTargetView *target, int width, 
 bool sc::has_scene(sc_device &dev, uint64_t scene) {
     std::shared_ptr<const Snapshot> snap = dev.comp.snapshot;
     return snap && snap->by_id.count(scene);
+}
+
+namespace {
+
+// See sc::scene_still. `seen` holds the sprigs walked already (a sprig shown twice is looked at once).
+bool still_walk(const Snapshot &snap, uint64_t scene_id, const std::unordered_set<uint64_t> &changed,
+                std::set<uint64_t> &seen, int depth) {
+    if (depth > 16) return false;  // sprigs inside sprigs this deep: drawn, as always
+    if (!seen.insert(scene_id).second) return true;
+    auto found = snap.by_id.find(scene_id);
+    if (found == snap.by_id.end()) return false;
+    const sc_scene &scene = snap.scenes[found->second];
+    for (int i = 0; i < scene.item_count; ++i) {
+        const sc_item &it = snap.items[static_cast<size_t>(scene.first_item + i)];
+        if (changed.count(it.source) || (it.part && changed.count(it.part))) return false;
+        if (it.effects >= 0 && static_cast<size_t>(it.effects) < snap.effects.size()) {
+            const sc_effects &fx = snap.effects[static_cast<size_t>(it.effects)];
+            // Filters that move on their own, frame by frame: Scroll, a barrel roll, the Background filter.
+            if (fx.scroll[0] != 0.0f || fx.scroll[1] != 0.0f || fx.spin_turns != 0.0f || fx.bg_mode != 0)
+                return false;
+        }
+        if (it.part && !still_walk(snap, it.part, changed, seen, depth + 1)) return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+bool sc::scene_still(sc_device &dev, uint64_t scene, const std::unordered_set<uint64_t> &changed) {
+    std::shared_ptr<const Snapshot> snap;
+    {
+        std::lock_guard<std::mutex> lock(dev.lock);
+        snap = dev.comp.snapshot;
+    }
+    if (!snap) return false;
+    std::set<uint64_t> seen;
+    return still_walk(*snap, scene, changed, seen, 0);
 }
 
 extern "C" {

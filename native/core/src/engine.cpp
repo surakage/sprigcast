@@ -24,6 +24,7 @@
 #include <deque>
 #include <iterator>
 #include <set>
+#include <unordered_set>
 #include <stdexcept>
 #include <string>
 
@@ -550,6 +551,13 @@ struct sc_engine {
     sc_canvas *gpu[SC_ENGINE_CANVASES] = {};
     std::unordered_map<uint64_t, uint64_t> holds_made;  // still copy -> the ask (HoldWant.serial) it was made for
     uint32_t canvas_draws = 0;  // canvases drawn so far, over all frames (stats.canvas_draws)
+    // A canvas whose picture is still the one drawn last: nothing it shows changed since (draw_frame).
+    struct Still {
+        bool valid = false;
+        uint64_t scene = 0;
+        int64_t drawn = 0;  // qpc() when it was last really drawn
+    };
+    Still still[SC_ENGINE_CANVASES];
     std::unordered_map<int, PreviewGpu> shown;
     Reader readers[SC_ENGINE_CANVASES];
     OutReader out_readers[SC_ENGINE_CANVASES][SC_ENGINE_OUTPUTS];
@@ -1275,6 +1283,10 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     uint64_t detach_seen;
     bool read_asked[SC_ENGINE_CANVASES] = {};
     std::vector<std::pair<uint64_t, HoldWant>> holds;
+    // What has a new picture this frame (sources, lists, still copies), or everything (a new snapshot, look, mask,
+    // a source let go): a canvas showing none of it keeps the picture it has (see the canvases below).
+    std::unordered_set<uint64_t> changed;
+    bool all_changed = false;
     at(e, "taking what Python sent");
     {
         std::lock_guard<std::mutex> lock(e.state);
@@ -1312,6 +1324,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         detach_seen = e.detach_asked;
     }
 
+    if (!forgets.empty() || !looks.empty() || !masks.empty() || snapshot) all_changed = true;
     for (uint64_t id : forgets) {
         at(e, "letting a source go", id);
         e.kept_sources.erase(id);
@@ -1346,6 +1359,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
             due.how.layout_width = size.first;
             due.how.layout_height = size.second;
         }
+        if (due.what == SC_MEDIA_PICTURE || due.what == SC_MEDIA_BLANK) changed.insert(id);
         if (due.what == SC_MEDIA_PICTURE && due.texture) {  // still on the card, where the decoder left it
             e.kept_sources.erase(id);
             at(e, "taking a video's picture on the card", id);
@@ -1382,6 +1396,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         at(e, "a visualizer's drawing", id);
         visual_due(drawings, &seen.second, &due);
         if (due.what == SC_MEDIA_PICTURE) {
+            changed.insert(id);
             e.kept_sources.erase(id);
             check(sc_source_upload(e.dev, id, due.data, &due.how));
         }
@@ -1431,6 +1446,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
             }
             block.page_said = false;
             block.seen = seq;
+            changed.insert(id);
             continue;
         }
         if (held) {
@@ -1438,6 +1454,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
             continue;
         }
         check(sc_source_upload(e.dev, id, data, &how));
+        changed.insert(id);
         if (block.counter() <= seq + 1) block.seen = seq;  // else overwritten while copied: taken again next frame
     }
     // Screen, window and game captures (capture_wgc.cpp): the newest picture, copied on the card.
@@ -1461,7 +1478,10 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         }
         if (keep) {
             at(e, "a parked capture", run->first);
-            if (r.cap->take(*e.dev, run->first, true)) r.copied = tick_now;
+            if (r.cap->take(*e.dev, run->first, true)) {
+                r.copied = tick_now;
+                changed.insert(run->first);
+            }
             keep = !r.cap->ended();
         }
         run = keep ? std::next(run) : e.capture_runs.erase(run);
@@ -1524,6 +1544,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         const bool held = captures_held.count(id) != 0;  // frozen: taken so Windows draws on, the picture kept
         const bool got = run.cap->take(*e.dev, id, !held);
         if (got) {
+            changed.insert(id);
             e.kept_sources.erase(id);
             ++run.frames;
             run.copied = qpc();
@@ -1557,6 +1578,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     for (auto &[id, pic] : uploads) {
         at(e, "uploading a picture from Python", id);
         check(sc_source_upload(e.dev, id, pic.data.data(), &pic.how));
+        changed.insert(id);
         e.kept_draws.erase(id);
         if (pic.keep) {
             e.kept_sources[id] = std::move(pic);
@@ -1569,6 +1591,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     for (auto &[id, d] : draws) {
         at(e, "drawing a source's list", id);
         check(sc_source_draws(e.dev, id, d.width, d.height, d.items.data(), d.count));
+        changed.insert(id);
         if (d.count < 0) {
             e.kept_draws.erase(id);
         } else {
@@ -1605,6 +1628,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         const int code = sc_source_hold(e.dev, id, want.source, want.scene, seconds);
         if (code == SC_NOT_YET) continue;
         check(code);
+        changed.insert(id);
         e.holds_made[id] = want.serial;
     }
 
@@ -1617,7 +1641,9 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         }
         if (cfg.width <= 0) continue;
         at(e, "drawing a canvas", static_cast<uint64_t>(i));
+        auto &still = e.still[i];
         if (!c) {
+            still.valid = false;
             int code = sc_canvas_create(e.dev, cfg.width, cfg.height, &c);
             check(code);
             if (code != SC_OK) continue;
@@ -1631,12 +1657,21 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
             run.start = seconds;
             run.on = run.from != 0;
         }
+        // Nothing it shows changed since it was last drawn (a still bloom: Starting Soon, BRB, a still layout): its
+        // picture is the one it has, and drawing it again would only use the graphics card. It is drawn again once
+        // a second all the same, so nothing missed here could stay wrong for long. Looked at on the frames it isn't
+        // taken too, so a change on one of those isn't missed.
+        if (!still.valid || all_changed || run.on || still.scene != cfg.scene ||
+            (cfg.scene && !sc::scene_still(*e.dev, cfg.scene, changed)))
+            still.valid = false;
         // A canvas nobody takes a picture of this frame isn't drawn: one no preview, recording or stream uses (the
         // other canvas of a garden shown on one), and one only a preview takes on the frames between its pictures
         // (a preview takes 30 a second or fewer; the engine draws 60). The imported garden's two canvases were
         // both drawn 60 times a second with one preview at 30 watching: 71% of the graphics card (2026-11-19).
         if (!read_asked[i] && !canvas_taken(e, i, watches[i], outputs[i], previews, now)) continue;
+        if (still.valid && now - still.drawn < qpf()) continue;
         ++e.canvas_draws;
+        still.valid = false;  // until this frame's drawing is done (a transition's never counts)
         if (run.on) {
             const double progress = (seconds - run.start) / std::max(0.001, static_cast<double>(run.how.seconds));
             if (progress < 1.0 && run.how.mode == SC_TRANSITION_MOVE) {
@@ -1653,6 +1688,9 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         }
         if (cfg.scene) check(sc_canvas_render(c, cfg.scene, seconds));
         else check(sc_canvas_clear(c, 0, 0, 0, 0));
+        still.valid = true;
+        still.scene = cfg.scene;
+        still.drawn = now;
     }
     at(e, "reading the canvases back for the previews");
     for (int i = 0; i < SC_ENGINE_CANVASES; ++i) read_back(e, i, e.gpu[i], watches[i], seconds, now);

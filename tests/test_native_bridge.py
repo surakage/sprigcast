@@ -1338,8 +1338,57 @@ def test_a_canvas_nobody_takes_a_picture_of_is_not_drawn():
         assert bridge.take("h") is not None
         bridge.set_outputs("v", [((18, 32), False)])
         time.sleep(0.3)
-        ticks, draws = span(0.5)
-        assert ticks > 5 and draws >= ticks - 2  # a recording or stream takes every frame
+        ticks, draws = span(1.0)
+        # A recording or stream takes every frame, but nothing on this bloom changes: drawn once, then kept (and
+        # drawn again once a second all the same).
+        assert ticks > 10 and draws <= 3
+        assert not bridge.failed
+    finally:
+        bridge.close()
+
+
+@needs_engine
+def test_a_still_bloom_is_kept_and_a_moving_one_is_drawn_every_frame():
+    """Starting Soon or BRB with nothing moving was drawn again 30-60 times a second, for the same picture."""
+    import time
+
+    col = SceneCollection(
+        canvases=[Canvas(id="h", width=32, height=18)],
+        sources=[SourceConfig(id="pic", kind="color", name="Picture")],
+        scenes=[Scene(id="a", name="A", canvas="h", items=[SceneItem(source="pic")])],
+        active_scenes={"h": "a"},
+    )
+    bridge = native_bridge.NativeCanvases(col, warp=True)
+    frame = np.zeros((18, 32, 4), np.uint8)
+
+    def span(seconds, moving):
+        before = bridge.engine.stats()
+        end = time.perf_counter() + seconds
+        n = 0
+        while time.perf_counter() < end:
+            if moving:  # a new picture every few ms, as a video or a camera sends them
+                n += 1
+                frame[:, :, 0] = n % 255
+                bridge.upload("pic", frame, "RGBA", (32, 18))
+            time.sleep(0.004)
+        after = bridge.engine.stats()
+        return after["ticks"] - before["ticks"], after["canvas_draws"] - before["canvas_draws"]
+
+    try:
+        bridge.sync(col, {}, _plain_state, False)
+        bridge.upload("pic", frame, "RGBA", (32, 18))
+        bridge.set_outputs("h", [((32, 18), False)])
+        time.sleep(0.3)
+        ticks, draws = span(1.0, moving=False)
+        assert ticks > 10 and draws <= 3  # kept: drawn again at most once a second
+        ticks, draws = span(1.0, moving=True)
+        assert ticks > 10 and draws >= ticks - 3  # a picture that changes: drawn every frame, as before
+        bridge.take_outputs("h", ((32, 18), False))
+        got = 0
+        for _ in range(10):
+            time.sleep(0.05)
+            got += len(bridge.take_outputs("h", ((32, 18), False)))
+        assert got >= 5  # a stream still gets every frame while the picture is kept
         assert not bridge.failed
     finally:
         bridge.close()
