@@ -1687,3 +1687,27 @@ def test_the_filters_window_views_draw_small_with_looks_of_their_own():
     engine.set_view_effects({})
     _run(engine, fake, seconds=0.05)
     assert item_key("view:filters-after", "cam") not in looked[-1]
+
+
+def test_a_link_that_gets_no_frames_twice_running_hands_them_through_python(monkeypatch):
+    """Mikedog (2026-11-22): a stream wrote no frames for its last 6 minutes; every 10 s its outputs were made again
+    and it was linked to the engine again, 36 times, and never got a frame."""
+    monkeypatch.setattr(sprigcore, "Engine", FakeEngine)
+    clock = {"now": 100.0}
+    monkeypatch.setattr(native_bridge.time, "perf_counter", lambda: clock["now"])
+    bridge = native_bridge.NativeCanvases(_collection())
+    bridge._slots["h"] = 0
+
+    class Stream:
+        path = SimpleNamespace(stem="stream-horizontal")
+
+    stream = Stream()
+    bridge._links[(0, 0)] = (stream, object(), ())
+    assert bridge.reset_outputs()
+    assert not bridge._refused(stream)  # once: tried again, linked
+    bridge._links[(0, 0)] = (stream, object(), ())
+    clock["now"] += 200  # long after: a feed that came back meanwhile, counted afresh
+    assert bridge.reset_outputs() and not bridge._refused(stream)
+    bridge._links[(0, 0)] = (stream, object(), ())
+    clock["now"] += 11  # again 11 s later: the link gets nothing
+    assert bridge.reset_outputs() and bridge._refused(stream)  # its frames go through Python from now on

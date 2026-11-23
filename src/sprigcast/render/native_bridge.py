@@ -31,6 +31,9 @@ from sprigcast.render.native_snapshot import SceneDraw
 
 log = logging.getLogger(__name__)
 
+LINK_RESETS_TO_PYTHON = 2  # outputs made again this often while a recording is linked: its link is given up
+LINK_RESET_WINDOW_S = 60.0  # ...within this long of each other (a stall is retried every ~10 s)
+
 STILL_AFTER_S = 1.0  # a source that sent nothing for this long is treated as a still picture (kept for rebuilds)
 STATS_EVERY_S = 1.0
 HUNG_GIVE_UP_S = 3.0  # a frame stuck this long (after the engine's own 2 s) and Python draws everything again
@@ -240,6 +243,7 @@ class NativeCanvases:
         self._links: dict[tuple[int, int], tuple] = {}
         self._paused: dict[tuple[int, int], tuple] = {}  # (owner, writer) unlinked for a transition Python draws
         self._link_refused = weakref.WeakSet()  # recordings whose writer an output wouldn't link to
+        self._link_resets = weakref.WeakKeyDictionary()  # linked recording -> (outputs made again while linked, when last)
         self.output_drops = 0
         self.pace: tuple | None = None  # (engine clock, frames drawn, frame times missed, ms a frame) at the last check
         self._late: dict[str, int] = {}  # output ("horizontal 1280x720 on the card") -> frames not taken, since said
@@ -726,6 +730,21 @@ class NativeCanvases:
         log.warning("native engine: making every output again (%d frames on the card not given back yet, "
                     "%d not taken in time so far; %s)", CardFrame.held, self.output_drops,
                     "; ".join(made) or "no outputs")
+        # A recording linked through two of these within LINK_RESET_WINDOW_S gets no frames that way: its frames go
+        # through Python from now on (the engine still draws them; Python hands them on). A tester's stream wrote
+        # nothing for its last 6 minutes with every output made again 36 times, linked each time (Mikedog,
+        # 2026-11-22).
+        linked = {id(owner): owner for owner, _writer, _settings in self._links.values() if owner is not None}
+        for owner in linked.values():
+            count, last = self._link_resets.get(owner, (0, float("-inf"))) if self._weak(owner) else (0, 0.0)
+            resets = count + 1 if now - last < LINK_RESET_WINDOW_S else 1  # long apart: a feed that came back
+            if self._weak(owner):
+                self._link_resets[owner] = (resets, now)
+            if resets >= LINK_RESETS_TO_PYTHON and not self._refused(owner):
+                self._refuse(owner)
+                log.warning("native engine: %s got no frames straight from the engine %d times in a row; they go "
+                            "through Python from now on", getattr(getattr(owner, "path", None), "stem",
+                                                                  "a recording"), resets)
         for canvas_id in list(self._slots):
             self.set_outputs(canvas_id, ())
         self._last_out.clear()
@@ -904,6 +923,14 @@ class NativeCanvases:
                 except Exception as exc:  # noqa: BLE001 - only a count
                     log.debug("native engine: the camera's frame count: %s", exc)
         return total
+
+    @staticmethod
+    def _weak(owner) -> bool:
+        try:
+            weakref.ref(owner)
+            return True
+        except TypeError:
+            return False
 
     def _refused(self, owner) -> bool:
         try:
