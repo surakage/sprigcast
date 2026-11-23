@@ -1,4 +1,4 @@
-"""Change by bloom: a video, image or colour that shows another file or colour in some blooms.
+"""Change by bloom: a video, image or color that shows another file or color in some blooms.
 
     ╭ File per bloom ──────────────────────────────╮
     │ Change by bloom                         (●)  │
@@ -178,8 +178,7 @@ class ByBloom(QFrame):
             line.addWidget(button)
             read = lambda: path.text().strip()  # noqa: E731
             choose = choose_file
-        remove = QPushButton("×")
-        remove.setStyleSheet(CHIP)
+        remove = theme.make_cross(QPushButton(), 30)
         remove.setCursor(Qt.CursorShape.PointingHandCursor)
         remove.setToolTip("Use the main one here")
         remove.clicked.connect(lambda: self._remove(bloom))
