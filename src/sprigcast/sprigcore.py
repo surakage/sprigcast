@@ -390,6 +390,8 @@ def _lib():
         "sc_engine_preview_attach": (c_int, [vp, c_int, vp, c_int, ctypes.c_uint32, ctypes.POINTER(c_int)]),
         "sc_engine_preview_detach": (c_int, [vp, c_int]),
         "sc_engine_stats_get": (c_int, [vp, ctypes.POINTER(EngineStats)]),
+        "sc_engine_redraws_take": (c_int, [vp, ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_uint32), c_int,
+                                           ctypes.POINTER(c_int)]),
         "sc_engine_canvas_read": (c_int, [vp, c_int, vp, c_int, c_int]),
         "sc_engine_canvas_watch": (c_int, [vp, c_int, c_int, c_int, c_int]),
         "sc_engine_canvas_take": (c_int, [vp, c_int, vp, c_int, c_int, ctypes.POINTER(ctypes.c_uint64),
@@ -1083,6 +1085,13 @@ class Engine:
         _check(_need().sc_engine_stats_get(self.handle, ctypes.byref(out)))
         drain_log()
         return out.as_dict()
+
+    def redraws_take(self, most: int = 16) -> dict[int, int]:
+        """Which sources made a still bloom be redrawn since the last call, and how many times each, most first
+        (source key -> redraws). The counts start again from zero after each call."""
+        ids, counts, n = (ctypes.c_uint64 * most)(), (ctypes.c_uint32 * most)(), c_int(0)
+        _check(_need().sc_engine_redraws_take(self.handle, ids, counts, most, ctypes.byref(n)))
+        return {int(ids[i]): int(counts[i]) for i in range(n.value)}
 
     def read_bgra(self, index: int) -> bytes:
         """Canvas ``index`` as BGRA bytes from a frame drawn after this call. Tests and screenshots only."""

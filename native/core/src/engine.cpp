@@ -558,6 +558,9 @@ struct sc_engine {
         int64_t drawn = 0;  // qpc() when it was last really drawn
     };
     Still still[SC_ENGINE_CANVASES];
+    // Canvases drawn again because of this source (its new picture, or a filter that moves), since Python last asked
+    // (sc_engine_redraws_take): what keeps a bloom from being still. Under `state`.
+    std::unordered_map<uint64_t, uint32_t> redrawn_by;
     std::unordered_map<int, PreviewGpu> shown;
     Reader readers[SC_ENGINE_CANVASES];
     OutReader out_readers[SC_ENGINE_CANVASES][SC_ENGINE_OUTPUTS];
@@ -1661,9 +1664,10 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         // picture is the one it has, and drawing it again would only use the graphics card. It is drawn again once
         // a second all the same, so nothing missed here could stay wrong for long. Looked at on the frames it isn't
         // taken too, so a change on one of those isn't missed.
-        if (!still.valid || all_changed || run.on || still.scene != cfg.scene ||
-            (cfg.scene && !sc::scene_still(*e.dev, cfg.scene, changed)))
-            still.valid = false;
+        uint64_t why = 0;
+        const bool kept = still.valid && !all_changed && !run.on && still.scene == cfg.scene &&
+                          (!cfg.scene || sc::scene_still(*e.dev, cfg.scene, changed, &why));
+        if (!kept) still.valid = false;
         // A canvas nobody takes a picture of this frame isn't drawn: one no preview, recording or stream uses (the
         // other canvas of a garden shown on one), and one only a preview takes on the frames between its pictures
         // (a preview takes 30 a second or fewer; the engine draws 60). The imported garden's two canvases were
@@ -1671,6 +1675,10 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         if (!read_asked[i] && !canvas_taken(e, i, watches[i], outputs[i], previews, now)) continue;
         if (still.valid && now - still.drawn < qpf()) continue;
         ++e.canvas_draws;
+        if (why) {
+            std::lock_guard<std::mutex> lock(e.state);
+            if (e.redrawn_by.size() < 4096 || e.redrawn_by.count(why)) ++e.redrawn_by[why];
+        }
         still.valid = false;  // until this frame's drawing is done (a transition's never counts)
         if (run.on) {
             const double progress = (seconds - run.start) / std::max(0.001, static_cast<double>(run.how.seconds));
@@ -2391,6 +2399,27 @@ SC_API int sc_engine_stats_get(sc_engine *engine, sc_engine_stats *out) {
         out->time = static_cast<double>(qpc() - engine->born) / static_cast<double>(qpf());
         out->hung = engine->hung.load() ? 1 : 0;
         out->faulted = engine->dead.load() ? 1 : 0;
+        return SC_OK;
+    });
+}
+
+SC_API int sc_engine_redraws_take(sc_engine *engine, uint64_t *ids, uint32_t *counts, int max, int *count) {
+    return guarded("sc_engine_redraws_take", [&]() -> int {
+        if (!engine || !count || max < 0 || (max > 0 && (!ids || !counts)))
+            return fail(SC_ERR_ARGUMENT, "sc_engine_redraws_take: no engine or room");
+        std::vector<std::pair<uint64_t, uint32_t>> all;
+        {
+            std::lock_guard<std::mutex> lock(engine->state);
+            all.assign(engine->redrawn_by.begin(), engine->redrawn_by.end());
+            engine->redrawn_by.clear();
+        }
+        std::sort(all.begin(), all.end(), [](const auto &a, const auto &b) { return a.second > b.second; });
+        const int n = std::min(max, static_cast<int>(all.size()));
+        for (int i = 0; i < n; ++i) {
+            ids[i] = all[static_cast<size_t>(i)].first;
+            counts[i] = all[static_cast<size_t>(i)].second;
+        }
+        *count = n;
         return SC_OK;
     });
 }

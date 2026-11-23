@@ -439,6 +439,15 @@ class WindowHost:
             try:  # the native engine's own counts: frames, and canvases really drawn (a still bloom isn't redrawn)
                 counts = native.engine.stats()
                 out["engineTicks"], out["canvasDraws"] = int(counts["ticks"]), int(counts["canvas_draws"])
+                take = getattr(native.engine, "redraws_take", None)
+                if take is not None:  # which sources kept a bloom being redrawn since the last ask, by name
+                    from sprigcast import sprigcore
+
+                    names = {sprigcore.key(s.id): s.name for s in getattr(self.w.collection, "sources", [])}
+                    by: dict[str, int] = {}
+                    for k, n in take().items():
+                        by[names.get(k, "Other")] = by.get(names.get(k, "Other"), 0) + n
+                    out["redrawsBy"] = by
             except Exception:  # noqa: BLE001
                 pass
         status = self.stream_status()

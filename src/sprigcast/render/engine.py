@@ -2775,12 +2775,28 @@ class Engine:
                     log.exception("frame tap for %s failed", canvas.id)
                 self._mark(f"{canvas.id} {getattr(callback, '__qualname__', 'output')}")
         self._mark("canvases")
+        tapped = [name for name in self.views if taps.get(f"view:{name}")]
+        part = native is not None and self._engine_shows(native, PART_VIEW)
         self._engine_part(native, now)
         self._render_views(compositor, sizes, now, taps, drawn_now, native)
-        self._mark("virtual camera")
+        self._mark(views_step(tapped, part))
         if self._grabs:
             self._serve_grabs(compositor, sizes)
             self._mark("snapshots")
+
+
+def views_step(tapped, part: bool) -> str:
+    """The late-frame line's name for the views step, after what it really did. It was always called "virtual
+    camera", so a tester with the camera off read 10-40 ms of waiting for Python's lock as the camera's
+    (Mikedog151's R2, 2026-11-22: the camera never started that day)."""
+    names = []
+    if "camera" in tapped:
+        names.append("virtual camera")
+    if any(name != "camera" for name in tapped):
+        names.append("projectors and previews")
+    if part:
+        names.append("sprig editor")
+    return " and ".join(names) if names else "after the canvases (nothing to draw)"
 
 
 class _SprigPlan:
