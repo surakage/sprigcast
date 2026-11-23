@@ -1165,7 +1165,11 @@ void ESend::session(AVFormatContext *&flv) {
     deadline = now_s() + connect_s;
     AVIOInterruptCB cb{esend_interrupted, this};
     AVDictionary *how = nullptr;
-    if (url.rfind("rtmp", 0) == 0) ff.av_dict_set(&how, "rtmp_enhanced_codecs", "avc1", 0);
+    // The codecs announced to the server: H.264, plus HEVC when a quality is HEVC (Twitch asks HEVC for a vertical
+    // canvas's quality). FFmpeg's FLV muxer writes HEVC in the Enhanced form ("hvc1") itself.
+    const bool hevc = std::any_of(pars.begin(), pars.end(),
+                                  [](const AVCodecParameters *p) { return p->codec_id == AV_CODEC_ID_HEVC; });
+    if (url.rfind("rtmp", 0) == 0) ff.av_dict_set(&how, "rtmp_enhanced_codecs", hevc ? "avc1,hvc1" : "avc1", 0);
     const int opened = ff.avio_open2(&out, url.c_str(), AVIO_FLAG_WRITE, &cb, &how);
     ff.av_dict_free(&how);
     if (opened < 0) throw Error("couldn't connect: " + av_text(opened));

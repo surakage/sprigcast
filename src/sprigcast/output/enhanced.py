@@ -267,10 +267,32 @@ def _fps(value) -> int:
     return 0
 
 
+def engine_sends() -> bool:
+    """Whether the engine packs and sends Enhanced Broadcasting (writer.cpp ESend): only it sends HEVC. The sender
+    thread here (eflv.py) knows H.264 alone."""
+    try:
+        from sprigcast import sprigcore
+
+        if os.environ.get("SPRIGCAST_NO_NATIVE_ESEND") or not sprigcore.use_native_media():
+            return False
+        lib = sprigcore._media_lib()
+        return lib is not None and hasattr(lib, "sc_esend_open")
+    except Exception:
+        return False
+
+
 def _encoder(kind: str, codec: str) -> str:
-    """OBS encoder ids in the answer ("obs_nvenc_h264_tex", "jim_nvenc", "obs_x264") → FFmpeg encoders."""
+    """OBS encoder ids in the answer ("obs_nvenc_h264_tex", "obs_nvenc_hevc_tex", "jim_nvenc", "obs_x264") → FFmpeg
+    encoders. HEVC is used when this PC's NVENC makes it: Twitch asked HEVC for the vertical canvas's quality and
+    got H.264 (PC test, 2026-11-23). Without it, or for AV1, the track falls back to H.264."""
     kind = (kind or "").lower()
-    if "nvenc" in kind and "hevc" not in kind and "av1" not in kind:
+    if "nvenc" in kind and "hevc" in kind:
+        from sprigcast.output.recorder import encoder_works
+
+        if engine_sends() and encoder_works("hevc_nvenc"):
+            return "hevc_nvenc"
+        return codec if codec.startswith("h264") else "h264_nvenc"
+    if "nvenc" in kind and "av1" not in kind:
         return "h264_nvenc"
     if "x264" in kind:
         return "libx264"
@@ -280,12 +302,15 @@ def _encoder(kind: str, codec: str) -> str:
 def encoder_options(encoder: str, settings: dict, bitrate_kbps: int) -> dict[str, str]:
     """Translate OBS-style encoder settings from the answer into FFmpeg options."""
     rate = {"maxrate": f"{bitrate_kbps}k", "bufsize": f"{bitrate_kbps}k"}
-    if encoder == "h264_nvenc":
+    if encoder in ("h264_nvenc", "hevc_nvenc"):
+        profile = str(settings.get("profile") or ("main" if encoder == "hevc_nvenc" else "high"))
+        if encoder == "hevc_nvenc" and profile not in ("main", "main10", "rext"):
+            profile = "main"
         options = {
             "preset": str(settings.get("preset2") or "p5"),
             "tune": str(settings.get("tune") or "hq"),
             "rc": "cbr" if str(settings.get("rate_control", "CBR")).upper() == "CBR" else "vbr",
-            "profile": str(settings.get("profile") or "high"),
+            "profile": profile,
             "no-scenecut": "1",  # keyframes only where we put them, so every track lines up
             "forced-idr": "1",
             **rate,
@@ -446,8 +471,9 @@ def _escape(rbsp: bytes) -> bytes:
     return bytes(out)
 
 
-def sei_nal(payload: bytes) -> bytes:
-    """One Annex-B H.264 SEI NAL unit carrying a user_data_unregistered (type 5) message."""
+def sei_nal(payload: bytes, hevc: bool = False) -> bytes:
+    """One Annex-B SEI NAL unit carrying a user_data_unregistered (type 5) message: H.264's, or HEVC's prefix SEI
+    (NAL type 39, a two-byte header)."""
     body = bytearray([5])
     size = len(payload)
     while size >= 255:
@@ -456,10 +482,10 @@ def sei_nal(payload: bytes) -> bytes:
     body.append(size)
     body += payload
     body.append(0x80)  # rbsp trailing bits
-    return b"\x00\x00\x00\x01\x06" + _escape(bytes(body))
+    return (b"\x00\x00\x00\x01\x4e\x01" if hevc else b"\x00\x00\x00\x01\x06") + _escape(bytes(body))
 
 
-def with_sei(frame: bytes, sei: bytes) -> bytes:
+def with_sei(frame: bytes, sei: bytes, hevc: bool = False) -> bytes:
     """A frame (Annex-B H.264) with SEI NAL units put in front of its first picture slice.
 
     An SEI after the slice starts a new access unit as far as H.264 goes, so a strict reader sees a frame with
@@ -471,7 +497,8 @@ def with_sei(frame: bytes, sei: bytes) -> bytes:
         at = frame.find(b"\x00\x00\x01", at)
         if at < 0 or at + 3 >= len(frame):
             return frame + sei
-        if frame[at + 3] & 0x1F in (1, 5):  # a picture slice: the SEI goes before its start code
+        slice_ = (frame[at + 3] >> 1) & 0x3F < 32 if hevc else frame[at + 3] & 0x1F in (1, 5)
+        if slice_:  # a picture slice: the SEI goes before its start code
             start = at - 1 if at > 0 and frame[at - 1] == 0 else at
             return frame[:start] + sei + frame[start:]
         at += 3
@@ -491,7 +518,7 @@ class TrackMetrics:
 
 
 def bpm_sei(metrics: TrackMetrics, *, cts: float, fer: float, ferc: float, pir: float,
-            session: tuple[int, int, int, int], rendition: tuple[int, int, int]) -> bytes:
+            session: tuple[int, int, int, int], rendition: tuple[int, int, int], hevc: bool = False) -> bytes:
     """The three BPM SEI NAL units to add to a keyframe.
 
     cts/fer/ferc/pir: wall-clock times (seconds) when the frame was composed, sent to the encoder,
@@ -526,7 +553,7 @@ def bpm_sei(metrics: TrackMetrics, *, cts: float, fer: float, ferc: float, pir: 
     erm = bytearray(BPM_ERM_UUID) + pir_stamp + bytes([2])  # three counters
     for tag, value in zip((1, 2, 3), diffs_r):
         erm += bytes([tag]) + (value & 0xFFFFFFFF).to_bytes(4, "big")
-    return sei_nal(bytes(ts)) + sei_nal(bytes(sm)) + sei_nal(bytes(erm))
+    return sei_nal(bytes(ts), hevc) + sei_nal(bytes(sm), hevc) + sei_nal(bytes(erm), hevc)
 
 
 def wall_clock(perf: float) -> float:

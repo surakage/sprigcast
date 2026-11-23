@@ -222,3 +222,35 @@ def test_a_place_smaller_than_its_canvas_asks_twitch_for_no_bigger_quality():
     first, second = body["preferences"]["canvases"]
     assert (first["width"], first["height"], first["canvas_width"], first["canvas_height"]) == (1280, 720, 1920, 1080)
     assert (second["width"], second["height"]) == (1080, 1920)
+
+
+def _vertical_answer(kind: str) -> dict:
+    return {**ANSWER, "encoder_configurations": [
+        {"type": "obs_nvenc_h264_tex", "width": 1280, "height": 720, "framerate": {"numerator": 60, "denominator": 1},
+         "canvas_index": 0, "settings": {"bitrate": 4500, "bf": 2, "profile": "main"}},
+        {"type": kind, "width": 1080, "height": 1920, "framerate": {"numerator": 60, "denominator": 1},
+         "canvas_index": 1, "settings": {"bitrate": 5000, "bf": 2, "profile": "main"}}]}
+
+
+def test_twitch_asking_hevc_for_the_vertical_canvas_gets_hevc(monkeypatch):
+    from sprigcast.output import recorder
+
+    monkeypatch.setattr(e, "engine_sends", lambda: True)
+    monkeypatch.setattr(recorder, "encoder_works", lambda codec: codec == "hevc_nvenc")
+    cfg = e.parse_config(_vertical_answer("obs_nvenc_hevc_tex"), "k", "h264_nvenc")
+    assert [t.encoder for t in cfg.tracks] == ["h264_nvenc", "hevc_nvenc"]
+    assert cfg.tracks[1].options["profile"] == "main"
+    # no HEVC here, or the engine doesn't send: H.264, as before
+    monkeypatch.setattr(recorder, "encoder_works", lambda codec: False)
+    assert e.parse_config(_vertical_answer("obs_nvenc_hevc_tex"), "k", "h264_nvenc").tracks[1].encoder == "h264_nvenc"
+    monkeypatch.setattr(recorder, "encoder_works", lambda codec: True)
+    monkeypatch.setattr(e, "engine_sends", lambda: False)
+    assert e.parse_config(_vertical_answer("obs_nvenc_hevc_tex"), "k", "h264_nvenc").tracks[1].encoder == "h264_nvenc"
+
+
+def test_hevc_keyframes_get_hevc_sei_before_the_slice():
+    sei = e.sei_nal(b"x" * 20, hevc=True)
+    assert sei.startswith(b"\x00\x00\x00\x01\x4e\x01")
+    vps, sps, pps, idr = (b"\x00\x00\x00\x01\x40\x01v", b"\x00\x00\x00\x01\x42\x01s", b"\x00\x00\x00\x01\x44\x01p",
+                          b"\x00\x00\x00\x01\x26\x01slice")
+    assert e.with_sei(vps + sps + pps + idr, sei, hevc=True) == vps + sps + pps + sei + idr

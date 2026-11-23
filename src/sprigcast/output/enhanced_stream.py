@@ -578,11 +578,12 @@ class EnhancedStreamer(Streamer):
         track.frames += 1
         if p.keyframe:
             now = time.time()
+            hevc = track.cfg.encoder.startswith("hevc")
             data = with_sei(data, bpm_sei(
                 track.metrics, cts=now, fer=now, ferc=now, pir=now,
                 session=(self._rendered, 0, sum(t.dropped for t in self.tracks), sum(t.frames for t in self.tracks)),
-                rendition=(enc.frames, track.dropped, track.frames),
-            ))
+                rendition=(enc.frames, track.dropped, track.frames), hevc=hevc,
+            ), hevc)
         if self._esend is not None:
             stamp = p.pts if p.pts is not None else p.dts
             if stamp is None:
