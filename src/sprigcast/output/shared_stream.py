@@ -37,7 +37,10 @@ from sprigcast.output.stream import (
     SEVERITY,
     log_live,
     plain_reason,
+    REFUSED_SAY,
     dropped_status,
+    note_refusal,
+    refused_status,
     retry_plan,
     explain_connect,
     ingest_name,
@@ -298,6 +301,7 @@ class StreamLink:
         self.connected = False
         self.status = "connecting"
         self.reconnects = 0
+        self.refused = 0  # tries in a row the server ended as they started (note_refusal)
         self.frames = self.dropped = self.bytes_out = 0
         self.mux_seconds = self.longest_stall = 0.0
         # Time the send buffer held NETWORK_BEHIND_S or more: "waiting on the network". mux_seconds (time handing
@@ -735,7 +739,9 @@ class StreamLink:
                     delay = RETRY_FIRST
                 self.reconnects += 1
                 hint, delay, after = retry_plan(message, self.bytes_out, delay)
-                self.status = dropped_status(self, message, hint, delay, self.bytes_out > sent)
+                delay, after = note_refusal(self, message, self.bytes_out > sent, delay, after)
+                self.status = (refused_status(self, message, delay) if self.refused >= REFUSED_SAY else
+                               dropped_status(self, message, hint, delay, self.bytes_out > sent))
                 if self._stop.wait(delay):
                     self.status = "stopped"
                     return

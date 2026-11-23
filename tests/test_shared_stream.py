@@ -394,6 +394,8 @@ def test_one_slow_destination_costs_the_others_one_small_step_at_most():
 
 def test_the_encoder_rests_while_no_destination_is_connected_and_wakes_when_one_is(tmp_path, monkeypatch):
     monkeypatch.setattr(shared_stream, "RETRY_FIRST", 0.2)
+    monkeypatch.setattr(stream_mod, "REFUSED_SAY", 1000)  # quick tries only: no slowing down after three
+    monkeypatch.setattr(shared_stream, "REFUSED_SAY", 1000)
     allowed = {"open": False}
 
     def door(url):
