@@ -230,7 +230,9 @@ bool has_scene(sc_device &dev, uint64_t scene);
 // True when scene `scene` would be drawn just as it was last frame: none of its items (sprigs inside it too) shows
 // a source in `changed` (a new picture this frame) or has a filter that moves on its own (Scroll, a barrel roll,
 // the Background filter). A scene the snapshot doesn't have is never still.
-bool scene_still(sc_device &dev, uint64_t scene, const std::unordered_set<uint64_t> &changed);
+// `why`, when given, gets the source that made it not still (a new picture, or a filter that moves; 0 = the scene
+// isn't there or sprigs go too deep).
+bool scene_still(sc_device &dev, uint64_t scene, const std::unordered_set<uint64_t> &changed, uint64_t *why = nullptr);
 
 // Draws `picture` into the rectangle x, y, w, h of a target `tw` x `th` (the phase 1 drawing: bilinear, "over"
 // blending, or a plain copy with blend = false). The device's lock must be held.

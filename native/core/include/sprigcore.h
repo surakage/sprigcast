@@ -510,6 +510,10 @@ SC_API int sc_engine_preview_attach(sc_engine *engine, int canvas, void *hwnd, i
 /* Stops showing the preview and waits (up to 2 s) until the engine has let go of the window. */
 SC_API int sc_engine_preview_detach(sc_engine *engine, int id);
 SC_API int sc_engine_stats_get(sc_engine *engine, sc_engine_stats *out);
+/* The sources that made canvases be drawn again since the last call (a new picture, or a filter that moves), the
+ * most first: up to `max` ids with their counts, how many in `count`. A canvas whose bloom has none of them is kept
+ * as it was drawn (still blooms). */
+SC_API int sc_engine_redraws_take(sc_engine *engine, uint64_t *ids, uint32_t *counts, int max, int *count);
 /* Waits for a frame drawn after this call (up to 2 s) and copies that canvas into `out` as BGRA, width * 4 bytes a row. The
  * width and height must be the canvas's. Tests and screenshots only: the frame path never copies frames back. */
 SC_API int sc_engine_canvas_read(sc_engine *engine, int index, uint8_t *out, int width, int height);
