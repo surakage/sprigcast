@@ -1334,7 +1334,9 @@ def test_a_canvas_nobody_takes_a_picture_of_is_not_drawn():
         bridge.watch("h", (32, 18), 5)
         time.sleep(0.3)
         ticks, draws = span(1.0)
-        assert 2 <= draws <= 8 and ticks > 3 * draws  # a preview at 5 a second: drawn for those pictures only
+        # A preview at 5 a second: drawn for those pictures only, and since nothing on it changes, kept after the
+        # first (drawn again once a second all the same).
+        assert 1 <= draws <= 3 and ticks > 3 * draws
         assert bridge.take("h") is not None
         bridge.set_outputs("v", [((18, 32), False)])
         time.sleep(0.3)

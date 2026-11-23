@@ -1029,7 +1029,7 @@ class Engine:
             settings = self._collection.bloom_settings(config)
             if source is not None and source.settings != settings:
                 log.info("source %s: the bloom on air sets its %s", config.id,
-                         "colour" if config.kind == "color" else "file")
+                         "color" if config.kind == "color" else "file")
                 self._safely(config.id, source, "update", source.update, settings)
 
     def _update_settings(self, settings: dict[str, dict]) -> None:
