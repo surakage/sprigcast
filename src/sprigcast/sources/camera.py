@@ -691,6 +691,7 @@ class _Feed:
         log.info("%s: the engine reads %r", self.id, device.name)
         log.info("%s: asked for %dx%d at %d fps; the camera offers %s", self.id, w, h, fps, modes_line(self.modes_seen))
         self.player = player
+        watch = SignalWatch()
         lost = None  # what the engine said when the camera went (the log says when it comes back)
         try:
             while not (self._stop.is_set() or self._restart.is_set()):
@@ -725,10 +726,28 @@ class _Feed:
                         log.warning("%s: %r went away: %s", self.id, device.name, text)
                     lost = text
                 player.set_shrink(self.shrink())
+                if self._signal_came(player, w, h, watch):
+                    log.info("%s: %r was given a signal: opened again to read its sizes afresh", self.id, device.name)
+                    forget_refusals(device.name)
+                    self._restart.set()
+                    break
                 self._restart.wait(0.25)
         finally:
             self.player = None  # the render thread lets go of it; the engine keeps it until then
             player.close()
+
+    def _signal_came(self, player, w: int, h: int, watch: SignalWatch) -> bool:
+        """Only for a camera that lists one size and came up bigger than asked (a capture card whose list, read with
+        no signal, had nothing smaller): a look at its picture now and then, see SignalWatch."""
+        given = self.given or (0, 0)
+        one_size = len({(m[2], m[3]) for m in self.modes_seen}) <= 1  # a card mirroring its input; not a webcam
+        if not one_size or given[0] <= w and given[1] <= h or not watch.due(time.monotonic()):
+            return False
+        try:
+            light = picture_light(player.video_frame())
+        except Exception:  # noqa: BLE001 - a look, never in the way
+            return False
+        return light is not None and watch.look(*light)
 
     # FFmpeg (PyAV) DirectShow: the default ---------------------------------------------
 
@@ -864,6 +883,57 @@ class _Feed:
         finally:
             cap.release()
         return True
+
+
+class SignalWatch:
+    """Whether a capture card that opened bigger than asked has just been given a signal, from a look at its
+    picture every EVERY_S. The PC's HD60 X (2026-11-24) lists only 2560x1440 while it has no signal, so it was
+    opened at that; a console then sent 1080p and the card showed "INVALID OUTPUT RESOLUTION SELECTED" (it never
+    upscales, and gives what the app asked for). Dark then lit: closed and opened again, its list read afresh."""
+
+    EVERY_S = 3.0
+    DARK_MEAN = 24.0  # TV-range black is 16
+    DARK_SPREAD = 6.0
+
+    def __init__(self) -> None:
+        self.dark = False
+        self.next = 0.0
+
+    def due(self, now: float) -> bool:
+        if now < self.next:
+            return False
+        self.next = now + self.EVERY_S
+        return True
+
+    def look(self, mean: float, spread: float) -> bool:
+        """True when the picture lights up after being dark (a signal arrived)."""
+        dark = mean < self.DARK_MEAN and spread < self.DARK_SPREAD
+        lit = self.dark and not dark
+        self.dark = dark
+        return lit
+
+
+def picture_light(frame) -> tuple[float, float] | None:
+    """(mean, spread) of a camera picture's brightness, from a sparse sample: a player's (pixels, order)."""
+    if not isinstance(frame, tuple) or len(frame) != 2:
+        return None
+    pixels, order = frame
+    try:
+        if str(order).startswith("I420"):
+            rows = pixels.shape[0] * 2 // (5 if str(order).startswith("I420A") else 3)
+            sample = pixels[:rows:8, ::8]
+        else:
+            sample = pixels[::8, ::8, :3]
+        sample = sample.astype(np.float32)
+        return float(sample.mean()), float(sample.std())
+    except Exception:  # noqa: BLE001 - a look, never in the way
+        return None
+
+
+def forget_refusals(device: str) -> None:
+    """A card given a signal lists other sizes: what it refused before is asked again."""
+    for key in [k for k in _not_given if k[0] == device]:
+        _not_given.discard(key)
 
 
 def _engine_choices(feed: _Feed, device: CameraDevice) -> tuple[str, list[tuple[str, dict]]]:
