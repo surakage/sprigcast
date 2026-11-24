@@ -580,6 +580,7 @@ struct sc_engine {
     bool lost = false;
     int build_failures = 0;
     int64_t next_build = 0;
+    double trimmed_at = 0;  // when idle staging textures were last let go of (sc::trim_staging)
 
     // ---- threads ----
     HANDLE quit = nullptr;  // manual reset: everything stops
@@ -1238,6 +1239,8 @@ bool canvas_taken(sc_engine &e, int index, const Watch &watch, const OutputWant 
     return false;
 }
 
+constexpr double STAGING_IDLE_S = 3.0;  // a source with no picture from memory this long lets its staging go
+
 // One frame: take Python's work, send it to the card, draw every canvas something takes a picture of, show the
 // previews.
 void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, uint64_t &skipped) {
@@ -1263,6 +1266,13 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         std::lock_guard<std::mutex> lock(e.state);
         e.detach_done = e.detach_asked;  // no device, no windows held
         return;
+    }
+    {  // once a second: staging textures of sources that stopped getting pictures from memory go
+        const double t = sc::steady_s();
+        if (t - e.trimmed_at >= 1.0) {
+            e.trimmed_at = t;
+            sc::trim_staging(*e.dev, t, STAGING_IDLE_S);
+        }
     }
 
     CanvasCfg canvases[SC_ENGINE_CANVASES];

@@ -58,6 +58,7 @@ struct Source {
     int nv12_next = 0;
     std::array<ComPtr<ID3D11Texture2D>, 3> up_staging;  // the same for other pictures from memory (sc_source_upload)
     int up_next = 0;
+    double staged_at = 0;  // when a picture last went up through the staging textures (steady clock, seconds)
     ComPtr<ID3D11ShaderResourceView> nv12_y, nv12_uv;
     bool premultiplied = false;   // RGBA with premultiplied alpha (a browser page drawn on the card)
 };
@@ -136,6 +137,11 @@ int make_target(ID3D11Device *device, int width, int height, Target &out,
 int upload_bytes(const sc_upload &how, size_t &bytes);
 bool upload_through_staging(sc_device &dev, Source &s, const uint8_t *data, int stride, int w, int h,
                             DXGI_FORMAT format, int row_bytes);
+// Lets go of the staging textures of sources that haven't had a picture from memory for `idle_s`: each is a
+// whole picture in system memory. Gameplay's browser pages held 398 MB of them for 33 sources, never given back
+// when the bloom went off air (PC 2026-11-24). Made again on the next upload. Takes device.lock.
+void trim_staging(sc_device &dev, double now, double idle_s);
+double steady_s();
 // An NV12 picture on the card (a texture, or slice `slice` of a decoder's texture array) as source `id`, without
 // passing through memory: copied, then repacked into the compositor's I420 layout (line for line the same as an
 // I420 upload of it). `how` gives the picture's size (format SC_FMT_NV12, height = picture height * 3 / 2), its
