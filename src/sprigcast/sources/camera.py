@@ -739,16 +739,17 @@ class _Feed:
             player.close()
 
     def _say_only_size(self, device: str, w: int, h: int) -> None:
-        """Once a run per card: it offers apps one size, bigger than asked. The PC's HD60 X (2026-11-24) offers only
-        2560x1440 to other apps whatever its input; fed 1080p it shows Elgato's "does not support upscaling" screen
-        instead of the game, and nothing in SprigCast can ask it for less."""
+        """Once a run per card: it offers apps one size, bigger than asked. The PC's HD60 X (2026-11-24) offered only
+        2560x1440 with Input EDID mode Merged (taken from the 1440p monitor on its HDMI out); fed 1080p by a PS5 it
+        showed Elgato's "does not support upscaling" screen until Elgato Studio's EDID mode was set to Internal."""
         given = self.given or (0, 0)
         sizes = {(m[2], m[3]) for m in self.modes_seen}
         if len(sizes) != 1 or (given[0] <= w and given[1] <= h) or device in _said_only_size:
             return
         _said_only_size.add(device)
-        log.info("%s: %r offers apps only %dx%d. With a smaller input (a console at 1080p) it shows the card's "
-                 "upscaling error instead of the picture: set the console to %dx%d", self.id, device, *given, *given)
+        log.info("%s: %r offers apps only %dx%d. If its picture shows the card's upscaling error, its input is "
+                 "smaller: on an Elgato card set Input EDID mode to Internal in Elgato Studio (Merged copies the "
+                 "monitor on its HDMI out), or send it %dx%d", self.id, device, *given, *given)
 
     def _signal_came(self, player, w: int, h: int, watch: SignalWatch) -> bool:
         """Only for a camera that lists one size and came up bigger than asked (a capture card whose list, read with

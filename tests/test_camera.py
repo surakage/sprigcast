@@ -819,5 +819,5 @@ def test_a_card_offering_one_bigger_size_is_said_once(caplog):
         feed._say_only_size("Card", 1280, 720)
         feed._say_only_size("Card", 1280, 720)
     lines = [r.getMessage() for r in caplog.records if "offers apps only" in r.getMessage()]
-    assert len(lines) == 1 and "set the console to 2560x1440" in lines[0]
+    assert len(lines) == 1 and "Input EDID mode to Internal" in lines[0]
     cam_mod._said_only_size.clear()
