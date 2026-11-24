@@ -2295,6 +2295,71 @@ SC_API int sc_engine_capture_state(sc_engine *engine, uint64_t id, int *state, i
     });
 }
 
+namespace {
+
+uint64_t texture_bytes(ID3D11Texture2D *t) {
+    if (!t) return 0;
+    D3D11_TEXTURE2D_DESC d = {};
+    t->GetDesc(&d);
+    uint64_t texel = 4;  // RGBA and BGRA, the most there is here
+    if (d.Format == DXGI_FORMAT_R8_UNORM) texel = 1;
+    else if (d.Format == DXGI_FORMAT_R8G8_UNORM) texel = 2;
+    const uint64_t one = static_cast<uint64_t>(d.Width) * d.Height;
+    if (d.Format == DXGI_FORMAT_NV12) return one * 3 / 2 * std::max(1u, d.ArraySize);
+    return one * texel * std::max(1u, d.ArraySize);
+}
+
+}  // namespace
+
+// What the engine holds for its sources (Gameplay with 34 browser pages added ~1 GB on its first wake, PC
+// 2026-11-24, and nothing said whose): textures on the card, staging copies in memory, sprig drawings, browser
+// pages' shared textures open, pictures kept for a rebuild.
+SC_API int sc_engine_memory_note(sc_engine *engine, char *out, int size) {
+    return engine_call(engine, "sc_engine_memory_note", [&]() -> int {
+        if (!out || size < 2) return fail(SC_ERR_ARGUMENT, "sc_engine_memory_note: no room");
+        out[0] = 0;
+        std::unique_lock<std::timed_mutex> frame(engine->frame, std::chrono::milliseconds(FRAME_WAIT_MS));
+        if (!frame.owns_lock()) return fail(SC_ERR_TIMEOUT, "sc_engine_memory_note: the engine's frame is stuck");
+        if (!engine->dev) return fail(SC_ERR_ARGUMENT, "sc_engine_memory_note: no device yet");
+        sc_device &dev = *engine->dev;
+        uint64_t card = 0, staging = 0, parts = 0, drawn = 0, big = 0;
+        size_t sources = 0, stagers = 0;
+        {
+            std::lock_guard<std::mutex> lock(dev.lock);
+            for (auto &[id, src] : dev.comp.sources) {
+                ++sources;
+                const uint64_t mine = texture_bytes(src.texture.Get()) + texture_bytes(src.nv12.Get());
+                card += mine;
+                if (mine >= (uint64_t(8) << 20)) ++big;
+                uint64_t up = 0;
+                for (auto &t : src.up_staging) up += texture_bytes(t.Get());
+                for (auto &t : src.nv12_staging) up += texture_bytes(t.Get());
+                staging += up;
+                if (up) ++stagers;
+            }
+            for (auto &[id, t] : dev.comp.parts) parts += texture_bytes(t.texture.Get());
+            for (auto &[id, d] : dev.comp.drawn) drawn += texture_bytes(d.target.texture.Get());
+        }
+        size_t pages = 0;
+        uint64_t page_bytes = 0;
+        for (auto &[id, block] : engine->shared_open) {
+            if (!block.page.texture) continue;
+            ++pages;
+            page_bytes += texture_bytes(block.page.texture.Get());
+        }
+        uint64_t kept = 0;
+        for (auto &[id, pic] : engine->kept_sources) kept += pic.data.capacity();
+        constexpr double MB = 1024.0 * 1024.0;
+        std::snprintf(out, static_cast<size_t>(size),
+                      "%zu sources %.0f MB on the card (%llu of 8 MB or more), staging %.0f MB in memory for %zu; "
+                      "sprigs %.0f MB; drawn lists %.0f MB; browser pages open %zu (%.0f MB shared); kept for a "
+                      "rebuild %.0f MB",
+                      sources, card / MB, static_cast<unsigned long long>(big), staging / MB, stagers, parts / MB,
+                      drawn / MB, pages, page_bytes / MB, kept / MB);
+        return SC_OK;
+    });
+}
+
 SC_API int sc_engine_capture_read(sc_engine *engine, uint64_t id, uint8_t *bgra, int stride, int max_width,
                                   int max_height, int *width, int *height) {
     return engine_call(engine, "sc_engine_capture_read", [&]() -> int {

@@ -390,6 +390,7 @@ def _lib():
         "sc_engine_preview_attach": (c_int, [vp, c_int, vp, c_int, ctypes.c_uint32, ctypes.POINTER(c_int)]),
         "sc_engine_preview_detach": (c_int, [vp, c_int]),
         "sc_engine_stats_get": (c_int, [vp, ctypes.POINTER(EngineStats)]),
+        "sc_engine_memory_note": (c_int, [vp, ctypes.c_char_p, c_int]),
         "sc_engine_redraws_take": (c_int, [vp, ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_uint32), c_int,
                                            ctypes.POINTER(c_int)]),
         "sc_engine_canvas_read": (c_int, [vp, c_int, vp, c_int, c_int]),
@@ -1085,6 +1086,12 @@ class Engine:
         _check(_need().sc_engine_stats_get(self.handle, ctypes.byref(out)))
         drain_log()
         return out.as_dict()
+
+    def memory_note(self) -> str:
+        """What the engine holds for its sources, in words (sc_engine_memory_note), for the memory map line."""
+        out = ctypes.create_string_buffer(512)
+        _check(_need().sc_engine_memory_note(self.handle, out, len(out)))
+        return out.value.decode("utf-8", "replace")
 
     def redraws_take(self, most: int = 16) -> dict[int, int]:
         """Which sources made a still bloom be redrawn since the last call, and how many times each, most first

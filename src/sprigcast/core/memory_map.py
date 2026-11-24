@@ -273,6 +273,21 @@ def graphics_memory() -> tuple[int, int] | None:
     return (local, system) if found else None
 
 
+engine_holds = None  # () -> str: what the native engine holds for its sources (render/engine.py sets it)
+
+
+def engine_note() -> str:
+    """The engine's own account of its sources' memory: Gameplay's 34 browser pages added ~1 GB on its first wake
+    (PC 2026-11-24) and the map alone couldn't say whose it was."""
+    holds = engine_holds
+    if holds is None:
+        return ""
+    try:
+        return holds() or ""
+    except Exception:  # noqa: BLE001 (a diagnostic: never in the way)
+        return ""
+
+
 def memory_map_line(reason: str = "") -> str | None:
     """"memory map: private ... ; big blocks ...; graphics driver: ... on the card, ... in system memory", or None
     off Windows. `reason` says when it was taken ("before Twitch's encoder opens")."""
@@ -309,6 +324,9 @@ def memory_map_line(reason: str = "") -> str | None:
         graphics = None
     if graphics is not None:
         parts.append(f"graphics driver {graphics[0] / MB:.0f} MB on the card, {graphics[1] / MB:.0f} MB in system memory")
+    note = engine_note()
+    if note:
+        parts.append("engine " + note)
     return f"memory map{f' ({reason})' if reason else ''}: " + "; ".join(parts)
 
 

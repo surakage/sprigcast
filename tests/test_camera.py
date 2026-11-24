@@ -714,6 +714,16 @@ def test_a_capture_card_is_asked_for_the_size_wanted_before_its_bigger_listed_on
     assert not not_given("card", (1280, 720), (1280, 720)) and asked_first(card, 1280, 720, 60, "card")
     assert not_given("card", (1280, 720), (2560, 1440)) and not not_given("card", (1280, 720), (2560, 1440))
     assert asked_first(card, 1280, 720, 60, "card") == [] and asked_first(card, 1920, 1080, 60, "card")
+    # The next run (PC 2026-11-24: refused on every start): not asked again while the card lists the same size...
+    cam_mod._not_given.clear()
+    assert asked_first(card, 1280, 720, 60, "card") == []
+    # ...but asked afresh once its input changes (a console at 1080p lists 1920x1080).
+    cam_mod._not_given.clear()
+    console = [("pixel_format", "nv12", 1920, 1080, 59.9999, 59.9999)]
+    assert asked_first(console, 1280, 720, 60, "card")
+    from PySide6.QtCore import QSettings
+
+    QSettings().remove(cam_mod.NOT_GIVEN_KEY)
     cam_mod._not_given.clear()
 
 
