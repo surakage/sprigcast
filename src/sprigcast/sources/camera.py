@@ -273,6 +273,38 @@ _listing_lock = threading.Lock()
 _listed: dict[str, list] = {}  # device name -> the modes it last listed (kept for when it lists none)
 _raw_listed: dict[str, str] = {}  # device name -> its whole list as it came (raw_modes_line), for the log
 _not_given: set[tuple[str, tuple[int, int]]] = set()  # (device, size): asked for though unlisted, and not given
+_asked_nearest: dict[tuple[str, tuple[int, int]], tuple[int, int]] = {}  # (device, size) -> the listed size above it
+NOT_GIVEN_KEY = "cameras/not_given"  # QSettings: "device|asked|nearest listed" a card refused, kept across runs
+
+
+def _refused_before() -> set[str]:
+    """What cards refused in earlier runs. The PC's HD60 X, fed 1440p, was asked for 720p and refused it on every
+    start (2026-11-21 to 11-24): each refused ask builds and tears down the card's capture graph before it opens
+    at 1440p. Kept with the listed size it fell back to, so a new input (a console at 1080p) is asked afresh."""
+    try:
+        from PySide6.QtCore import QSettings
+
+        value = QSettings().value(NOT_GIVEN_KEY, [])
+    except Exception:  # noqa: BLE001 - no settings (a test, a helper process): this run only
+        return set()
+    if isinstance(value, str):
+        value = [value]
+    return {str(v) for v in value or []}
+
+
+def _refusal_key(device: str, asked: tuple[int, int], nearest: tuple[int, int]) -> str:
+    return f"{device}|{asked[0]}x{asked[1]}|{nearest[0]}x{nearest[1]}"
+
+
+def _remember_refusal(key: str) -> None:
+    try:
+        from PySide6.QtCore import QSettings
+
+        known = _refused_before()
+        if key not in known:
+            QSettings().setValue(NOT_GIVEN_KEY, sorted(known | {key})[-40:])
+    except Exception:  # noqa: BLE001, S110 - kept for this run all the same
+        pass
 
 
 def listed_modes(name: str) -> list:
@@ -370,12 +402,17 @@ def asked_first(modes, w: int, h: int, fps: int, device: str = "") -> list[dict[
     2560x1440 alone (2026-11-21) and every picture was taken in at 1440p and shrunk for a 720p source, though
     Elgato says the card sends 1080p and 720p for that input. FFmpeg matches the size against everything the
     device offers, also formats it has no name for and ranges of sizes, which parse_dshow_modes leaves out. A
-    device that refuses, or opens at another size, isn't asked again this run (_not_given)."""
+    device that refuses, or opens at another size, isn't asked again: this run (_not_given) nor later ones while
+    its list stays the same (_refused_before)."""
     usable = [m for m in modes if m[0] == "pixel_format" or m[1] == "mjpeg"]
     sizes = sorted({(m[2], m[3]) for m in usable}, key=lambda s: s[0] * s[1])
     nearest = next((s for s in sizes if s[0] >= w and s[1] >= h), None)
     if (w, h) in sizes or nearest is None or (device, (w, h)) in _not_given:
         return []
+    if _refusal_key(device, (w, h), nearest) in _refused_before():
+        _not_given.add((device, (w, h)))
+        return []
+    _asked_nearest[(device, (w, h))] = nearest
     # Always with a rate (never the device's own for that size, which may be slower than asked): the rate asked,
     # then the listed size's own nearest (59.9999 as its exact interval).
     near = [m for m in usable if (m[2], m[3]) == nearest and m[4] - 0.01 <= fps <= m[5] + 0.01]
@@ -391,6 +428,9 @@ def not_given(device: str, asked: tuple[int, int], got: tuple[int, int] | None) 
     if not got or tuple(got) == tuple(asked) or (device, tuple(asked)) in _not_given:
         return False
     _not_given.add((device, tuple(asked)))
+    nearest = _asked_nearest.get((device, tuple(asked)))
+    if nearest:
+        _remember_refusal(_refusal_key(device, tuple(asked), nearest))
     return True
 
 
