@@ -581,3 +581,30 @@ def test_a_place_added_reaches_the_path_file_right_away(tmp_path, monkeypatch):
     finally:
         w.close()
         QSettings().clear()
+
+
+def test_on_a_short_screen_the_suggestions_scroll_and_the_buttons_stay_on_it(monkeypatch):
+    """Mikedog151 2026-11-23: on a 1600x900 all-in-one the suggestions needed 895 px of 860, so Windows pushed the
+    window past the screen (Apply under the taskbar)."""
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app.wizard import OptimizeWizard
+
+    app = QApplication.instance() or QApplication([])
+
+    def fake(p):
+        p.threads, p.memory_gb, p.codec, p.upload_kbps = 4, 4.0, "libx264", 3000
+        return "fake"
+
+    monkeypatch.setattr(optimize, "CHECKS", [optimize.Check("all", "Everything", fake)])
+    w = OptimizeWizard(_collection(), first_run=True, run_in_thread=False)
+    w._room = lambda: 520
+    w.show()
+    app.processEvents()
+    assert w.height() <= 520
+    w.test_upload.setChecked(False)
+    w.start_checks()
+    app.processEvents()
+    assert w.height() <= 520 and w.minimumHeight() <= 520  # the pages scroll instead
+    assert w.scroll.verticalScrollBar().maximum() > 0
+    w.close()
