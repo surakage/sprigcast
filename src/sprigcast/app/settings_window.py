@@ -295,6 +295,20 @@ def _devices(devices) -> dict[str, list[str]]:
     return devices
 
 
+class _DeviceScan:
+    """The audio devices for the Audio page: called, they're waited for (_devices); ready() says whether that's
+    without a wait, so the page can make its Devices tab once they're found instead of holding the window."""
+
+    def __init__(self, devices):
+        self.devices = devices
+
+    def __call__(self) -> dict[str, list[str]]:
+        return _devices(self.devices)
+
+    def ready(self) -> bool:
+        return not hasattr(self.devices, "done") or self.devices.done()
+
+
 LINED_UP = "settingsLinedUp"  # a form label already set level with its box
 TALL_FIELD = 48  # a box taller than this (text areas, lists) keeps its label at the top
 
@@ -463,7 +477,7 @@ class SettingsWindow(QDialog):
             "Appearance": self._appearance_page,
             "Stream": lambda: self._stream_page(encoder),
             "Recording": lambda: self._recording_page(encoder),
-            "Audio": lambda: self._audio_page(lambda: _devices(audio_devices)),
+            "Audio": lambda: self._audio_page(_DeviceScan(audio_devices)),
             "Video": self._video_page,
             "Connections": lambda: self._connections_page(control),
         }
