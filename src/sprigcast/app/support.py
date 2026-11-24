@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLay
 from sprigcast.app import icons, theme
 
 TIP_URL = "https://slothbloom.com/tip"
+DISCORD_URL = "https://discord.gg/fgMD33XrhM"  # the SprigCast server: #help, #bug-reports, #feature-ideas
 
 HEADING = "Thank you for being here"
 MESSAGE = (
