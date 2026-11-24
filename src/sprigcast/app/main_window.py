@@ -3017,6 +3017,7 @@ class MainWindow(QMainWindow):
         help_menu = bar.addMenu("&Help")
         help_menu.addAction("Keyboard shortcuts").triggered.connect(lambda: self._show_shortcuts())
         help_menu.addSeparator()
+        help_menu.addAction("Get help on Discord").triggered.connect(lambda: self._open_discord())
         help_menu.addAction("Report a problem…").triggered.connect(lambda: self.report_problem())
         help_menu.addAction("Export report").triggered.connect(lambda: self.export_report())
         help_menu.addAction("Open logs folder").triggered.connect(lambda: self._open_logs())
@@ -3133,6 +3134,15 @@ class MainWindow(QMainWindow):
         else:
             text = f"Couldn't repot {missed} of {len(files)} (details in the log)"
         self.statusBar().showMessage(text, 10000)
+
+    def _open_discord(self) -> None:
+        """Help → Get help on Discord: the SprigCast server's invite in the browser."""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        from sprigcast.app.support import DISCORD_URL
+
+        QDesktopServices.openUrl(QUrl(DISCORD_URL))
 
     def _open_tip_page(self) -> None:
         """Help → Support SprigCast: what the project is and why a tip helps, then Close or the tip page."""

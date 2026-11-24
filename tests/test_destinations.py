@@ -712,7 +712,7 @@ def test_menu_bar_order_and_shortcut_list(app, tmp_path, monkeypatch):
                             "Show file"]
         assert texts(4) == ["New…", "Duplicate…", "Rename…", "Remove", "Import…", "Export…"]
         assert texts(5) == ["Get started…", "Stream doctor…", "Hotkeys…", "Plugin store…"]
-        assert texts(6) == ["Keyboard shortcuts", "Report a problem…", "Export report", "Open logs folder",
+        assert texts(6) == ["Keyboard shortcuts", "Get help on Discord", "Report a problem…", "Export report", "Open logs folder",
                             "About SprigCast", "Support SprigCast"]
         palette = {c.title for c in w._palette_commands()}
         assert {"Optimize for this PC", "Starter kit", "Check for updates", "Stats", "Main", "Stream details"} <= palette
@@ -721,6 +721,10 @@ def test_menu_bar_order_and_shortcut_list(app, tmp_path, monkeypatch):
         help_menu = w.menuBar().actions()[6].menu()
         next(a for a in help_menu.actions() if a.text() == "Support SprigCast").trigger()
         assert shown and shown[0].windowTitle() == "Support SprigCast"
+        opened = []
+        monkeypatch.setattr("PySide6.QtGui.QDesktopServices.openUrl", lambda url: opened.append(url.toString()))
+        next(a for a in help_menu.actions() if a.text() == "Get help on Discord").trigger()
+        assert opened == ["https://discord.gg/fgMD33XrhM"]
         for menu_action in w.menuBar().actions():  # no tick column on the left of any top menu
             assert not any(a.isCheckable() for a in menu_action.menu().actions())
     finally:
