@@ -189,6 +189,22 @@ def place_size(size, canvas) -> tuple[int, int] | None:
     return (w, h) if 0 < w <= canvas.width and 0 < h <= canvas.height and (w, h) != (canvas.width, canvas.height) else None
 
 
+def extra_size(size, main, extra) -> tuple[int, int] | None:
+    """The size the additional (vertical) canvas goes out at: the place's own size carried over, its short side
+    the same as the place's, its shape the vertical canvas's own. A Twitch place at 720p sent the vertical at
+    1080x1920 because only the horizontal canvas took the place's size (live 2026-11-23: the user streams 720p60
+    everywhere). None when the place has no size of its own or it isn't smaller than the vertical canvas."""
+    own = place_size(size, main)
+    if own is None:
+        return None
+    short = min(own)
+    long_side, short_side = max(extra.width, extra.height), min(extra.width, extra.height)
+    if short >= short_side:
+        return None
+    scaled = round(long_side * short / short_side / 2) * 2
+    return (short, scaled) if extra.height > extra.width else (scaled, short)
+
+
 LIGHT_TRACKS = 2  # qualities a canvas asks Twitch for when the place leaves it on Auto
 
 

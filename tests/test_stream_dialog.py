@@ -371,3 +371,21 @@ def test_expert_settings_never_bring_back_another_services_account_row(fake_keyr
         assert not d.signin_row.isVisibleTo(d) and not d.signin_label.isVisibleTo(d)
         assert not d.twitch_button.isVisibleTo(d)  # connected: no "Connect Account" beside "Connected as"
     d.close()
+
+
+def test_the_additional_canvas_says_the_size_the_place_sends_it_at(fake_keyring, monkeypatch):
+    """A 720p Twitch place sends the vertical at 720x1280 (live 2026-11-23: Twitch offered only 1080p for it)."""
+    monkeypatch.delenv("SPRIGCAST_TWITCH_VERTICAL", raising=False)
+    app = QApplication.instance() or QApplication([])  # noqa: F841
+    from sprigcast.app.stream_dialog import StreamPage
+
+    col = SceneCollection(
+        canvases=[Canvas(id="horizontal", width=1920, height=1080), Canvas(id="vertical", width=1080, height=1920)],
+        outputs=[Output(id="out-twitch", type="stream", service="twitch", canvas="horizontal", key_ref="sprigcast/t",
+                        size=(1280, 720), enhanced=True, enhanced_vertical=True)],
+    )
+    d = StreamPage(col)
+    row = d.extra_canvas.findData("vertical")
+    assert d.extra_canvas.itemText(row) == "Vertical (720×1280)"
+    d.size.setCurrentIndex(d.size.findData(""))  # the canvas's own size
+    assert d.extra_canvas.itemText(row) == "Vertical (1080×1920)"

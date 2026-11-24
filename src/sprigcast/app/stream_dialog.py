@@ -467,6 +467,8 @@ class StreamPage(QWidget):
             if canvas.height > canvas.width:
                 self.extra_canvas.addItem(f"{canvas.id.capitalize()} ({canvas.width}×{canvas.height})", canvas.id)
         self.extra_canvas.currentIndexChanged.connect(self._edited)
+        self.size.currentIndexChanged.connect(self._name_extra_canvas)
+        self.canvas.currentIndexChanged.connect(self._name_extra_canvas)
         form.addRow("Additional canvas", self.extra_canvas)
         # Twitch's vertical (dual format): hidden when it's switched off (SPRIGCAST_TWITCH_VERTICAL=0).
         from sprigcast.output.enhanced import vertical_allowed
@@ -688,6 +690,21 @@ class StreamPage(QWidget):
     def _canvas(self):
         canvas_id = self.canvas.currentData()
         return next((c for c in self.collection.canvases if c.id == canvas_id), self.collection.canvases[0])
+
+    def _name_extra_canvas(self, *_args) -> None:
+        """The Additional canvas choice says the size it goes out at: the place's own size carries over to it (a
+        720p place sends the vertical at 720x1280, not its canvas's 1080x1920)."""
+        from sprigcast.output.enhanced import extra_size
+
+        main = next((c for c in self.collection.canvases if c.id == self.canvas.currentData()), None)
+        data = self.size.currentData() or ""
+        size = tuple(int(n) for n in data.split("x")) if data else None
+        for row in range(1, self.extra_canvas.count()):
+            canvas = next((c for c in self.collection.canvases if c.id == self.extra_canvas.itemData(row)), None)
+            if canvas is None:
+                continue
+            w, h = (extra_size(size, main, canvas) if main is not None else None) or (canvas.width, canvas.height)
+            self.extra_canvas.setItemText(row, f"{canvas.id.capitalize()} ({w}×{h})")
 
     def _fill_size_and_fps(self, size: tuple[int, int] | None, fps: int | None) -> None:
         """Offer sizes that keep the canvas shape and frame rates up to the canvas's."""

@@ -224,6 +224,23 @@ def test_a_place_smaller_than_its_canvas_asks_twitch_for_no_bigger_quality():
     assert (second["width"], second["height"]) == (1080, 1920)
 
 
+def test_the_vertical_canvas_goes_out_at_the_places_size_too():
+    """A 720p place: the vertical goes out at 720x1280, not its canvas's 1080x1920 (live 2026-11-23)."""
+    from types import SimpleNamespace
+
+    from sprigcast.output import enhanced as e
+
+    main, vertical = SimpleNamespace(width=1920, height=1080), SimpleNamespace(width=1080, height=1920)
+    assert e.extra_size((1280, 720), main, vertical) == (720, 1280)
+    assert e.extra_size((1600, 900), main, vertical) == (900, 1600)
+    assert e.extra_size(None, main, vertical) is None and e.extra_size((1920, 1080), main, vertical) is None
+    assert e.extra_size((1280, 720), main, SimpleNamespace(width=720, height=1280)) is None  # already that small
+    body = e.build_request("k", [e.CanvasInfo(1920, 1080, 60, (1280, 720)),
+                                 e.CanvasInfo(1080, 1920, 60, e.extra_size((1280, 720), main, vertical))], "0.1.0")
+    second = body["preferences"]["canvases"][1]
+    assert (second["width"], second["height"], second["canvas_width"]) == (720, 1280, 1080)
+
+
 def _vertical_answer(kind: str) -> dict:
     return {**ANSWER, "encoder_configurations": [
         {"type": "obs_nvenc_h264_tex", "width": 1280, "height": 720, "framerate": {"numerator": 60, "denominator": 1},
