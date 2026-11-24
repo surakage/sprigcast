@@ -12,6 +12,8 @@ with a big garden brought over from OBS (88 scenes, 61 web pages, about 78 neste
 
 ### Added
 
+- Help → Get help on Discord opens the SprigCast Discord server, where #help, #bug-reports and #feature-ideas
+  live.
 - The license files are also at the top of SprigCast's folder (Programs\SprigCast), where people look for them, not
   only in its python folder. `app.info`, the hello and connection.json have `build`: the version as SprigCast
   shows it, naming a test build.
