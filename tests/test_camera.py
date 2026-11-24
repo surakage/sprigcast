@@ -756,3 +756,51 @@ def test_the_whole_list_is_kept_for_the_log_as_it_came():
     assert [m[2:4] for m in parse_dshow_modes(lines)] == [(2560, 1440), (2560, 1440)]  # what SprigCast reads
     assert raw_modes_line(lines) == "nv12 2560x1440 60; 0x30313050 1920x1080 60; yuyv422 640x360-1920x1080 60"
     assert raw_modes_line([]) == "nothing"
+
+
+def test_a_capture_card_given_a_signal_is_opened_again():
+    """PC 2026-11-24: the HD60 X listed only 2560x1440 with no signal and was opened at that; a console's 1080p then
+    showed "INVALID OUTPUT RESOLUTION SELECTED". Dark, then lit: opened again with its list read afresh."""
+    import numpy as np
+
+    from sprigcast.sources import camera as cam_mod
+
+    watch = cam_mod.SignalWatch()
+    assert watch.due(0.0) and not watch.due(1.0) and watch.due(3.0)
+    black = np.full((1080, 1280), 16, dtype=np.uint8)  # I420 rows: Y then U and V
+    black[720:] = 128
+    lit = black.copy()
+    lit[:720, :640] = 200
+    assert not watch.look(*cam_mod.picture_light((black, "I420/709/tv")))
+    assert not watch.look(*cam_mod.picture_light((black, "I420/709/tv")))
+    assert watch.look(*cam_mod.picture_light((lit, "I420/709/tv")))
+    assert not watch.look(*cam_mod.picture_light((lit, "I420/709/tv")))  # once per signal, never a loop
+    # A picture lit from the start (a card opened with its signal on) never reopens.
+    fresh = cam_mod.SignalWatch()
+    assert not fresh.look(*cam_mod.picture_light((np.full((8, 8, 4), 180, dtype=np.uint8), "RGBA")))
+    assert cam_mod.picture_light(None) is None and cam_mod.picture_light("blank") is None
+
+    cam_mod._not_given.update({("Card", (1280, 720)), ("Webcam", (1280, 720))})
+    cam_mod.forget_refusals("Card")
+    assert cam_mod._not_given == {("Webcam", (1280, 720))}
+    cam_mod._not_given.clear()
+
+
+def test_only_a_one_size_card_opened_bigger_is_looked_at():
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from sprigcast.sources import camera as cam_mod
+
+    feed = cam_mod._Feed("camera-1", {"name": "Card", "path": "", "width": 1280, "height": 720, "fps": 30})
+    taken = []
+    player = SimpleNamespace(video_frame=lambda: taken.append(1) or (np.zeros((8, 8, 4), np.uint8), "RGBA"))
+    feed.modes_seen = [("pixel_format", "nv12", 2560, 1440, 60.0, 60.0)]
+    feed.given = (1280, 720)  # given what was asked: nothing to look at
+    assert not feed._signal_came(player, 1280, 720, cam_mod.SignalWatch()) and not taken
+    feed.given = (2560, 1440)
+    assert not feed._signal_came(player, 1280, 720, cam_mod.SignalWatch()) and taken
+    taken.clear()
+    feed.modes_seen.append(("pixel_format", "nv12", 1920, 1080, 60.0, 60.0))  # a webcam's list: never looked at
+    assert not feed._signal_came(player, 1280, 720, cam_mod.SignalWatch()) and not taken
