@@ -276,3 +276,17 @@ def test_hevc_keyframes_get_hevc_sei_before_the_slice():
     vps, sps, pps, idr = (b"\x00\x00\x00\x01\x40\x01v", b"\x00\x00\x00\x01\x42\x01s", b"\x00\x00\x00\x01\x44\x01p",
                           b"\x00\x00\x00\x01\x26\x01slice")
     assert e.with_sei(vps + sps + pps + idr, sei, hevc=True) == vps + sps + pps + sei + idr
+
+
+def test_an_engine_sent_enhanced_stream_counts_network_like_the_other_places():
+    """Network = time with more than NETWORK_BEHIND_S waiting, not time inside the send call (62% with nothing
+    waiting at 9.5 Mbps, stream review 2026-11-23)."""
+    from sprigcast.output.enhanced_stream import EnhancedStreamer
+
+    st = EnhancedStreamer.__new__(EnhancedStreamer)
+    st.bitrate_kbps, st.behind_seconds, st._engine_sent = 9500, 0.0, True
+    st._note_behind(0, now=0.0)
+    st._note_behind(1000, now=1.0)  # almost nothing waiting
+    assert st.behind_seconds == 0.0
+    st._note_behind(9500 * 125, now=2.0)  # a second of the stream waiting
+    assert st.behind_seconds == 1.0

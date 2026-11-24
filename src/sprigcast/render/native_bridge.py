@@ -36,6 +36,7 @@ LINK_RESET_WINDOW_S = 60.0  # ...within this long of each other (a stall is retr
 
 STILL_AFTER_S = 1.0  # a source that sent nothing for this long is treated as a still picture (kept for rebuilds)
 STATS_EVERY_S = 1.0
+SLOW_END_S = 0.03  # an output's end taking this long is logged (a 352 ms step at Stop, stream review 2026-11-23)
 HUNG_GIVE_UP_S = 3.0  # a frame stuck this long (after the engine's own 2 s) and Python draws everything again
 
 
@@ -681,10 +682,18 @@ class NativeCanvases:
             self._output_scale[slot] = scale
         for key in [k for k in current if k not in want]:
             out = current.pop(key)
+            began = time.perf_counter()
             self._unlink(slot, out)
+            unlinked = time.perf_counter()
             self._dropped.pop((slot, out), None)
             self._last_out.pop((canvas_id, key), None)
             self._guard("output", self.engine.set_output, slot, out, 0, 0)
+            ended = time.perf_counter()
+            if ended - began >= SLOW_END_S:  # on the render thread: say which part held the picture up
+                log.info("native engine: ending %s's %dx%d output%s took %.0f ms (its recording or stream let go "
+                         "in %.0f ms, the engine's output in %.0f ms)", canvas_id, key[0][0], key[0][1],
+                         " on the card" if key[1] else "", 1000 * (ended - began), 1000 * (unlinked - began),
+                         1000 * (ended - unlinked))
         free = [o for o in range(sprigcore.ENGINE_OUTPUTS) if o not in current.values()]
         for key in want:
             if key not in current and free:
