@@ -239,6 +239,11 @@ def test_the_vertical_canvas_goes_out_at_the_places_size_too():
                                  e.CanvasInfo(1080, 1920, 60, e.extra_size((1280, 720), main, vertical))], "0.1.0")
     second = body["preferences"]["canvases"][1]
     assert (second["width"], second["height"], second["canvas_width"]) == (720, 1280, 1080)
+    line = e.asked_line(e.build_request("live_secret", [e.CanvasInfo(1920, 1080, 60, (1280, 720)),
+                                                        e.CanvasInfo(1080, 1920, 60, (720, 1280))], "0.1.0",
+                                        max_tracks=4, max_bitrate_kbps=9000))
+    assert line == ("canvas 0 1280x720@60 of 1920x1080, canvas 1 720x1280@60 of 1080x1920; at most 4 tracks, "
+                    "9000 kbps at most") and "secret" not in line
 
 
 def _vertical_answer(kind: str) -> dict:

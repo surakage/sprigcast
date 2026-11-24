@@ -7093,6 +7093,7 @@ class MainWindow(QMainWindow):
                 max_tracks=output.enhanced_max_tracks or enhanced.LIGHT_TRACKS * len(canvases),
                 max_bitrate_kbps=output.enhanced_max_kbps or None,
             )
+            log.info("Enhanced Broadcasting: asking Twitch for %s", enhanced.asked_line(request))
             from sprigcast.core.workers import wait_answering
 
             answer = wait_answering(enhanced.fetch_config, request)  # a web request: off the window's thread

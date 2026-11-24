@@ -205,6 +205,23 @@ def extra_size(size, main, extra) -> tuple[int, int] | None:
     return (short, scaled) if extra.height > extra.width else (scaled, short)
 
 
+def asked_line(request: dict) -> str:
+    """What SprigCast told Twitch, for the log (no key): "canvas 0 1280x720@60 of 1920x1080, canvas 1 ...;
+    at most 4 tracks, bandwidth auto". The canvases told weren't in the log (stream review 2026-11-23)."""
+    prefs = request.get("preferences", {})
+    parts = []
+    for i, c in enumerate(prefs.get("canvases", [])):
+        fps = c.get("framerate", {})
+        rate = fps.get("numerator", 0) / max(1, fps.get("denominator", 1)) if isinstance(fps, dict) else fps
+        parts.append(f"canvas {i} {c.get('width')}x{c.get('height')}@{rate:g} of {c.get('canvas_width')}x"
+                     f"{c.get('canvas_height')}")
+    tracks = prefs.get("maximum_video_tracks")
+    bps = prefs.get("maximum_aggregate_bitrate")
+    kbps = int(bps) // 1000 if bps else 0
+    return (", ".join(parts) or "no canvases") + (f"; at most {tracks} tracks" if tracks else "") + \
+        (f", {kbps} kbps at most" if kbps else ", bandwidth auto")
+
+
 LIGHT_TRACKS = 2  # qualities a canvas asks Twitch for when the place leaves it on Auto
 
 
