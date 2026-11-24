@@ -646,7 +646,7 @@ def watch_stalls(clock=time.perf_counter, interval: float = 0.05) -> None:
                 last = now
                 if late >= STALL_MS and now - logged >= STALL_EVERY_S:
                     logged = now
-                    log.info("everything waited %.0f ms; busy then: %s", late, busy_stacks(me))
+                    log.info("everything waited %.0f ms; busy then: %s%s", late, busy_stacks(me), memory_pressure())
                 _check_window(now)
                 _check_busy(now)
             except Exception:  # noqa: BLE001
@@ -890,6 +890,31 @@ def thread_names(threads=None) -> str:
     names = collections.Counter(re.sub(r"[-_]\d+", "", t.name).strip() or "thread"
                                 for t in (threading.enumerate() if threads is None else threads))
     return ", ".join(f"{name} ×{n}" if n > 1 else name for name, n in sorted(names.items()))
+
+
+_faults_seen: tuple[float, int] | None = None  # (time, this process's page faults) at the last memory_pressure
+
+
+def memory_pressure() -> str:
+    """"; PC memory free 1,100 of 3,980 MB, page faults 2,310/s": whether a long wait was the PC paging (a 4 GB
+    PC with a hard drive waited 12.8 s opening Settings, with nothing in the log to say why: Mikedog151,
+    2026-11-23). Page faults are SprigCast's own since the last line (soft and hard together: Windows gives one
+    count). Empty when unknown."""
+    global _faults_seen
+    try:
+        import psutil
+
+        ram = psutil.virtual_memory()
+        text = f"; PC memory free {ram.available / 1e6:,.0f} of {ram.total / 1e6:,.0f} MB"
+        faults = getattr(psutil.Process().memory_info(), "num_page_faults", None)
+        now = time.monotonic()
+        if faults is not None:
+            if _faults_seen is not None and now > _faults_seen[0]:
+                text += f", page faults {(faults - _faults_seen[1]) / (now - _faults_seen[0]):,.0f}/s"
+            _faults_seen = (now, faults)
+        return text
+    except Exception:  # noqa: BLE001 (a diagnostic: never in the way)
+        return ""
 
 
 TRIM_KEEP_MB = 160  # what stays in memory at rest: the pages touched last (the window, the render loop)

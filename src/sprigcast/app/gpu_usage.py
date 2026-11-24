@@ -203,8 +203,10 @@ def log_gpu_users_later(stalled_ms: float) -> None:
                 time.sleep(1.0)
                 counter.read()
                 counter.close()
-            log.info("graphics card stalled %.0f ms; programs using it then: %s", stalled_ms,
-                     describe_processes(counter.processes))
+            from sprigcast.core.pacing import memory_pressure
+
+            log.info("graphics card stalled %.0f ms; programs using it then: %s%s", stalled_ms,
+                     describe_processes(counter.processes), memory_pressure())
         except Exception as exc:  # noqa: BLE001 (a diagnostic: never in the way)
             log.info("graphics card stalled %.0f ms; couldn't see who used it: %s", stalled_ms, exc)
 
