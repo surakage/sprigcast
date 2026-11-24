@@ -137,6 +137,19 @@ ERRORS_LOGGED = 3  # a page's console errors logged after each load
 RENDERER_LIMIT = 2  # Chromium page processes for every browser source and web dock together
 
 
+GPU_MEM_MB = 512  # the graphics memory Chromium is told it has, to size its buffers by (chromium_flags)
+BIG_MEMORY_GB = 8.5  # PCs with more memory than this get GPU_MEM_MB; smaller ones keep Chromium's own choice
+
+
+def _big_memory() -> bool:
+    try:
+        import psutil
+
+        return psutil.virtual_memory().total / 2**30 > BIG_MEMORY_GB
+    except Exception:  # noqa: BLE001 - left to Chromium
+        return False
+
+
 def chromium_flags(current: str = "") -> str:
     """Chromium's start flags with a cap on page processes: each site got its own (60-100 MB each), so five
     overlays from five sites cost five. Two keeps one crashing page from taking all of them down with it.
@@ -150,6 +163,11 @@ def chromium_flags(current: str = "") -> str:
         # A page's own count of its script memory to the byte and fresh (page_rest.PageSizes): Chromium rounds it
         # to buckets and renews it every 20 minutes otherwise.
         flags = f"{flags} --enable-precise-memory-info"
+    if "--force-gpu-mem-available-mb" not in flags and _big_memory():
+        # Chromium sizes its graphics buffers from the card: on the PC's 16 GB card the page helper held 1.9 GB for
+        # 34 overlays; told 512 MB it held 344 MB less, every page drawn the same (A/B on the PC, 2026-11-24).
+        # A PC with 8 GB or less is left to Chromium, which already keeps its budget small there.
+        flags = f"{flags} --force-gpu-mem-available-mb={GPU_MEM_MB}"
     if "--renderer-process-limit" in current:
         return flags.strip()  # set by hand (to test something): kept
     return f"{flags} --renderer-process-limit={RENDERER_LIMIT}".strip()

@@ -87,13 +87,26 @@ def test_thread_names_group_the_numbered_ones():
     assert "python threads" in __import__("sprigcast.core.pacing", fromlist=["x"]).memory_line()
 
 
-def test_chromium_gets_a_cap_on_page_processes():
+def test_chromium_gets_a_cap_on_page_processes(monkeypatch):
+    from sprigcast.app import browser_host
     from sprigcast.app.browser_host import chromium_flags
 
+    monkeypatch.setattr(browser_host, "_big_memory", lambda: False)
     auto = "--autoplay-policy=no-user-gesture-required --enable-precise-memory-info"
     assert chromium_flags("") == f"{auto} --renderer-process-limit=2"
     assert chromium_flags("--enable-gpu") == f"--enable-gpu {auto} --renderer-process-limit=2"
     assert chromium_flags("--renderer-process-limit=5") == f"--renderer-process-limit=5 {auto}"  # set by hand: kept
+
+
+def test_chromium_is_given_a_smaller_graphics_budget_on_big_pcs(monkeypatch):
+    """PC 2026-11-24: 34 overlays held 1.9 GB in the page helper; told 512 MB, 344 MB less."""
+    from sprigcast.app import browser_host
+
+    monkeypatch.setattr(browser_host, "_big_memory", lambda: True)
+    assert "--force-gpu-mem-available-mb=512" in browser_host.chromium_flags("")
+    assert browser_host.chromium_flags("--force-gpu-mem-available-mb=256").count("force-gpu-mem") == 1  # by hand
+    monkeypatch.setattr(browser_host, "_big_memory", lambda: False)
+    assert "force-gpu-mem" not in browser_host.chromium_flags("")  # small PCs: Chromium's own choice
 
 
 @pytest.fixture
