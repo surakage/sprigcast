@@ -180,7 +180,12 @@ def _libraries() -> str:
 def pc_lines() -> list[str]:
     from sprigcast.app.logbook import _version
 
-    lines = [f"SprigCast {_version()}{'' if getattr(sys, 'frozen', False) else ' (run from source)'}",
+    from sprigcast.update import installed_dir
+
+    # Installed: Setup's folder (its own Python, never a frozen exe): "(run from source)" was said on an installed
+    # build (Mikedog151's report, 2026-11-23).
+    installed = getattr(sys, "frozen", False) or installed_dir() is not None
+    lines = [f"SprigCast {_version()}{'' if installed else ' (run from source)'}",
              f"Windows: {_windows()}"]
     try:
         from sprigcast.app.optimize import _cpu_name
