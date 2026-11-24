@@ -934,7 +934,11 @@ class SignalWatch:
     """Whether a capture card that opened bigger than asked has just been given a signal, from a look at its
     picture every EVERY_S. The PC's HD60 X (2026-11-24) lists only 2560x1440 while it has no signal, so it was
     opened at that; a console then sent 1080p and the card showed "INVALID OUTPUT RESOLUTION SELECTED" (it never
-    upscales, and gives what the app asked for). Dark then lit: closed and opened again, its list read afresh."""
+    upscales, and gives what the app asked for). Dark then lit: closed and opened again, its list read afresh.
+
+    Only while the picture has been dark since the card opened: once it has shown a picture the watch ends. On the
+    PC (2026-11-24, EDID Internal, PS5 at 1440p) a game's black loading screen read as "a signal came" and the card
+    was opened again mid-game, twice in 12 s, each a gap in the picture."""
 
     EVERY_S = 3.0
     DARK_MEAN = 24.0  # TV-range black is 16
@@ -943,18 +947,24 @@ class SignalWatch:
     def __init__(self) -> None:
         self.dark = False
         self.next = 0.0
+        self.ended = False
 
     def due(self, now: float) -> bool:
-        if now < self.next:
+        if self.ended or now < self.next:
             return False
         self.next = now + self.EVERY_S
         return True
 
     def look(self, mean: float, spread: float) -> bool:
-        """True when the picture lights up after being dark (a signal arrived)."""
+        """True when the picture lights up after being dark since the card opened (a signal arrived); a picture
+        lit once ends the watch, so a dark scene later on never reopens the card."""
+        if self.ended:
+            return False
         dark = mean < self.DARK_MEAN and spread < self.DARK_SPREAD
         lit = self.dark and not dark
         self.dark = dark
+        if not dark:
+            self.ended = True
         return lit
 
 

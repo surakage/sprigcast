@@ -775,9 +775,15 @@ def test_a_capture_card_given_a_signal_is_opened_again():
     assert not watch.look(*cam_mod.picture_light((black, "I420/709/tv")))
     assert watch.look(*cam_mod.picture_light((lit, "I420/709/tv")))
     assert not watch.look(*cam_mod.picture_light((lit, "I420/709/tv")))  # once per signal, never a loop
+    # Once lit, a dark scene (a game's loading screen) and back never reopens it, and no more looks are taken.
+    assert not watch.look(*cam_mod.picture_light((black, "I420/709/tv")))
+    assert not watch.look(*cam_mod.picture_light((lit, "I420/709/tv")))
+    assert not watch.due(100.0)
     # A picture lit from the start (a card opened with its signal on) never reopens.
     fresh = cam_mod.SignalWatch()
     assert not fresh.look(*cam_mod.picture_light((np.full((8, 8, 4), 180, dtype=np.uint8), "RGBA")))
+    assert not fresh.look(*cam_mod.picture_light((black, "I420/709/tv")))
+    assert not fresh.look(*cam_mod.picture_light((lit, "I420/709/tv"))) and not fresh.due(10.0)
     assert cam_mod.picture_light(None) is None and cam_mod.picture_light("blank") is None
 
     cam_mod._not_given.update({("Card", (1280, 720)), ("Webcam", (1280, 720))})
