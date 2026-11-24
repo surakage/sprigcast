@@ -224,6 +224,28 @@ def test_a_place_smaller_than_its_canvas_asks_twitch_for_no_bigger_quality():
     assert (second["width"], second["height"]) == (1080, 1920)
 
 
+def test_the_vertical_canvas_goes_out_at_the_places_size_too():
+    """A 720p place: the vertical goes out at 720x1280, not its canvas's 1080x1920 (live 2026-11-23)."""
+    from types import SimpleNamespace
+
+    from sprigcast.output import enhanced as e
+
+    main, vertical = SimpleNamespace(width=1920, height=1080), SimpleNamespace(width=1080, height=1920)
+    assert e.extra_size((1280, 720), main, vertical) == (720, 1280)
+    assert e.extra_size((1600, 900), main, vertical) == (900, 1600)
+    assert e.extra_size(None, main, vertical) is None and e.extra_size((1920, 1080), main, vertical) is None
+    assert e.extra_size((1280, 720), main, SimpleNamespace(width=720, height=1280)) is None  # already that small
+    body = e.build_request("k", [e.CanvasInfo(1920, 1080, 60, (1280, 720)),
+                                 e.CanvasInfo(1080, 1920, 60, e.extra_size((1280, 720), main, vertical))], "0.1.0")
+    second = body["preferences"]["canvases"][1]
+    assert (second["width"], second["height"], second["canvas_width"]) == (720, 1280, 1080)
+    line = e.asked_line(e.build_request("live_secret", [e.CanvasInfo(1920, 1080, 60, (1280, 720)),
+                                                        e.CanvasInfo(1080, 1920, 60, (720, 1280))], "0.1.0",
+                                        max_tracks=4, max_bitrate_kbps=9000))
+    assert line == ("canvas 0 1280x720@60 of 1920x1080, canvas 1 720x1280@60 of 1080x1920; at most 4 tracks, "
+                    "9000 kbps at most") and "secret" not in line
+
+
 def _vertical_answer(kind: str) -> dict:
     return {**ANSWER, "encoder_configurations": [
         {"type": "obs_nvenc_h264_tex", "width": 1280, "height": 720, "framerate": {"numerator": 60, "denominator": 1},
@@ -254,3 +276,17 @@ def test_hevc_keyframes_get_hevc_sei_before_the_slice():
     vps, sps, pps, idr = (b"\x00\x00\x00\x01\x40\x01v", b"\x00\x00\x00\x01\x42\x01s", b"\x00\x00\x00\x01\x44\x01p",
                           b"\x00\x00\x00\x01\x26\x01slice")
     assert e.with_sei(vps + sps + pps + idr, sei, hevc=True) == vps + sps + pps + sei + idr
+
+
+def test_an_engine_sent_enhanced_stream_counts_network_like_the_other_places():
+    """Network = time with more than NETWORK_BEHIND_S waiting, not time inside the send call (62% with nothing
+    waiting at 9.5 Mbps, stream review 2026-11-23)."""
+    from sprigcast.output.enhanced_stream import EnhancedStreamer
+
+    st = EnhancedStreamer.__new__(EnhancedStreamer)
+    st.bitrate_kbps, st.behind_seconds, st._engine_sent = 9500, 0.0, True
+    st._note_behind(0, now=0.0)
+    st._note_behind(1000, now=1.0)  # almost nothing waiting
+    assert st.behind_seconds == 0.0
+    st._note_behind(9500 * 125, now=2.0)  # a second of the stream waiting
+    assert st.behind_seconds == 1.0

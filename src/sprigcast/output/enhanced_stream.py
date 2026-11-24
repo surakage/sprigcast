@@ -143,6 +143,8 @@ class EnhancedStreamer(Streamer):
         self.native = engine_encodes_streams()
         self._live = None  # (container, session start in perf_counter seconds) while connected, native only
         self._esend = None  # the engine's sender while it sends this connection (sprigcore.EnhancedSender)
+        self._engine_sent = False  # the engine sent it (its network figure is the backlog's, _note_behind)
+        self.behind_seconds = 0.0
         if self.native:
             for track in self.tracks:
                 track.encoder = _TrackEncoder(self, track, start_time)
@@ -237,7 +239,23 @@ class EnhancedStreamer(Streamer):
     def stats(self) -> dict:
         out = super().stats()
         out["size"] = " + ".join(f"{t.cfg.width}×{t.cfg.height}" for t in self.tracks)
+        if self._engine_sent:  # the engine sends: "network" means the same as for the other places
+            running = max(1e-6, time.monotonic() - self.started_at)
+            out["network_pct"] = 100 * self.behind_seconds / running
+            out["sending_pct"] = 100 * self.mux_seconds / running
         return out
+
+    def _note_behind(self, backlog_bytes: int, now: float | None = None) -> None:
+        """Time with more than NETWORK_BEHIND_S of the stream waiting to go out: what "network" means for the other
+        places (shared_stream). It was the time spent inside the send call, which a 9.5 Mbps connection is most
+        of the time with nothing waiting: 62% against 0-1% for the others, 0 drops (stream review 2026-11-23)."""
+        from sprigcast.output.shared_stream import NETWORK_BEHIND_S
+
+        now = time.monotonic() if now is None else now
+        was = getattr(self, "_behind_at", None)
+        self._behind_at = now
+        if was is not None and backlog_bytes * 8 / (max(1, self.bitrate_kbps) * 1000) >= NETWORK_BEHIND_S:
+            self.behind_seconds += now - was
 
     @property
     def track_summary(self) -> str:
@@ -500,6 +518,7 @@ class EnhancedStreamer(Streamer):
             line = DelayLine(self.delay_s, self._to_engine, f"delay-{self.name}") if self.delay_s > 0 else None
             self._delay_line = line
             self._esend = sender
+            self._engine_sent = True
             self._live = (None, self.start_time)  # the tracks' packets go out from their next keyframe
 
             def numbers():
@@ -507,6 +526,7 @@ class EnhancedStreamer(Streamer):
                 self.bytes_out, self.mux_seconds = base[0] + stats.bytes, base[1] + stats.send_seconds
                 self.longest_stall = max(self.longest_stall, stats.longest_send)
                 self._backlog_bytes = stats.backlog_bytes
+                self._note_behind(stats.backlog_bytes)
                 if stats.state_name == "live" and not self.connected:
                     self.connected, self._connected_at, self.status = True, time.monotonic(), "live"
                     log_live(self)

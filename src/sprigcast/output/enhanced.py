@@ -189,6 +189,39 @@ def place_size(size, canvas) -> tuple[int, int] | None:
     return (w, h) if 0 < w <= canvas.width and 0 < h <= canvas.height and (w, h) != (canvas.width, canvas.height) else None
 
 
+def extra_size(size, main, extra) -> tuple[int, int] | None:
+    """The size the additional (vertical) canvas goes out at: the place's own size carried over, its short side
+    the same as the place's, its shape the vertical canvas's own. A Twitch place at 720p sent the vertical at
+    1080x1920 because only the horizontal canvas took the place's size (live 2026-11-23: the user streams 720p60
+    everywhere). None when the place has no size of its own or it isn't smaller than the vertical canvas."""
+    own = place_size(size, main)
+    if own is None:
+        return None
+    short = min(own)
+    long_side, short_side = max(extra.width, extra.height), min(extra.width, extra.height)
+    if short >= short_side:
+        return None
+    scaled = round(long_side * short / short_side / 2) * 2
+    return (short, scaled) if extra.height > extra.width else (scaled, short)
+
+
+def asked_line(request: dict) -> str:
+    """What SprigCast told Twitch, for the log (no key): "canvas 0 1280x720@60 of 1920x1080, canvas 1 ...;
+    at most 4 tracks, bandwidth auto". The canvases told weren't in the log (stream review 2026-11-23)."""
+    prefs = request.get("preferences", {})
+    parts = []
+    for i, c in enumerate(prefs.get("canvases", [])):
+        fps = c.get("framerate", {})
+        rate = fps.get("numerator", 0) / max(1, fps.get("denominator", 1)) if isinstance(fps, dict) else fps
+        parts.append(f"canvas {i} {c.get('width')}x{c.get('height')}@{rate:g} of {c.get('canvas_width')}x"
+                     f"{c.get('canvas_height')}")
+    tracks = prefs.get("maximum_video_tracks")
+    bps = prefs.get("maximum_aggregate_bitrate")
+    kbps = int(bps) // 1000 if bps else 0
+    return (", ".join(parts) or "no canvases") + (f"; at most {tracks} tracks" if tracks else "") + \
+        (f", {kbps} kbps at most" if kbps else ", bandwidth auto")
+
+
 LIGHT_TRACKS = 2  # qualities a canvas asks Twitch for when the place leaves it on Auto
 
 

@@ -7086,12 +7086,14 @@ class MainWindow(QMainWindow):
             request = enhanced.build_request(
                 target.key, [enhanced.CanvasInfo(
                     c.width, c.height, (output.fps or c.fps) if c is target.canvas else c.fps,
-                    enhanced.place_size(output.size, c) if c is target.canvas else None) for c in canvases], __version__,
+                    enhanced.place_size(output.size, c) if c is target.canvas else
+                    enhanced.extra_size(output.size, target.canvas, c)) for c in canvases], __version__,
                 # Auto: two qualities a canvas (each more is another picture made and another encoder on the card;
                 # at 4,500 kbps viewers lose little). A number picked in the place's settings wins.
                 max_tracks=output.enhanced_max_tracks or enhanced.LIGHT_TRACKS * len(canvases),
                 max_bitrate_kbps=output.enhanced_max_kbps or None,
             )
+            log.info("Enhanced Broadcasting: asking Twitch for %s", enhanced.asked_line(request))
             from sprigcast.core.workers import wait_answering
 
             answer = wait_answering(enhanced.fetch_config, request)  # a web request: off the window's thread

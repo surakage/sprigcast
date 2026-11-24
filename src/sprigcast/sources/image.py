@@ -152,6 +152,14 @@ class ImageSource(Source):
                 frame = decoding.result()
             except Exception:  # noqa: BLE001 (logged by the worker)
                 frame = None
+        elif DECODE_ASIDE:
+            # Its first picture on a worker too (asked here, when something first shows it, so pictures nothing shows
+            # are never decoded): decoded on the render thread, one picture held a frame 215.9 ms on a light PC
+            # (Mikedog151, 2026-11-23).
+            from sprigcast.core import workers
+
+            self._decoding = workers.picture(load_rgba, self._path(), name="picture decode")
+            return None
         else:
             frame = load_rgba(self._path())
         self._pending = False

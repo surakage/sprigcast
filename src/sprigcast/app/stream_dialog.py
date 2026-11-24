@@ -457,16 +457,18 @@ class StreamPage(QWidget):
         self.enhanced_kbps.setRange(0, 100000)
         self.enhanced_kbps.setSingleStep(500)
         self.enhanced_kbps.setSuffix(" Kbps")
-        form.addRow("Maximum streaming bandwidth", self._auto_row(self.enhanced_kbps_auto, self.enhanced_kbps, 8000))
+        form.addRow("Max bandwidth", self._auto_row(self.enhanced_kbps_auto, self.enhanced_kbps, 8000))
         self.enhanced_tracks_auto, self.enhanced_tracks = QCheckBox("Auto"), QSpinBox()
         self.enhanced_tracks.setRange(0, 5)
-        form.addRow("Maximum video tracks", self._auto_row(self.enhanced_tracks_auto, self.enhanced_tracks, 3))
+        form.addRow("Max tracks", self._auto_row(self.enhanced_tracks_auto, self.enhanced_tracks, 3))
         self.extra_canvas = QComboBox()
         self.extra_canvas.addItem("None", "")
         for canvas in collection.canvases:
             if canvas.height > canvas.width:
                 self.extra_canvas.addItem(f"{canvas.id.capitalize()} ({canvas.width}×{canvas.height})", canvas.id)
         self.extra_canvas.currentIndexChanged.connect(self._edited)
+        self.size.currentIndexChanged.connect(self._name_extra_canvas)
+        self.canvas.currentIndexChanged.connect(self._name_extra_canvas)
         form.addRow("Additional canvas", self.extra_canvas)
         # Twitch's vertical (dual format): hidden when it's switched off (SPRIGCAST_TWITCH_VERTICAL=0).
         from sprigcast.output.enhanced import vertical_allowed
@@ -534,9 +536,13 @@ class StreamPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(auto)
         layout.addWidget(spin, 1)
+        spin.setSpecialValueText("Set by Twitch")  # 0 is Auto: never "0 Kbps" in the box
+
         def toggled(on: bool) -> None:
             spin.setEnabled(not on)
-            if not on and not spin.value() and not self._loading:
+            if on:
+                spin.setValue(0)
+            elif not spin.value() and not self._loading:
                 spin.setValue(start)  # a sensible first value instead of 0 (which means Auto)
 
         auto.toggled.connect(toggled)
@@ -688,6 +694,21 @@ class StreamPage(QWidget):
     def _canvas(self):
         canvas_id = self.canvas.currentData()
         return next((c for c in self.collection.canvases if c.id == canvas_id), self.collection.canvases[0])
+
+    def _name_extra_canvas(self, *_args) -> None:
+        """The Additional canvas choice says the size it goes out at: the place's own size carries over to it (a
+        720p place sends the vertical at 720x1280, not its canvas's 1080x1920)."""
+        from sprigcast.output.enhanced import extra_size
+
+        main = next((c for c in self.collection.canvases if c.id == self.canvas.currentData()), None)
+        data = self.size.currentData() or ""
+        size = tuple(int(n) for n in data.split("x")) if data else None
+        for row in range(1, self.extra_canvas.count()):
+            canvas = next((c for c in self.collection.canvases if c.id == self.extra_canvas.itemData(row)), None)
+            if canvas is None:
+                continue
+            w, h = (extra_size(size, main, canvas) if main is not None else None) or (canvas.width, canvas.height)
+            self.extra_canvas.setItemText(row, f"{canvas.id.capitalize()} ({w}×{h})")
 
     def _fill_size_and_fps(self, size: tuple[int, int] | None, fps: int | None) -> None:
         """Offer sizes that keep the canvas shape and frame rates up to the canvas's."""
