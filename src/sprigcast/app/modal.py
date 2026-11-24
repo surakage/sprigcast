@@ -27,6 +27,7 @@ def modal(dialog) -> int:
     watch = _CloseWatch.start(dialog) if _depth == 0 else None  # one watch covers pop-ups opened from pop-ups
     _depth += 1
     _time_showing(dialog)
+    _keep_on_screen(dialog)
     try:
         return dialog.exec()
     finally:
@@ -68,6 +69,21 @@ def _time_showing(dialog) -> None:
                      reader)
 
     QTimer.singleShot(0, shown)
+
+
+def _keep_on_screen(dialog) -> None:
+    """Once it's up, no bigger than its screen's free part and wholly on it (card.keep_on_screen): Settings is
+    1060 px wide, more than some small screens have."""
+    try:
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QWidget
+    except ImportError:
+        return
+    if not isinstance(dialog, QWidget):
+        return  # a stand-in (tests)
+    from sprigcast.app.card import keep_on_screen
+
+    QTimer.singleShot(0, dialog, lambda: keep_on_screen(dialog))
 
 
 _depth = 0  # pop-ups open through modal() right now (one opened from another counts twice)

@@ -78,3 +78,38 @@ def test_the_big_windows_are_rounded_cards(app):
     app.processEvents()
     assert window.card.width() == 400 and window.card.geometry().contains(window._grip.geometry())  # still resizable
     window.close()
+
+
+def test_a_tall_pop_up_scrolls_instead_of_running_past_a_short_screen(app, monkeypatch):
+    """Text from a file was 926 px tall and the starter kit 849 px: more than a 900 px all-in-one has free
+    (Mikedog151, 2026-11-23)."""
+    from sprigcast.app import card
+    from sprigcast.app.text_leaf_dialog import TextLeafDialog
+
+    room = card.screen_room(None)
+    monkeypatch.setattr(card.FitScroll, "_room", lambda self: 600 - self.chrome)
+    d = TextLeafDialog("Deaths", {"text": "Hi"})
+    d.show()
+    app.processEvents()
+    assert d.height() <= 600 and d._scroll.verticalScrollBar().maximum() > 0
+    d.close()
+    monkeypatch.undo()
+    small = card.CardDialog("Rename bloom")  # one that fits: as tall as it was, nothing to scroll
+    small.show()
+    app.processEvents()
+    assert small.height() < room.height() and small._scroll.verticalScrollBar().maximum() == 0
+    small.close()
+
+
+def test_a_pop_up_past_the_screen_edge_is_moved_onto_it(app):
+    from sprigcast.app.card import CardWindow, keep_on_screen, screen_room
+
+    room = screen_room(None)
+    w = CardWindow("Test", size=(room.width() + 300, 300))
+    w.show()
+    app.processEvents()
+    assert w.width() <= room.width()
+    w.move(room.right() - 50, room.bottom() - 50)
+    keep_on_screen(w)
+    assert room.contains(w.frameGeometry())
+    w.close()
