@@ -22,6 +22,7 @@ from sprigcast.sources.camera import (
 )
 
 RATES = (60, 30, 15)
+FORMAT_NAMES = {"nv12": "NV12", "yuyv422": "YUY2", "mjpeg": "MJPEG", "uyvy422": "UYVY", "bgr24": "RGB24"}
 
 
 def _field(label: str, box: QWidget) -> QVBoxLayout:
@@ -79,6 +80,30 @@ class CameraDialog(CardDialog):
         pair.addLayout(_field("Frame rate", self.rate), 1)
         self.body.addLayout(pair)
 
+        # What the device itself is asked for, as it lists it (a capture card fed 1440p, a camera's MJPEG): off,
+        # SprigCast picks from the device's list for the size and rate above.
+        self.custom = Switch()
+        self.custom.setChecked(current.get("capture_mode") == "custom")
+        self.body.addLayout(_row("Custom device mode", self.custom))
+        self.device_size = combo(4)
+        self.device_rate = combo(4)
+        self.device_format = combo(4)
+        self.custom_box = QWidget()
+        trio = QHBoxLayout(self.custom_box)
+        trio.setContentsMargins(0, 0, 0, 0)
+        trio.setSpacing(12)
+        trio.addLayout(_field("Device size", self.device_size), 5)
+        trio.addLayout(_field("Device rate", self.device_rate), 4)
+        trio.addLayout(_field("Format", self.device_format), 4)
+        self.body.addWidget(self.custom_box)
+        self._custom_wanted = (tuple(current.get("capture_size") or ()), current.get("capture_fps"),
+                               current.get("capture_format"))
+        self.custom.toggled.connect(self._show_custom)
+        for box in (self.device_size, self.device_rate, self.device_format):
+            box.currentIndexChanged.connect(lambda *_: self._explain())
+        self.device.currentIndexChanged.connect(self._fill_custom)
+        self.device_size.currentIndexChanged.connect(self._fill_rates)
+
         self.pause = Switch()
         self.pause.setToolTip("Frees the camera and its memory while no bloom on screen shows it.\n"
                               "It takes a second to come back.")
@@ -106,7 +131,57 @@ class CameraDialog(CardDialog):
             box.currentIndexChanged.connect(self._explain)
         self.device.currentIndexChanged.connect(self._retitle)
         self._retitle()
+        self._fill_custom()
+        self._show_custom()
         self._explain()
+
+    # The device's own mode (Custom device mode) -------------------------------------------------------------
+    def _listed(self) -> list:
+        return [m for m in (self._modes.get(self._key(self.device_choice())) or [])
+                if m[0] == "pixel_format" or m[1] == "mjpeg"] if self.cameras else []
+
+    def _fill_custom(self) -> None:
+        """The device's sizes as it lists them, biggest first; read once the switch is on (a list takes a moment)."""
+        if self.cameras and self.custom.isChecked():
+            self._modes_of(self.device_choice())
+        sizes = sorted({(m[2], m[3]) for m in self._listed()}, key=lambda s: -s[0] * s[1])
+        want = self._custom_wanted[0]
+        self.device_size.blockSignals(True)
+        self.device_size.clear()
+        for w, h in sizes:
+            self.device_size.addItem(f"{w} x {h}", (w, h))
+        if not sizes and len(want) == 2:
+            self.device_size.addItem(f"{want[0]} x {want[1]}", tuple(want))
+        at = next((i for i in range(self.device_size.count()) if self.device_size.itemData(i) == want), 0)
+        self.device_size.setCurrentIndex(at)
+        self.device_size.blockSignals(False)
+        self._fill_rates()
+
+    def _fill_rates(self) -> None:
+        size = self.device_size.currentData()
+        here = [m for m in self._listed() if (m[2], m[3]) == size]
+        rates = sorted({round(m[5]) for m in here} | {r for r in RATES for m in here if m[4] - 0.01 <= r <= m[5] + 0.01},
+                       reverse=True) or [int(self._custom_wanted[1] or 60)]
+        formats = sorted({m[1] for m in here}, key=lambda f: {"nv12": 0, "yuyv422": 1, "mjpeg": 2}.get(f, 9))
+        _, want_fps, want_fmt = self._custom_wanted
+        self.device_rate.clear()
+        for r in rates:
+            self.device_rate.addItem(f"{r} fps", r)
+        self.device_rate.setCurrentIndex(next((i for i, r in enumerate(rates) if r == want_fps), 0))
+        self.device_format.clear()
+        self.device_format.addItem("Automatic", "")
+        for f in formats:
+            self.device_format.addItem(FORMAT_NAMES.get(f, f.upper()), f)
+        self.device_format.setCurrentIndex(next((i for i in range(self.device_format.count())
+                                                 if self.device_format.itemData(i) == want_fmt and want_fmt), 0))
+
+    def _show_custom(self, *_args) -> None:
+        on = self.custom.isChecked()
+        if on and not self._listed():
+            self._fill_custom()
+        self.custom_box.setVisible(on)
+        self._explain()
+        self.adjustSize()
 
     def _is_card(self) -> bool:
         return bool(self.cameras) and is_capture_card(self.device_choice().name)
@@ -135,9 +210,19 @@ class CameraDialog(CardDialog):
         if not self.cameras:
             self._say("")
             return
+        noun = "capture card" if self._is_card() else "camera"
+        size = self.device_size.currentData()
+        if self.custom.isChecked() and size:
+            w, h, fps = self._ask()
+            fmt = self.device_format.currentData() or ""
+            mode = {"video_size": f"{size[0]}x{size[1]}", "framerate": str(self.device_rate.currentData() or fps)}
+            if fmt:
+                mode["vcodec" if fmt == "mjpeg" else "pixel_format"] = fmt
+            shrink = f", and SprigCast shrinks it to {w} x {h}" if tuple(size) != (w, h) else ""
+            self._say(f"The {noun} is asked for {plain_mode(mode)}{shrink}.")
+            return
         modes = self._modes.get(self._key(self.device_choice()))
-        self._say(describe_mode(modes, *self._ask(), noun="capture card" if self._is_card() else "camera")
-                  if modes else "")
+        self._say(describe_mode(modes, *self._ask(), noun=noun) if modes else "")
 
     def _modes_of(self, cam: CameraDevice) -> list:
         key = self._key(cam)
@@ -166,8 +251,16 @@ class CameraDialog(CardDialog):
     def settings(self) -> dict[str, Any]:
         cam = self.device_choice()
         w, h, fps = self._ask()
-        return {"name": cam.name, "path": cam.path, "width": w, "height": h, "fps": fps,
-                "mirror": self.mirror.isChecked(), "pause_off_screen": self.pause.isChecked()}
+        out = {"name": cam.name, "path": cam.path, "width": w, "height": h, "fps": fps,
+               "mirror": self.mirror.isChecked(), "pause_off_screen": self.pause.isChecked()}
+        size = self.device_size.currentData()
+        if self.custom.isChecked() and size:
+            out.update(capture_mode="custom", capture_size=list(size), capture_fps=int(self.device_rate.currentData()
+                                                                                       or fps),
+                       capture_format=self.device_format.currentData() or "")
+        else:
+            out["capture_mode"] = "auto"
+        return out
 
 
 def describe_mode(modes: list, w: int, h: int, fps: int, noun: str = "camera") -> str:

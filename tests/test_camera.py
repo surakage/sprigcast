@@ -821,3 +821,64 @@ def test_a_card_offering_one_bigger_size_is_said_once(caplog):
     lines = [r.getMessage() for r in caplog.records if "offers apps only" in r.getMessage()]
     assert len(lines) == 1 and "Input EDID mode to Internal" in lines[0]
     cam_mod._said_only_size.clear()
+
+
+def test_custom_device_mode_is_tried_first():
+    """Custom device mode (like a capture app's device properties): the size, rate and format picked are asked of
+    the device before anything SprigCast would choose; the source's size is still what's shown."""
+    from types import SimpleNamespace
+
+    from sprigcast.sources import camera as cam_mod
+
+    card = [("pixel_format", "nv12", 1920, 1080, 59.9999, 59.9999), ("pixel_format", "yuyv422", 1920, 1080, 59.9999,
+                                                                      59.9999),
+            ("pixel_format", "nv12", 1280, 720, 59.9999, 59.9999)]
+    assert cam_mod.custom_modes({"capture_mode": "auto", "capture_size": [1920, 1080]}, card) == []
+    picked = cam_mod.custom_modes({"capture_mode": "custom", "capture_size": [1920, 1080], "capture_fps": 60,
+                                   "capture_format": "yuyv422"}, card)
+    assert picked[0] == {"video_size": "1920x1080", "framerate": "60", "pixel_format": "yuyv422"}
+    assert all(o["pixel_format"] == "yuyv422" for o in picked)
+    any_format = cam_mod.custom_modes({"capture_mode": "custom", "capture_size": [1920, 1080], "capture_fps": 60}, card)
+    assert [o["pixel_format"] for o in any_format][:1] == ["nv12"] and {o["pixel_format"] for o in any_format} == {
+        "nv12", "yuyv422"}
+    unlisted = cam_mod.custom_modes({"capture_mode": "custom", "capture_size": [3840, 2160], "capture_fps": 30}, card)
+    assert unlisted == [{"video_size": "3840x2160", "framerate": "30"}]
+
+    cam_mod._not_given.clear()
+    feed = cam_mod._Feed("camera-1", {"name": "Card", "path": "", "width": 1280, "height": 720, "fps": 60,
+                                      "capture_mode": "custom", "capture_size": [1920, 1080], "capture_fps": 60,
+                                      "capture_format": "nv12"})
+    import pytest
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(cam_mod, "listed_modes", lambda name: card)
+    try:
+        _fmt, choices = cam_mod._engine_choices(feed, SimpleNamespace(name="Card", path=""))
+    finally:
+        mp.undo()
+    assert choices[0][1]["video_size"] == "1920x1080" and choices[0][1]["pixel_format"] == "nv12"
+    assert feed.asked_first == []
+
+
+def test_the_capture_dialog_keeps_a_custom_device_mode():
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from sprigcast.app.camera_dialog import CameraDialog
+    from sprigcast.sources.camera import CameraDevice
+
+    card = [("pixel_format", "nv12", 2560, 1440, 59.9999, 59.9999), ("pixel_format", "nv12", 1920, 1080, 59.9999,
+                                                                      59.9999)]
+    cams = [CameraDevice(0, "Game Capture HD60 X", "")]
+    d = CameraDialog(cams, {"width": 1280, "height": 720, "fps": 60}, modes=card)
+    assert d.settings()["capture_mode"] == "auto" and not d.custom_box.isVisibleTo(d)
+    d.custom.setChecked(True)
+    assert [d.device_size.itemData(i) for i in range(d.device_size.count())] == [(2560, 1440), (1920, 1080)]
+    d.device_size.setCurrentIndex(1)
+    got = d.settings()
+    assert got["capture_mode"] == "custom" and got["capture_size"] == [1920, 1080] and got["capture_fps"] == 60
+    assert "1920 x 1080" in d.note.text() and "1280 x 720" in d.note.text()
+    again = CameraDialog(cams, got, modes=card)
+    assert again.custom.isChecked() and again.device_size.currentData() == (1920, 1080)
+    d.deleteLater()
+    again.deleteLater()
