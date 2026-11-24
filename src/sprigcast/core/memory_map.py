@@ -332,14 +332,20 @@ ENCODER_AFTER_S = 10.0  # the map again this long after an encoder starts: the d
 _encoder_logged = 0.0
 
 
+_encoder_first = ""  # the encoder the current pair is named after
+
+
 def around_encoder(name: str) -> None:
     """An encoder is about to start: the map now and ENCODER_AFTER_S later, so a block can be tied to that moment
     (light-PC test 2026-11-19: going live added 32, 32 and 21 MB blocks nobody could name). Encoders starting
     together (a stream and its recording) share one pair."""
-    global _encoder_logged
+    global _encoder_logged, _encoder_first
     now = time.monotonic()
     if now - _encoder_logged < 2.0:
+        # Named, so its blocks aren't put down to the first one alone (two cameras opened in the same second:
+        # only camera-2 had lines, build check 2026-11-24)
+        log.info("memory map: %s starts too, in the %s pair", name, _encoder_first)
         return
-    _encoder_logged = now
+    _encoder_logged, _encoder_first = now, name
     log_memory_map(f"before {name} starts")
     log_memory_map(f"{ENCODER_AFTER_S:.0f} s after {name} started", ENCODER_AFTER_S)

@@ -290,3 +290,8 @@ def test_an_engine_sent_enhanced_stream_counts_network_like_the_other_places():
     assert st.behind_seconds == 0.0
     st._note_behind(9500 * 125, now=2.0)  # a second of the stream waiting
     assert st.behind_seconds == 1.0
+    import time
+
+    st.started_at, st.mux_seconds = time.monotonic() - 10, 2.2  # 22% inside the send call, 1 s behind
+    waiting, words = st._network_share()  # the summary at Stop says what the report rows say
+    assert round(waiting, 2) == 0.1 and words == "10% of the time (sending 22%)"

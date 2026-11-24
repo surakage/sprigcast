@@ -245,6 +245,15 @@ class EnhancedStreamer(Streamer):
             out["sending_pct"] = 100 * self.mux_seconds / running
         return out
 
+    def _network_share(self) -> tuple[float, str]:
+        """Sent by the engine: the backlog's share, as its report rows and the other places say it ("network 0%
+        (sending 22%)" in the rows, "waiting on the network 22%" in the summary, build check 2026-11-24)."""
+        if not self._engine_sent:
+            return super()._network_share()
+        running = max(1e-6, time.monotonic() - self.started_at)
+        waiting = self.behind_seconds / running
+        return waiting, f"{waiting:.0%} of the time (sending {self.mux_seconds / running:.0%})"
+
     def _note_behind(self, backlog_bytes: int, now: float | None = None) -> None:
         """Time with more than NETWORK_BEHIND_S of the stream waiting to go out: what "network" means for the other
         places (shared_stream). It was the time spent inside the send call, which a 9.5 Mbps connection is most

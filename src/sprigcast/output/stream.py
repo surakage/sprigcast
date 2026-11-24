@@ -413,6 +413,11 @@ class Streamer(Recorder):
         """Error text from FFmpeg can contain the URL; never let the key reach the screen or a log."""
         return privacy.mask(text, [self._key])
 
+    def _network_share(self) -> tuple[float, str]:
+        """(share of the time waiting on the network, how the summary says it): time inside the send call."""
+        waiting = self.mux_seconds / max(1e-6, time.monotonic() - self.started_at)
+        return waiting, f"{waiting:.0%} of the time"
+
     def summary(self) -> str:
         """One line for after the stream ends: how much was dropped and what was slow."""
         total = self.frames + self.dropped
@@ -421,13 +426,13 @@ class Streamer(Recorder):
         loss = self.dropped / total
         encode_ms = 1000 * self.encode_seconds / max(1, self.frames)
         budget_ms = 1000 / self.fps
-        waiting = self.mux_seconds / max(1e-6, time.monotonic() - self.started_at)
+        waiting, waits = self._network_share()
         live_s = max(1e-6, time.monotonic() - (self._connected_at or self.started_at))
         average = f"averaged {self.bytes_out * 8 / 1000 / live_s:.0f} kbps (set {self.bitrate_kbps})"
         line = (
             f"{self.name}: {self.dropped} of {total} frames dropped ({loss:.1%}), {average}. "
             f"Encoding took {encode_ms:.1f} ms per frame (budget {budget_ms:.1f} ms); "
-            f"waiting on the network {waiting:.0%} of the time, longest stall {self.longest_stall:.1f} s"
+            f"waiting on the network {waits}, longest stall {self.longest_stall:.1f} s"
         )
         if self.reconnects:
             line += f"; {self.reconnects} reconnects"
