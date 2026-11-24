@@ -6,6 +6,7 @@
 #include "shader_compositor.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <set>
@@ -656,7 +657,22 @@ bool sc::upload_through_staging(sc_device &dev, Source &s, const uint8_t *data, 
                     static_cast<size_t>(row_bytes));
     dev.context->Unmap(staging.Get(), 0);
     dev.context->CopyResource(s.texture.Get(), staging.Get());
+    s.staged_at = sc::steady_s();
     return true;
+}
+
+double sc::steady_s() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void sc::trim_staging(sc_device &dev, double now, double idle_s) {
+    std::lock_guard<std::mutex> lock(dev.lock);
+    for (auto &[id, s] : dev.comp.sources) {
+        if (now - s.staged_at < idle_s) continue;
+        for (auto &t : s.up_staging) t.Reset();
+        for (auto &t : s.nv12_staging) t.Reset();
+        s.up_next = s.nv12_next = 0;
+    }
 }
 
 int sc::upload_bytes(const sc_upload &how, size_t &bytes) {

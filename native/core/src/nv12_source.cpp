@@ -258,6 +258,7 @@ int upload_nv12(sc_device &dev, uint64_t id, const uint8_t *data, const sc_uploa
                 std::memcpy(out + static_cast<size_t>(row) * m.RowPitch, data + static_cast<size_t>(row) * stride,
                             static_cast<size_t>(w));
             dev.context->Unmap(staging.Get(), 0);
+            s.staged_at = sc::steady_s();
         }
         int code = source_nv12(dev, id, staging.Get(), 0, how);
         if (code != SC_OK) return code;

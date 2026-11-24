@@ -804,3 +804,20 @@ def test_only_a_one_size_card_opened_bigger_is_looked_at():
     taken.clear()
     feed.modes_seen.append(("pixel_format", "nv12", 1920, 1080, 60.0, 60.0))  # a webcam's list: never looked at
     assert not feed._signal_came(player, 1280, 720, cam_mod.SignalWatch()) and not taken
+
+
+def test_a_card_offering_one_bigger_size_is_said_once(caplog):
+    import logging
+
+    from sprigcast.sources import camera as cam_mod
+
+    cam_mod._said_only_size.clear()
+    feed = cam_mod._Feed("camera-3", {"name": "Card", "path": "", "width": 1280, "height": 720, "fps": 30})
+    feed.modes_seen = [("pixel_format", "nv12", 2560, 1440, 60.0, 60.0)]
+    feed.given = (2560, 1440)
+    with caplog.at_level(logging.INFO, logger="sprigcast.sources.camera"):
+        feed._say_only_size("Card", 1280, 720)
+        feed._say_only_size("Card", 1280, 720)
+    lines = [r.getMessage() for r in caplog.records if "offers apps only" in r.getMessage()]
+    assert len(lines) == 1 and "Input EDID mode to Internal" in lines[0]
+    cam_mod._said_only_size.clear()

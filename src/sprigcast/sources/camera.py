@@ -273,6 +273,7 @@ _listing_lock = threading.Lock()
 _listed: dict[str, list] = {}  # device name -> the modes it last listed (kept for when it lists none)
 _raw_listed: dict[str, str] = {}  # device name -> its whole list as it came (raw_modes_line), for the log
 _not_given: set[tuple[str, tuple[int, int]]] = set()  # (device, size): asked for though unlisted, and not given
+_said_only_size: set[str] = set()  # cards whose one size was said in the log this run (_say_only_size)
 _asked_nearest: dict[tuple[str, tuple[int, int]], tuple[int, int]] = {}  # (device, size) -> the listed size above it
 NOT_GIVEN_KEY = "cameras/not_given"  # QSettings: "device|asked|nearest listed" a card refused, kept across runs
 
@@ -715,6 +716,7 @@ class _Feed:
                             self._said_given = True
                             log.info("%s: the camera sends %dx%d when asked, though its list doesn't show that "
                                      "size. Its whole list: %s", self.id, w, h, getattr(self, "raw_listed", "not kept"))
+                    self._say_only_size(device.name, w, h)
                     for source in list(self.subscribers):
                         source._size = source.fit(self.picture)
                     if lost is not None:
@@ -735,6 +737,19 @@ class _Feed:
         finally:
             self.player = None  # the render thread lets go of it; the engine keeps it until then
             player.close()
+
+    def _say_only_size(self, device: str, w: int, h: int) -> None:
+        """Once a run per card: it offers apps one size, bigger than asked. The PC's HD60 X (2026-11-24) offered only
+        2560x1440 with Input EDID mode Merged (taken from the 1440p monitor on its HDMI out); fed 1080p by a PS5 it
+        showed Elgato's "does not support upscaling" screen until Elgato Studio's EDID mode was set to Internal."""
+        given = self.given or (0, 0)
+        sizes = {(m[2], m[3]) for m in self.modes_seen}
+        if len(sizes) != 1 or (given[0] <= w and given[1] <= h) or device in _said_only_size:
+            return
+        _said_only_size.add(device)
+        log.info("%s: %r offers apps only %dx%d. If its picture shows the card's upscaling error, its input is "
+                 "smaller: on an Elgato card set Input EDID mode to Internal in Elgato Studio (Merged copies the "
+                 "monitor on its HDMI out), or send it %dx%d", self.id, device, *given, *given)
 
     def _signal_came(self, player, w: int, h: int, watch: SignalWatch) -> bool:
         """Only for a camera that lists one size and came up bigger than asked (a capture card whose list, read with
