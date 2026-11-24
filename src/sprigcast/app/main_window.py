@@ -902,7 +902,7 @@ class MainWindow(QMainWindow):
         self.source_list.setStyleSheet(
             "#insideList { background: transparent; border: none; }"
             "#insideList::item, #insideList::item:hover, #insideList::item:selected { background: transparent; }")
-        add = QPushButton("+ Add")
+        add = self.add_button = QPushButton("+ Add")  # (the tour points at it)
         add.setStyleSheet(theme.SMALL_PILL_STYLE)
         add.setCursor(Qt.CursorShape.PointingHandCursor)
         add.setToolTip("Add a camera, screen, window, image, text, sound or sprig")
@@ -3015,6 +3015,7 @@ class MainWindow(QMainWindow):
         tools_menu.aboutToShow.connect(self._fill_plugin_tools)
 
         help_menu = bar.addMenu("&Help")
+        help_menu.addAction("Take the tour with Pip").triggered.connect(lambda: self.take_tour())
         help_menu.addAction("Keyboard shortcuts").triggered.connect(lambda: self._show_shortcuts())
         help_menu.addSeparator()
         help_menu.addAction("Get help on Discord").triggered.connect(lambda: self._open_discord())
@@ -8576,9 +8577,23 @@ class MainWindow(QMainWindow):
         self._saved_note("This PC runs smoother with lighter settings", detail="Optimize sets them in a minute",
                          link="Optimize", on_click=lambda: self.open_optimizer(), kind="warn", ms=30000)
 
+    def take_tour(self) -> None:
+        """Help → Take the tour with Pip (app/tour.py)."""
+        from sprigcast.app import tour
+
+        tour.start(self)
+
     def first_run_optimizer(self) -> None:
         """Once on a fresh install: Get started (which makes the blooms too), then Optimize for this PC
-        (it also covers the old light-settings suggestion), each offered only once."""
+        (it also covers the old light-settings suggestion), each offered only once; then Pip offers the tour."""
+        from sprigcast.app import getting_started, tour
+
+        fresh = not QSettings().value(getting_started.DONE, False, type=bool)
+        self._first_run_steps()
+        if fresh and self.isVisible():
+            tour.offer(self)  # asked once, after the set-up; Help → Take the tour with Pip any time after
+
+    def _first_run_steps(self) -> None:
         from sprigcast.app import getting_started, optimize
         from sprigcast.app.starter import is_fresh
 

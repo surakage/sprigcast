@@ -26,8 +26,13 @@ ART_MAX = 640  # kept this wide at most: the largest shows 260 px wide, so 2.5x 
 WARM_ART = ("welcome", "happy")  # what About, Getting started, the Garden check and Stream doctor open with
 
 
+def _file(name: str) -> Path:
+    """sloth-<name>.png, or a Pip picture by its own name ("pip-hello": 300 px tall, for the tour)."""
+    return ART_FOLDER / (f"{name}.png" if name.startswith("pip-") else f"sloth-{name}.png")
+
+
 def _read(name: str) -> QImage:
-    image = QImage(str(ART_FOLDER / f"sloth-{name}.png"))
+    image = QImage(str(_file(name)))
     if image.width() > ART_MAX:  # 1.6 MB kept instead of the PNG's 4 MB
         image = image.scaledToWidth(ART_MAX, Qt.TransformationMode.SmoothTransformation)
     return image
@@ -58,7 +63,7 @@ def _art_size(name: str) -> QSize:
     if name not in _sizes:
         from PySide6.QtGui import QImageReader
 
-        _sizes[name] = QImageReader(str(ART_FOLDER / f"sloth-{name}.png")).size()
+        _sizes[name] = QImageReader(str(_file(name))).size()
     return _sizes[name]
 
 
