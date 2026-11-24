@@ -68,6 +68,20 @@ def test_an_encoder_starting_logs_the_map_before_and_after_once_for_encoders_sta
                      ("10 s after stream-horizontal started", mm.ENCODER_AFTER_S)]
 
 
+
+def test_a_second_camera_in_the_same_pair_is_named(monkeypatch, caplog):
+    import logging
+
+    from sprigcast.core import memory_map as mm
+
+    monkeypatch.setattr(mm, "log_memory_map", lambda reason="", after_s=0.0: None)
+    monkeypatch.setattr(mm, "_encoder_logged", 0.0)
+    with caplog.at_level(logging.INFO, logger=mm.log.name):
+        mm.around_encoder("camera camera-2")
+        mm.around_encoder("camera camera-3")
+    assert "memory map: camera camera-3 starts too, in the camera camera-2 pair" in caplog.text
+
+
 def test_off_windows_the_threads_line_names_no_native_threads(monkeypatch):
     from sprigcast.core import pacing
 
