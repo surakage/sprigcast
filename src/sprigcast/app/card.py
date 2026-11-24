@@ -11,7 +11,7 @@ Drag it by any empty spot. Esc cancels, Enter presses the main button.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QSize, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QLayout,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSizeGrip,
     QSizePolicy,
     QVBoxLayout,
@@ -45,6 +46,78 @@ def field_label(text: str) -> QLabel:
     return label
 
 
+def screen_room(widget: QWidget):
+    """The free part (no taskbar) of the screen a window is on, or None."""
+    from PySide6.QtGui import QGuiApplication
+
+    screen = QWidget.screen(widget) if widget is not None else None  # (a pop-up may call a field "screen")
+    screen = screen or QGuiApplication.primaryScreen()
+    return screen.availableGeometry() if screen is not None else None
+
+
+def keep_on_screen(window: QWidget) -> None:
+    """No bigger than the free part of its screen, and wholly on it: a pop-up centered on a window at a screen's
+    edge, or taller than a small screen, ran past it (a 1600x900 all-in-one, 2026-11-23)."""
+    room = screen_room(window)
+    if room is None or room.isEmpty():
+        return
+    width, height = QWidget.width(window), QWidget.height(window)  # (fields may be called "size" or "width")
+    if width > room.width() or height > room.height():
+        small = QWidget.minimumSize(window)
+        QWidget.setMinimumSize(window, min(small.width(), room.width()), min(small.height(), room.height()))
+        QWidget.resize(window, min(width, room.width()), min(height, room.height()))
+    frame = QWidget.frameGeometry(window)
+    x = min(max(frame.x(), room.left()), room.left() + room.width() - frame.width())
+    y = min(max(frame.y(), room.top()), room.top() + room.height() - frame.height())
+    if (x, y) != (frame.x(), frame.y()):
+        QWidget.move(window, max(x, room.left()), max(y, room.top()))
+
+
+class FitScroll(QScrollArea):
+    """A pop-up's body: as tall as what's in it, up to what its screen has room for, then it scrolls. The pop-ups
+    are as tall as their content, and Text from a file needed 926 px: more than a 900 px screen has free."""
+
+    def __init__(self, chrome: int, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.chrome = chrome  # the window's height around this scroll area (margins, shadow)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setStyleSheet("QScrollArea { background: transparent; }")
+        self.viewport().setStyleSheet("background: transparent")
+
+    def setWidget(self, widget: QWidget) -> None:  # noqa: N802
+        super().setWidget(widget)
+        widget.installEventFilter(self)  # its layout changing (rows shown or hidden) resizes the pop-up
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.LayoutRequest and watched is self.widget():
+            self.updateGeometry()
+        return super().eventFilter(watched, event)
+
+    def _room(self) -> int:
+        room = screen_room(self.window())
+        return room.height() - self.chrome if room is not None and not room.isEmpty() else 100_000
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        inner = self.widget()
+        if inner is None:
+            return super().sizeHint()
+        hint = inner.sizeHint()
+        wide = self.width() if self.isVisible() else 0
+        card = self.parentWidget()
+        if wide <= 0 and card is not None and card.layout() is not None:
+            margins = card.layout().contentsMargins()
+            wide = card.minimumWidth() - margins.left() - margins.right() - 2  # (the card's edge)
+        height = hint.height()
+        if wide > 0 and inner.hasHeightForWidth():
+            height = inner.heightForWidth(wide)
+        return QSize(hint.width(), max(60, min(height, self._room())))
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return self.sizeHint()
+
+
 class CardDialog(QDialog):
     def __init__(self, title: str, parent: QWidget | None = None, width: int = 440):
         super().__init__(parent, Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
@@ -64,8 +137,16 @@ class CardDialog(QDialog):
         # inside it, the text field's blinking caret among them (Gardens > New, 61 ms on the PC, 2026-11-19).
         self._card = card
         outer.addWidget(card)
-        self.body = QVBoxLayout(card)
-        self.body.setContentsMargins(24, 20, 24, 20)
+        holder = QVBoxLayout(card)
+        holder.setContentsMargins(0, 14, 4, 14)  # the scroll bar, when there is one, inside the round corners
+        self._scroll = FitScroll(14 + 26 + 14 + 14 + 2)
+        holder.addWidget(self._scroll)
+        inner = QWidget()
+        inner.setObjectName("popCardBody")
+        inner.setStyleSheet("#popCardBody { background: transparent; }")
+        self.body = QVBoxLayout(inner)
+        self.body.setContentsMargins(24, 6, 20, 6)  # with the holder's: 24 / 20 / 24 / 20 as before
+        self._scroll.setWidget(inner)
         self.body.setSpacing(14)
         heading = self.heading = QLabel(title)
         heading.setWordWrap(True)
@@ -78,6 +159,10 @@ class CardDialog(QDialog):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         theme.paint_card_shadow(self, self._card)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        keep_on_screen(self)
 
     def line_edit(self, placeholder: str = "") -> QLineEdit:
         edit = QLineEdit()
@@ -245,6 +330,10 @@ class CardWindow(QDialog):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         theme.paint_card_shadow(self, self.card)  # drawn once per size, not blurred on every paint
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        keep_on_screen(self)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)

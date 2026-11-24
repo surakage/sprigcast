@@ -307,6 +307,12 @@ class StarterDialog(QDialog):
     def paintEvent(self, event) -> None:  # noqa: N802
         theme.paint_card_shadow(self, self._card)
 
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        from sprigcast.app.card import keep_on_screen
+
+        keep_on_screen(self)
+
     def __init__(self, cameras: list, monitors: list, mics: list[str], fresh: bool, both_shapes: bool,
                  parent: QWidget | None = None, speakers: list[str] | None = None,
                  running_apps: list[str] | None = None):
@@ -324,9 +330,19 @@ class StarterDialog(QDialog):
                            " border-radius: 24px; }")
         self._card = card  # its shadow: drawn once per size, under it (paintEvent, theme.paint_card_shadow)
         outer.addWidget(card)
-        root = QVBoxLayout(card)
-        root.setContentsMargins(26, 22, 26, 22)
+        from sprigcast.app.card import FitScroll
+
+        holder = QVBoxLayout(card)
+        holder.setContentsMargins(0, 14, 4, 14)  # the scroll bar on a short screen, inside the round corners
+        scroll = FitScroll(14 + 26 + 14 + 14 + 2)  # 849 px tall: more than a 768 px screen has free
+        holder.addWidget(scroll)
+        inner = QWidget()
+        inner.setObjectName("starterBody")
+        inner.setStyleSheet("#starterBody { background: transparent; }")
+        root = QVBoxLayout(inner)
+        root.setContentsMargins(26, 8, 22, 8)  # with the holder's: 26 / 22 / 26 / 22 as before
         root.setSpacing(12)
+        scroll.setWidget(inner)
         title = QLabel("Set up your blooms in one go")
         font = title.font()
         font.setPixelSize(20)
