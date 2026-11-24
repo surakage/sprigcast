@@ -335,3 +335,23 @@ def test_gpu_blur_pixelate_and_color_key(compositor):
     assert tuple(out[3, 2]) == tuple(out[6, 6])  # one flat block
     assert render_one(compositor, (255, 0, 255, 255), [flt("color_key", key_color="#ff00ff")])[3] == 0
     assert render_one(compositor, (0, 200, 0, 255), [flt("color_key", key_color="#ff00ff")])[3] == 255
+
+
+def test_the_hdr_game_look_brings_hdr10_down_to_sdr():
+    """A console's HDR through a capture card that doesn't tone map (PC 2026-11-24): PQ black stays black, BT.2408
+    reference white lands bright but under white, and a 1000-nit highlight lands on white, without clipping below."""
+    import numpy as np
+
+    from sprigcast.core import looks
+
+    def pq(nits: float) -> float:
+        m1, m2, c1, c2, c3 = 0.1593017578125, 78.84375, 0.8359375, 18.8515625, 18.6875
+        y = (nits / 10000) ** m1
+        return ((c1 + c2 * y) / (1 + c3 * y)) ** m2
+
+    grey = lambda nits: looks.hdr_to_sdr(np.array([[pq(nits)] * 3], np.float32))[0]  # noqa: E731
+    assert np.allclose(grey(0), 0) and 0.65 < grey(203)[0] < 0.85 and np.allclose(grey(1000), 1, atol=0.01)
+    assert grey(20)[0] < grey(100)[0] < grey(203)[0] < grey(500)[0]
+    assert ("hdr_sdr", "HDR game to SDR") in looks.LOOKS
+    table = looks.look("hdr_sdr")
+    assert table.shape == (looks.SIZE,) * 3 + (3,) and 0.0 <= table.min() and table.max() <= 1.0

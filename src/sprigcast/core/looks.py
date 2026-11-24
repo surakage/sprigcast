@@ -26,6 +26,7 @@ LOOKS: tuple[tuple[str, str], ...] = (
     ("night", "Night"),
     ("vivid", "Vivid"),
     ("mono", "Black and white"),
+    ("hdr_sdr", "HDR game to SDR"),
 )
 FROM_FILE = "file"
 
@@ -128,8 +129,40 @@ def _soft_s(c: np.ndarray, amount: float) -> np.ndarray:
     return c + (s - c) * amount
 
 
+# HDR10 (PQ, BT.2020) pictures read as if they were ordinary BT.709 video: a console in HDR through a capture card
+# that doesn't tone map them itself (the PC's HD60 X with "HDR tone mapping for third-party apps" off; on, it looked
+# flat, 2026-11-24). The table undoes the BT.709 reading, decodes PQ, rolls highlights off to SDR and converts the
+# colours to BT.709.
+SDR_WHITE_NITS = 203.0  # BT.2408 reference white: where SDR's white lands
+HDR_PEAK_NITS = 1000.0  # what a console's HDR games are mastered to, most often
+_TO_709 = np.array([[1.6605, -0.5876, -0.0728], [-0.1246, 1.1329, -0.0083], [-0.0182, -0.1006, 1.1187]], np.float32)
+
+
+def _pq_nits(e: np.ndarray) -> np.ndarray:
+    m1, m2, c1, c2, c3 = 0.1593017578125, 78.84375, 0.8359375, 18.8515625, 18.6875
+    p = np.power(np.clip(e, 0.0, 1.0), 1.0 / m2)
+    return 10000.0 * np.power(np.maximum(p - c1, 0.0) / (c2 - c3 * p), 1.0 / m1)
+
+
+def hdr_to_sdr(c: np.ndarray) -> np.ndarray:
+    r, g, b = c[..., 0], c[..., 1], c[..., 2]
+    y = 0.2126 * r + 0.7152 * g + 0.0722 * b  # back to the Y'CbCr the card sent
+    cb, cr = (b - y) / 1.8556, (r - y) / 1.5748
+    r2, b2 = y + 1.4746 * cr, y + 1.8814 * cb  # read as BT.2020, which it is
+    g2 = (y - 0.2627 * r2 - 0.0593 * b2) / 0.6780
+    lin = np.stack([_pq_nits(r2), _pq_nits(g2), _pq_nits(b2)], -1) / SDR_WHITE_NITS
+    peak = HDR_PEAK_NITS / SDR_WHITE_NITS
+    top = np.max(lin, axis=-1, keepdims=True)
+    rolled = top * (1.0 + top / (peak * peak)) / (1.0 + top)  # extended Reinhard: peak lands on SDR white
+    lin = lin * np.where(top > 0, rolled / np.maximum(top, 1e-6), 0.0)
+    lin = np.clip(lin @ _TO_709.T, 0.0, 1.0)
+    return np.power(lin, 1.0 / 2.2)
+
+
 def look(name: str, size: int = SIZE) -> np.ndarray:
     c = identity(size)
+    if name == "hdr_sdr":
+        return np.clip(hdr_to_sdr(c), 0.0, 1.0).astype(np.float32)
     r, g, b = c[..., 0:1], c[..., 1:2], c[..., 2:3]
     y = _luma(c)
     if name == "canopy":
