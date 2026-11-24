@@ -721,7 +721,7 @@ class _Feed:
         log.info("%s: the engine reads %r", self.id, device.name)
         log.info("%s: asked for %dx%d at %d fps; the camera offers %s", self.id, w, h, fps, modes_line(self.modes_seen))
         self.player = player
-        watch = SignalWatch()
+        watch = self._signal_watch()
         lost = None  # what the engine said when the camera went (the log says when it comes back)
         try:
             while not (self._stop.is_set() or self._restart.is_set()):
@@ -760,6 +760,7 @@ class _Feed:
                 if self._signal_came(player, w, h, watch):
                     log.info("%s: %r was given a signal: opened again to read its sizes afresh", self.id, device.name)
                     forget_refusals(device.name)
+                    self._sizes_at_signal = self._sizes()
                     self._restart.set()
                     break
                 self._restart.wait(0.25)
@@ -779,6 +780,19 @@ class _Feed:
         log.info("%s: %r offers apps only %dx%d. If its picture shows the card's upscaling error, its input is "
                  "smaller: on an Elgato card set Input EDID mode to Internal in Elgato Studio (Merged copies the "
                  "monitor on its HDMI out), or send it %dx%d", self.id, device, *given, *given)
+
+    def _sizes(self) -> frozenset:
+        return frozenset((m[2], m[3]) for m in self.modes_seen)
+
+    def _signal_watch(self) -> SignalWatch:
+        """A fresh watch for this open, ended at once when the card was opened again for a signal and its list
+        didn't change: a card on its own "NO SIGNAL" picture went black, then lit, every 6.4 s, and was opened
+        again each time (PC 2026-11-24, 1,218 times in a day)."""
+        watch = SignalWatch()
+        sizes = self._sizes()
+        if sizes and sizes == getattr(self, "_sizes_at_signal", None):
+            watch.ended = True
+        return watch
 
     def _signal_came(self, player, w: int, h: int, watch: SignalWatch) -> bool:
         """Only for a camera that lists one size and came up bigger than asked (a capture card whose list, read with
