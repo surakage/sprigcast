@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -282,7 +283,17 @@ class OptimizeWizard(CardWindow):
         root = QVBoxLayout(self.card)
         root.setContentsMargins(22, 20, 22, 18)
         root.setSpacing(14)
-        root.addWidget(self.pages, 1)
+        # The pages scroll on a short screen instead of the window growing past it: on a 1600x900 all-in-one the
+        # suggestions needed 895 px of an 860 px screen, so Windows put Apply under the taskbar (Mikedog151,
+        # 2026-11-23, "Unable to set geometry ... OptimizeWizard").
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        self.scroll.viewport().setStyleSheet("background: transparent")
+        self.scroll.setWidget(self.pages)
+        root.addWidget(self.scroll, 1)
         root.addLayout(buttons)
         self._timer = QTimer(self)
         self._timer.setInterval(100)
@@ -458,20 +469,34 @@ class OptimizeWizard(CardWindow):
     def _fit_height(self) -> None:
         """The window is at least as tall as what it shows (the list of changes, a second row of places): at
         its starting height those squeezed the stages and gauges into each other."""
+        room = self._room()
+        if self.minimumHeight() > room:
+            self.setMinimumHeight(room)
+        if self.height() > room:
+            self.resize(self.width(), room)
         if self.pages.currentIndex() != 2:
             return
         self.card.layout().activate()
         _, top, _, bottom = self.MARGINS
-        needed = self.card.layout().minimumSize().height() + top + bottom
-        if self.layout() is not None:  # what the window itself insists on: asking for less made Qt complain
-            self.layout().activate()
-            needed = max(needed, self.layout().minimumSize().height(), self.minimumSizeHint().height())
-        screen = self.screen()
-        if screen is not None:
-            needed = min(needed, screen.availableGeometry().height())  # never taller than the screen
-        self.setMinimumHeight(max(600, needed))
+        # what the pages need shown whole, not what the scroll area around them can shrink to
+        whole = self.pages.minimumSizeHint().height() - self.scroll.minimumSizeHint().height()
+        needed = self.card.layout().minimumSize().height() + max(0, whole) + top + bottom
+        wide, shown = self.scroll.width(), self.scroll.viewport().height()
+        if wide > 0 and shown > 0:  # laid out: grow by what the pages lack at this width (no scroll bar once all fits)
+            needed = max(needed, self.height() + self.pages.heightForWidth(wide) - shown)
+        needed = min(needed, self._room())  # never taller than the screen: the pages scroll instead
+        self.setMinimumHeight(max(min(600, self._room()), needed))
         if self.height() < self.minimumHeight():
             self.resize(self.width(), self.minimumHeight())
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._fit_height()  # on its screen now: a short one gets a shorter window
+
+    def _room(self) -> int:
+        """How tall the window can be on its screen."""
+        screen = self.screen()
+        return screen.availableGeometry().height() if screen is not None else 10_000
 
     # Flow ------------------------------------------------------------------------------
 
