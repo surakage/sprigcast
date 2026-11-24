@@ -734,6 +734,10 @@ class Engine:
                 from sprigcast.render import gpu_share
 
                 gpu_share.set_native(self._native)  # encoders opened from now on take its frames on the card
+                from sprigcast.core import memory_map
+
+                native = self._native  # the memory map line says what the engine holds for its sources
+                memory_map.engine_holds = lambda: native.engine.memory_note()
             except Exception as exc:  # no native engine: Python's compositor draws everything
                 log.warning("native engine: couldn't start (%s); the Python compositor draws everything", exc)
             sprigcore.drain_log()

@@ -87,3 +87,19 @@ def test_off_windows_the_threads_line_names_no_native_threads(monkeypatch):
 
     monkeypatch.setattr(pacing.sys, "platform", "linux")
     assert pacing.native_threads() == ""
+
+
+def test_the_memory_map_line_says_what_the_engine_holds(monkeypatch):
+    """Gameplay's 34 browser pages added ~1 GB on its first wake (PC 2026-11-24): the engine says whose."""
+    from sprigcast.core import memory_map
+
+    monkeypatch.setattr(memory_map, "engine_holds", lambda: "3 sources 25 MB on the card")
+    assert memory_map.engine_note() == "3 sources 25 MB on the card"
+
+    def broken():
+        raise RuntimeError("the engine's frame is stuck")
+
+    monkeypatch.setattr(memory_map, "engine_holds", broken)
+    assert memory_map.engine_note() == ""
+    monkeypatch.setattr(memory_map, "engine_holds", None)
+    assert memory_map.engine_note() == ""

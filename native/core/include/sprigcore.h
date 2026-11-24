@@ -519,6 +519,9 @@ SC_API int sc_engine_stats_get(sc_engine *engine, sc_engine_stats *out);
 #define SC_REDRAW_SECOND 4     /* a still canvas's once-a-second refresh */
 #define SC_REDRAW_OTHER 5      /* sprigs nested too deep to look through, or a bloom it doesn't have */
 SC_API int sc_engine_redraws_take(sc_engine *engine, uint64_t *ids, uint32_t *counts, int max, int *count);
+/* One line, in words, of what the engine holds for its sources: textures on the card, staging copies in memory,
+ * sprig drawings, browser pages' shared textures open, pictures kept for a rebuild. */
+SC_API int sc_engine_memory_note(sc_engine *engine, char *out, int size);
 /* Waits for a frame drawn after this call (up to 2 s) and copies that canvas into `out` as BGRA, width * 4 bytes a row. The
  * width and height must be the canvas's. Tests and screenshots only: the frame path never copies frames back. */
 SC_API int sc_engine_canvas_read(sc_engine *engine, int index, uint8_t *out, int width, int height);
