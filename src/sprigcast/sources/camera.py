@@ -423,6 +423,35 @@ def asked_first(modes, w: int, h: int, fps: int, device: str = "") -> list[dict[
             for rate in rates for fmt in ("nv12", "yuyv422")]
 
 
+def custom_modes(settings: dict[str, Any], modes) -> list[dict[str, str]]:
+    """The device's own mode the person picked (Custom device mode: size, rate, format), tried before anything
+    SprigCast would choose; the pictures are still shrunk to the source's size. With no format picked, each the
+    device lists at that size, least data first. Empty when it's off."""
+    if settings.get("capture_mode") != "custom":
+        return []
+    size = settings.get("capture_size") or ()
+    if len(size) != 2:
+        return []
+    w, h = int(size[0]), int(size[1])
+    fps = int(settings.get("capture_fps") or settings.get("fps", 30))
+    fmt = str(settings.get("capture_format") or "")
+    listed = [m for m in modes if (m[2], m[3]) == (w, h) and (m[0] == "pixel_format" or m[1] == "mjpeg")]
+    formats = [fmt] if fmt else sorted({m[1] for m in listed}, key=lambda f: _FORMAT_ORDER.get(f, 9)) or [""]
+    out = []
+    for f in formats:
+        near = [m for m in listed if m[1] == f]
+        # The rate asked when the device's range covers it, else its own nearest (59.9999 as its exact interval).
+        rates = [str(fps)] if not near or any(m[4] - 0.01 <= fps <= m[5] + 0.01 for m in near) else []
+        rates += [r for r in dict.fromkeys(_rate(min(max(fps, m[4]), m[5])) for m in near) if r not in rates]
+        for rate in rates:
+            option = {"video_size": f"{w}x{h}", "framerate": rate}
+            if f:
+                option["vcodec" if f == "mjpeg" else "pixel_format"] = f
+            if option not in out:
+                out.append(option)
+    return out
+
+
 def not_given(device: str, asked: tuple[int, int], got: tuple[int, int] | None) -> bool:
     """Remember that a device asked for an unlisted size (asked_first) gave another one, so it isn't asked again
     this run. True the first time, for one log line."""
@@ -786,8 +815,9 @@ class _Feed:
             listed = choose_modes(self.modes_seen, w, h, fps)
             if self.modes_seen:
                 break
-        early = asked_first(self.modes_seen, w, h, fps, device.name)
-        modes = [*early, *listed,  # then guesses, from strict to loose
+        custom = custom_modes(self.settings, self.modes_seen)
+        early = [] if custom else asked_first(self.modes_seen, w, h, fps, device.name)
+        modes = [*custom, *early, *listed,  # then guesses, from strict to loose
                  {"video_size": f"{w}x{h}", "framerate": str(fps), "vcodec": "mjpeg"},
                  {"video_size": f"{w}x{h}", "framerate": str(fps)},
                  {"video_size": f"{w}x{h}"},  # e.g. a camera whose 60 is really 59.94: its own rate, paced below
@@ -965,7 +995,10 @@ def _engine_choices(feed: _Feed, device: CameraDevice) -> tuple[str, list[tuple[
             break
     feed.asked_first = asked_first(feed.modes_seen, w, h, fps, device.name)
     feed.raw_listed = next((_raw_listed[name] for name in names if name in _raw_listed), "not kept")
-    modes = [*feed.asked_first, *listed,
+    custom = custom_modes(feed.settings, feed.modes_seen)
+    if custom:
+        feed.asked_first = []
+    modes = [*custom, *feed.asked_first, *listed,
              {"video_size": f"{w}x{h}", "framerate": str(fps), "vcodec": "mjpeg"},
              {"video_size": f"{w}x{h}", "framerate": str(fps)},
              {"video_size": f"{w}x{h}"},
@@ -992,7 +1025,8 @@ def _feed_key(settings: dict[str, Any]) -> tuple:
 
 @register("camera")
 class CameraSource(Source):
-    """Settings: name, path, width, height, fps, mirror (bool), pause_off_screen (bool)."""
+    """Settings: name, path, width, height, fps, mirror (bool), pause_off_screen (bool); capture_mode ("auto" or
+    "custom") with capture_size [w, h], capture_fps and capture_format ("" for any): the device's own mode."""
 
     channel_order = "BGR"  # of the picture video_frame() last returned: BGR (OpenCV) or packed YUV planes
     sleeps = True  # only used when "Sources that aren't on screen" is set to pause cameras too
