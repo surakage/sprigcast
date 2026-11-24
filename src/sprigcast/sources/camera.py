@@ -624,6 +624,13 @@ class _Feed:
         """Read the camera in the engine's player until stopped or retuned. It reopens an unplugged or busy camera
         by itself every 2 s; if it can't be made at all, or faults, Python reads the camera instead."""
         w, h, fps = self._mode()
+        from sprigcast.core.memory_map import around_encoder
+
+        # The memory map before it opens and 10 s after: the first camera bloom added ~0.95 GB of commit outside
+        # the heaps that hiding the camera never gave back (PC 2026-11-24), with nothing tying a block to a camera.
+        if self.id not in _mapped:  # once a run per camera: a camera reopened again and again isn't a flood
+            _mapped.add(self.id)
+            around_encoder(f"camera {self.id}")
         try:
             format_name, choices = _engine_choices(self, device)
             player = sprigcore.MediaPlayer(playing=True)
@@ -842,6 +849,7 @@ def _engine_choices(feed: _Feed, device: CameraDevice) -> tuple[str, list[tuple[
     return "dshow", [(name, mode) for name in names for mode in modes]
 
 
+_mapped: set[str] = set()  # cameras whose opening the memory map was logged around (_run_engine)
 _feeds: dict[tuple, _Feed] = {}  # device + mode -> the feed sources share
 _closing: dict[tuple, _Feed] = {}  # feeds told to stop without waiting (a source went to sleep)
 _feeds_lock = threading.Lock()
