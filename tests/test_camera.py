@@ -812,6 +812,20 @@ def test_only_a_one_size_card_opened_bigger_is_looked_at():
     assert not feed._signal_came(player, 1280, 720, cam_mod.SignalWatch()) and not taken
 
 
+def test_a_card_opened_again_with_the_same_list_is_not_watched_again():
+    """PC 2026-11-24: the HD60 X on its "NO SIGNAL" picture went black then lit every 6.4 s and was opened again
+    each time (1,218 times in a day). Once opened again for a signal with its list unchanged, no more looks."""
+    from sprigcast.sources import camera as cam_mod
+
+    feed = cam_mod._Feed("camera-3", {"name": "Card", "path": "", "width": 1920, "height": 1080, "fps": 60})
+    feed.modes_seen = [("pixel_format", "nv12", 2560, 1440, 60.0, 60.0)]
+    assert not feed._signal_watch().ended  # first open: watched
+    feed._sizes_at_signal = feed._sizes()  # opened again for a signal
+    assert feed._signal_watch().ended  # same list: not watched again
+    feed.modes_seen = [("pixel_format", "nv12", 1920, 1080, 60.0, 60.0)]
+    assert not feed._signal_watch().ended  # the list changed: watched as usual
+
+
 def test_a_card_offering_one_bigger_size_is_said_once(caplog):
     import logging
 
