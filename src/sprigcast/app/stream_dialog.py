@@ -457,10 +457,10 @@ class StreamPage(QWidget):
         self.enhanced_kbps.setRange(0, 100000)
         self.enhanced_kbps.setSingleStep(500)
         self.enhanced_kbps.setSuffix(" Kbps")
-        form.addRow("Maximum streaming bandwidth", self._auto_row(self.enhanced_kbps_auto, self.enhanced_kbps, 8000))
+        form.addRow("Max bandwidth", self._auto_row(self.enhanced_kbps_auto, self.enhanced_kbps, 8000))
         self.enhanced_tracks_auto, self.enhanced_tracks = QCheckBox("Auto"), QSpinBox()
         self.enhanced_tracks.setRange(0, 5)
-        form.addRow("Maximum video tracks", self._auto_row(self.enhanced_tracks_auto, self.enhanced_tracks, 3))
+        form.addRow("Max tracks", self._auto_row(self.enhanced_tracks_auto, self.enhanced_tracks, 3))
         self.extra_canvas = QComboBox()
         self.extra_canvas.addItem("None", "")
         for canvas in collection.canvases:
@@ -536,9 +536,13 @@ class StreamPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(auto)
         layout.addWidget(spin, 1)
+        spin.setSpecialValueText("Set by Twitch")  # 0 is Auto: never "0 Kbps" in the box
+
         def toggled(on: bool) -> None:
             spin.setEnabled(not on)
-            if not on and not spin.value() and not self._loading:
+            if on:
+                spin.setValue(0)
+            elif not spin.value() and not self._loading:
                 spin.setValue(start)  # a sensible first value instead of 0 (which means Auto)
 
         auto.toggled.connect(toggled)
