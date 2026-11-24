@@ -636,3 +636,32 @@ def test_sound_rows_leave_the_window_a_tick_between_parts(monkeypatch):
         app.processEvents()
     assert len(asked) > 1 and min(asked) >= 1
     page.finish()
+
+
+def test_the_devices_tab_waits_for_the_sound_devices_without_holding_the_window():
+    """Mikedog151 2026-11-23: the Audio page held Settings 9.5-12.8 s while live, waiting for the device scan."""
+    from concurrent.futures import Future
+
+    from PySide6.QtWidgets import QApplication, QLabel
+
+    from sprigcast.app.audio_page import AudioPage
+    from sprigcast.app.settings_window import _DeviceScan
+
+    app = QApplication.instance() or QApplication([])
+    scan = Future()
+    page = AudioPage(_collection(), _DeviceScan(scan), first="Devices")
+    assert "Devices" in page._finding and not page.device_combos  # says so, made nothing yet, didn't wait
+    assert any(w.text() == "Finding sound devices…" for w in page.findChildren(QLabel))
+    scan.set_result({"audio_input": ["Wave"], "audio_output": ["Speakers"]})
+    deadline = time.monotonic() + 3
+    while page._finding and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+    assert not page._finding and page.device_combos  # made once they were found
+
+    later = Future()
+    waiting = AudioPage(_collection(), _DeviceScan(later), first="Devices")
+    assert "Devices" in waiting._finding
+    later.set_result({})
+    waiting.finish()  # before reading what's picked: made right away
+    assert not waiting._finding

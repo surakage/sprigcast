@@ -100,6 +100,7 @@ AUDIO_KBPS = (96, 128, 160, 192, 256, 320)
 
 PUSH_RELEASE_MS = (0, 100, 250, 500)
 DUCK_PICKS = ((-6.0, "-6 dB"), (-12.0, "-12 dB"), (-18.0, "-18 dB"))
+DEVICES_RETRY_MS = 250  # how often a Devices tab waiting for the device scan looks again
 METER_MS = 80  # how often the Devices meters move, and only while that tab is on screen
 STALE_S = 0.5  # levels older than this are silence (the mixer stopped)
 CHIPS_SHOWN = 3  # sounds named on a track's row before "+2 more" (4 made Tracks wider than Settings)
@@ -261,6 +262,7 @@ class AudioPage(QWidget):
         self.setStyleSheet(page_style())
         self._levels = levels
         self.meters: dict[str, LevelDots] = {}
+        self._finding: dict[str, QWidget] = {}  # tabs waiting for the sound devices to be found: their "Finding" line
         self._parts_waiting: list = []  # (tab's layout, place, makes a card): cards still to make (build_tab)
         self._meter_timer = QTimer(self)
         self._meter_timer.setInterval(METER_MS)
@@ -304,10 +306,22 @@ class AudioPage(QWidget):
                 self.tabs.widget(i).setSizePolicy(policy, policy)
         self.tabs.updateGeometry()
 
-    def build_tab(self, name: str, later=None) -> None:
+    def build_tab(self, name: str, later=None, wait: bool = False) -> None:
         """Make one tab's contents (once). later(call): the tab's first card is made now and each further card
         handed to it, to be made a tick apart (Settings' _slice): Devices' three cards in one go held the window
         63 ms on the PC while live (184 ms with the old engine, 2026-11-19). None: all of it now."""
+        ready = getattr(self._audio_devices, "ready", None)
+        if name == "Devices" and not wait and ready is not None and not ready() and name in self._holders:
+            # The sound devices are still being found: the tab says so and is made once they are. Waiting for them
+            # here held the window 9.5-12.8 s on a light PC while live (Mikedog151, 2026-11-23).
+            if name not in self._finding:
+                self._finding[name] = _hint("Finding sound devices…")
+                self._holders[name].addWidget(self._finding[name], 0, Qt.AlignmentFlag.AlignTop)
+            QTimer.singleShot(DEVICES_RETRY_MS, self, lambda: self.build_tab(name, later))
+            return
+        finding = self._finding.pop(name, None)
+        if finding is not None:
+            finding.deleteLater()
         box = self._holders.pop(name, None)
         if box is None:
             return
@@ -349,8 +363,8 @@ class AudioPage(QWidget):
 
     def finish(self) -> None:
         """Make every tab, card and sound row still waiting (before reading what's picked)."""
-        for name in list(self.later):
-            self.build_tab(name)
+        for name in [*self.later, *self._finding]:
+            self.build_tab(name, wait=True)
         for part in list(self._parts_waiting):
             self._make_part(part)
         while getattr(self, "_rows_waiting", None):
