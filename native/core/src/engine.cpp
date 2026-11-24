@@ -1239,7 +1239,12 @@ bool canvas_taken(sc_engine &e, int index, const Watch &watch, const OutputWant 
     return false;
 }
 
-constexpr double STAGING_IDLE_S = 3.0;  // a source with no picture from memory this long lets its staging go
+// A source with no picture from memory this long lets its staging go. 3 s (#920) churned: a video or page that
+// paused a few seconds made its staging again and again, and on the software renderer (WARP, the build's
+// start-up check, 2026-11-24) an upload or read-back right after stalled the frame thread 2.2-2.6 s, in 3 of
+// 5 runs. Off-air pages still give theirs back, a minute later.
+constexpr double STAGING_IDLE_S = 60.0;
+constexpr double STAGING_TRIM_EVERY_S = 10.0;
 
 // One frame: take Python's work, send it to the card, draw every canvas something takes a picture of, show the
 // previews.
@@ -1267,9 +1272,9 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         e.detach_done = e.detach_asked;  // no device, no windows held
         return;
     }
-    {  // once a second: staging textures of sources that stopped getting pictures from memory go
+    {  // now and then: staging textures of sources that stopped getting pictures from memory go
         const double t = sc::steady_s();
-        if (t - e.trimmed_at >= 1.0) {
+        if (t - e.trimmed_at >= STAGING_TRIM_EVERY_S) {
             e.trimmed_at = t;
             sc::trim_staging(*e.dev, t, STAGING_IDLE_S);
         }
