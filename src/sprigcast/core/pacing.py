@@ -911,6 +911,8 @@ def memory_pressure() -> str:
         if faults is not None:
             if _faults_seen is not None and now > _faults_seen[0]:
                 text += f", page faults {(faults - _faults_seen[1]) / (now - _faults_seen[0]):,.0f}/s"
+            else:  # the first line of the run: no earlier count to compare with (build check 2026-11-24)
+                text += f", page faults {faults:,} since start"
             _faults_seen = (now, faults)
         return text
     except Exception:  # noqa: BLE001 (a diagnostic: never in the way)

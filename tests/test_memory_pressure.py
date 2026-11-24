@@ -19,7 +19,7 @@ def test_memory_pressure_says_free_memory_and_a_fault_rate(monkeypatch):
     clock = iter([10.0, 12.0])
     monkeypatch.setattr(pacing, "time", SimpleNamespace(monotonic=lambda: next(clock)))
     monkeypatch.setattr(pacing, "_faults_seen", None)
-    assert pacing.memory_pressure() == "; PC memory free 1,100 of 4,000 MB"
+    assert pacing.memory_pressure() == "; PC memory free 1,100 of 4,000 MB, page faults 1,000 since start"
     assert pacing.memory_pressure() == "; PC memory free 1,100 of 4,000 MB, page faults 1,000/s"
 
 
