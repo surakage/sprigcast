@@ -38,6 +38,20 @@ void sound_thread_priority() {
     // made viewers hear choppy voice. Highest within SprigCast's class (above normal while live), as OBS does for
     // its audio threads; a short burst of work every 10 ms, so it never starves anything else.
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    // Then Windows' own scheduling for sound (the Multimedia Class Scheduler, "Audio" task), as sound apps use:
+    // the thread is run ahead of busy apps for its short bursts, with a share always left to the rest. On a
+    // 4-core AMD E2 laptop Windows dropped a USB mic's sound 3-9 times every 30 s while the PC was busy
+    // (Mikedog151, 2026-11-24). avrt.dll is loaded only here; without it the priority above stays.
+    using Join = HANDLE(WINAPI *)(LPCWSTR, LPDWORD);
+    static const Join join = []() -> Join {
+        HMODULE avrt = LoadLibraryW(L"avrt.dll");
+        FARPROC found = avrt ? GetProcAddress(avrt, "AvSetMmThreadCharacteristicsW") : nullptr;
+        return found ? reinterpret_cast<Join>(reinterpret_cast<void (*)()>(found)) : nullptr;
+    }();
+    if (join) {
+        DWORD task = 0;
+        join(L"Audio", &task);  // left joined for the thread's life; Windows lets go when the thread ends
+    }
 #endif
 }
 

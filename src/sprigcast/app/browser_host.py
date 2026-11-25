@@ -86,6 +86,16 @@ MEDIA_JS = """
 (() => {
   if (window.__sprigcastMediaWatch) return;
   window.__sprigcastMediaWatch = true;
+  // Pages never get a camera or microphone (permissions are denied). Asking for the list of devices still made
+  // Chromium start its video capture service, 63 MB for the whole run (PC 2026-11-24/25): the list is empty here.
+  const md = navigator.mediaDevices;
+  if (md) {
+    try {
+      const denied = () => Promise.reject(new DOMException("Not allowed in SprigCast", "NotAllowedError"));
+      Object.defineProperty(md, "enumerateDevices", {value: () => Promise.resolve([]), configurable: true});
+      Object.defineProperty(md, "getUserMedia", {value: denied, configurable: true});
+    } catch (e) {}
+  }
   const told = new Set();
   const tell = (kind, src) => {
     if (told.has(kind)) return;
@@ -794,6 +804,12 @@ class BrowserHost(QObject):
             line = host.sizes.line(sum(1 for page in host.pages.values() if getattr(page, "resting", False)))
             if line:
                 log.info(line)
+                # Where the helper's own memory is (heaps, the graphics driver, Chromium's mapped blocks): the PC's
+                # helper held 1.2-1.5 GB with the graphics in its own process, and its total alone couldn't say
+                # what in (2026-11-25). Same moments as the line above, on a thread of its own.
+                from sprigcast.core import memory_map
+
+                memory_map.log_memory_map("page helper")
 
         wait = page_rest.MEASURE_EVERY_S if self._asked_sizes else page_rest.MEASURE_FIRST_S
         self._asked_sizes = True
