@@ -1,6 +1,6 @@
 """Post a release to the SprigCast Discord: a card with the version, what's new, the download and its size.
 
-    python packaging/discord_post.py release v0.3.0 <installer.exe>      (public #releases)
+    python packaging/discord_post.py release v0.4.0 <installer.exe>      (public #releases)
     python packaging/discord_post.py test test-2026-11-22 <installer.exe> --label "Beta 0.3 test build …"
                                                                            (Tester Garden's #tester-news)
     add --print to show the message as JSON instead of sending it

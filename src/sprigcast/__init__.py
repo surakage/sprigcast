@@ -1,6 +1,6 @@
 """SprigCast: a lightweight streaming app with horizontal and vertical canvases."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 
 def display_version(version: str | None = None) -> str:
