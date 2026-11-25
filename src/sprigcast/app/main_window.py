@@ -3010,6 +3010,7 @@ class MainWindow(QMainWindow):
         tools_menu.addSeparator()
         tools_menu.addAction("Hotkeys…").triggered.connect(lambda: self.open_hotkeys())
         tools_menu.addAction("Plugin store…").triggered.connect(lambda: self.open_plugin_store())
+        tools_menu.addAction("Check for updates…").triggered.connect(lambda: self.updater.check(manual=True))
         self._tools_menu = tools_menu
         self._plugin_tool_actions: list = []
         tools_menu.aboutToShow.connect(self._fill_plugin_tools)

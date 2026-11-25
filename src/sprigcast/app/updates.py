@@ -1,7 +1,7 @@
 """Check for updates: the window side of sprigcast/update.py.
 
 - At start (after a short wait) and every 12 hours, if Settings → General → Updates allows it.
-- Help → Check for updates… and the Check now button in Settings ask right away.
+- Tools → Check for updates… and the Check now button in Settings ask right away.
 - A rounded pop-up shows the new version and what's new. Update now downloads and checks the installer,
   closes SprigCast and lets Setup put the new version in and start it again.
 - Never while live or recording: an update found then waits until both are off, and Update now becomes

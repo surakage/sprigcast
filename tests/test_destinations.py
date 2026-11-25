@@ -711,7 +711,7 @@ def test_menu_bar_order_and_shortcut_list(app, tmp_path, monkeypatch):
         assert texts(3) == ["New…", "Duplicate…", "Rename…", "Remove", "Import", "Export", "Missing files…",
                             "Show file"]
         assert texts(4) == ["New…", "Duplicate…", "Rename…", "Remove", "Import…", "Export…"]
-        assert texts(5) == ["Get started…", "Stream doctor…", "Hotkeys…", "Plugin store…"]
+        assert texts(5) == ["Get started…", "Stream doctor…", "Hotkeys…", "Plugin store…", "Check for updates…"]
         assert texts(6) == ["Take the tour with Pip", "Keyboard shortcuts", "Get help on Discord", "Report a problem…",
                             "Export report", "Open logs folder", "About SprigCast", "Support SprigCast"]
         palette = {c.title for c in w._palette_commands()}
