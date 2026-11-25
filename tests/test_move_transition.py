@@ -205,6 +205,45 @@ def test_engine_runs_a_move_and_skips_the_sprigs_it_opened_up():
     assert all(s.id != "a" for s in drawn) and {s.id for s in drawn} == {"b"}
 
 
+def test_a_sprig_full_screen_on_one_bloom_and_shrunk_on_the_other_glides():
+    """User 2026-11-25: the camera's sprig full screen on one bloom and shrunk on another didn't move: opened up
+    on one side and whole on the other, nothing paired. Now it's whole on both and glides."""
+    col = sprig_collection(40)
+    col.scenes.append(Scene(id="c", name="C", canvas="h", items=[SceneItem(source="pa", x=8, y=4, scale=0.5)]))
+    engine = Engine(col)
+    engine._sources = {}
+    sizes = {"cam": (16, 9), "bg": (W, H), "logo": (4, 4)}
+    old, new = engine._move_both(col.scene("a"), col.scene("c"), sizes)
+    assert [p.source for p in old] == ["pa"] and [p.source for p in new] == ["pa"]
+    assert move.pair(old, new) == {0: 0}
+    mid = move.frame(old, new, 0.5, "linear", "fade", (W, H))
+    assert [d.source for d in mid] == ["pa"]
+    xs = [q[0] for q in mid[0].quad]
+    assert 0 < min(xs) < 8 and max(xs) - min(xs) == pytest.approx(W * 0.75)  # halfway in size and place
+    # Both full screen: still opened up, so what's inside moves on its own as before.
+    assert [p.source for p in engine._move_both(col.scene("a"), col.scene("a"), sizes)[0]] == ["bg", "cam", "logo"]
+    # The bloom moved out of draws that sprig whole for the move.
+    before = col.model_copy(deep=True)
+    col.active_scenes["h"] = "c"
+    engine._start_transitions(before, col)
+    drawn = engine._move_light(col, engine._drawn_scenes(col))
+    assert any(s.id == "~move:a" and [i.source for i in s.items] == ["pa"] for s in drawn)
+
+
+def test_a_camera_on_its_own_glides_into_the_sprig_that_holds_it():
+    """The camera placed by itself on one bloom, and inside a framed sprig on the other: they pair."""
+    col = sprig_collection(40, scaled=True)
+    col.scenes.append(Scene(id="c", name="C", canvas="h", items=[SceneItem(source="cam", x=1, y=1)]))
+    engine = Engine(col)
+    sizes = {"cam": (16, 9), "bg": (W, H), "logo": (4, 4)}
+    old, new = engine._move_both(col.scene("c"), col.scene("a"), sizes)
+    assert [p.source for p in old] == ["cam"] and [p.source for p in new] == ["pa"]
+    assert "cam" in new[0].holds
+    assert move.pair(old, new) == {0: 0}
+    # Plain pieces with nothing inside them never pair this way.
+    assert move.pair([piece("x", 0, 0, 4, 4)], [piece("y", 9, 9, 4, 4)]) == {}
+
+
 def test_old_files_load_with_move_settings_defaulted():
     t = Transition.model_validate({"kind": "fade", "duration_ms": 300})
     assert t.easing == "smooth" and t.unmatched == "fade"

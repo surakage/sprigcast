@@ -658,13 +658,27 @@ class BeforeAfter(QWidget):
         self.timer = QTimer(self)
         self.timer.setInterval(getattr(grab, "every_ms", self.EVERY_MS))  # the native engine's views: smoother
         self.timer.timeout.connect(self.ask)
+        # The first pictures wait until the window is up. Asking straight away had the engine make its two
+        # views in the same moment the window was being laid out and painted: one late frame of 148 ms the
+        # first time Filters opened and 48 ms after (PC 2026-11-25). Apart, each fits in a frame or two.
+        self.first = QTimer(self)
+        self.first.setSingleShot(True)
+        self.first.setInterval(self.FIRST_MS)
+        self.first.timeout.connect(self._start)
+
+    FIRST_MS = 150
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
-        self.ask()
-        self.timer.start()
+        self.first.start()
+
+    def _start(self) -> None:
+        if self.isVisible():
+            self.ask()
+            self.timer.start()
 
     def hideEvent(self, event) -> None:  # noqa: N802
+        self.first.stop()
         self.timer.stop()
         super().hideEvent(event)
 

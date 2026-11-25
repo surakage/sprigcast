@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from sprigcast.core.scene import MOVE_EASINGS as EASINGS
 from sprigcast.core.scene import MOVE_UNMATCHED as UNMATCHED
 
-__all__ = ["EASINGS", "UNMATCHED", "Draw", "Piece", "between", "ease", "flatten", "frame", "pair"]
+__all__ = ["EASINGS", "UNMATCHED", "Draw", "Piece", "between", "both", "ease", "flatten", "frame", "pair"]
 SCALE_TO = 0.8  # "scale": what is leaving shrinks to this, what is arriving grows from it
 SLIDE_EDGE = 0.25  # "slide": how far past the nearest edge, as a share of the canvas, it starts or ends
 MAX_DEPTH = 8  # sprigs inside sprigs opened up at most this deep
@@ -55,6 +55,7 @@ class Piece:
     canvas: str  # the canvas id the sprig textures are looked up for
     quad: list  # 4 x (x, y, u, v): top-left, top-right, bottom-left, bottom-right
     opacity: float = 1.0
+    holds: frozenset = frozenset()  # a sprig drawn whole: the sources inside it, however deep
 
 
 @dataclass
@@ -77,16 +78,27 @@ def _is_whole_canvas(quad: list, size: tuple[float, float], tol: float = 0.5) ->
 
 def flatten(scene, collection, sizes: dict, part_size: Callable[[str, str], tuple | None],
             view: Callable, plain: Callable[[str], bool], canvas_size: tuple[int, int],
-            hidden: frozenset = frozenset()) -> list[Piece]:
+            hidden: frozenset = frozenset(), keep: frozenset = frozenset()) -> list[Piece]:
     """A bloom as the pieces it draws, bottom first.
 
     part_size(source id, canvas id): the size of a sprig placement's texture (None: not drawn yet).
     view(layout, placement source): (the layout as it shows now, its per-item fades or None).
     plain(source id): True when the source has no video filters (a sprig with filters is drawn whole).
     hidden: sources left out wherever they are (screenshots).
+    keep: sprig placements drawn whole even when they fill the canvas (the other bloom draws them whole: see
+    both).
     """
     sources = {s.id: s for s in collection.sources}
     out: list[Piece] = []
+
+    def inside(part, canvas_id: str, depth: int, seen: frozenset) -> frozenset:
+        found: set[str] = set()
+        for item in collection.shape_for(part, canvas_id).items:
+            found.add(item.source)
+            inner = collection.part_of(sources[item.source]) if item.source in sources else None
+            if inner is not None and depth < MAX_DEPTH and inner.id not in seen:
+                found |= inside(inner, canvas_id, depth + 1, seen | {inner.id})
+        return frozenset(found)
 
     def walk(layout, opacity: float, fades, depth: int, seen: frozenset) -> None:
         for item in layout.items:
@@ -105,12 +117,13 @@ def flatten(scene, collection, sizes: dict, part_size: Callable[[str, str], tupl
                 if not quad:
                     continue
                 shape = collection.shape_for(part, layout.canvas)
-                if (depth < MAX_DEPTH and part.id not in seen and plain(item.source)
+                if (depth < MAX_DEPTH and part.id not in seen and plain(item.source) and item.source not in keep
                         and tuple(size) == tuple(canvas_size) and _is_whole_canvas(quad, canvas_size)):
                     inner, inner_fades = view(shape, source)
                     walk(inner, alpha, inner_fades, depth + 1, seen | {part.id})
                     continue
-                out.append(Piece(item.source, source.name.casefold(), item.source, layout.canvas, quad, alpha))
+                out.append(Piece(item.source, source.name.casefold(), item.source, layout.canvas, quad, alpha,
+                                 inside(part, layout.canvas, depth, seen | {part.id})))
                 continue
             size = sizes.get(item.source)
             if not size:
@@ -123,18 +136,41 @@ def flatten(scene, collection, sizes: dict, part_size: Callable[[str, str], tupl
     return out
 
 
+def both(lay_out: Callable[[frozenset], tuple[list, list]], is_sprig: Callable[[str], bool]) -> tuple[list, list]:
+    """The two blooms' pieces, with a sprig drawn whole in one bloom drawn whole in the other too.
+
+    A sprig that fills the canvas is opened up into its pieces; the same sprig smaller in the other bloom is one
+    piece. Paired with nothing, the full-screen camera on one bloom and the shrunk one on the other just faded
+    (user 2026-11-25: "i have it on fullscreen on one bloom and shrunk it on another but it didnt do the
+    animation move"). lay_out(keep) -> (old pieces, new pieces)."""
+    keep: frozenset = frozenset()
+    for _ in range(MAX_DEPTH):
+        old, new = lay_out(keep)
+        whole = frozenset(p.key for p in (*old, *new) if is_sprig(p.key))
+        if whole <= keep:
+            break
+        keep |= whole
+    return old, new
+
+
+def _holds(a: Piece, b: Piece) -> bool:
+    """One is a sprig drawn whole with the other's source inside it (a camera on its own, and in a frame)."""
+    return (a.key in b.holds) != (b.key in a.holds)
+
+
 def pair(old: list[Piece], new: list[Piece]) -> dict[int, int]:
     """new index -> old index for pieces in both: the same source first (in order, when one is placed
-    twice), then the same name among what's left."""
+    twice), then the same name among what's left, then a source and a sprig that holds it."""
     pairs: dict[int, int] = {}
     taken: set[int] = set()
-    for rule in ("key", "name"):
+    for rule in ("key", "name", "holds"):
         for j, piece in enumerate(new):
             if j in pairs or (rule == "name" and not piece.name):
                 continue
-            want = getattr(piece, rule)
             for i, before in enumerate(old):
-                if i not in taken and getattr(before, rule) == want:
+                if i in taken:
+                    continue
+                if (_holds(before, piece) if rule == "holds" else getattr(before, rule) == getattr(piece, rule)):
                     pairs[j] = i
                     taken.add(i)
                     break

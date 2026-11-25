@@ -87,12 +87,12 @@ def test_transitions_card_is_short_and_says_how_many_rules(app):
     panel = TransitionsPanel(col.transition, lambda: None, collection=col, compact=True)
     panel.resize(300, 300)
     panel.show()
-    assert panel.rules_count.text() == "None"
+    assert panel.rules_row.isHidden()  # no rules: no Between blooms row (user 2026-11-25)
     assert panel.form.labelForField(panel.length).text() == "Duration"
     assert panel.kind_pick.text() == "Fade"  # no "Type" label, no ▾ text: a drawn chevron
     col.transition_rules = [TransitionRule(to_scene="a"), TransitionRule(from_scene="a", transition=Transition())]
     panel.show_rule_count()
-    assert panel.rules_count.text() == "2 active"
+    assert panel.rules_count.text() == "2 active" and not panel.rules_row.isHidden()
     before = panel.length.value()
     from PySide6.QtCore import QPoint, QPointF, Qt
     from PySide6.QtGui import QMouseEvent

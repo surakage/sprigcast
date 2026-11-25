@@ -1863,7 +1863,7 @@ class Engine:
 
     # Move transition -----------------------------------------------------------------------------------
 
-    def _move_pieces(self, scene, sizes: dict, hidden: frozenset = frozenset()) -> list:
+    def _move_pieces(self, scene, sizes: dict, hidden: frozenset = frozenset(), keep: frozenset = frozenset()) -> list:
         """A bloom as the pieces a Move transition moves (render/move.py flatten): sprigs that fill the
         canvas one to one are opened up so what's inside them moves on its own."""
         collection = self._collection
@@ -1884,16 +1884,30 @@ class Engine:
         filtered, frozen = self._filtered, self._frozen  # a frozen sprig is drawn whole too: its held picture
         return move.flatten(scene, collection, sizes, part_size, view,
                             lambda sid: sid not in filtered and sid not in frozen,
-                            canvases.get(scene.canvas, (0, 0)), hidden)
+                            canvases.get(scene.canvas, (0, 0)), hidden, keep)
+
+    def _move_both(self, outgoing, incoming, sizes: dict, hidden: frozenset = frozenset()) -> tuple[list, list]:
+        """Both blooms of a Move as pieces (render/move.py both): a sprig drawn whole in one is drawn whole in the
+        other, so the two pair up and it glides."""
+        collection = self._collection
+
+        def lay_out(keep: frozenset) -> tuple[list, list]:
+            old = self._move_pieces(outgoing, sizes, hidden, keep)
+            return old, (self._move_pieces(incoming, sizes, hidden, keep) if incoming is not None else [])
+
+        sources = {s.id: s for s in collection.sources}
+
+        def is_sprig(source_id: str) -> bool:
+            source = sources.get(source_id)
+            return source is not None and collection.part_of(source) is not None
+
+        return move.both(lay_out, is_sprig)
 
     def _move_layout(self, running: Running, canvas, hidden: frozenset = frozenset()) -> tuple[list, list]:
         """A Move's two blooms on a canvas as pieces (render/move.py flatten): the one it leaves, the one it goes
         to. The native engine takes them once, when the Move starts, and works out every frame itself."""
         sizes = {source_id: source.size for source_id, source in self._sources.items()}
-        new = self._collection.active_scene(canvas.id)
-        old = self._move_pieces(running.outgoing, sizes, hidden)
-        now = self._move_pieces(new, sizes, hidden) if new is not None else []
-        return old, now
+        return self._move_both(running.outgoing, self._collection.active_scene(canvas.id), sizes, hidden)
 
     def _move_frame(self, running: Running, canvas, progress: float, hidden: frozenset = frozenset()) -> list:
         """This frame of a Move transition on a canvas, as pieces to draw (see compositor.render)."""
@@ -1904,7 +1918,7 @@ class Engine:
     def _move_light(self, collection: SceneCollection, drawn: list) -> list:
         """What to draw sprigs for: during a Move, the bloom it moves out of needs only the sprigs it draws
         whole, not the ones opened up into their pieces (their sources are drawn straight onto the canvas)."""
-        outgoing = {id(r.outgoing): r for r in self._transitions.values()
+        outgoing = {id(r.outgoing): cid for cid, r in self._transitions.items()
                     if r.settings.kind == "move" and r.began is not None}
         if not outgoing:
             return drawn
@@ -1915,7 +1929,7 @@ class Engine:
                 out.append(scene)
                 continue
             whole: dict[str, list] = {}  # canvas id -> sprigs drawn whole
-            for piece in self._move_pieces(scene, {}):
+            for piece in self._move_both(scene, collection.active_scene(outgoing[id(scene)]), {})[0]:
                 if collection.part_of(collection.source(piece.source)) is not None:
                     whole.setdefault(piece.canvas, []).append(SceneItem(source=piece.source))
             for canvas_id, items in whole.items():  # stand-ins placing just those sprigs, so they are drawn

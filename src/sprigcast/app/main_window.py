@@ -3590,6 +3590,13 @@ class MainWindow(QMainWindow):
         restored = SceneCollection.model_validate_json(text)
         for name in type(self.collection).model_fields:
             setattr(self.collection, name, getattr(restored, name))
+        # The Transitions cards edit the collection's transition object itself: after undo, redo or a garden
+        # switch that is a new one, and picks on the card went to the old one, so switches never used them
+        # (user 2026-11-25: "when i select the transition from the card it does not register").
+        for panel in (getattr(self, "transitions_panel", None), getattr(self, "live_transitions", None)):
+            if panel is not None:
+                panel.load(self.collection.transition)
+        self._show_transition_chip()
         self._undo_current = text
         self._undo_at = 0.0
         if saved:
@@ -4440,6 +4447,9 @@ class MainWindow(QMainWindow):
 
             def hear(sid: str, filters: list) -> Preview:
                 return Preview(sid, filters, device=device)
+        from sprigcast.app.theme import ui_burst
+
+        ui_burst()  # from the start: making the window's widgets hands Python's lock to the renderer quickly too
         modal(FiltersDialog(self.collection.source(source_id), self._changed, self, media, sounds=sounds,
                             collection=self.collection, grab=grab, hear=hear))
         if self._has_sound(self.collection.source(source_id)):
