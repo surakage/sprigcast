@@ -28,8 +28,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImage, QPainter, QPainterPath, QPixmap
+from PySide6.QtCore import QObject, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QAbstractButton,
     QComboBox,
@@ -185,6 +185,81 @@ class Meter(QWidget):
         p.end()
 
 
+THUMB = 66
+_THUMBS: dict[tuple[str, int, int], QPixmap | None] = {}
+
+
+def _thumb_key(path: Path) -> tuple[str, int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return str(path), stat.st_mtime_ns, stat.st_size
+
+
+def _decode(path: str):
+    """On a worker: the picture decoded at about tile size (a full decode of six pictures on the window's thread
+    stalled it 346 ms opening the card on the PC, 2026-11-25)."""
+    from PySide6.QtCore import QSize
+    from PySide6.QtGui import QImageReader
+
+    reader = QImageReader(path)
+    size = reader.size()
+    if size.isValid() and size.width() > 0 and size.height() > 0:
+        reader.setScaledSize(size.scaled(QSize(THUMB * 2, THUMB * 2), Qt.AspectRatioMode.KeepAspectRatio))
+    image = reader.read()
+    if image.isNull():
+        return None
+    return image.scaled(THUMB, THUMB, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+
+
+class _Thumbs(QObject):
+    """Tile pictures made on a worker and handed back to the window's thread."""
+
+    done = Signal(object, object)  # key, QImage or None
+
+    def __init__(self):
+        super().__init__()
+        self.waiting: dict[tuple, list] = {}
+        self.done.connect(self._arrived)
+
+    def get(self, path: Path, tile) -> QPixmap | None:
+        key = _thumb_key(path)
+        if key is None:
+            return None
+        if key in _THUMBS:
+            return _THUMBS[key]
+        if key not in self.waiting:
+            self.waiting[key] = []
+            from sprigcast.core import workers
+
+            workers.run(lambda: self.done.emit(key, _decode(key[0])), name="pngtuber tile")
+        self.waiting[key].append(tile)
+        return None
+
+    def _arrived(self, key, image) -> None:
+        if len(_THUMBS) > 96:
+            _THUMBS.clear()
+        _THUMBS[key] = QPixmap.fromImage(image) if image is not None else None
+        for tile in self.waiting.pop(key, []):
+            try:
+                if tile.want == key:
+                    tile.picture = _THUMBS[key]
+                    tile.update()
+            except RuntimeError:  # the card closed first
+                pass
+
+
+_LOADER: _Thumbs | None = None
+
+
+def _loader() -> _Thumbs:
+    global _LOADER
+    if _LOADER is None:
+        _LOADER = _Thumbs()
+    return _LOADER
+
+
 class Tile(QAbstractButton):
     """One picture of the model: what it shows now (yours or the folder's), click to pick another."""
 
@@ -198,15 +273,12 @@ class Tile(QAbstractButton):
         self.setAccessibleName(f"{label} picture")
         self.name = label
         self.picture: QPixmap | None = None
+        self.want: tuple | None = None  # the picture asked for (it's made on a worker)
         self.borrowed = False
 
     def show_picture(self, path: Path | None, borrowed: bool) -> None:
-        self.picture = None
-        if path is not None and path.is_file():
-            image = QImage(str(path))
-            if not image.isNull():
-                self.picture = QPixmap.fromImage(image.scaled(66, 66, Qt.AspectRatioMode.KeepAspectRatio,
-                                                              Qt.TransformationMode.SmoothTransformation))
+        self.want = _thumb_key(path) if path is not None else None
+        self.picture = _loader().get(path, self) if path is not None else None
         self.borrowed = borrowed
         self.update()
 
@@ -226,7 +298,7 @@ class Tile(QAbstractButton):
             p.drawPixmap(int(box.center().x() - self.picture.width() / 2),
                          int(box.center().y() - self.picture.height() / 2), self.picture)
             p.setOpacity(1.0)
-        else:
+        elif self.want is None or self.want in _THUMBS:  # nothing to show (not still on its way)
             p.setPen(QColor(theme.MUTED))
             p.drawText(box, Qt.AlignmentFlag.AlignCenter, "+")
         p.setPen(QColor(theme.TEXT if not self.borrowed else theme.MUTED))

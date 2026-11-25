@@ -318,3 +318,23 @@ def test_before_and_after_shows_only_with_a_filter(app):
     app.processEvents()
     assert one.preview.isVisible()
     one.reject()
+
+
+def test_f2_renames_the_picked_filter(monkeypatch):
+    _app()
+    from PySide6.QtGui import QKeySequence, QShortcut
+
+    from sprigcast.app import card
+    from sprigcast.app.filters_dialog import FiltersDialog
+    from sprigcast.core.scene import SourceConfig
+
+    source = SourceConfig(id="cam", kind="camera", name="Cam")
+    d = FiltersDialog(source, lambda save=True: None)
+    flt = d.add("chroma_key")
+    assert any(s.key() == QKeySequence("F2") for s in d.findChildren(QShortcut))
+    monkeypatch.setattr(card, "ask_text", lambda *a, **k: ("Green wall", True))
+    assert d.rename_selected()
+    assert flt.name == "Green wall" and d.list.item(0).text() == "Green wall"
+    monkeypatch.setattr(card, "ask_text", lambda *a, **k: ("", False))
+    assert not d.rename_selected() and flt.name == "Green wall"
+    d.close()
