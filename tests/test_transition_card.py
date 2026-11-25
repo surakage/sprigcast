@@ -26,6 +26,13 @@ def test_the_card_still_counts_after_undo_and_a_restore(tmp_path, monkeypatch, a
         w._restore_state(w.collection.to_text(), saved=False)  # a garden switch puts a whole garden back the same way
         w.live_transitions.set_kind("leaf")
         assert w.collection.transition_for(shows[0], shows[-1]).kind == "leaf"
+        w.live_transitions.length.setValue(1200)  # Duration on Live's card (user 2026-11-25: didn't work either)
+        assert w.collection.transition_for(shows[0], shows[-1]).duration_ms == 1200
+        assert w.transitions_panel.length.value() == 1200
+        sent = []
+        w.engine.send = sent.append
+        w.live_transitions.length.setValue(900)
+        assert sent and sent[-1].collection.transition.duration_ms == 900  # the engine gets it at once
         # A Between blooms rule wins for its own switch only.
         w.collection.transition_rules = [TransitionRule(from_scene=ANY, to_scene=shows[-1],
                                                         transition=Transition(kind="cut"))]
