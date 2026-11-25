@@ -920,9 +920,23 @@ def memory_pressure() -> str:
 
 
 TRIM_KEEP_MB = 160  # what stays in memory at rest: the pages touched last (the window, the render loop)
+# Below this much memory the working set is never trimmed. On a 4 GB PC with a hard drive the trimmed pages were
+# soon reused by Windows, and every pop-up, bloom switch and stream start brought them back from the disk: the
+# whole app froze 6-26 s at a time, 8 times in a 26-minute stream (Mikedog151, AMD E2-7110, 2026-11-24).
+TRIM_MIN_RAM_GB = 6.0
+_trim_skip_said = False
 
 
-def trim_working_set(keep_mb: float = TRIM_KEEP_MB, kernel32=None) -> bool:
+def _ram_gb() -> float | None:
+    try:
+        import psutil
+
+        return psutil.virtual_memory().total / (1024 ** 3)
+    except Exception:  # noqa: BLE001 (unknown: trim as before)
+        return None
+
+
+def trim_working_set(keep_mb: float = TRIM_KEEP_MB, kernel32=None, ram_gb: float | None = None) -> bool:
     """Windows: hand back to the system the pages the app hasn't touched in a while (what Task Manager counts),
     keeping the last-used keep_mb.
 
@@ -931,8 +945,16 @@ def trim_working_set(keep_mb: float = TRIM_KEEP_MB, kernel32=None) -> bool:
     MB in Task Manager), so the next look at the window brought every page of the window, Qt and the graphics
     driver back one by one: SprigCast started minimized, or minimized at rest, took seconds to open fully.
     Windows trims the least recently used pages first, so the window and the render loop stay. True if
-    Windows took it."""
+    Windows took it. Never on a PC with under TRIM_MIN_RAM_GB of memory (see there)."""
+    global _trim_skip_said
     if sys.platform != "win32" and kernel32 is None:
+        return False
+    ram = _ram_gb() if ram_gb is None else ram_gb
+    if ram is not None and ram < TRIM_MIN_RAM_GB:
+        if not _trim_skip_said:
+            _trim_skip_said = True
+            log.info("memory: kept in place, not handed back (this PC has %.1f GB: pages handed back come back "
+                     "from the disk later, freezing the window)", ram)
         return False
     try:
         import ctypes

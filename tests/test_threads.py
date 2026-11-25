@@ -137,10 +137,21 @@ def test_trimming_memory_keeps_the_pages_used_last():
             calls.append((process, low, high, flags))
             return 1
 
-    assert pacing.trim_working_set(kernel32=Kernel32())
+    assert pacing.trim_working_set(kernel32=Kernel32(), ram_gb=16)
     keep = pacing.TRIM_KEEP_MB * 1024 * 1024
     assert calls == [(7, keep // 4, keep, 0)]  # soft limits: it grows again when it needs to
     assert all(size != (1 << 64) - 1 for size in calls[0][1:3])  # not (SIZE_T)-1, which empties it
+
+
+def test_a_small_memory_pc_keeps_its_pages():
+    """A 4 GB PC with a hard drive froze 6-26 s whenever trimmed pages came back from the disk (Mikedog151)."""
+    from sprigcast.core import pacing
+
+    class Kernel32:
+        def GetCurrentProcess(self):
+            raise AssertionError("never asked")
+
+    assert not pacing.trim_working_set(kernel32=Kernel32(), ram_gb=3.7)
 
 
 def test_the_window_not_answering_is_logged_with_where_it_was(caplog, check_window):
