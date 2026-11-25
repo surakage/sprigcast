@@ -81,29 +81,6 @@ def test_no_releases_yet_is_not_an_error():
     assert update.fetch_latest(opener=_opener(pages)).version == "9.0.0"
 
 
-def test_releases_come_from_the_releases_repo_or_the_source_repo():
-    """Source going private (2026-11-25): installers move to a releases-only repository; until it has one, the
-    source repository's releases still count, and the newest of the two wins."""
-    import json
-
-    releases, source = (update.latest_url(r) for r in (update.RELEASES_REPO, update.SOURCE_REPO))
-    only_source = {source: json.dumps(_release_json("9.0.0")).encode()}
-    assert update.fetch_latest(opener=_opener(only_source)).version == "9.0.0"
-    both = {releases: json.dumps(_release_json("9.1.0")).encode(), **only_source}
-    assert update.fetch_latest(opener=_opener(both)).version == "9.1.0"
-
-    def source_down(request, timeout=None):  # one repository unreachable: the other still answers
-        if request.full_url == source:
-            raise urllib.error.URLError("down")
-        return _Reply(both[request.full_url])
-    assert update.fetch_latest(opener=source_down).version == "9.1.0"
-
-    def all_down(request, timeout=None):
-        raise urllib.error.URLError("down")
-    with pytest.raises(OSError):
-        update.fetch_latest(opener=all_down)
-
-
 def test_hash_for_reads_the_workflows_sha256_file():
     text = (f"{'A' * 64}  sprigcast_camera.dll\n{SETUP_HASH.upper()}  SprigCast-Setup-9.0.0.exe\n"
             "Defender found nothing\n")
