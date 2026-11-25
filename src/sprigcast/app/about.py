@@ -106,8 +106,6 @@ def show_about(parent: QWidget | None = None) -> None:
 
     dialog = PopUp("About SprigCast", parent)
     dialog.add_tab("about", "About", about_page())
-    layout = dialog.done_button.parentWidget().layout()
-    layout.setAlignment(dialog.done_button, Qt.AlignmentFlag.AlignHCenter)  # centered under the centered page
     dialog.done_button.setFixedHeight(PILL_H)
     dialog.done_button.setStyleSheet(theme.PRIMARY_STYLE + f"QPushButton {{ border-radius: {PILL_H // 2}px; padding: 0 40px; }}")
     modal(dialog)
