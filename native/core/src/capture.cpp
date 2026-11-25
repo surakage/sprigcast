@@ -234,7 +234,10 @@ struct sc_capture {
             return false;
         }
         const DWORD flags = as_loopback ? AUDCLNT_STREAMFLAGS_LOOPBACK : 0;
-        const REFERENCE_TIME buffer = 1000000;  // 100 ms
+        // 500 ms of room in Windows' buffer. It adds no delay (whatever arrives is read every few ms), it only
+        // gives the reader longer before Windows throws sound away: 100 ms ran over on a 4 GB laptop with a hard
+        // drive whenever the PC stalled ("lost by Windows", Mikedog151 2026-11-24). About 190 KB a device.
+        const REFERENCE_TIME buffer = 5000000;
         // First choice: Windows converts to 48 kHz stereo float itself.
         WAVEFORMATEX want{};
         want.wFormatTag = WAVE_FORMAT_IEEE_FLOAT;
