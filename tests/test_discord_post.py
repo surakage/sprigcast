@@ -60,3 +60,15 @@ def test_no_webhook_posts_nothing(tmp_path, monkeypatch, capsys):
     assert discord_post.main(["release", "v0.4.0", str(setup)]) == 0
     assert "nothing was posted" in capsys.readouterr().out
     assert json.dumps(discord_post.message("release", "v0.4.0", setup, None))  # serializable
+
+
+def test_cards_point_at_the_public_releases_repo_when_set(tmp_path, monkeypatch):
+    setup = tmp_path / "SprigCast-Setup-0.4.0.exe"
+    setup.write_bytes(b"x")
+    monkeypatch.setenv("SPRIGCAST_RELEASES_REPO", "surakage/SprigCast-Releases")
+    release = discord_post.message("release", "v0.4.0", setup, None)["embeds"][0]
+    fields = {f["name"]: f["value"] for f in release["fields"]}
+    assert "github.com/surakage/SprigCast-Releases/releases/download/v0.4.0/" in fields["Download"]
+    assert release["url"] == "https://github.com/surakage/SprigCast-Releases/releases/tag/v0.4.0"
+    assert release["image"]["url"].startswith("https://raw.githubusercontent.com/surakage/SprigCast-Releases/")
+    assert "surakage/sprigcast/" not in json.dumps(release)  # nothing points into the source repo

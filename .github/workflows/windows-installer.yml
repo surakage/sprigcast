@@ -16,6 +16,11 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      # owner/name of the public releases-only repo (a repository variable). Empty: releases stay in this repo
+      # only. Set: each release and test build is also published there (needs the RELEASES_TOKEN secret, a token
+      # that can write that repo's contents) and the Discord cards link there. For when the source goes private.
+      RELEASES_REPO: ${{ vars.RELEASES_REPO }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -212,6 +217,19 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "CHANGELOG.md needs a section for $version" }
           $shown = (& packaging\build\python\python.exe -c "import sprigcast; print(sprigcast.display_version())").Trim()
           gh release create $tag $setup packaging\out\SHA256.txt --title "SprigCast $shown" --notes-file notes.md --verify-tag --latest
+      # The same release in the public releases-only repo, with SHA256SUMS.txt beside SHA256.txt (the same lines).
+      # Its tag is made there at that repo's own main. A failure here fails the run: the Discord card links there.
+      - name: Copy the release to the public releases repo
+        if: startsWith(github.ref, 'refs/tags/v') && env.RELEASES_REPO != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $setup = "packaging\out\SprigCast-Setup-$($tag.TrimStart("v")).exe"
+          Copy-Item packaging\out\SHA256.txt packaging\out\SHA256SUMS.txt
+          $shown = (& packaging\build\python\python.exe -c "import sprigcast; print(sprigcast.display_version())").Trim()
+          gh release create $tag $setup packaging\out\SHA256.txt packaging\out\SHA256SUMS.txt --repo $env:RELEASES_REPO --title "SprigCast $shown" --notes-file notes.md --latest
       # The release's card in the Discord's public #releases: version, what's new, download, size. Without the
       # DISCORD_RELEASES_WEBHOOK secret nothing is posted; a Discord failure never fails the release.
       - name: Post the release to Discord
@@ -220,6 +238,7 @@ jobs:
         shell: pwsh
         env:
           DISCORD_RELEASES_WEBHOOK: ${{ secrets.DISCORD_RELEASES_WEBHOOK }}
+          SPRIGCAST_RELEASES_REPO: ${{ env.RELEASES_REPO }}
         run: |
           $setup = "packaging\out\SprigCast-Setup-$("${{ github.ref_name }}".TrimStart("v")).exe"
           & packaging\build\python\python.exe packaging\discord_post.py release "${{ github.ref_name }}" $setup
@@ -250,6 +269,14 @@ jobs:
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "label=$label" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "setup=$($setup.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+      - name: Copy the test pre-release to the public releases repo
+        if: steps.tester.outcome == 'success' && env.RELEASES_REPO != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          Copy-Item packaging\out\SHA256.txt packaging\out\SHA256SUMS.txt
+          gh release create "${{ steps.tester.outputs.tag }}" "${{ steps.tester.outputs.setup }}" packaging\out\SHA256.txt packaging\out\SHA256SUMS.txt --repo $env:RELEASES_REPO --title "SprigCast test build (${{ steps.tester.outputs.label }})" --notes-file docs\tester-guide.md --prerelease
       # The test build's card in the Tester Garden's #tester-news (never the public #releases): what changed since
       # the last test build, download, size. Without the DISCORD_TESTER_WEBHOOK secret nothing is posted.
       - name: Post the test build to the Tester Garden
@@ -258,5 +285,6 @@ jobs:
         shell: pwsh
         env:
           DISCORD_TESTER_WEBHOOK: ${{ secrets.DISCORD_TESTER_WEBHOOK }}
+          SPRIGCAST_RELEASES_REPO: ${{ env.RELEASES_REPO }}
         run: |
           & packaging\build\python\python.exe packaging\discord_post.py test "${{ steps.tester.outputs.tag }}" "${{ steps.tester.outputs.setup }}" --label "${{ steps.tester.outputs.label }}"

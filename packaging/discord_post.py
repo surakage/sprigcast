@@ -6,7 +6,9 @@
     add --print to show the message as JSON instead of sending it
 
 A public release reads DISCORD_RELEASES_WEBHOOK, a test build DISCORD_TESTER_WEBHOOK. With no webhook set it
-says so and does nothing, so a build never fails over Discord. A test build's "What's new" is the pull requests
+says so and does nothing, so a build never fails over Discord. With SPRIGCAST_RELEASES_REPO set (owner/name of
+the public releases-only repo, for when the source repo is private), the download and release links point there,
+and a test build's list names its pull requests without links, since nobody outside could open them. A test build's "What's new" is the pull requests
 merged since the previous test-* tag (needs the git history: checkout with fetch-depth 0).
 """
 
@@ -25,12 +27,28 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from release_notes import CHANGELOG, _shown, section  # noqa: E402
 
-REPO = "https://github.com/surakage/sprigcast"
+REPO = "https://github.com/surakage/sprigcast"  # the source: pull requests and commits
 BANNER = "https://raw.githubusercontent.com/surakage/sprigcast/main/brand/sprigcast-banner.png"
 EMERALD = 0x2A9C5E  # brand/README.md: the sprig S
 MINT = 0x3ECF7F  # the app icon's S, for test builds
 PER_HEADING = 5  # entries shown under Added, Changed, Fixed and Removed; the rest are counted
 LIMIT = 3800  # Discord allows 4096 characters in a card's text; leave room for the closing line
+
+
+def _releases_repo() -> str:
+    """'owner/name' of the public releases-only repo, or '' while releases live in the source repo."""
+    return os.environ.get("SPRIGCAST_RELEASES_REPO", "").strip().strip("/")
+
+
+def _releases() -> str:
+    """Where release pages and downloads live."""
+    repo = _releases_repo()
+    return f"https://github.com/{repo}" if repo else REPO
+
+
+def _banner() -> str:
+    repo = _releases_repo()
+    return f"https://raw.githubusercontent.com/{repo}/main/sprigcast-banner.png" if repo else BANNER
 
 
 def _size(path: Path) -> str:
@@ -88,7 +106,7 @@ def changelog_summary(notes: str, tag: str) -> str:
         if len(entries) > PER_HEADING:
             lines.append(f"• …and {len(entries) - PER_HEADING} more")
         lines.append("")
-    return _fit(lines, f"…and more in the [full notes]({REPO}/releases/tag/{tag}).")
+    return _fit(lines, f"…and more in the [full notes]({_releases()}/releases/tag/{tag}).")
 
 
 def merged_since_last_test(tag: str) -> str:
@@ -111,16 +129,20 @@ def merged_since_last_test(tag: str) -> str:
         if title.startswith("Merge pull request"):
             body = git("log", "-1", "--format=%b", commit)
             title = (body.strip().splitlines() or [f"Pull request #{pr}"])[0]
-        lines.append(f"• {_first_sentence(title)} ([#{pr}]({REPO}/pull/{pr}))")
+        private = bool(_releases_repo())  # the source repo is private: a link would only show "not found"
+        lines.append(f"• {_first_sentence(title)} (#{pr})" if private
+                     else f"• {_first_sentence(title)} ([#{pr}]({REPO}/pull/{pr}))")
     if not lines:
         return "Fixes and small changes since the last test build."
     since = f"Since {tags[0]}:" if tags else "Latest changes:"
-    return _fit([since, *lines], f"…and more in the [commit list]({REPO}/commits/{tag}).")
+    more = (f"…and more in the [test build's notes]({_releases()}/releases/tag/{tag})." if _releases_repo()
+            else f"…and more in the [commit list]({REPO}/commits/{tag}).")
+    return _fit([since, *lines], more)
 
 
 def message(kind: str, tag: str, installer: Path, label: str | None) -> dict:
-    download = f"{REPO}/releases/download/{tag}/{installer.name}"
-    page = f"{REPO}/releases/tag/{tag}"
+    download = f"{_releases()}/releases/download/{tag}/{installer.name}"
+    page = f"{_releases()}/releases/tag/{tag}"
     sha = _sha256(installer)
     if kind == "release":
         version = tag.removeprefix("v")
@@ -143,7 +165,7 @@ def message(kind: str, tag: str, installer: Path, label: str | None) -> dict:
     embed = {"title": title, "url": page, "description": text, "color": color, "fields": fields,
              "footer": {"text": footer}}
     if kind == "release":
-        embed["image"] = {"url": BANNER}
+        embed["image"] = {"url": _banner()}
     return {"username": "SprigCast", "embeds": [embed], "allowed_mentions": {"parse": []}}
 
 
