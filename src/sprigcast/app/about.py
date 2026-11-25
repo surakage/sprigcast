@@ -17,6 +17,9 @@ from sprigcast.app import theme
 from sprigcast.app.support import SITE_URL, SOURCE_URL, TIP_URL
 
 PILL_H = 34  # the About buttons: fully rounded ends
+# The height goes in the style too: the app's QPushButton min-height (18 px) wins over setFixedHeight and
+# squeezed these to 22 px, where a 17 px radius is too big and Qt draws square corners (user 2026-11-25).
+PILL = f"min-height: {PILL_H - 2}px; max-height: {PILL_H - 2}px;"
 NOTICES = "THIRD-PARTY-NOTICES.txt"  # written next to python.exe by packaging/notices.py
 
 
@@ -82,8 +85,8 @@ def about_page() -> QWidget:
         button.setObjectName(name_)
         button.setToolTip(url)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
-        button.setFixedHeight(PILL_H)  # Qt draws a radius over half the height square, so pin the height
-        button.setStyleSheet(theme.button_style(radius=PILL_H // 2, padding="0 18px"))
+        button.setFixedHeight(PILL_H)
+        button.setStyleSheet(theme.button_style(radius=PILL_H // 2 - 1, padding="0 18px", extra=PILL))
         button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
         return button
 
@@ -107,5 +110,5 @@ def show_about(parent: QWidget | None = None) -> None:
     dialog = PopUp("About SprigCast", parent)
     dialog.add_tab("about", "About", about_page())
     dialog.done_button.setFixedHeight(PILL_H)
-    dialog.done_button.setStyleSheet(theme.PRIMARY_STYLE + f"QPushButton {{ border-radius: {PILL_H // 2}px; padding: 0 40px; }}")
+    dialog.done_button.setStyleSheet(theme.PRIMARY_STYLE + f"QPushButton {{ border-radius: {PILL_H // 2 - 1}px; padding: 0 40px; {PILL} }}")
     modal(dialog)
