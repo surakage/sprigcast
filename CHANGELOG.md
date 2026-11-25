@@ -1,11 +1,64 @@
 # Changelog
 
 What changed in each SprigCast beta and release. Full releases are whole numbers (Version 1); betas are the last
-full release plus decimals (Beta 0.3). Each new section is grouped as Added, Changed, Fixed and Removed. Numbers like (#184) are the pull requests on GitHub.
+full release plus decimals (Beta 0.4). Each new section is grouped as Added, Changed, Fixed and Removed. Numbers like (#184) are the pull requests on GitHub.
 
 "Tested" means tried on a real Windows PC. Everything else passed the automated tests but still needs a try.
 
-## Beta 0.3 (not released yet)
+## Beta 0.4 (2026-11-24)
+
+Lighter on older PCs, steadier with the HD60 X, and a first-start tour with Pip. Everything here was merged after
+the Beta 0.3 test build; most of it went to testers as test builds from 2026-11-22 on.
+
+### Added
+
+- The tour with Pip: offered on first start, 24 stops with three try-it stops, and Help to replay it (#917).
+- Video capture has a Custom device mode that sets the device's size, rate and format (#921).
+- Mood filter: an "HDR game to SDR" look for consoles that send HDR (#922).
+- Filters per canvas: one source can show on both canvases with its own picture filters on each (#904).
+- A file or color per bloom (#899).
+- Window capture lists window titles and Store app names, has search, and can show SprigCast's own pop-ups (#889).
+- The web page card has an Interact button (#891).
+- Help → Get help on Discord opens the SprigCast server (#911).
+- Garden check shares identical copies of a source as one (#905).
+- `app.stats` has engine ticks, canvases drawn and `redrawsBy`, which names the source that keeps a still bloom
+  redrawn (#900, #902, #903).
+
+### Changed
+
+- Light PCs: still blooms aren't redrawn, a Light live preview, x264 on older AMD graphics, videos decoded on the
+  graphics card, and video uploads that never wait on the card. Optimize reminds a light PC to pick its settings
+  (#896, #898, #899).
+- Memory: idle memory is given back after bloom switches and at rest, web pages get a 512 MB graphics budget on
+  PCs with more than 8 GB, and the Stats panel and stream report show memory the way Task Manager does (#883, #900,
+  #907, #923).
+- Twitch Enhanced uses HEVC for the qualities Twitch asks HEVC for, sends vertical at the place's size, and is back
+  on for vertical (#895, #897, #909).
+- Pop-ups fit any screen: tall ones scroll and every one stays on its screen, the Optimize window included (#914,
+  #915).
+- Inspector: titled cards, one "Also in" pill, and values beside their labels (#893).
+- Garden check is sized and on brand, with a round × everywhere (#884).
+- The Live banner keeps one size at any width, and places lowered together share one line (#885).
+- Web pages' Sort A–Z skips a leading emoji (#892).
+- Logs: every place on/off change, page console errors and reloads, what page sign-in requests send, memory free
+  and page faults during long waits, and the memory map around each camera's first opening (#890, #892, #894,
+  #908, #910, #912, #916, #918).
+
+### Fixed
+
+- HD60 X: dark game scenes no longer reopen the card, it isn't reopened every 6 s while the console sleeps, a card
+  given a signal opens again with its list read afresh, a refused size is remembered, a one-size card points at
+  Elgato's Input EDID mode, and its sound's slow clock is evened out (#884, #918, #919, #920, #923, #925).
+- Streams on older AMD graphics stay connected, and a second click waits for SprigCast still starting (#886).
+- A stream that gets no frames from the engine twice running takes them through Python instead (#901).
+- A place that keeps turning tries away says so plainly (#906).
+- Light PCs stop a stream cleanly (#898).
+- Drags no longer hold up the picture (#907).
+- Audio settings no longer freeze while sound devices are found (#913).
+- The engine keeps idle staging for 60 s instead of 3 s, which stopped a 2-second frame stall (#924).
+- Web panels close cleanly (#895).
+
+## Beta 0.3 (test builds only)
 
 The C++ engine now sends streams, writes recordings and keeps clips. Many of the Build and web page fixes were found
 with a big garden brought over from OBS (88 scenes, 61 web pages, about 78 nested sprigs).

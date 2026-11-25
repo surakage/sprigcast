@@ -43,7 +43,7 @@ def test_actions_describe_themselves():
     from sprigcast import display_version
 
     info = _ok(api, "app.info")
-    assert info["build"].startswith(display_version(info["version"]))  # "Beta 0.3", or "Beta 0.3 test build …"
+    assert info["build"].startswith(display_version(info["version"]))  # "Beta 0.4", or "Beta 0.4 test build …"
     assert _fails(api, "nope.nothing") == "unknown_action"
 
 
