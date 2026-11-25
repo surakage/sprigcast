@@ -10,12 +10,12 @@ Version 0.2.0. See [CHANGELOG.md](CHANGELOG.md) for what changed and what has be
 
 ## Install
 
-Download `SprigCast-Setup-<version>.exe` from the [latest release](https://github.com/surakage/sprigcast/releases/latest)
+Download `SprigCast-Setup-<version>.exe` from the [SprigCast website](https://sprigcast.slothbloom.com)
 and run it. New to SprigCast? The [user guide](docs/user-guide.md) walks you from install to your first stream,
 and says how to send a problem report.
 
 The installer isn't signed yet, so Windows may show "Windows protected your PC". Choose **More info**, then
-**Run anyway**. The file's fingerprint is in `SHA256.txt` on the same release page.
+**Run anyway**. The file's fingerprint is in `SHA256.txt` on the download page.
 
 ## Community
 

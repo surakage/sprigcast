@@ -63,7 +63,7 @@ A good first version of native support in a tool like Streamer.bot:
 - Sub-actions: show bloom, show/hide/toggle item, set sprig state, mute/volume sound, set text, filter on/off, media play/stop, screenshot, save clip, stream/record start/stop/toggle, switch garden/path, and a generic "run action" with JSON fields, filled from `app.actions`.
 - Triggers from events: bloom shown, stream/record started and stopped, clip saved, and plugin events.
 
-Questions or changes that would help your integration: open an issue on [the SprigCast repository](https://github.com/surakage/sprigcast).
+Questions or changes that would help your integration: ask in #feature-ideas or #help on [the SprigCast Discord](https://discord.gg/fgMD33XrhM).
 
 ## Going live on TikTok LIVE Studio at the same time
 

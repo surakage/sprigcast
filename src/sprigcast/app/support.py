@@ -13,8 +13,10 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from sprigcast.app import icons, theme
+from sprigcast.update import SITE_URL
 
 TIP_URL = "https://slothbloom.com/tip"
+SOURCE_URL = f"{SITE_URL}/source"  # the GPL source offer; that page links to the code
 DISCORD_URL = "https://discord.gg/fgMD33XrhM"  # the SprigCast server: #help, #bug-reports, #feature-ideas
 
 HEADING = "Thank you for being here"

@@ -37,9 +37,9 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 AppVerName=SprigCast {#AppShown}
 AppCopyright=Slothbloom
-AppPublisherURL=https://github.com/surakage/sprigcast
-AppSupportURL=https://github.com/surakage/sprigcast/issues
-AppUpdatesURL=https://github.com/surakage/sprigcast/releases
+AppPublisherURL=https://sprigcast.slothbloom.com
+AppSupportURL=https://discord.gg/fgMD33XrhM
+AppUpdatesURL=https://sprigcast.slothbloom.com
 UninstallDisplayName=SprigCast
 VersionInfoVersion={#AppVersion}
 VersionInfoProductName=SprigCast
@@ -127,7 +127,7 @@ const
   HeaderMuted = $00929A8B;  // #8b9a92
   NoteColor = $00929A8B;    // #8b9a92, muted text on the dark page
   LinkColor = $008FD84F;    // #4fd88f, the app's accent green
-  ChangelogUrl = 'https://github.com/surakage/sprigcast/blob/main/CHANGELOG.md';
+  ChangelogUrl = 'https://sprigcast.slothbloom.com/changelog';
 
 var
   ExtrasPage: TWizardPage;

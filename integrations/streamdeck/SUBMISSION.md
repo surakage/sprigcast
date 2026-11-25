@@ -44,7 +44,7 @@ No setup: with SprigCast open on the same PC, the keys connect by themselves.
 
 **Platforms:** Windows 10 and newer (SprigCast is Windows-only), Stream Deck 7.1 or newer.
 
-**Support / website:** https://github.com/surakage/sprigcast
+**Support / website:** https://sprigcast.slothbloom.com
 
 ## Assets
 

@@ -11,7 +11,6 @@ BRITISH = re.compile(r"(?i)\b(centre[sd]?|centring|colour(s|ed|ful|ing)?|behavio
                      r"labelled|neighbour\w*|licence)\b")
 # file:line: why it stays
 KEEP = {
-    "update.py:140",  # an internal error, never shown
     "output/nvenc_d3d11.py:417",  # a log line
     "core/style.py:60",  # custom looks also accept "colour" when people type it
 }
