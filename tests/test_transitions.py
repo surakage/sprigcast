@@ -374,8 +374,9 @@ def test_rules_table_adds_edits_and_removes():
     assert table.hint.isVisibleTo(dialog)
     table.add()
     rule = col.transition_rules[0]
-    assert rule.to_scene == "a" and rule.transition.kind == "stinger" and edits
-    row = table.rows.itemAt(0).widget()
+    assert rule.to_scene == "a" and rule.transition == col.transition and edits  # starts as the card's own
+    assert rule.transition is not col.transition
+    row = table._rule_rows()[0]
     assert isinstance(row, RuleRow) and row.to_pick.text().startswith("A")
     assert panel.rules_count.text() == "1 rule"
     row._set_end("from_scene", "b")
@@ -579,7 +580,8 @@ def test_a_stinger_rule_shows_its_whole_file_name_and_its_vertical_clip(monkeypa
     dialog.show()
     QApplication.processEvents()
     try:
-        stinger, fade = (dialog.table.rows.itemAt(i).widget() for i in range(2))
+        rows = {id(row.rule): row for row in dialog.table._rule_rows()}
+        stinger, fade = (rows[id(rule)] for rule in col.transition_rules)
         assert isinstance(stinger, RuleRow)
         assert stinger.how.text() == "Stinger · hidden-slothbloom-stinger.webm"  # whole, at the size it opens
         assert stinger.tall.isVisibleTo(dialog) and stinger.tall.text() == "Same clip"
@@ -639,3 +641,47 @@ def test_a_bloom_pointed_at_wakes_its_sources_without_drawing_them():
     assert "green" not in engine._shown_sources()
     engine.peek = frozenset({"b"})
     assert "green" in engine._shown_sources() and "green" not in engine._visible_sources()
+
+
+def test_between_blooms_groups_rules_by_bloom_and_searches_a_long_list():
+    """User 2026-11-25: with a lot of blooms one long list "will look crazy long". Rules are grouped by the bloom
+    they go to (A-Z, "Into any bloom" first), and a long list gets a search."""
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    from sprigcast.app.transitions_panel import RulesTable
+    from sprigcast.core.scene import ANY, Canvas, Scene, SceneCollection, Transition, TransitionRule
+
+    names = ["Starting Soon", "Be Right Back", "Gameplay", "Just Chatting", "Ending Soon"]
+    col = SceneCollection(canvases=[Canvas(id="horizontal", width=1920, height=1080)],
+                          scenes=[Scene(id=f"s{i}", name=n, canvas="horizontal") for i, n in enumerate(names)])
+    col.transition_rules = [TransitionRule(from_scene=ANY, to_scene=f"s{i}", transition=Transition(kind="leaf"))
+                            for i in range(5)]
+    col.transition_rules += [TransitionRule(from_scene="s2", to_scene="s1", transition=Transition(kind="cut")),
+                             TransitionRule(from_scene="s0", to_scene=ANY, transition=Transition(kind="fade"))]
+    table = RulesTable(col, lambda: None)
+    groups = [(title, [r.from_scene for r in rules]) for title, rules in table.groups()]
+    assert groups == [("Into any bloom", ["s0"]), ("Into Be Right Back", [ANY, "s2"]), ("Into Ending Soon", [ANY]),
+                      ("Into Gameplay", [ANY]), ("Into Just Chatting", [ANY]), ("Into Starting Soon", [ANY])]
+    assert table.rows.count() == 6  # one section card per bloom
+    assert not table.search.isHidden()  # 7 rules: a search
+    assert table._rule_rows() == []  # and every group starts folded to its title
+    table.toggle(ANY)
+    assert [row.rule.to_scene for row in table._rule_rows()] == [ANY]
+    table.toggle(ANY)
+    table.search.setText("gameplay")
+    assert [title for title, _rules in table.groups()] == ["Into Be Right Back", "Into Gameplay"]
+    assert len(table._rule_rows()) == 2
+    table.search.setText("nothing like it")
+    assert table.rows.count() == 0 and not table.none_found.isHidden()
+    table.search.clear()
+    col.transition_rules = col.transition_rules[:2]
+    table = RulesTable(col, lambda: None)
+    assert table.search.isHidden() and len(table._rule_rows()) == 2  # a short list needs none, and shows open
+    # A new rule copies the card's transition into the first bloom (A-Z) that has no rule yet.
+    table.add()
+    assert col.transition_rules[-1].to_scene == "s4" and col.transition_rules[-1].transition.kind == "fade"

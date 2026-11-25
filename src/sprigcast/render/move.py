@@ -56,6 +56,7 @@ class Piece:
     quad: list  # 4 x (x, y, u, v): top-left, top-right, bottom-left, bottom-right
     opacity: float = 1.0
     holds: frozenset = frozenset()  # a sprig drawn whole: the sources inside it, however deep
+    part: str = ""  # a sprig drawn whole: the sprig it shows (two placements of one sprig are the same picture)
 
 
 @dataclass
@@ -85,7 +86,7 @@ def flatten(scene, collection, sizes: dict, part_size: Callable[[str, str], tupl
     view(layout, placement source): (the layout as it shows now, its per-item fades or None).
     plain(source id): True when the source has no video filters (a sprig with filters is drawn whole).
     hidden: sources left out wherever they are (screenshots).
-    keep: sprig placements drawn whole even when they fill the canvas (the other bloom draws them whole: see
+    keep: sprigs (part ids) drawn whole even when they fill the canvas (the other bloom draws them whole: see
     both).
     """
     sources = {s.id: s for s in collection.sources}
@@ -117,13 +118,13 @@ def flatten(scene, collection, sizes: dict, part_size: Callable[[str, str], tupl
                 if not quad:
                     continue
                 shape = collection.shape_for(part, layout.canvas)
-                if (depth < MAX_DEPTH and part.id not in seen and plain(item.source) and item.source not in keep
+                if (depth < MAX_DEPTH and part.id not in seen and plain(item.source) and part.id not in keep
                         and tuple(size) == tuple(canvas_size) and _is_whole_canvas(quad, canvas_size)):
                     inner, inner_fades = view(shape, source)
                     walk(inner, alpha, inner_fades, depth + 1, seen | {part.id})
                     continue
                 out.append(Piece(item.source, source.name.casefold(), item.source, layout.canvas, quad, alpha,
-                                 inside(part, layout.canvas, depth, seen | {part.id})))
+                                 inside(part, layout.canvas, depth, seen | {part.id}), part.id))
                 continue
             size = sizes.get(item.source)
             if not size:
@@ -136,21 +137,27 @@ def flatten(scene, collection, sizes: dict, part_size: Callable[[str, str], tupl
     return out
 
 
-def both(lay_out: Callable[[frozenset], tuple[list, list]], is_sprig: Callable[[str], bool]) -> tuple[list, list]:
+def both(lay_out: Callable[[frozenset], tuple[list, list]]) -> tuple[list, list]:
     """The two blooms' pieces, with a sprig drawn whole in one bloom drawn whole in the other too.
 
     A sprig that fills the canvas is opened up into its pieces; the same sprig smaller in the other bloom is one
     piece. Paired with nothing, the full-screen camera on one bloom and the shrunk one on the other just faded
     (user 2026-11-25: "i have it on fullscreen on one bloom and shrunk it on another but it didnt do the
-    animation move"). lay_out(keep) -> (old pieces, new pieces)."""
+    animation move"). The same sprig counts however it is placed: the vertical Webcam is placed once per bloom
+    (PC 2026-11-25). lay_out(keep) -> (old pieces, new pieces)."""
     keep: frozenset = frozenset()
     for _ in range(MAX_DEPTH):
         old, new = lay_out(keep)
-        whole = frozenset(p.key for p in (*old, *new) if is_sprig(p.key))
+        whole = frozenset(p.part for p in (*old, *new) if p.part)
         if whole <= keep:
             break
         keep |= whole
     return old, new
+
+
+def same(a: Piece, b: Piece) -> bool:
+    """The same picture: one source, or one sprig placed twice. It glides as one, its crop sliding."""
+    return a.source == b.source or bool(a.part and a.part == b.part)
 
 
 def _holds(a: Piece, b: Piece) -> bool:
@@ -160,12 +167,13 @@ def _holds(a: Piece, b: Piece) -> bool:
 
 def pair(old: list[Piece], new: list[Piece]) -> dict[int, int]:
     """new index -> old index for pieces in both: the same source first (in order, when one is placed
-    twice), then the same name among what's left, then a source and a sprig that holds it."""
+    twice), then the same sprig placed again, then the same name among what's left, then a source and a sprig
+    that holds it."""
     pairs: dict[int, int] = {}
     taken: set[int] = set()
-    for rule in ("key", "name", "holds"):
+    for rule in ("key", "part", "name", "holds"):
         for j, piece in enumerate(new):
-            if j in pairs or (rule == "name" and not piece.name):
+            if j in pairs or (rule in ("name", "part") and not getattr(piece, rule)):
                 continue
             for i, before in enumerate(old):
                 if i in taken:
@@ -277,7 +285,7 @@ def frame(old: list[Piece], new: list[Piece], progress: float, easing: str = "sm
         piece, before = new[j], old[pairs[j]]
         quad = between(before.quad, piece.quad, e)
         alpha = before.opacity + (piece.opacity - before.opacity) * t
-        if before.source == piece.source:
+        if same(before, piece):
             return [Draw(piece.source, piece.canvas, quad, alpha)]
         # Paired by name: two sources, so the old one hands over to the new one as they move.
         shape = _shape(quad)

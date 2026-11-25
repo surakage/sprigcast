@@ -888,16 +888,14 @@ class TransitionsPanel(QWidget):
             grid.removeWidget(widget)
         row = 1 if split else 0
         grid.addWidget(self.rules_label, 0, 0, 1, 4 if split else 1)
-        # Its width is ignored so it never holds the panel open; on one line it still gets room for its words
-        # (it had none on Live's card, so "1 active" sat there with no name).
-        policy = QSizePolicy.Policy.Ignored if split else QSizePolicy.Policy.Fixed
-        self.rules_label.setSizePolicy(policy, QSizePolicy.Policy.Preferred)
         grid.addWidget(self.rules_count, row, 0 if split else 1)
         grid.addWidget(self.rules_button, row, 3)
         for c in range(4):
             grid.setColumnStretch(c, 0)
-        # Live's card keeps the count beside its label and Edit at the far end; the full panel lets the count fill.
-        grid.setColumnStretch(2 if self.compact or split else 1, 1)
+        # The label's width is ignored, so it never holds the card open (a fixed one clipped Live's card, PC
+        # 2026-11-25). On one line it takes the spare room, so its words show (with none, "1 active" sat there
+        # with no name); split, the count fills and Edit stays at the far end.
+        grid.setColumnStretch(0 if not split else 2, 1)
 
     def _reflow(self, columns: int) -> None:
         """Lay the choices out in `columns` equal columns: four on a wide card, fewer on a narrow one."""
@@ -1351,11 +1349,12 @@ def section_title(text: str, tip: str = "") -> QLabel:
 
 def bloom_choices(collection: SceneCollection) -> list[tuple[str, str]]:
     """(scene id, name) of every main bloom: shows that are not just another canvas's twin."""
-    return [(s.id, s.name) for s in collection.scenes if s.kind == "show" and s.linked_to is None]
+    return sorted(((s.id, s.name) for s in collection.scenes if s.kind == "show" and s.linked_to is None),
+                  key=lambda pair: pair[1].casefold())
 
 
-ROW_STYLE = (f"#ruleRow {{ background: {theme.SECTION}; border: 1px solid {theme.SECTION_EDGE};"
-             " border-radius: 16px; }")
+ROW_STYLE = (f"#ruleRow {{ background: {theme.RAISED}; border: 1px solid {theme.SECTION_EDGE};"
+             " border-radius: 14px; }")
 ROW_LABEL_STYLE = f"color: {theme.LABEL}; font-size: 12px;"
 ROW_LABEL_WIDTH = 74
 
@@ -1452,6 +1451,8 @@ class RuleRow(QFrame):
         setattr(self.rule, end, scene_id)
         self.show_values()
         self.table.changed()
+        if end == "to_scene":  # it moves to its new bloom's group (after the menu has closed)
+            QTimer.singleShot(0, self.table.refresh)
 
     def _name(self, scene_id: str) -> str:
         if scene_id == ANY:
@@ -1502,15 +1503,25 @@ class RuleRow(QFrame):
 
 
 class RulesTable(QWidget):
-    """Between blooms: transitions for particular switches, like a stinger only into BRB."""
+    """Between blooms: transitions for particular switches, like a stinger only into BRB.
+
+    Rules are grouped by the bloom they go to, each group its own section card, A-Z (user 2026-11-25: with a lot
+    of blooms one long list "will look crazy long"). With more than SEARCH_FROM rules a search narrows them by
+    bloom or transition, and each group folds to its title: a long list starts folded.
+    """
+
+    SEARCH_FROM = 5
 
     def __init__(self, collection: SceneCollection, changed: Callable[[], None],
                  probe: Callable[[str], float | None] | None = None):
         super().__init__()
         self.collection, self.changed, self.probe = collection, changed, probe
+        # The groups folded open (by the bloom they go to); a short list shows every group open.
+        self.opened: set[str] = set()
+        self._fold_all = len(collection.transition_rules) > self.SEARCH_FROM
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(12)
         top = QHBoxLayout()
         top.addWidget(section_title("Between blooms", "Use another transition for particular switches"))
         top.addStretch(1)
@@ -1520,33 +1531,123 @@ class RulesTable(QWidget):
         add.clicked.connect(self.add)
         top.addWidget(add)
         layout.addLayout(top)
+        from PySide6.QtWidgets import QLineEdit
+
+        from sprigcast.app import icons
+
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search")
+        self.search.setClearButtonEnabled(True)
+        self.search.addAction(icons.icon("search", theme.MUTED, 16), QLineEdit.ActionPosition.LeadingPosition)
+        self.search.setStyleSheet(
+            f"QLineEdit {{ background: {theme.FIELD}; color: {theme.TEXT}; border: 1px solid {theme.SECTION_EDGE};"
+            f" border-radius: 14px; padding: 8px 12px; }} QLineEdit:focus {{ border-color: {theme.ACCENT}; }}")
+        self.search.textChanged.connect(lambda _text: self.refresh())
+        layout.addWidget(self.search)
         self.hint = QLabel("Every switch uses the usual transition. Add a rule to give some switches "
                            "their own, like a stinger into BRB.")
         self.hint.setWordWrap(True)
         self.hint.setStyleSheet(theme.MUTED_STYLE)
         layout.addWidget(self.hint)
+        self.none_found = QLabel("No rules match")
+        self.none_found.setStyleSheet(theme.MUTED_STYLE)
+        layout.addWidget(self.none_found)
         self.rows = QVBoxLayout()
         self.rows.setSpacing(12)
         layout.addLayout(self.rows)
         layout.addStretch(1)  # rows keep their size; the space stays below them
         self.refresh()
 
+    def _bloom_name(self, scene_id: str) -> str:
+        if scene_id == ANY:
+            return "Any bloom"
+        scene = next((s for s in self.collection.scenes if s.id == scene_id), None)
+        return (scene.name or "?") if scene is not None else "Removed"
+
+    def _matches(self, rule: TransitionRule, words: list[str]) -> bool:
+        text = " ".join((self._bloom_name(rule.from_scene), self._bloom_name(rule.to_scene),
+                         summary(rule.transition), os.path.basename(rule.transition.stinger.path))).casefold()
+        return all(word in text for word in words)
+
+    def is_open(self, to: str) -> bool:
+        return not self._fold_all or bool(self.search.text().strip()) or to in self.opened
+
+    def toggle(self, to: str) -> None:
+        self.opened ^= {to}
+        self.refresh()
+
+    def groups(self) -> list[tuple[str, list[TransitionRule]]]:
+        """(title, rules) for each bloom the shown rules go to: "Into any bloom" first, then A-Z, and within a
+        group "From any bloom" first, then A-Z."""
+        words = self.search.text().casefold().split() if self.search.isVisible() or self.search.text() else []
+        by_to: dict[str, list[TransitionRule]] = {}
+        for rule in self.collection.transition_rules:
+            if self._matches(rule, words):
+                by_to.setdefault(rule.to_scene, []).append(rule)
+
+        def order(scene_id: str) -> tuple:
+            return (scene_id != ANY, self._bloom_name(scene_id).casefold())
+
+        return [(f"Into {self._bloom_name(to).lower() if to == ANY else self._bloom_name(to)}",
+                 sorted(rules, key=lambda r: order(r.from_scene)))
+                for to, rules in sorted(by_to.items(), key=lambda pair: order(pair[0]))]
+
+    def _group_card(self, title: str, rules: list[TransitionRule]) -> QFrame:
+        """One bloom's rules on a section card. Its title folds it; folded, one line says what its rules do."""
+        from sprigcast.app import card, icons
+
+        to = rules[0].to_scene
+        opened = self.is_open(to)
+        frame, box = card.section("", spacing=10)
+        head = QPushButton(f"{title}  ·  {len(rules)}")
+        head.setIcon(icons.icon("chevron-up" if opened else "chevron-down", theme.MUTED, 16))
+        head.setLayoutDirection(Qt.LayoutDirection.RightToLeft)  # the chevron at the far end
+        head.setCursor(Qt.CursorShape.PointingHandCursor)
+        head.setToolTip("Fold" if opened else "Show its rules")
+        head.setAccessibleName(title)
+        head.setStyleSheet(
+            f"QPushButton {{ background: transparent; border: none; color: {theme.TEXT_BRIGHT}; font-weight: 650;"
+            f" font-size: {theme.SECTION_TITLE_PX}px; text-align: left; padding: 2px 0; }}")
+        head.clicked.connect(lambda: self.toggle(to))
+        box.addWidget(head)
+        if opened:
+            for rule in rules:
+                box.addWidget(RuleRow(self, rule))
+        else:
+            kinds = sorted({summary(r.transition) for r in rules})
+            note = QLabel(", ".join(kinds))
+            note.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
+            box.addWidget(note)
+        return frame
+
     def refresh(self) -> None:
-        """Rebuild the rows (after rules were added or removed, or blooms renamed)."""
+        """Rebuild the groups (after rules were added, removed or moved, blooms renamed, a search or a fold)."""
         while self.rows.count():
             widget = self.rows.takeAt(0).widget()
             if widget is not None:
                 widget.setParent(None)
                 widget.deleteLater()
-        for rule in self.collection.transition_rules:
-            self.rows.addWidget(RuleRow(self, rule))
-        self.hint.setVisible(not self.collection.transition_rules)
+        rules = self.collection.transition_rules
+        self.search.setVisible(len(rules) > self.SEARCH_FROM or bool(self.search.text()))
+        shown = self.groups()
+        for title, group in shown:
+            self.rows.addWidget(self._group_card(title, group))
+        self.hint.setVisible(not rules)
+        self.none_found.setVisible(bool(rules) and not shown)
+
+    def _rule_rows(self) -> list["RuleRow"]:
+        return [row for i in range(self.rows.count()) if (frame := self.rows.itemAt(i).widget()) is not None
+                for row in frame.findChildren(RuleRow)]
 
     def add(self) -> None:
         usual = self.collection.transition
         blooms = bloom_choices(self.collection)
-        transition = Transition(kind="stinger", stinger=usual.stinger.model_copy())
-        rule = TransitionRule(from_scene=ANY, to_scene=blooms[0][0] if blooms else ANY, transition=transition)
+        # Starts as a copy of the card's transition, into the first bloom (A-Z) with no rule yet (it was always a
+        # stinger into the first bloom, PC 2026-11-25).
+        ruled = {r.to_scene for r in self.collection.transition_rules if r.from_scene == ANY}
+        to = next((sid for sid, _name in blooms if sid not in ruled), blooms[0][0] if blooms else ANY)
+        rule = TransitionRule(from_scene=ANY, to_scene=to, transition=usual.model_copy(deep=True))
+        self.opened.add(to)  # its group opens, so it's in sight
         self.collection.transition_rules.append(rule)
         self.refresh()
         self.changed()
@@ -1558,7 +1659,5 @@ class RulesTable(QWidget):
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
-        for i in range(self.rows.count()):
-            row = self.rows.itemAt(i).widget()
-            if isinstance(row, RuleRow):
-                row.show_values()  # bloom names may have changed
+        for row in self._rule_rows():
+            row.show_values()  # bloom names may have changed
