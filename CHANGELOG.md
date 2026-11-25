@@ -5,7 +5,7 @@ full release plus decimals (Beta 0.4). Each new section is grouped as Added, Cha
 
 "Tested" means tried on a real Windows PC. Everything else passed the automated tests but still needs a try.
 
-## Beta 0.4 (not released yet)
+## Beta 0.4 (2026-11-24)
 
 Lighter on older PCs, steadier with the HD60 X, and a first-start tour with Pip. Everything here was merged after
 the Beta 0.3 test build; most of it went to testers as test builds from 2026-11-22 on.
