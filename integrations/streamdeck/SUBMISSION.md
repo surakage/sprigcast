@@ -8,7 +8,7 @@ Everything for the Marketplace listing. The pictures live in the project files u
 
 - Plugin ID `com.slothbloom.sprigcast`: maker name + plugin name. Every key's ID starts with it. It can't change after publishing.
 - `Author` is the maker organization name, **SlothBloom**. It must match the name in the Maker Console.
-- 27 keys (Elgato allows 2 to 30). Keys that fail show the alert; list icons are white lines on transparent.
+- 28 keys since 0.5.0 (Elgato allows 2 to 30). Keys that fail show the alert; list icons are white lines on transparent.
 - Icons: plugin 256/512, category 28/56, key list 20/40, keys 72/144, all PNG. App icon 288×288 for the store.
 - Settings save as they change. Nothing is collected, so no privacy policy is needed.
 - Free, no paywall. Links go to the website and Discord only (never GitHub).
@@ -80,3 +80,9 @@ to 1920×960, makes a strong fifth one.
 
 `npm ci && npm run build && npm test && npm run validate && npm run pack` → `dist/com.slothbloom.sprigcast.streamDeckPlugin`.
 (`validate` needs internet to check the website link.)
+
+## Release notes for 0.5.0 (next upload, as a new version in the Maker Console)
+
+New Teleprompter key: runs the THSV Teleprompter app from your Stream Deck (play or pause, start, pause, reset,
+next, previous, faster, slower, bigger or smaller text, mirror). It works with the teleprompter window in the
+background, and even while SprigCast is closed.

@@ -24,7 +24,13 @@ const FIELDS = {
 	pngtuber: [["mode", "Press", ["expression", "next", "reset"]], ["expression", "Expression", "getExpressions"],
 		["seconds", "For seconds", null]],
 	run: [["action", "Action", "getActions"], ["fields", "Fields (JSON)", "json"]],
+	// The THSV Teleprompter app, not SprigCast: [value, label] pairs, and its own port (8765 unless changed there).
+	teleprompter: [["command", "Press", [["toggle", "Play or pause"], ["start", "Start"], ["pause", "Pause"], ["reset", "Reset"],
+		["next", "Next"], ["prev", "Previous"], ["faster", "Faster"], ["slower", "Slower"], ["bigger", "Bigger text"],
+		["smaller", "Smaller text"], ["mirror", "Mirror"]]], ["tpPort", "Port", "port:8765"]],
 };
+
+const OWN_APP = new Set(["teleprompter"]); // keys for other apps: no SprigCast connection box
 
 let socket, context, settings = {}, globals = {};
 
@@ -42,10 +48,19 @@ function build(kind) {
 		let input;
 		if (Array.isArray(source)) {
 			input = document.createElement("select");
-			for (const value of source) input.add(new Option(value[0].toUpperCase() + value.slice(1), value));
+			for (const value of source) {
+				if (Array.isArray(value)) input.add(new Option(value[1], value[0]));
+				else input.add(new Option(value[0].toUpperCase() + value.slice(1), value));
+			}
 		} else if (source === "json") {
 			input = document.createElement("textarea");
 			input.placeholder = '{"bloom": "BRB"}';
+		} else if (typeof source === "string" && source.startsWith("port:")) {
+			input = document.createElement("input");
+			input.type = "number";
+			input.min = "1";
+			input.max = "65535";
+			input.placeholder = source.slice(5);
 		} else if (source) {
 			input = document.createElement("select");
 			input.dataset.source = source;
@@ -55,7 +70,8 @@ function build(kind) {
 			input = document.createElement("input");
 		}
 		input.id = `f-${key}`;
-		if (input.tagName !== "SELECT" || Array.isArray(source)) input.value = settings[key] ?? (Array.isArray(source) ? source[0] : "");
+		const first = Array.isArray(source) ? (Array.isArray(source[0]) ? source[0][0] : source[0]) : "";
+		if (input.tagName !== "SELECT" || Array.isArray(source)) input.value = settings[key] ?? first;
 		const save = () => {
 			if (settings[key] === input.value) return;
 			settings[key] = input.value;
@@ -67,7 +83,8 @@ function build(kind) {
 		row.appendChild(input);
 		form.appendChild(row);
 	}
-	if (!(FIELDS[kind] ?? []).length) document.getElementById("connection").open = true;
+	if (OWN_APP.has(kind)) document.getElementById("connection").hidden = true;
+	else if (!(FIELDS[kind] ?? []).length) document.getElementById("connection").open = true;
 }
 
 /** Every name SprigCast has, plus the one picked now (even if SprigCast doesn't have it right now). */

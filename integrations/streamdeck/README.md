@@ -32,6 +32,7 @@ bloom is on air, a sound key shows when it's muted, and Go live and Record turn 
 | Freeze | freezes a sprig or source (for its usual time or the seconds you set), toggles, or lets it go (Freeze plugin) | ✓ and Frozen or Moving | |
 | PNGtuber | shows an expression (for some seconds, or until changed), the next one, or default (PNGtuber plugin) | ✓ and the expression's name | |
 | Run action | any SprigCast action with JSON fields | ✓ on success | |
+| Teleprompter | the THSV Teleprompter app: play or pause, start, pause, reset, next, previous, faster, slower, bigger or smaller text, mirror (GET `/control/<command>` on its port, 8765 unless changed) | ✓ on success; works without SprigCast | the command |
 
 Not here on purpose: Studio Mode (SprigCast has none: a bloom goes straight on air).
 

@@ -4,6 +4,7 @@
 import streamDeck, { SingletonAction } from "@elgato/streamdeck";
 
 import { SprigCast, addSeconds, clockText, placeTitle, timerText } from "./sprigcast.js";
+import { TELEPROMPTER_TITLES, teleprompterCommand, teleprompterPort, teleprompterSend } from "./teleprompter.js";
 
 const ID = "com.slothbloom.sprigcast";
 const sprigcast = new SprigCast();
@@ -469,11 +470,44 @@ class RunAction extends SprigCastAction {
 	}
 }
 
+/**
+ * Teleprompter: runs the THSV Teleprompter app (its own local web control, GET /control/<command>), not
+ * SprigCast. It works whether SprigCast is open or not, so it never goes dark or opens a SprigCast connection.
+ */
+class TeleprompterKey extends SprigCastAction {
+	constructor() { super("teleprompter", 1); }
+	async onWillAppear(ev) {
+		await this.dress(ev.action);
+		return this.paint(ev.action, ev.payload.settings);
+	}
+	onWillDisappear() {}
+	async dress(action) {
+		if (!action.isKey()) return;
+		if (keyStyle === "canopy") return action.setImage();
+		return action.setImage(`imgs/styles/${keyStyle}/${this.suffix}/key0@2x.png`);
+	}
+	async onSendToPlugin() {}
+	async onKeyDown(ev) {
+		const s = ev.payload.settings;
+		try {
+			await teleprompterSend(teleprompterCommand(s), teleprompterPort(s));
+			await ev.action.showOk();
+		} catch (error) {
+			streamDeck.logger.warn(`${this.manifestId}: ${error.message}`);
+			await ev.action.showAlert();
+			await flash(ev.action, "Not\nrunning");
+			setTimeout(() => this.paint(ev.action, s).catch(() => {}), 1900);
+		}
+	}
+	paint(action, s) { return action.setTitle(TELEPROMPTER_TITLES[teleprompterCommand(s)]); }
+	repaintAll() { return Promise.resolve(); } // nothing from SprigCast changes it
+}
+
 const actions = [new ShowBloom(), new MuteSound(), new SoundVolume(), new ToggleItem(), new GoLive(), new PlaceKey(), new Record(), new RecordPause(), new RecordChapter(),
 	new ClipsKey(), new SaveClip(), new CameraKey(), new Screenshot(), new MediaKey(), new FilterKey(),
 	new TransitionKey(), new GardenKey(), new PathKey(), new SprigStateAction(), new DeathCount(), new Pngtuber(),
 	new TimerKey(), new TimerReset(), new TimerAdd(), new ReplayKey(), new FreezeKey(),
-	new RunAction()];
+	new RunAction(), new TeleprompterKey()];
 for (const action of actions) streamDeck.actions.registerAction(action);
 
 sprigcast.on("changed", () => all.forEach((a) => a.repaintAll().catch(() => {})));
