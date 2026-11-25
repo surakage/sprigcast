@@ -87,3 +87,24 @@ def test_libav_lines_arent_held_back_to_be_written_later():
         assert main.import_av() and av.logging.get_skip_repeated() is False
     finally:
         av.logging.set_skip_repeated(before)
+
+
+def test_a_connection_the_server_stopped_reading_is_made_again():
+    """PC live 2026-11-25: YouTube (horizontal) took nothing for 23 s and dropped 907 frames before Windows ended it."""
+    from sprigcast.output.shared_stream import StallWatch
+
+    w = StallWatch(5.0)
+    assert not w.stalled(0.0, 100, 50_000, True)
+    assert not w.stalled(4.9, 100, 50_000, True)  # a short wait on the network is normal
+    assert w.stalled(5.0, 100, 50_000, True)
+    assert not w.stalled(6.0, 101, 50_000, True)  # it moved again: counted from now
+    assert not w.stalled(20.0, 101, 0, True)  # nothing waiting to go: the encoder, not the network
+    assert not w.stalled(30.0, 101, 50_000, False)  # still connecting: connect_timeout covers that
+    assert not w.stalled(34.0, 101, 50_000, True)
+    assert w.stalled(35.0, 101, 50_000, True)
+
+
+def test_youtube_goes_over_rtmps():
+    from sprigcast.output import stream
+
+    assert stream.SERVICES["youtube"].server.startswith("rtmps://a.rtmps.youtube.com:443/")

@@ -13,7 +13,7 @@ import sys
 
 INGESTS = {
     "twitch": "rtmp://live.twitch.tv/app",
-    "youtube": "rtmp://a.rtmp.youtube.com/live2",
+    "youtube": "rtmps://a.rtmps.youtube.com:443/live2",
 }
 
 

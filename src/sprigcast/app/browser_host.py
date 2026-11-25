@@ -86,16 +86,20 @@ MEDIA_JS = """
 (() => {
   if (window.__sprigcastMediaWatch) return;
   window.__sprigcastMediaWatch = true;
-  // Pages never get a camera or microphone (permissions are denied). Asking for the list of devices still made
-  // Chromium start its video capture service, 63 MB for the whole run (PC 2026-11-24/25): the list is empty here.
-  const md = navigator.mediaDevices;
-  if (md) {
-    try {
-      const denied = () => Promise.reject(new DOMException("Not allowed in SprigCast", "NotAllowedError"));
-      Object.defineProperty(md, "enumerateDevices", {value: () => Promise.resolve([]), configurable: true});
-      Object.defineProperty(md, "getUserMedia", {value: denied, configurable: true});
-    } catch (e) {}
-  }
+  // Pages never get a camera or microphone (permissions are denied). Asking for the device list, or only
+  // listening for devices coming and going, still made Chromium start its video capture service: 61-63 MB for the
+  // whole run (PC 2026-11-24/25). Pages get a stand-in that never reaches Chromium: no devices, no camera, no
+  // microphone, no screen, and "devicechange" never fires.
+  try {
+    const denied = () => Promise.reject(new DOMException("Not allowed in SprigCast", "NotAllowedError"));
+    const stub = new EventTarget();
+    stub.ondevicechange = null;
+    stub.enumerateDevices = () => Promise.resolve([]);
+    stub.getUserMedia = denied;
+    stub.getDisplayMedia = denied;
+    stub.getSupportedConstraints = () => ({});
+    Object.defineProperty(Navigator.prototype, "mediaDevices", {get: () => stub, configurable: true});
+  } catch (e) {}
   const told = new Set();
   const tell = (kind, src) => {
     if (told.has(kind)) return;
