@@ -125,7 +125,9 @@ class FilterForm(QWidget):
         form.setVerticalSpacing(14)
         for f in fields:
             self.rows[f.key] = self._widget(f, values.get(f.key, f.default))
-            form.addRow(f.label, self.rows[f.key])
+            label = QLabel(f.label)
+            label.setStyleSheet(f"color: {theme.TEXT}; background: transparent;")  # the theme's text, not Qt's dark
+            form.addRow(label, self.rows[f.key])
         self.changed.connect(self._show_rows)
         self._show_rows()
 
@@ -280,6 +282,8 @@ class FilterForm(QWidget):
 
 # On a PANEL pop-up, pills use the shared button look and number boxes are one step lighter.
 RAISED_PILL = theme.SMALL_PILL_STYLE
+# A part of the Filters window (the list, a filter's settings): a soft card on the window, so the parts read apart.
+SECTION_STYLE = "#{name} {{ background: %s; border: 1px solid %s; border-radius: 18px; }}" % (theme.CARD, theme.EDGE_STRONG)
 NUMBER_STYLE = (
     f"QSpinBox, QDoubleSpinBox, QLineEdit, QComboBox {{ background: {theme.RAISED}; color: {theme.TEXT};"
     f" border: none; border-radius: 12px; padding: 5px 10px; }}"
@@ -1249,7 +1253,13 @@ class FiltersDialog(CardWindow):
         self.same.toggled.connect(self._same_toggled)
         self.canvas_switch = CanvasSwitch(self.canvases, self._pick_canvas)
         self.canvas_switch.setVisible(self.canvas_col is not None and not self.same.isChecked())
-        left = QVBoxLayout()
+        # Each part of the window on a card of its own (user 2026-11-25: "they all blend into one").
+        self.list_card = QFrame()
+        self.list_card.setObjectName("filterListCard")
+        self.list_card.setStyleSheet(SECTION_STYLE.format(name="filterListCard"))
+        left = QVBoxLayout(self.list_card)
+        left.setContentsMargins(12, 14, 12, 14)
+        self.list_card.setFixedWidth(236 + 24)  # the list's width, whether or not there are filters yet
         left.setSpacing(10)
         left.addWidget(self.canvas_switch)
         left.addWidget(self.list, 1)
@@ -1308,17 +1318,24 @@ class FiltersDialog(CardWindow):
         if self.hearing is not None:
             self.sound_view = SoundView(self.hearing, self._current)
             right.addWidget(self.sound_view)
+        self.form_card = QFrame()
+        self.form_card.setObjectName("filterFormCard")
+        self.form_card.setStyleSheet(SECTION_STYLE.format(name="filterFormCard"))
+        form_box = QVBoxLayout(self.form_card)
+        form_box.setContentsMargins(18, 14, 14, 14)
+        form_box.setSpacing(12)
         title_row = QHBoxLayout()
         title_row.addWidget(self.title, 1)
         title_row.addWidget(self.save_look_button)
         title_row.addWidget(self.reset_button)
         title_row.addWidget(self.remove_button)
-        right.addLayout(title_row)
-        right.addWidget(self.form_area, 1)
+        form_box.addLayout(title_row)
+        form_box.addWidget(self.form_area, 1)
+        right.addWidget(self.form_card, 1)
 
         body = QHBoxLayout()
-        body.setSpacing(22)
-        body.addLayout(left, 0)
+        body.setSpacing(16)
+        body.addWidget(self.list_card, 0)
         body.addWidget(card, 1)
         root = QVBoxLayout(self.card)
         root.setContentsMargins(24, 20, 24, 22)
@@ -1502,6 +1519,10 @@ class FiltersDialog(CardWindow):
         flt = self._current()
         self.reset_button.setVisible(flt is not None)
         self.remove_button.setVisible(flt is not None)
+        # The before and after picture (or the sound view) only once there's a filter to show it for.
+        for view in (self.preview, self.sound_view):
+            if view is not None:
+                view.setVisible(flt is not None)
         if flt is None:
             self.save_look_button.hide()
             self._set_title("")

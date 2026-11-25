@@ -153,8 +153,10 @@ def test_before_and_after_asks_for_both_pictures():
         asked.append((source_id, raw, limit))
         back(np.full((90, 160, 4), 200 if raw else 50, np.uint8))
 
-    source = SourceConfig(id="cam", kind="camera", name="Cam")
-    d = FiltersDialog(source, lambda save=True: None, grab=grab)
+    from sprigcast.core.scene import Filter
+
+    source = SourceConfig(id="cam", kind="camera", name="Cam", filters=[Filter(id="f", kind="blur", name="Mist")])
+    d = FiltersDialog(source, lambda save=True: None, grab=grab)  # with a filter: the picture shows only then
     assert d.preview is not None
     d.show()
     app.processEvents()
@@ -290,3 +292,29 @@ def test_sound_filters_preview_first_too():
     assert source.filters == []
     d.apply()
     assert [f.kind for f in source.filters] == ["gain"]
+
+
+def test_before_and_after_shows_only_with_a_filter(app):
+    """User 2026-11-25: with nothing picked, the before and after picture isn't shown."""
+    import numpy as np
+
+    from sprigcast.app.filters_dialog import FiltersDialog
+    from sprigcast.core.scene import Filter, SourceConfig
+
+    def grab(source_id, back, raw, limit, filters=None):
+        back(np.full((90, 160, 4), 120, np.uint8))
+
+    d = FiltersDialog(SourceConfig(id="cam", kind="camera", name="Cam"), lambda save=True: None, grab=grab)
+    d.show()
+    app.processEvents()
+    assert not d.preview.isVisible() and not d.preview.timer.isActive()
+    d.add("blur")
+    app.processEvents()
+    assert d.preview.isVisible()
+    d.reject()
+    one = FiltersDialog(SourceConfig(id="cam", kind="camera", name="Cam", filters=[Filter(id="f", kind="blur", name="Mist")]),
+                        lambda save=True: None, grab=grab)
+    one.show()
+    app.processEvents()
+    assert one.preview.isVisible()
+    one.reject()

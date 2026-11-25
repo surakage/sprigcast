@@ -87,6 +87,8 @@ LATE_LOG_EVERY_S = 10.0  # late-frame log lines at most this often (the rest are
 GPU_STALL_S = 0.3  # the card behind this long stopped the whole app (the window too): log who was using it
 GPU_SKIP_MAX_S = 2.0  # the card stuck longer than this (a lost device?): draw anyway, waiting as before
 SOURCE_BUDGET_MS = 5.0  # a source averaging more than this per frame is drawn less often (see _charge)
+BUDGET_LOG_S = 300.0  # after a source's slow-down and recovery lines, its next ones wait this long (_charge)
+
 CHARGE_CAP_MS = 4 * SOURCE_BUDGET_MS  # the most one frame adds to a source's average (_charge)
 BUDGET_MARGIN = 0.8  # ...and drawn more often again only under this share of the lower step's budget
 WAKE_WAIT_S = 2.0  # a switch to a bloom whose camera is closed shows the old bloom until it opens, at most this
@@ -186,6 +188,11 @@ class Running:
     wipe_map: str = ""  # wipe image path
     queued: float = field(default_factory=time.perf_counter)
 
+
+
+def _since(missed: int) -> str:
+    """How many more times a quieted log line's state changed since it was last said."""
+    return f" (changed {missed} more times since its last line)" if missed else ""
 
 class Engine:
     def __init__(self, collection: SceneCollection):
@@ -2434,13 +2441,31 @@ class Engine:
             # switched 6 times in 6 s in the 2026-11-17 heavy run
         if every != before:
             self._source_every[source_id] = every
+            # A slow-down and the recovery after it are both said, then nothing more for BUDGET_LOG_S; the next line
+            # says how often it changed meanwhile. A window capture at 4-5 ms went back and forth about 10 times a
+            # minute, 101 lines in 10 minutes (PC 2026-11-25).
+            quiet = getattr(self, "_budget_quiet", None)
+            if quiet is None:
+                quiet = self._budget_quiet = {}
+            now = time.monotonic()
+            since, said, missed = quiet.get(source_id, (now, 0, 0))
+            if now - since >= BUDGET_LOG_S:
+                since, said = now, 0
+            line = None
             if every > 1 and source_id not in self._budget_logged:
                 self._budget_logged.add(source_id)
-                log.info("source %s (%s) takes %.1f ms a frame: drawing it every %d frames to keep the canvas "
-                         "on time", source_id, source.kind, avg, every)
+                line = ("source %s (%s) takes %.1f ms a frame: drawing it every %d frames to keep the canvas on "
+                        "time%s", source_id, source.kind, avg, every)
             elif every == 1 and source_id in self._budget_logged:
                 self._budget_logged.discard(source_id)
-                log.info("source %s (%s) back to every frame (%.1f ms a frame)", source_id, source.kind, avg)
+                line = ("source %s (%s) back to every frame (%.1f ms a frame)%s", source_id, source.kind, avg)
+            if line is not None:
+                if said < 2:
+                    log.info(line[0], *line[1:], _since(missed))
+                    said, missed = said + 1, 0
+                else:
+                    missed += 1
+                quiet[source_id] = (since, said, missed)
 
     def _mark(self, name: str) -> None:
         now = time.perf_counter()

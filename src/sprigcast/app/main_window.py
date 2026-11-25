@@ -354,6 +354,16 @@ def _show_sprigcast_to_captures(window) -> None:
         window._privacy_to_open_windows()
 
 
+
+def keep_scroll(view, value: int) -> None:
+    """A list rebuilt from scratch stays where it was scrolled to, instead of jumping back to the top: dragging a
+    bloom, sprig or leaf far down the list sent the view to the top on every drop (user 2026-11-25). Set now and
+    once more after Qt lays the new rows out (until then the scroll range may still be too short)."""
+    bar = view.verticalScrollBar()
+    bar.setValue(value)
+    if bar.value() != value:
+        QTimer.singleShot(0, view, lambda: bar.setValue(value))
+
 class MainWindow(QMainWindow):
     _record_finished = Signal(object, bool)  # a recording's files are closed (from the thread that waited)
     _clip_written = Signal(list, list)  # a clip's files are written (files, problems), from the thread that wrote
@@ -1198,7 +1208,8 @@ class MainWindow(QMainWindow):
         scene = next((sc for sc in self.collection.scenes if sc.id == scene_id), None)
         if scene is None:
             return
-        name, ok = popups.ask_text(self, "Rename", f"{cap(SHOW)} name", scene.name, "Rename")
+        what = cap(SHOW) if scene.kind == "show" else cap(PART)
+        name, ok = popups.ask_text(self, "Rename", f"{what} name", scene.name, "Rename")
         if ok and name.strip() and name.strip() != scene.name:
             scene.name = name.strip()
             self._changed()
@@ -1806,6 +1817,23 @@ class MainWindow(QMainWindow):
             return
         self.collection.folder(folder_id).collapsed = not expanded
         self._changed()
+
+    def _rename_selected(self) -> None:
+        """F2 (user 2026-11-25): renames what's picked where you are. In the library, the bloom, sprig or folder;
+        anywhere else in Build, the leaf."""
+        from PySide6.QtWidgets import QApplication
+
+        tree = self.scene_tree
+        focus = QApplication.focusWidget()
+        if focus is not None and (focus is tree or tree.isAncestorOf(focus)):
+            row = tree.currentItem()
+            kind = row.data(0, ROLE_ROW) if row is not None else None
+            if kind in ("bloom", "sprig"):
+                self._rename_bloom(row.data(0, ROLE_ID))
+            elif kind == "folder":
+                self._rename_folder(row.data(0, ROLE_FOLDER))
+            return
+        self._rename_item()
 
     def _rename_item(self) -> None:
         item = self._item()
@@ -3750,6 +3778,7 @@ class MainWindow(QMainWindow):
     def _refresh_scenes(self) -> None:
         """Build's left rail: Blooms (this shape's, by folder), then Sprigs (by folder)."""
         self._updating = True
+        scrolled = self.scene_tree.verticalScrollBar().value()  # kept: a drop rebuilds the list
         self.scene_tree.clear()
         canvas_id = self.build_canvas
         searching = bool(self.library.search.text().strip())
@@ -3831,6 +3860,7 @@ class MainWindow(QMainWindow):
         for holder, folder in folder_items:
             holder.setExpanded(searching or not folder.collapsed)
         self.library.apply_filter()
+        keep_scroll(self.scene_tree, scrolled)
         self._updating = False
         self.live_panel.show_scenes(self.collection)
         self._refresh_build_bar()
@@ -3882,6 +3912,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_sources(self, keep_row: int | None = None) -> None:
         self._updating = True
+        scrolled = self.source_list.verticalScrollBar().value()  # kept: a drop or a rename rebuilds the list
         self.source_list.clear()
         scene = self._scene()
         if scene is not None:
@@ -3892,8 +3923,9 @@ class MainWindow(QMainWindow):
                 row.setCheckState(Qt.CheckState.Checked if item.visible else Qt.CheckState.Unchecked)
                 row.setData(ROLE_LOCKED, bool(item.locked))
                 self.source_list.addItem(row)
+        keep_scroll(self.source_list, scrolled)
         if keep_row is not None and 0 <= keep_row < self.source_list.count():
-            self.source_list.setCurrentRow(keep_row)
+            self.source_list.setCurrentRow(keep_row)  # scrolls only if that row is out of view
         empty = self.source_list.count() == 0
         self.source_list.setVisible(not empty)
         self.inside_empty.setVisible(empty)
@@ -5783,7 +5815,7 @@ class MainWindow(QMainWindow):
             ("lock", "Lock", "Ctrl+L", lambda: self.prop_locked.setChecked(not self.prop_locked.isChecked())),
             ("settings", "Properties…", "Ctrl+Return", self._edit_source_settings),
             ("filters", "Filters…", "Ctrl+Shift+E", self._edit_filters),
-            ("rename", "Rename…", "F2", self._rename_item),
+            ("rename", "Rename…", "F2", self._rename_selected),
             ("remove", "Remove", "Delete", self._remove_item),
         )
         for key, text, shortcut, slot in table:
