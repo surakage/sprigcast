@@ -30,8 +30,20 @@ from sprigcast import __version__
 
 log = logging.getLogger(__name__)
 
-REPO = "surakage/sprigcast"
-LATEST_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
+# Where releases are published. SprigCast's source is going private (user, 2026-11-25): installers move to a
+# public releases-only repository. Until that repository has its first release, and for builds that already
+# shipped, the source repository is asked too; the newest finished release of the two wins.
+RELEASES_REPO = "surakage/SprigCast-Releases"
+SOURCE_REPO = "surakage/sprigcast"
+REPOS = (RELEASES_REPO, SOURCE_REPO)
+REPO = RELEASES_REPO
+
+
+def latest_url(repo: str) -> str:
+    return f"https://api.github.com/repos/{repo}/releases/latest"
+
+
+LATEST_URL = latest_url(RELEASES_REPO)
 HASHES_NAME = "SHA256.txt"
 _VERSION = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 # Signature states (PowerShell's Get-AuthenticodeSignature) an installer may have. "NotSigned" stays
@@ -68,7 +80,7 @@ class Release:
         return installer_name(self.version)
 
 
-def release_from_json(data: dict) -> Release | None:
+def release_from_json(data: dict, repo: str = REPO) -> Release | None:
     """A GitHub release -> Release, or None if it isn't a finished release with an installer and hashes."""
     if data.get("draft") or data.get("prerelease"):
         return None
@@ -83,7 +95,7 @@ def release_from_json(data: dict) -> Release | None:
     return Release(
         version=version,
         notes=str(data.get("body") or "").strip(),
-        page_url=str(data.get("html_url") or f"https://github.com/{REPO}/releases"),
+        page_url=str(data.get("html_url") or f"https://github.com/{repo}/releases"),
         installer_url=str(setup.get("browser_download_url", "")),
         installer_size=int(setup.get("size") or 0),
         hashes_url=str(hashes.get("browser_download_url", "")),
@@ -97,16 +109,33 @@ def _request(url: str, accept: str) -> urllib.request.Request:
 Opener = Callable[..., object]
 
 
-def fetch_latest(opener: Opener = urllib.request.urlopen, timeout: float = 15) -> Release | None:
-    """The newest published release, or None when there isn't one yet. Network errors raise OSError."""
+def _latest_of(repo: str, opener: Opener, timeout: float) -> Release | None:
     try:
-        with opener(_request(LATEST_URL, "application/vnd.github+json"), timeout=timeout) as reply:
+        with opener(_request(latest_url(repo), "application/vnd.github+json"), timeout=timeout) as reply:
             data = json.loads(reply.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        if exc.code == 404:  # no releases published yet
+        if exc.code == 404:  # no releases published yet, or no such (public) repository
             return None
         raise
-    return release_from_json(data) if isinstance(data, dict) else None
+    return release_from_json(data, repo) if isinstance(data, dict) else None
+
+
+def fetch_latest(opener: Opener = urllib.request.urlopen, timeout: float = 15) -> Release | None:
+    """The newest published release of REPOS, or None when there isn't one yet. Network errors raise OSError
+    only when no repository could be asked."""
+    found: list[Release] = []
+    failed: OSError | None = None
+    for repo in REPOS:
+        try:
+            release = _latest_of(repo, opener, timeout)
+        except OSError as exc:
+            failed = exc
+            continue
+        if release is not None:
+            found.append(release)
+    if not found and failed is not None:
+        raise failed
+    return max(found, key=lambda r: parse_version(r.version) or (0, 0, 0), default=None)
 
 
 def hash_for(hashes_text: str, name: str) -> str | None:
