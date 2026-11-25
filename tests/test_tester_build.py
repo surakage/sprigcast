@@ -114,8 +114,10 @@ def test_about_names_a_test_build_and_links_the_licenses(monkeypatch):
     monkeypatch.setattr(sprigcast, "build_label", lambda: f"{sprigcast.display_version()} test build 7 (abc1234)")
     page = about.about_page()
     assert page.findChild(QLabel, "aboutBuild").text() == "Test build 7 (abc1234)"
-    assert "sprigcast.slothbloom.com/source" in page.findChild(QLabel, "aboutLicenses").text()  # from source
-    assert "github.com" not in page.findChild(QLabel, "aboutLink").text()  # people go to the website
+    from PySide6.QtWidgets import QPushButton
+
+    assert page.findChild(QPushButton, "aboutLicenses").toolTip() == "https://sprigcast.slothbloom.com/source"
+    assert page.findChild(QPushButton, "aboutLink").toolTip() == "https://sprigcast.slothbloom.com"  # never GitHub
 
 
 def test_x264_picked_in_settings_isnt_called_no_gpu_encoder(monkeypatch):

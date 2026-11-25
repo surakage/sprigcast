@@ -9,12 +9,14 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QUrl
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from sprigcast.app.modal import modal
 from sprigcast.app import theme
 from sprigcast.app.support import SITE_URL, SOURCE_URL, TIP_URL
 
+PILL_H = 34  # the About buttons: fully rounded ends
 NOTICES = "THIRD-PARTY-NOTICES.txt"  # written next to python.exe by packaging/notices.py
 
 
@@ -75,15 +77,19 @@ def about_page() -> QWidget:
         line.setStyleSheet(style)
         layout.addWidget(line)
 
-    def link(name_: str, url: str, text: str) -> QLabel:
-        label = QLabel(f"<a href='{url}' style='color: {theme.ACCENT}; text-decoration: none;'>{text}</a>")
-        label.setObjectName(name_)
-        label.setOpenExternalLinks(True)
-        return label
+    def link(name_: str, url: str, text: str) -> QPushButton:
+        button = QPushButton(text)  # a rounded SprigCast button that opens the page
+        button.setObjectName(name_)
+        button.setToolTip(url)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFixedHeight(PILL_H)  # Qt draws a radius over half the height square, so pin the height
+        button.setStyleSheet(theme.button_style(radius=PILL_H // 2, padding="0 18px"))
+        button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
+        return button
 
     links = QHBoxLayout()  # one row, evenly spaced, instead of three lines with gaps between them
     links.setContentsMargins(0, 4, 0, 0)
-    links.setSpacing(20)
+    links.setSpacing(10)
     links.addStretch(1)
     links.addWidget(link("aboutLink", SITE_URL, "Website"))
     links.addWidget(link("aboutLicenses", licenses_url(), "Licenses"))
@@ -100,4 +106,8 @@ def show_about(parent: QWidget | None = None) -> None:
 
     dialog = PopUp("About SprigCast", parent)
     dialog.add_tab("about", "About", about_page())
+    layout = dialog.done_button.parentWidget().layout()
+    layout.setAlignment(dialog.done_button, Qt.AlignmentFlag.AlignHCenter)  # centered under the centered page
+    dialog.done_button.setFixedHeight(PILL_H)
+    dialog.done_button.setStyleSheet(theme.PRIMARY_STYLE + f"QPushButton {{ border-radius: {PILL_H // 2}px; padding: 0 40px; }}")
     modal(dialog)
