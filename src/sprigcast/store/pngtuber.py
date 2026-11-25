@@ -9,19 +9,26 @@ Your model is a folder of pictures (PNG, GIF, WebP or APNG; GIFs play), named fo
     talk.png        mouth open (also: talking, open, speaking)                  needed
     blink.png       mouth closed, eyes shut (also: idle_blink, eyes_closed)
     talk_blink.png  mouth open, eyes shut
+    half.png        mouth half open, for soft syllables (also: half_open, mid)
+    half_blink.png  half open, eyes shut
     yell.png        loud: shouting (also: scream, shout, loud)
     yell_blink.png  loud, eyes shut
+    sleep.png       napping, after Naps after of quiet (also: asleep, nap, zzz)
 An expression is a folder inside it with its own set (happy/idle.png, happy/talk.png...), or files
 named with it in front (happy_idle.png, happy_talk.png). The pictures at the top are "default".
-Anything missing borrows the nearest picture (no blink: it doesn't blink; no yell: it talks).
+Anything missing borrows the nearest picture (no blink: it doesn't blink; no yell or half: it talks;
+no sleep: it naps with its eyes shut).
 Draw every picture the same size, so nothing jumps when it changes.
-Pictures named anything else (Cozy.png, Pog.png...): pick them as Idle picture and Talk picture
-instead (one picture for both just bounces). Picked pictures replace the folder's own idle and talk.
+Pictures named anything else (Cozy.png, Pog.png...): pick them one by one in its settings (Idle, Talk,
+Half open, Yell, Blink, Sleep; one picture for both Idle and Talk just bounces). Picked Idle and Talk
+pictures replace the folder's own set; the others replace just that picture.
+An outfit is a saved set of folder and pictures, put on with one click, a hotkey or an app.
 
 It listens to a sound you already have in SprigCast (Auto: your mic), so it costs nothing extra and
 goes quiet when you mute. It can also listen to a mic straight from Windows. Settings: Talks above
-and Yells above (dB), Hold (seconds it stays talking after you stop, so it doesn't flap between
-words), Bounce and Blink.
+and Yells above (dB, with a live meter), Hold (seconds it stays talking after you stop, so it doesn't
+flap between words), Naps after, Bounce (Hop, Squash or Off, and how strong), Idle sway, Shake on
+yell and Blink.
 
 Change expression with hotkeys (Tools → Hotkeys → Plugins), a right-click on it, the Stream Deck
 PNGtuber key, or from an app:
@@ -30,6 +37,10 @@ PNGtuber key, or from an app:
     {"do": "pngtuber.next"}        the next expression (A-Z)
     {"do": "pngtuber.reset"}       back to default
     {"do": "pngtuber.expressions"} the list, and the one showing
+    {"do": "pngtuber.react", "reaction": "sparkle"}   hop, sparkle or shake: for a follow, a sub, a raid
+    {"do": "pngtuber.outfit", "outfit": "Cozy"}       put on a saved outfit
+    {"do": "pngtuber.outfits"}     the saved outfits, and the one it's wearing
+Streamer.bot (or StreamBridge) sends pngtuber.react when a follow, sub or raid comes in.
 
 Hidden, or in a bloom that isn't showing, it stops listening; a minute later it lets the pictures go.
 
@@ -51,14 +62,15 @@ from typing import Any
 
 import numpy as np
 
-from sprigcast.control.native import ApiError, register_action, send_event
+from sprigcast.control.native import ApiError, commit_settings, register_action, send_event
 from sprigcast.core import drawn
 from sprigcast.core.source import Source, register
 from sprigcast.plugin_hooks import not_here, on_air, register_hotkeys, register_item_menu
 
-PLUGIN = {"id": "pngtuber", "name": "PNGtuber", "version": 5, "adds": "Source",
+PLUGIN = {"id": "pngtuber", "name": "PNGtuber", "version": 6, "adds": "Source",
           "about": "Your avatar pictures talk when you do: blinks, a little bounce and expressions.",
-          "new": "Lighter: its pictures are drawn by SprigCast's engine."}
+          "new": "A new settings card with a live mic meter, half-open, yell and sleep pictures, squash, sway "
+                 "and shake, reactions for follows and subs, and outfits."}
 
 log = logging.getLogger(__name__)
 
@@ -80,11 +92,19 @@ DROP_DB = 9.0  # the mouth shuts when the voice falls this far under the syllabl
 RISE_DB = 6.0  # and opens again once it rises this far above the dip (the next syllable)
 PHRASE_GAP = 0.35  # quiet this long ends a sentence (the next one bounces again)
 YELL_AFTER = 0.06  # seconds above Yells above before it yells (a clap isn't a yell)
+HALF_DB = 8.0  # a syllable under this much over Talks above shows the half-open mouth (when there's a picture)
+SIDE = 12  # room each side of the model for sway, shake and squash, in box pixels
+SWAY_PX, SWAY_TIME = 5.0, 3.4  # idle sway: this far each way, once there and back in this many seconds
+SHAKE_PX = 5.0  # shake on yell (and the Shake reaction): this far each way
+SQUASH = 0.10  # squash bounce: this much shorter, then taller, at full strength
+REACT_TIME = {"hop": HOP_TIME, "shake": 0.6, "sparkle": 1.1}
+REACTIONS = ("hop", "sparkle", "shake")
 
 ASSETS = Path(__file__).resolve().parent / "assets" / "pngtuber"
 
 # File names -> what the picture shows. Compared without case, spaces, dashes or underscores.
-STATES = ("idle", "talk", "blink", "talk_blink", "yell", "yell_blink")
+STATES = ("idle", "talk", "half", "blink", "talk_blink", "half_blink", "yell", "yell_blink", "sleep")
+PICKED = ("idle", "talk", "half", "yell", "blink", "sleep")  # the pictures you can pick one by one (<state>_picture)
 _NAMES = {
     "idle": ("idle", "closed", "mouthclosed", "quiet", "rest", "neutral", "silent", "still", "notalk", "default"),
     "talk": ("talk", "talking", "open", "mouthopen", "speak", "speaking", "talk1"),
@@ -92,6 +112,9 @@ _NAMES = {
     "talk_blink": ("talkblink", "talkingblink", "openblink", "speakblink", "speakingblink", "blinktalk"),
     "yell": ("yell", "yelling", "scream", "screaming", "shout", "shouting", "loud"),
     "yell_blink": ("yellblink", "screamblink", "shoutblink", "loudblink"),
+    "half": ("half", "halfopen", "halftalk", "talkhalf", "mouthhalf", "mid", "midtalk", "little"),
+    "half_blink": ("halfblink", "halfopenblink", "halftalkblink", "midblink"),
+    "sleep": ("sleep", "sleeping", "asleep", "nap", "napping", "zzz", "snooze"),
 }
 _ALIAS = {name: state for state, names in _NAMES.items() for name in names}
 # A missing picture borrows from these, in order (any of them may be missing too).
@@ -102,6 +125,9 @@ _BORROW = {
     "talk_blink": ("talk", "blink"),
     "yell": ("talk",),
     "yell_blink": ("yell", "talk_blink"),
+    "half": ("talk",),
+    "half_blink": ("half", "talk_blink"),
+    "sleep": ("blink", "idle"),  # no sleep picture: it naps with its eyes shut
 }
 
 
@@ -156,8 +182,11 @@ def scan(folder: Path | None, picked: dict[str, Path] | None = None) -> dict[str
     to ask whenever the hotkey list is made."""
     found = _scan_folder(folder) if folder is not None else {}
     picked = {k: v for k, v in (picked or {}).items() if v.is_file()}
-    if picked:
-        found[DEFAULT] = {"idle": picked.get("idle") or picked["talk"], "talk": picked.get("talk") or picked["idle"]}
+    if "idle" in picked or "talk" in picked:  # your own idle and talk: the folder's default is left out
+        found[DEFAULT] = {**picked, "idle": picked.get("idle") or picked["talk"],
+                          "talk": picked.get("talk") or picked["idle"]}
+    elif picked and DEFAULT in found:  # a blink or a sleep picture of your own over the folder's
+        found[DEFAULT] = {**found[DEFAULT], **picked}
     return found
 
 
@@ -213,9 +242,9 @@ def _path(settings: dict[str, Any], key: str) -> Path | None:
 
 
 def picked_pictures(settings: dict[str, Any]) -> dict[str, Path]:
-    """The Idle picture and Talk picture chosen one by one (state -> file), as set (found or not)."""
+    """The pictures chosen one by one (state -> file), as set (found or not)."""
     out = {}
-    for state in ("idle", "talk"):
+    for state in PICKED:
         path = _path(settings, f"{state}_picture")
         if path is not None:
             out[state] = path
@@ -227,13 +256,14 @@ def model_folder(settings: dict[str, Any]) -> Path | None:
     folder = _path(settings, "folder")
     if folder is not None:
         return folder
-    return None if picked_pictures(settings) else _sample()
+    picked = picked_pictures(settings)
+    return None if "idle" in picked or "talk" in picked else _sample()
 
 
 def model_key(settings: dict[str, Any]) -> tuple:
     """What the model is made from: a new one is loaded when this changes."""
     picked = picked_pictures(settings)
-    return model_folder(settings), picked.get("idle"), picked.get("talk")
+    return (model_folder(settings),) + tuple(picked.get(state) for state in PICKED)
 
 
 def _name(path: Path) -> str:
@@ -404,7 +434,7 @@ def load_model(folder: Path | None, box: tuple[int, int] = (W, H), picked: dict[
     won't open is told (the log)."""
     warn = warn or log.warning
     found = scan(folder, picked)
-    _SCANS[folder, (picked or {}).get("idle"), (picked or {}).get("talk")] = (time.monotonic(), found)
+    _SCANS[(folder,) + tuple((picked or {}).get(state) for state in PICKED)] = (time.monotonic(), found)
     if not found or any(not p.is_file() for p in (picked or {}).values()):
         raise ModelError(what_is_missing(folder, picked or {}))
     sizes: dict[tuple[str, str], tuple[int, int, int]] = {}
@@ -419,7 +449,7 @@ def load_model(folder: Path | None, box: tuple[int, int] = (W, H), picked: dict[
     w, h = box
     widest = max(1, max(sw for sw, _sh, _n in sizes.values()))
     tallest = max(1, max(sh for _sw, sh, _n in sizes.values()))
-    scale = min(w / widest, (h - HOP) / tallest)  # one scale for all, so every picture lines up
+    scale = min((w - 2 * SIDE) / widest, (h - HOP) / tallest)  # one scale for all, so every picture lines up
     # Frames are kept at the size they're shown, never the file's own; too many of them and animated
     # pictures keep fewer (evenly spaced, same length), so a folder of big animated emotes stays small.
     frame_bytes = {k: (sw * scale) * (sh * scale) * 4 for k, (sw, sh, _n) in sizes.items()}
@@ -508,6 +538,11 @@ class Voice:
             return "idle"
         return "yell" if self.yelling else "talk"
 
+    @property
+    def peak_db(self) -> float:
+        """The loudest of the syllable the mouth is open for (a soft one shows the half-open mouth)."""
+        return self._peak
+
 
 class Blinker:
     """Shuts the eyes every few seconds, now and then twice in a row."""
@@ -525,6 +560,47 @@ class Blinker:
             double = self.rng.random() < 0.12
             self._next = now + (BLINK + 0.12 if double else self.rng.uniform(2.5, 6.0))
         return 0 <= now - self._start < BLINK
+
+
+def bounce_style(settings: dict[str, Any]) -> str:
+    """hop, squash or off (older settings only have Bounce on or off)."""
+    style = str(settings.get("bounce_style") or "").lower()
+    if style in ("hop", "squash", "off"):
+        return style
+    return "hop" if settings.get("bounce", True) else "off"
+
+
+def squash_amount(t: float, strength: float) -> int:
+    """How squashed it is t seconds into a squash bounce, in thousandths of its height: shorter first, then a
+    little taller (never past the room above it), then back."""
+    if t < 0 or t >= HOP_TIME * 1.4:
+        return 0
+    phase = math.sin(2 * math.pi * t / (HOP_TIME * 1.4))
+    if phase >= 0:
+        return int(round(1000 * SQUASH * strength * phase))
+    return int(round(1000 * max(-HOP / H, -SQUASH * strength * 0.5) * -phase))
+
+
+_SPARKLE_SPOTS = ((0.12, 0.18, 70), (0.86, 0.10, 84), (0.50, 0.02, 60), (0.04, 0.45, 56), (0.94, 0.40, 64),
+                  (0.30, 0.04, 50), (0.70, 0.24, 46))  # where stars pop (share of the picture), and how big
+_STAR = []
+
+
+def _star():
+    """A soft four-pointed star (premultiplied), made once."""
+    if not _STAR:
+        n = 64
+        yy, xx = np.mgrid[0:n, 0:n].astype(np.float32)
+        u, v = np.abs(xx - (n - 1) / 2) / (n / 2), np.abs(yy - (n - 1) / 2) / (n / 2)
+        arms = np.clip(1 - (np.sqrt(u) + np.sqrt(v)) / 1.15, 0, 1) ** 0.6
+        glow = np.clip(1 - np.hypot(u, v) * 1.4, 0, 1) ** 2 * 0.8
+        a = np.clip(arms * 1.6 + glow, 0, 1)
+        colour = np.array([200, 245, 255], np.float32)  # BGR: a warm white gold
+        bgra = np.zeros((n, n, 4), np.uint8)
+        bgra[..., :3] = (colour * a[..., None]).astype(np.uint8)
+        bgra[..., 3] = (255 * a).astype(np.uint8)
+        _STAR.append(_qimage(bgra, True))
+    return _STAR[0]
 
 
 def hop_height(t: float, height: float) -> int:
@@ -607,8 +683,10 @@ def _quit_later(mic) -> None:
 @register(KIND)
 class PngtuberSource(Source):
     label = "PNGtuber"
-    defaults = {"folder": "", "idle_picture": "", "talk_picture": "", "listen_to": "auto", "talk_at": -38.0, "yell_at": -12.0, "hold": 0.08,
-                "bounce": True, "blink": True}
+    defaults = {"folder": "", "idle_picture": "", "talk_picture": "", "half_picture": "", "yell_picture": "",
+                "blink_picture": "", "sleep_picture": "", "listen_to": "auto", "talk_at": -38.0, "yell_at": -12.0,
+                "hold": 0.08, "sleep_after": 0, "bounce": True, "bounce_style": "", "bounce_strength": 1.0,
+                "sway": False, "shake": True, "blink": True, "outfits": [], "outfit": ""}
     choices = {"listen_to": _listen_choices}
     placeholders = {"folder": "Sloth (built in)"}  # an empty Folder is the sample sloth
     sleeps = True  # off air it stops listening and lets the pictures go
@@ -643,6 +721,9 @@ class PngtuberSource(Source):
         self._fade_len = FADE
         self._hop_start = -1.0
         self._hop_size = 0.0
+        self._hop_style = "hop"
+        self._quiet_since = time.monotonic()  # for Naps after
+        self._reaction: tuple[str, float] | None = None  # (name, started)
         self._was = (False, False)  # (speaking, yelling) last frame
         self.voice = Voice()
         self.blinker = Blinker()
@@ -666,6 +747,7 @@ class PngtuberSource(Source):
 
     def wake(self) -> None:
         self._shown = None
+        self._quiet_since = time.monotonic()  # back on screen awake, not mid-nap
         self._get_model()
 
     def sleep(self) -> None:
@@ -725,8 +807,9 @@ class PngtuberSource(Source):
             log.log(level, text)
 
     def _load(self, key: tuple) -> None:
-        folder, idle, talk = key
-        picked = {s: p for s, p in (("idle", idle), ("talk", talk)) if p is not None}
+        folder = key[0]
+        picked = {state: path for state, path in zip(PICKED, key[1:]) if path is not None}
+        idle, talk = picked.get("idle"), picked.get("talk")
         try:
             model = load_model(folder, picked=picked, warn=self._say)
         except ModelError as exc:
@@ -827,18 +910,30 @@ class PngtuberSource(Source):
         if self._revert is not None and now >= self._revert[0]:
             self.expression, self._revert = self._revert[1], None
         s = self.settings
-        state = self.voice.feed(self._level(), now, _num(s.get("talk_at"), -38.0), _num(s.get("yell_at"), -12.0),
+        talk_at = _num(s.get("talk_at"), -38.0)
+        state = self.voice.feed(self._level(), now, talk_at, _num(s.get("yell_at"), -12.0),
                                 max(0.0, _num(s.get("hold"), 0.08)))
+        voice = self.voice
+        if state == "talk" and voice.peak_db < talk_at + HALF_DB:
+            state = "half"  # a soft syllable: the half-open mouth (the talk picture when there's none)
         # one hop as a sentence starts (not every syllable), a bigger one as a yell starts
         was_speaking, was_yelling = self._was
-        voice = self.voice
+        style = bounce_style(s)
+        strength = min(2.0, max(0.25, _num(s.get("bounce_strength"), 1.0)))
         if ((voice.speaking and not was_speaking) or (voice.yelling and not was_yelling)) \
-                and s.get("bounce", True) and now - self._hop_start > HOP_TIME * 0.6:
-            self._hop_start = now
-            self._hop_size = HOP if voice.yelling else HOP * 0.55
+                and style != "off" and now - self._hop_start > HOP_TIME * 0.6:
+            self._start_hop(now, style, (1.0 if voice.yelling else 0.55) * strength)
         self._was = (voice.speaking, voice.yelling)
-        if s.get("blink", True) and self.blinker.closed(now):
+        if voice.speaking:
+            self._quiet_since = now
+        nap = _num(s.get("sleep_after"), 0.0)
+        if nap > 0 and now - self._quiet_since >= nap:
+            state = "sleep"  # a long quiet: it naps (its eyes shut when there's no sleep picture)
+        elif s.get("blink", True) and self.blinker.closed(now):
             state = "blink" if state == "idle" else f"{state}_blink"
+        reaction = self._reaction
+        if reaction is not None and now - reaction[1] >= REACT_TIME[reaction[0]]:
+            self._reaction = reaction = None
         expression = self.expression if self.expression in model.pictures else DEFAULT
         picture = model.picture(expression, state)
         if picture is None:
@@ -852,7 +947,8 @@ class PngtuberSource(Source):
                 blink_only = ("blink" in state) != ("blink" in self._key_state) and \
                     state.replace("_blink", "").replace("blink", "idle") == \
                     self._key_state.replace("_blink", "").replace("blink", "idle")
-                self._fade_len = EXPRESSION_FADE if not same_face else BLINK_FADE if blink_only else FADE
+                slow = "sleep" in (state, self._key_state)
+                self._fade_len = EXPRESSION_FADE if not same_face or slow else BLINK_FADE if blink_only else FADE
                 if self._key[1] == id(picture):
                     self._from = None  # an animated picture's next frame: no fade
             self._key, self._key_state = key, state
@@ -862,19 +958,76 @@ class PngtuberSource(Source):
             if f >= 1.0:
                 self._from, f = None, 1.0
         step = 256 if self._from is None else max(0, min(255, int(f * 256)))
-        hop = hop_height(now - self._hop_start, self._hop_size) if self._hop_start >= 0 else 0
-        shown = (key, self._from, step, hop)
+        hop, squash = 0, 0
+        if self._hop_start >= 0:
+            if self._hop_style == "squash":
+                squash = squash_amount(now - self._hop_start, self._hop_size)
+            else:
+                hop = hop_height(now - self._hop_start, min(HOP, HOP * self._hop_size))
+        if not drawn.wanted():  # the old engine's buffer: only the hop (see _compose)
+            shown = (key, self._from, step, hop)
+            if shown == self._shown:
+                return None
+            if self._shown is None or self._shown[:3] != shown[:3]:
+                self._compose(model, key, self._from, step)
+            self._shown = shown
+            return self._buf[hop:hop + H]
+        dx = 0
+        if s.get("sway", False) and state not in ("sleep",):
+            dx += round(SWAY_PX * math.sin(2 * math.pi * now / SWAY_TIME))
+        if (s.get("shake", True) and voice.yelling) or (reaction is not None and reaction[0] == "shake"):
+            dx += round(SHAKE_PX * math.sin(2 * math.pi * now * 13))
+        sparkle = -1
+        if reaction is not None and reaction[0] == "sparkle":
+            sparkle = int((now - reaction[1]) * 60)  # a new look each frame while it sparkles
+        shown = (key, self._from, step, hop, dx, squash, sparkle)
         if shown == self._shown:
             return None  # nothing moved: nothing drawn, nothing uploaded
-        if drawn.wanted():
-            self._shown = shown
-            return self._listed(model, key, self._from, step, hop)
-        if self._shown is None or self._shown[:3] != shown[:3]:
-            self._compose(model, key, self._from, step)
         self._shown = shown
-        return self._buf[hop:hop + H]
+        d = self._listed(model, key, self._from, step, hop, dx, squash)
+        if sparkle >= 0:
+            self._sparkles(d, model, key, now - reaction[1])
+        return d
 
-    def _listed(self, model: Model, key: tuple, old: tuple | None, step: int, hop: int) -> drawn.Drawn:
+    def _start_hop(self, now: float, style: str, size: float) -> None:
+        self._hop_start, self._hop_style, self._hop_size = now, style, size
+
+    def react(self, name: str) -> str:
+        """Play a reaction now: hop, sparkle or shake (a follow, a sub, a raid...)."""
+        name = str(name or "").strip().lower()
+        if name not in REACTIONS:
+            raise ValueError(f"No reaction called {name!r}. There are: {', '.join(REACTIONS)}.")
+        now = time.monotonic()
+        if name == "hop":
+            self._start_hop(now, "hop", 1.0)
+        else:
+            self._reaction = (name, now)
+        self._quiet_since = now  # a reaction wakes it from a nap
+        return name
+
+    def _sparkles(self, d: drawn.Drawn, model: Model, key: tuple, t: float) -> None:
+        """Little stars that pop around the model's head, each a moment after the last."""
+        frame = self._frame_of(model, key)
+        if frame is None:
+            return
+        pixels, x, y = frame
+        h, w = pixels.shape[:2]
+        star = _star()
+        for i, (fx, fy, size) in enumerate(_SPARKLE_SPOTS):
+            local = (t - i * 0.08) / 0.55
+            if not 0 <= local < 1:
+                continue
+            grow = math.sin(math.pi * local)
+            side = max(4.0, size * (0.5 + 0.5 * grow))
+            cx = min(W - side / 2, max(side / 2, x + fx * w))
+            cy = min(H - side / 2, max(side / 2, y + fy * h - local * 14))
+            d.save()
+            d.opacity(min(1.0, grow * 1.4))
+            d.image("sparkle", star, cx - side / 2, cy - side / 2, side, side)
+            d.restore()
+
+    def _listed(self, model: Model, key: tuple, old: tuple | None, step: int, hop: int, dx: int = 0,
+                squash: int = 0) -> drawn.Drawn:
         """What _compose puts in the buffer, as a list for the engine (core/drawn.py): the picture showing is art
         sent to the card once, so a bounce or a held mouth sends nothing; a fade sends only the part that blends
         (the mouth, the eyes), and the rest of the picture around it as crops of the art."""
@@ -882,6 +1035,11 @@ class PngtuberSource(Source):
         new = self._frame_of(model, key)
         if new is None:
             return d
+        if dx or squash:  # sway, shake and squash move the whole picture, about its feet
+            d.translate(W / 2 + dx, H)
+            sy = 1 - squash / 1000
+            d.scale(1 + min(0.04, max(-0.04, (1 - sy) * 0.5)), sy)
+            d.translate(-W / 2, -H)
         pixels, x, y = new
         h, w = pixels.shape[:2]
         y -= hop
@@ -1106,6 +1264,79 @@ register_action("pngtuber.reset", "Back to the PNGtuber's default expression.", 
 register_action("pngtuber.expressions", "The PNGtuber's expressions and the one showing.", dict(_WHICH), _list)
 
 
+def react(api, sources, name: str) -> dict:
+    """Play a reaction (hop, sparkle, shake) on each PNGtuber that's running."""
+    name = str(name or "").strip().lower()
+    if name not in REACTIONS:
+        raise ApiError("bad_request", f"No reaction called {name!r}. There are: {', '.join(REACTIONS)}.")
+    for source in sources:
+        instance = api.host.source_instance(source.id)
+        if instance is not None and hasattr(instance, "react"):
+            instance.react(name)
+    return {"reaction": name}
+
+
+def _react(api, data):
+    return react(api, _tubers(api, data), data.get("reaction"))
+
+
+def outfits_of(settings: dict[str, Any]) -> list[dict[str, Any]]:
+    return [o for o in (settings.get("outfits") or []) if isinstance(o, dict) and str(o.get("name", "")).strip()]
+
+
+OUTFIT_KEYS = ("folder",) + tuple(f"{state}_picture" for state in PICKED)
+
+
+def outfit_name_for(pictures: dict[str, Any]) -> str:
+    """A name to offer for a new outfit: its folder's name, else its idle picture's."""
+    for key in ("folder", "idle_picture", "talk_picture"):
+        text = str(pictures.get(key, "") or "").strip().strip('"')
+        if text:
+            path = Path(text)
+            return (path.name if key == "folder" else path.stem) or "Outfit"
+    return "Sloth"
+
+
+def wear(api, sources, wanted: str) -> dict:
+    """Put on the outfit called `wanted` (its folder and pictures), saved with your blooms."""
+    wanted = str(wanted or "").strip().lower()
+    changed, names = [], []
+    for source in sources:
+        outfits = outfits_of(source.settings)
+        names += [o["name"] for o in outfits if o["name"] not in names]
+        outfit = next((o for o in outfits if str(o["name"]).strip().lower() == wanted), None)
+        if outfit is None:
+            continue
+        source.settings = {**source.settings, **{k: str(outfit.get(k, "") or "") for k in OUTFIT_KEYS},
+                           "outfit": outfit["name"]}
+        changed.append(source)
+    if not changed:
+        if not names:
+            raise ApiError("not_found", "Save an outfit first (the PNGtuber's settings → + Save as outfit).")
+        raise ApiError("not_found", f"No outfit called {wanted!r}. There are: {', '.join(names)}.")
+    commit_settings(api.host, changed, "sources")
+    return {"outfit": changed[0].settings["outfit"], "outfits": names}
+
+
+def _outfit(api, data):
+    wanted = data.get("outfit")
+    if not isinstance(wanted, str) or not wanted.strip():
+        raise ApiError("bad_request", "outfit is needed (pngtuber.outfits lists them).")
+    return wear(api, _tubers(api, data), wanted)
+
+
+def _outfit_list(api, data):
+    source = _tubers(api, data)[0]
+    return {"outfit": str(source.settings.get("outfit") or ""), "outfits": [o["name"] for o in outfits_of(source.settings)]}
+
+
+register_action("pngtuber.react", "A quick PNGtuber reaction, for a follow, a sub or a raid: hop, sparkle or shake.",
+                {"reaction": "hop, sparkle or shake", **_WHICH}, _react)
+register_action("pngtuber.outfit", "Put on one of the PNGtuber's saved outfits.", {"outfit": "the outfit's name", **_WHICH},
+                _outfit)
+register_action("pngtuber.outfits", "The PNGtuber's saved outfits and the one it's wearing.", dict(_WHICH), _outfit_list)
+
+
 def _hotkeys(collection):
     tubers = [s for s in collection.sources if s.kind == KIND]
     if not tubers:
@@ -1114,7 +1345,12 @@ def _hotkeys(collection):
     for source in tubers:
         names += [n for n in expressions_in(source.settings) if n not in names]
     keys = [(f"pngtuber:expression:{n}", f"PNGtuber: {n}") for n in expression_order(names)]
-    return keys + [("pngtuber:next", "PNGtuber: next expression")]
+    keys += [("pngtuber:next", "PNGtuber: next expression")]
+    keys += [(f"pngtuber:react:{r}", f"PNGtuber reaction: {r}") for r in REACTIONS]
+    outfits: list[str] = []
+    for source in tubers:
+        outfits += [o["name"] for o in outfits_of(source.settings) if o["name"] not in outfits]
+    return keys + [(f"pngtuber:outfit:{n}", f"PNGtuber outfit: {n}") for n in sorted(outfits, key=str.lower)]
 
 
 def _run_hotkey(api, hid):
@@ -1122,6 +1358,15 @@ def _run_hotkey(api, hid):
         tubers = _tubers(api)
         if hid == "pngtuber:next":
             change(api, tubers, _next)
+        elif hid.startswith("pngtuber:react:"):
+            react(api, tubers, hid.split(":", 2)[2])
+        elif hid.startswith("pngtuber:outfit:"):
+            wanted = hid.split(":", 2)[2]
+            have = [s for s in tubers if any(o["name"] == wanted for o in outfits_of(s.settings))]
+            if not have:
+                return f"No {wanted} outfit in this PNGtuber"
+            wear(api, have, wanted)
+            tubers = have
         elif hid.startswith("pngtuber:expression:"):
             wanted = hid.split(":", 2)[2]
             have = [s for s in tubers if wanted in expressions_in(s.settings)]
@@ -1146,10 +1391,11 @@ def _menu(api, source, add):
     if source is None or source.kind != KIND:
         return
     names = expressions_in(source.settings)
-    if len(names) < 2:
-        return
-    for name in names:
-        add(f"Expression: {name}", lambda name=name: change(api, [source], _named(name)))
+    if len(names) >= 2:
+        for name in names:
+            add(f"Expression: {name}", lambda name=name: change(api, [source], _named(name)))
+    for outfit in outfits_of(source.settings):
+        add(f"Outfit: {outfit['name']}", lambda name=outfit["name"]: wear(api, [source], name))
 
 
 register_item_menu(_menu)

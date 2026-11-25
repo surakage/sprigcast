@@ -5352,6 +5352,38 @@ class MainWindow(QMainWindow):
             self._changed()
             self._refresh_sources(keep_row=self.source_list.currentRow())
 
+    def _pngtuber_dialog(self, title: str, settings: dict, source_id: str | None, primary: str = "Save"):
+        """The PNGtuber's own card: a live meter of the sound it follows, and Try buttons for the one on screen."""
+        from sprigcast.app.pngtuber_dialog import PngtuberDialog, tuber_module
+
+        pngtuber = tuber_module()
+
+        holder: list = []
+
+        def level() -> float | None:
+            if not holder:
+                return None
+            sid = pngtuber.sound_for(holder[0].listen.currentData() or "auto", self.collection)
+            at, levels = getattr(self, "_last_levels", (0.0, {}))
+            if sid is None or sid not in levels or time.monotonic() - at > 1.0:
+                return None
+            return float(levels[sid][0])
+
+        def react(name: str) -> None:
+            instance = self.engine._sources.get(source_id) if source_id else None
+            if instance is not None and hasattr(instance, "react"):
+                instance.react(name)
+
+        def ask_name(suggested: str) -> str | None:
+            text, ok = popups.ask_text(self, "Save as outfit", "Outfit name", suggested, primary="Save")
+            return text.strip() or None if ok else None
+
+        dialog = PngtuberDialog(title, settings, self, listen_choices=pngtuber._listen_choices(self.collection),
+                                level=level, react=react if source_id else None, primary=primary,
+                                ask_name=ask_name)
+        holder.append(dialog)
+        return dialog
+
     def _add_from_class(self, kind: str, name: str) -> None:
         """Add a source whose settings form is described by its class's `defaults` (text and plugins)."""
         if self._scene() is None:
@@ -5371,6 +5403,8 @@ class MainWindow(QMainWindow):
             from sprigcast.app.text_leaf_dialog import TextLeafDialog
 
             dialog = TextLeafDialog(f"New {name}", defaults, self, primary="Save")
+        elif kind == "pngtuber":
+            dialog = self._pngtuber_dialog(f"New {name}", defaults, None, primary="Add")
         else:
             dialog = SettingsDialog(f"New {name}", defaults, defaults, self, cls=cls, collection=self.collection)
         if not modal(dialog):
@@ -6116,6 +6150,8 @@ class MainWindow(QMainWindow):
                 from sprigcast.app.text_leaf_dialog import TextLeafDialog
 
                 dialog = TextLeafDialog(config.name, config.settings, self)
+            elif config.kind == "pngtuber":
+                dialog = self._pngtuber_dialog(config.name, config.settings, config.id)
             else:
                 dialog = SettingsDialog(config.name, defaults, config.settings, self, cls=cls,
                                         collection=self.collection)
