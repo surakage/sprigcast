@@ -230,6 +230,26 @@ def test_a_sprig_full_screen_on_one_bloom_and_shrunk_on_the_other_glides():
     assert any(s.id == "~move:a" and [i.source for i in s.items] == ["pa"] for s in drawn)
 
 
+def test_one_sprig_placed_once_per_bloom_glides_and_its_crop_slides():
+    """PC 2026-11-25: the vertical Webcam sprig is placed once per bloom (two placements), full on one and cropped
+    on the other. It snapped at about 0.3 s, handed over from one placement to the other; now it's one picture."""
+    from sprigcast.core.scene import SourceConfig as Src
+
+    col = sprig_collection(40)
+    col.sources.append(Src(id="pa2", kind="scene", name="Sprig A again", settings={"scene": "spa"}))
+    col.scenes.append(Scene(id="c", name="C", canvas="h", items=[SceneItem(source="pa2", crop=(0, 9, 0, 0))]))
+    engine = Engine(col)
+    engine._sources = {}
+    sizes = {"cam": (16, 9), "bg": (W, H), "logo": (4, 4)}
+    old, new = engine._move_both(col.scene("a"), col.scene("c"), sizes)
+    assert [p.source for p in old] == ["pa"] and [p.source for p in new] == ["pa2"]
+    assert old[0].part == new[0].part == "spa" and move.pair(old, new) == {0: 0}
+    mid = move.frame(old, new, 0.5, "linear", "fade", (W, H))
+    assert len(mid) == 1 and mid[0].opacity == 1.0  # one picture, no cross-fade
+    v_top = mid[0].quad[0][3]
+    assert 0.0 < v_top < 9 / H  # the crop is halfway
+
+
 def test_a_camera_on_its_own_glides_into_the_sprig_that_holds_it():
     """The camera placed by itself on one bloom, and inside a framed sprig on the other: they pair."""
     col = sprig_collection(40, scaled=True)

@@ -1889,19 +1889,11 @@ class Engine:
     def _move_both(self, outgoing, incoming, sizes: dict, hidden: frozenset = frozenset()) -> tuple[list, list]:
         """Both blooms of a Move as pieces (render/move.py both): a sprig drawn whole in one is drawn whole in the
         other, so the two pair up and it glides."""
-        collection = self._collection
-
         def lay_out(keep: frozenset) -> tuple[list, list]:
             old = self._move_pieces(outgoing, sizes, hidden, keep)
             return old, (self._move_pieces(incoming, sizes, hidden, keep) if incoming is not None else [])
 
-        sources = {s.id: s for s in collection.sources}
-
-        def is_sprig(source_id: str) -> bool:
-            source = sources.get(source_id)
-            return source is not None and collection.part_of(source) is not None
-
-        return move.both(lay_out, is_sprig)
+        return move.both(lay_out)
 
     def _move_layout(self, running: Running, canvas, hidden: frozenset = frozenset()) -> tuple[list, list]:
         """A Move's two blooms on a canvas as pieces (render/move.py flatten): the one it leaves, the one it goes

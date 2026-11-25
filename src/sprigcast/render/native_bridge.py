@@ -17,6 +17,8 @@ good, this steps aside and Python's compositor draws the previews again, as befo
 
 from __future__ import annotations
 
+import dataclasses
+
 import logging
 import os
 import sys
@@ -607,8 +609,12 @@ class NativeCanvases:
             return p.source, part_id, p.quad, p.opacity, fx_struct
 
         t = running.settings
-        return sprigcore.move_spec([piece(p) for p in old], [piece(p) for p in new], move.pair(old, new),
-                                   t.easing, t.unmatched)
+        pairs = move.pair(old, new)
+        old = list(old)
+        for j, i in pairs.items():  # one sprig placed twice: the engine glides it as one picture, not a hand-over
+            if old[i].source != new[j].source and move.same(old[i], new[j]):
+                old[i] = dataclasses.replace(old[i], source=new[j].source, key=new[j].key)
+        return sprigcore.move_spec([piece(p) for p in old], [piece(p) for p in new], pairs, t.easing, t.unmatched)
 
     # ---- what comes out ----------------------------------------------------------------------------------------
 
