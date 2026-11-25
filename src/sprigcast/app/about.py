@@ -37,7 +37,7 @@ def about_page() -> QWidget:
     page = QWidget()
     layout = QVBoxLayout(page)
     layout.setContentsMargins(24, 4, 24, 4)
-    layout.setSpacing(12)
+    layout.setSpacing(8)
     layout.addWidget(ArtPicture("welcome", 260), 0, Qt.AlignmentFlag.AlignHCenter)
 
     name_row = QHBoxLayout()
@@ -64,31 +64,33 @@ def about_page() -> QWidget:
         build.setStyleSheet(f"color: {theme.MUTED};")
         layout.addWidget(build)
 
-    for text, style in (
-        ("One show, every shape: stream and record horizontal and vertical at once.", f"color: {theme.TEXT};"),
-        ("Open source under the GPL 3.0 or later.", f"color: {theme.MUTED};"),
+    for name_, text, style in (
+        ("aboutTagline", "One show, every shape: stream and record horizontal and vertical at once.", f"color: {theme.TEXT};"),
+        ("aboutLicense", "Open source under the GPL 3.0 or later.", f"color: {theme.MUTED};"),
     ):
         line = QLabel(text)
+        line.setObjectName(name_)
         line.setWordWrap(True)
         line.setAlignment(Qt.AlignmentFlag.AlignCenter)
         line.setStyleSheet(style)
         layout.addWidget(line)
-    link = QLabel(f"<a href='{SITE_URL}' style='color: {theme.ACCENT}; text-decoration: none;'>"
-                  "sprigcast.slothbloom.com</a>")
-    link.setObjectName("aboutLink")
-    link.setOpenExternalLinks(True)
-    link.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    layout.addWidget(link)
-    licenses = QLabel(f"<a href='{licenses_url()}' style='color: {theme.ACCENT}; text-decoration: none;'>Licenses</a>")
-    licenses.setObjectName("aboutLicenses")
-    licenses.setOpenExternalLinks(True)
-    licenses.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    layout.addWidget(licenses)
-    tip = QLabel(f"<a href='{TIP_URL}' style='color: {theme.ACCENT}; text-decoration: none;'>Support SprigCast</a>")
-    tip.setObjectName("aboutTip")
-    tip.setOpenExternalLinks(True)
-    tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    layout.addWidget(tip)
+
+    def link(name_: str, url: str, text: str) -> QLabel:
+        label = QLabel(f"<a href='{url}' style='color: {theme.ACCENT}; text-decoration: none;'>{text}</a>")
+        label.setObjectName(name_)
+        label.setOpenExternalLinks(True)
+        return label
+
+    links = QHBoxLayout()  # one row, evenly spaced, instead of three lines with gaps between them
+    links.setContentsMargins(0, 4, 0, 0)
+    links.setSpacing(20)
+    links.addStretch(1)
+    links.addWidget(link("aboutLink", SITE_URL, "Website"))
+    links.addWidget(link("aboutLicenses", licenses_url(), "Licenses"))
+    links.addWidget(link("aboutTip", TIP_URL, "Support SprigCast"))
+    links.addStretch(1)
+    layout.addLayout(links)
+    layout.addStretch(1)  # any spare height goes below, not between the lines
     page.setMinimumWidth(380)
     return page
 
