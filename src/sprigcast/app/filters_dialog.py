@@ -1234,6 +1234,11 @@ class FiltersDialog(CardWindow):
             self.list.model().rowsMoved.connect(self._dragged)
         self.list.currentRowChanged.connect(self._show_selected)
         self.list.itemChanged.connect(self._toggled)
+        from PySide6.QtGui import QKeySequence, QShortcut
+
+        rename = QShortcut(QKeySequence(Qt.Key.Key_F2), self)  # F2 renames the picked filter, as in the library
+        rename.setContext(Qt.ShortcutContext.WindowShortcut)
+        rename.activated.connect(self.rename_selected)
         self.picker = AddPicker(self)
         self.picker.picked.connect(self.add)
         self.add_button = add = QPushButton("Add filter")
@@ -1447,6 +1452,22 @@ class FiltersDialog(CardWindow):
         self._refresh(len(self._shown()) - 1)
         self.on_change(save=False)
         return flt
+
+    def rename_selected(self) -> bool:
+        """F2 or a double-click: name the picked filter (the window's own copy; Apply keeps it)."""
+        from sprigcast.app import card as popups
+
+        flt = self._current()
+        if flt is None:
+            return False
+        text, ok = popups.ask_text(self, "Rename filter", "Filter name", shown_name(flt.kind, flt.name), "Rename")
+        text = text.strip()
+        if not ok or not text or text == shown_name(flt.kind, flt.name):
+            return False
+        flt.name = text
+        self._refresh(self.list.currentRow())
+        self.on_change(save=False)
+        return True
 
     def _current(self) -> Filter | None:
         row, shown = self.list.currentRow(), self._shown()

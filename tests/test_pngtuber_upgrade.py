@@ -31,6 +31,20 @@ def _listed(source, clock, seconds, step=1 / 60):
     return out
 
 
+def _settle(d, seconds=3.0):
+    """Let the tiles' pictures arrive (they're made on a worker)."""
+    import time
+
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app import pngtuber_dialog
+
+    end = time.monotonic() + seconds
+    while pngtuber_dialog._loader().waiting and time.monotonic() < end:
+        QApplication.processEvents()
+        time.sleep(0.01)
+
+
 def _shown_state(source):
     return source._key_state
 
@@ -172,6 +186,7 @@ def test_the_settings_card_round_trips_and_saves_outfits(tuber, tmp_path):  # no
     try:
         v = d.values()
         assert v["bounce_style"] == "off" and v["talk_at"] == -40 and v["sleep_after"] == 60
+        _settle(d)
         assert d.tiles["idle"].picture is not None and d.tiles["half"].borrowed  # no half picture: talk's, dimmed
         d._pick_style("squash")
         d.strength.slider.setValue(30)  # 150%
@@ -226,6 +241,7 @@ def test_expressions_made_in_its_settings(tuber, tmp_path, monkeypatch):  # noqa
                             lambda *a, **k: (next(picks), ""))
         d._pick_picture(d.tiles["idle"])
         d._pick_picture(d.tiles["talk"])
+        _settle(d)
         assert d.tiles["idle"].picture is not None and d.tiles["blink"].borrowed
         d._edit("sad")  # swap one picture of a folder expression
         monkeypatch.setattr("sprigcast.app.pngtuber_dialog.QFileDialog.getOpenFileName",
