@@ -178,21 +178,25 @@ class MuteSound extends SprigCastAction {
 }
 
 class ToggleItem extends SprigCastAction {
+	// Shape: both canvases (the default), or only the horizontal or vertical one.
 	constructor() { super("item"); }
 	press(s, action) {
 		const verb = { show: "item.show", hide: "item.hide" }[s.mode] ?? "item.toggle";
-		return sprigcast.run(verb, { bloom: s.bloom, item: s.item }).then((result) => {
+		const shape = itemShape(s);
+		return sprigcast.run(verb, { bloom: s.bloom, item: s.item, shape }).then((result) => {
 			if (typeof result?.visible === "boolean") {
-				sprigcast.state.items[`${s.bloom}/${s.item}`] = result.visible;
+				const shapes = shape === "both" ? ["both", "horizontal", "vertical"] : [shape];
+				for (const one of shapes) sprigcast.state.items[`${s.bloom}/${s.item}|${one}`] = result.visible;
 				return action.setState(result.visible ? 0 : 1);
 			}
 		});
 	}
 	async paint(action, s) {
-		const key = `${s.bloom}/${s.item}`;
+		const shape = itemShape(s);
+		const key = `${s.bloom}/${s.item}|${shape}`;
 		if (sprigcast.state.items[key] === undefined && sprigcast.ready && s.bloom && s.item) {
 			try {
-				sprigcast.state.items[key] = (await sprigcast.run("item.status", { bloom: s.bloom, item: s.item })).visible;
+				sprigcast.state.items[key] = (await sprigcast.run("item.status", { bloom: s.bloom, item: s.item, shape })).visible;
 			} catch {
 				return undefined;
 			}
@@ -200,6 +204,12 @@ class ToggleItem extends SprigCastAction {
 		const shown = sprigcast.state.items[key];
 		return typeof shown === "boolean" ? action.setState(shown ? 0 : 1) : undefined;
 	}
+}
+
+const SHAPES = new Set(["both", "horizontal", "vertical"]);
+/** A key's Shape setting: both canvases unless it names one. */
+function itemShape(s) {
+	return SHAPES.has(s.shape) ? s.shape : "both";
 }
 
 class SoundVolume extends SprigCastAction {
@@ -367,7 +377,7 @@ class SaveClip extends SprigCastAction {
 
 class Screenshot extends SprigCastAction {
 	constructor() { super("screenshot", 1); this.okAfterPress = true; }
-	press() { return sprigcast.run("screenshot.take"); }
+	press(s) { return sprigcast.run("screenshot.take", { shape: itemShape(s) }); }
 	said() { return "Saved"; }
 }
 

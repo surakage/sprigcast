@@ -6,7 +6,9 @@
 const FIELDS = {
 	bloom: [["bloom", "Bloom", "getBlooms"], ["shape", "Shape", ["both", "horizontal", "vertical"]]],
 	mute: [["sound", "Sound", "getSounds"], ["mode", "Press", ["toggle", "mute", "unmute"]]],
-	item: [["bloom", "Bloom", "getBlooms"], ["item", "Item", "getSources"], ["mode", "Press", ["toggle", "show", "hide"]]],
+	item: [["bloom", "Bloom", "getBlooms"], ["item", "Item", "getSources"], ["mode", "Press", ["toggle", "show", "hide"]],
+		["shape", "Shape", ["both", "horizontal", "vertical"]]],
+	screenshot: [["shape", "Shape", ["both", "horizontal", "vertical"]]],
 	"sprig-state": [["sprig", "Sprig", "getSprigs"], ["state", "State", null]],
 	volume: [["sound", "Sound", "getSounds"], ["mode", "Press", ["change", "set"]], ["step", "Change (dB)", null],
 		["db", "Set to (dB)", null]],

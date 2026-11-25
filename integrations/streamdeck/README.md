@@ -6,7 +6,7 @@ bloom is on air, a sound key shows when it's muted, and Go live and Record turn 
 | Key | Does | Lights | OBS plugin's |
 | --- | --- | --- | --- |
 | Show bloom | puts a bloom on air (both shapes, or one) | while it's on air | Scene |
-| Show or hide | toggles, shows or hides an item in a bloom | while hidden | Source Visibility |
+| Show or hide | (Shape: both canvases, or only horizontal or vertical) toggles, shows or hides an item in a bloom | while hidden | Source Visibility |
 | Garden | switches garden | while in use | Scene Collection |
 | Path | switches path | while in use | Profile |
 | Mute sound | toggles, mutes or unmutes a sound | while muted | Audio Mixer |

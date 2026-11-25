@@ -93,9 +93,11 @@ test("an item in a bloom's own sprig lights a key set to the bloom", async () =>
 	const sc = new SprigCast({ port: 4456, WebSocketClass: FakeSocket });
 	sc.want(true);
 	await welcome(FakeSocket.last);
-	FakeSocket.last.say({ event: "item.changed", sprig: "Chatting 2", blooms: ["Chatting"], item: "Cam", visible: false });
-	assert.equal(sc.state.items["Chatting/Cam"], false);
-	assert.equal(sc.state.items["Chatting 2/Cam"], false);
+	sc.state.items["Chatting/Cam|both"] = true; // a both-shapes key's answer from before
+	FakeSocket.last.say({ event: "item.changed", sprig: "Chatting 2", blooms: ["Chatting"], item: "Cam", shape: "vertical", visible: false });
+	assert.equal(sc.state.items["Chatting/Cam|vertical"], false);
+	assert.equal(sc.state.items["Chatting 2/Cam|vertical"], false);
+	assert.equal(sc.state.items["Chatting/Cam|both"], undefined); // asks again: still shown horizontally?
 	sc.want(false);
 });
 
