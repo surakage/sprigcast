@@ -44,7 +44,7 @@ and its keys go dark until SprigCast is back. A quiet connection is checked ever
 
 ## Set up
 
-1. Double-click `com.sprigcast.sprigcast.streamDeckPlugin` to install it (Stream Deck 7.1 or newer).
+1. Double-click `com.slothbloom.sprigcast.streamDeckPlugin` to install it (Stream Deck 7.1 or newer).
 2. Drag any SprigCast key onto your Stream Deck. That's it: with SprigCast open, the keys connect by themselves.
 
 While its API runs (on by default: Settings → Connections), SprigCast keeps its port and a key for this PC (not the password) in
@@ -52,7 +52,7 @@ While its API runs (on by default: Settings → Connections), SprigCast keeps it
 reads obs-websocket's settings. If OBS holds port 4455, SprigCast takes the next free port and the file says so.
 The plugin looks for the file every 2 seconds, so keys come alive as soon as SprigCast opens.
 
-**Key style** in any key's settings switches every key's look: Canopy (dark green with a mint glow), Colour (each kind of key
+**Key style** in any key's settings switches every key's look: Canopy (dark green with a mint glow), Color (each kind of key
 its own colour) or Graphite (dark and plain, mint when on).
 
 Not connecting by itself? In SprigCast press **Settings → Connections → Pair a device** and type the 6-digit code
@@ -66,13 +66,13 @@ SprigCast is found.
 cd integrations/streamdeck
 npm install
 npm test            # client tests
-npm run build       # bundles src/ into com.sprigcast.sprigcast.sdPlugin/bin/plugin.js
+npm run build       # bundles src/ into com.slothbloom.sprigcast.sdPlugin/bin/plugin.js
 npm run validate
-npm run pack        # dist/com.sprigcast.sprigcast.streamDeckPlugin
+npm run pack        # dist/com.slothbloom.sprigcast.streamDeckPlugin
 ```
 
-For development, `npx streamdeck link com.sprigcast.sprigcast.sdPlugin` installs the folder itself, and
-`npx streamdeck restart com.sprigcast.sprigcast` reloads it after a build.
+For development, `npx streamdeck link com.slothbloom.sprigcast.sdPlugin` installs the folder itself, and
+`npx streamdeck restart com.slothbloom.sprigcast` reloads it after a build.
 
 Images come from `tools/make_images.py` (run it with SprigCast's Python from the repo root); they're SVG glyphs
 drawn to PNG, in the brand colours.
