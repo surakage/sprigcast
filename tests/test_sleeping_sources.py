@@ -549,3 +549,29 @@ def test_slow_wakes_are_spread_over_ticks(monkeypatch):
         awake.append(sum(not s.asleep for s in engine._sources.values()))
     assert awake == [1, 2, 3]
     assert all(s.log.count("wake") == 1 for s in engine._sources.values())
+
+
+def test_a_source_going_back_and_forth_is_logged_once_in_a_while(monkeypatch, caplog):
+    """PC 2026-11-25: a window capture at 4-5 ms switched about 10 times a minute, 101 log lines in 10 minutes."""
+    import logging
+
+    from sprigcast.render import engine as module
+
+    engine, col = _engine()
+    source = engine._sources["game"]
+    now = [1000.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    caplog.set_level(logging.INFO, logger=module.log.name)
+    for _ in range(10):  # slow, then quick, ten times over a minute or two
+        for _ in range(60):
+            engine._charge("game", source, 0.012)
+        for _ in range(120):
+            engine._charge("game", source, 0.0005)
+        now[0] += 10
+    lines = [r.getMessage() for r in caplog.records if "game" in r.getMessage() and "frame" in r.getMessage()]
+    assert len(lines) == 2, lines  # the first slow-down and the recovery after it
+    now[0] += module.BUDGET_LOG_S
+    for _ in range(60):
+        engine._charge("game", source, 0.012)
+    lines = [r.getMessage() for r in caplog.records if "game" in r.getMessage() and "frame" in r.getMessage()]
+    assert len(lines) == 3 and "more times since its last line" in lines[-1]
