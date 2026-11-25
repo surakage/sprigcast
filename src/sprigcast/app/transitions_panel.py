@@ -855,8 +855,11 @@ class TransitionsPanel(QWidget):
             self.rules_grid = row
             self._rules_split: bool | None = None
             self._place_rules(False)
-            root.addSpacing(4)
+            self.rules_gap = QWidget()  # the space above it goes when it hides
+            self.rules_gap.setFixedHeight(4)
+            root.addWidget(self.rules_gap)
             root.addWidget(rules)
+            self.rules_row = rules
             self.show_rule_count()
         root.addStretch(1)
         self.load(transition)
@@ -885,6 +888,10 @@ class TransitionsPanel(QWidget):
             grid.removeWidget(widget)
         row = 1 if split else 0
         grid.addWidget(self.rules_label, 0, 0, 1, 4 if split else 1)
+        # Its width is ignored so it never holds the panel open; on one line it still gets room for its words
+        # (it had none on Live's card, so "1 active" sat there with no name).
+        policy = QSizePolicy.Policy.Ignored if split else QSizePolicy.Policy.Fixed
+        self.rules_label.setSizePolicy(policy, QSizePolicy.Policy.Preferred)
         grid.addWidget(self.rules_count, row, 0 if split else 1)
         grid.addWidget(self.rules_button, row, 3)
         for c in range(4):
@@ -1045,7 +1052,11 @@ class TransitionsPanel(QWidget):
         if not self.compact:
             self.rules_count.setText(f"{count} rule{'s' if count != 1 else ''}" if count else "None")
             return
-        # Live's card: a small green "N active" chip, or a muted "None" (the rules themselves are under Edit).
+        # Live's card shows the row only once there is a rule (user 2026-11-25: "hide it when no rules"); the
+        # gear's pop-up has the Between blooms tab to add the first one, and so does a bloom's "Comes in with".
+        self.rules_row.setVisible(bool(count))
+        self.rules_gap.setVisible(bool(count))
+        # Live's card: a small green "N active" chip (the rules themselves are under Edit).
         self.rules_count.setText(f"{count} active" if count else "None")
         self.rules_count.setStyleSheet(
             f"color: {theme.ACCENT}; background: {theme.SELECT_BG}; border-radius: 11px; padding: 0 10px;"
