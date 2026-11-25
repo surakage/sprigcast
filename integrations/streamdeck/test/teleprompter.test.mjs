@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 
-import { TELEPROMPTER_TITLES, teleprompterCommand, teleprompterPort, teleprompterSend, teleprompterUrl } from "../src/teleprompter.js";
+import { NoPageError, TELEPROMPTER_TITLES, teleprompterCommand, teleprompterPort, teleprompterSend, teleprompterUrl } from "../src/teleprompter.js";
 
 test("every command the teleprompter app takes is on the key", () => {
 	assert.deepEqual(Object.keys(TELEPROMPTER_TITLES).sort(),
@@ -23,7 +23,11 @@ test("port: 8765 unless a real port is set", () => {
 
 test("sends GET /control/<command> to the app", async () => {
 	const seen = [];
-	const server = http.createServer((req, res) => { seen.push(`${req.method} ${req.url}`); res.end("ok"); });
+	const server = http.createServer((req, res) => {
+		seen.push(`${req.method} ${req.url}`);
+		res.setHeader("Content-Type", "application/json");
+		res.end(JSON.stringify({ ok: true, command: "faster", pages: 1 }));
+	});
 	await new Promise((r) => server.listen(0, "127.0.0.1", r));
 	try {
 		await teleprompterSend("faster", server.address().port);
@@ -46,6 +50,16 @@ test("an app that says no is an error too", async () => {
 	await new Promise((r) => server.listen(0, "127.0.0.1", r));
 	try {
 		await assert.rejects(teleprompterSend("bogus", server.address().port), /answered 404/);
+	} finally {
+		server.close();
+	}
+});
+
+test("app running but no teleprompter page open: an alert too", async () => {
+	const server = http.createServer((_req, res) => res.end(JSON.stringify({ ok: true, command: "toggle", pages: 0 })));
+	await new Promise((r) => server.listen(0, "127.0.0.1", r));
+	try {
+		await assert.rejects(teleprompterSend("toggle", server.address().port), NoPageError);
 	} finally {
 		server.close();
 	}

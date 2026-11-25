@@ -4,7 +4,7 @@
 import streamDeck, { SingletonAction } from "@elgato/streamdeck";
 
 import { SprigCast, addSeconds, clockText, placeTitle, timerText } from "./sprigcast.js";
-import { TELEPROMPTER_TITLES, teleprompterCommand, teleprompterPort, teleprompterSend } from "./teleprompter.js";
+import { NoPageError, TELEPROMPTER_TITLES, teleprompterCommand, teleprompterPort, teleprompterSend } from "./teleprompter.js";
 
 const ID = "com.slothbloom.sprigcast";
 const sprigcast = new SprigCast();
@@ -495,7 +495,7 @@ class TeleprompterKey extends SprigCastAction {
 		} catch (error) {
 			streamDeck.logger.warn(`${this.manifestId}: ${error.message}`);
 			await ev.action.showAlert();
-			await flash(ev.action, "Not\nrunning");
+			await flash(ev.action, error instanceof NoPageError ? "No page\nopen" : "Not\nrunning");
 			setTimeout(() => this.paint(ev.action, s).catch(() => {}), 1900);
 		}
 	}

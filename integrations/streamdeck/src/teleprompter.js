@@ -28,6 +28,11 @@ export function teleprompterPort(settings = {}) {
 	return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : TELEPROMPTER_PORT;
 }
 
+/** The app is running but no teleprompter page is open: nothing got the command. */
+export class NoPageError extends Error {
+	constructor() { super("Teleprompter has no page open"); }
+}
+
 export function teleprompterUrl(command, port, host = "127.0.0.1") {
 	return `http://${host}:${port}/control/${encodeURIComponent(command)}`;
 }
@@ -39,9 +44,12 @@ export async function teleprompterSend(command, port, fetchImpl = fetch) {
 		try {
 			const response = await fetchImpl(teleprompterUrl(command, port, host), { signal: AbortSignal.timeout(1500) });
 			if (!response.ok) throw new Error(`Teleprompter answered ${response.status}`);
-			return;
+			const answer = await response.json().catch(() => ({}));
+			if (answer?.pages === 0) throw new NoPageError(); // the app runs, but no teleprompter page is open
+			return answer;
 		} catch (error) {
 			last = error;
+			if (error instanceof NoPageError) throw error;
 			if (String(error.message).startsWith("Teleprompter answered")) break; // it's running; it said no
 		}
 	}
