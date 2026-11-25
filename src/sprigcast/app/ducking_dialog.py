@@ -6,16 +6,15 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QSlider,
-    QVBoxLayout,
     QWidget,
 )
 
 from sprigcast.app import theme
 from sprigcast.app.card import CardDialog
+from sprigcast.app.card import section as card_section
 from sprigcast.app.labels import literal
 from sprigcast.core.scene import AudioSettings, SceneCollection
 
@@ -53,8 +52,7 @@ class DuckingDialog(CardDialog):
         self.enabled.setChecked(audio.ducking)
         self.enabled.setAccessibleName("Lower other sounds while I talk")
 
-        voices = QGroupBox("Voices (these do the lowering)")
-        voice_box = QVBoxLayout(voices)
+        voices, voice_box = card_section("Voices (these do the lowering)", 8)
         self.voice_boxes: dict[str, QCheckBox] = {}
         sources = [s for s in collection.sources if s.kind in AUDIO_KINDS]
         for source in sources:
@@ -65,8 +63,9 @@ class DuckingDialog(CardDialog):
         if not sources:
             voice_box.addWidget(QLabel("No audio sources yet."))
 
-        sound = QGroupBox("How it sounds")
-        form = QFormLayout(sound)
+        sound, sound_box = card_section("How it sounds")
+        form = QFormLayout()
+        sound_box.addLayout(form)
         form.setHorizontalSpacing(16)
         form.setVerticalSpacing(10)
         row, self.amount = _slider(3, 30, -audio.duck_amount_db, "−{} dB", "Lower others by")
@@ -85,11 +84,11 @@ class DuckingDialog(CardDialog):
         # Off: the voices and how it sounds can't be changed, and look it (PC 2026-11-20: the ticks looked
         # live but didn't respond).
         for part in (voices, sound):
-            part.setObjectName("duckPart")
+            part.setProperty("duckPart", True)  # its name stays the section card's (its look)
         # (The tick boxes' own leaf pictures already have a quiet off version: only the words and bars change.)
         self.setStyleSheet(
-            f"#duckPart QCheckBox:disabled, #duckPart QLabel:disabled {{ color: {theme.BUTTON_EDGE}; }}"
-            f"#duckPart QSlider::sub-page:horizontal:disabled {{ background: {theme.EDGE_STRONG}; }}")
+            f"QFrame[duckPart='true'] QCheckBox:disabled, QFrame[duckPart='true'] QLabel:disabled {{ color: {theme.BUTTON_EDGE}; }}"
+            f"QFrame[duckPart='true'] QSlider::sub-page:horizontal:disabled {{ background: {theme.EDGE_STRONG}; }}")
 
         def toggle(on: bool) -> None:
             voices.setEnabled(on)
@@ -97,7 +96,7 @@ class DuckingDialog(CardDialog):
 
         self.enabled.toggled.connect(toggle)
         toggle(audio.ducking)
-        self.body.addLayout(_row("Lower other sounds while I talk", self.enabled))
+        self.section().addLayout(_row("Lower other sounds while I talk", self.enabled))
         self.body.addWidget(voices)
         self.body.addWidget(sound)
         self.ok = self.add_buttons("Save")

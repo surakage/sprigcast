@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
     QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -33,6 +32,7 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app import theme
 from sprigcast.app.card import CardDialog, field_label
+from sprigcast.app.card import section as card_section
 from sprigcast.app.labels import literal
 from sprigcast.app.sound_card import GROUP_COLOURS, TYPE_COLORS
 
@@ -121,10 +121,7 @@ class SoundTypeDialog(CardDialog):
 
         # Two titled cards, as in Settings: the type itself, then its sounds as pills that wrap (no sideways
         # scrolling; a long list scrolls down only, and Find narrows it).
-        about = QGroupBox("Name and color")
-        box = QVBoxLayout(about)
-        box.setContentsMargins(18, 22, 18, 18)
-        box.setSpacing(10)
+        about, box = card_section("Name and color", 10)
         box.addWidget(field_label("Name"))
         self.name = self.line_edit("Background, Friends, Ads…")
         self.name.setText(editing or "")
@@ -151,10 +148,7 @@ class SoundTypeDialog(CardDialog):
         box.addLayout(swatches)
         self.body.addWidget(about)
 
-        sounds_card = QGroupBox("Sounds")
-        box = QVBoxLayout(sounds_card)
-        box.setContentsMargins(18, 22, 18, 18)
-        box.setSpacing(12)
+        sounds_card, box = card_section("Sounds", 12)
         top = QHBoxLayout()
         top.setSpacing(10)
         self.find = self.line_edit("Find a sound")

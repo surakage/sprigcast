@@ -56,7 +56,8 @@ class CameraDialog(CardDialog):
         self.device.setCurrentIndex(index)
         if modes and cameras:
             self._modes[self._key(cameras[index])] = list(modes)
-        self.body.addLayout(_field("Device", self.device))
+        picture = self.section("Picture")
+        picture.addLayout(_field("Device", self.device))
 
         self.size = combo(8)
         for w, h in SIZES:
@@ -78,13 +79,14 @@ class CameraDialog(CardDialog):
         pair.setSpacing(12)
         pair.addLayout(_field("Size", self.size), 1)
         pair.addLayout(_field("Frame rate", self.rate), 1)
-        self.body.addLayout(pair)
+        picture.addLayout(pair)
 
         # What the device itself is asked for, as it lists it (a capture card fed 1440p, a camera's MJPEG): off,
         # SprigCast picks from the device's list for the size and rate above.
         self.custom = Switch()
         self.custom.setChecked(current.get("capture_mode") == "custom")
-        self.body.addLayout(_row("Custom device mode", self.custom))
+        mode = self.section("Device mode")
+        mode.addLayout(_row("Custom device mode", self.custom))
         self.device_size = combo(4)
         self.device_rate = combo(4)
         self.device_format = combo(4)
@@ -95,7 +97,7 @@ class CameraDialog(CardDialog):
         trio.addLayout(_field("Device size", self.device_size), 5)
         trio.addLayout(_field("Device rate", self.device_rate), 4)
         trio.addLayout(_field("Format", self.device_format), 4)
-        self.body.addWidget(self.custom_box)
+        mode.addWidget(self.custom_box)
         self._custom_wanted = (tuple(current.get("capture_size") or ()), current.get("capture_fps"),
                                current.get("capture_format"))
         self.custom.toggled.connect(self._show_custom)
@@ -108,22 +110,23 @@ class CameraDialog(CardDialog):
         self.pause.setToolTip("Frees the camera and its memory while no bloom on screen shows it.\n"
                               "It takes a second to come back.")
         self.pause.setChecked(bool(current.get("pause_off_screen", True)))
-        self.body.addLayout(_row("Pause when not on screen", self.pause))
+        options = self.section("Options")
+        options.addLayout(_row("Pause when not on screen", self.pause))
         self.mirror = Switch()
         self.mirror.setChecked(bool(current.get("mirror", False)))
-        self.body.addLayout(_row("Mirror", self.mirror))
+        options.addLayout(_row("Mirror", self.mirror))
 
         self.note = QLabel()
         self.note.setWordWrap(True)
         self.note.setStyleSheet(f"{theme.NOTE_STYLE} padding: 10px 14px;")
-        self.body.addWidget(self.note)
+        picture.addWidget(self.note)
         self.lighter = QPushButton("Find a lighter camera")
         self.lighter.setStyleSheet(theme.button_style(17, "8px 16px"))
         self.lighter.setCursor(Qt.CursorShape.PointingHandCursor)
         self.lighter.setAutoDefault(False)
         self.lighter.setToolTip("Checks what your other cameras offer at this size and frame rate")
         self.lighter.clicked.connect(self._find_lighter)
-        self.body.addWidget(self.lighter, 0, Qt.AlignmentFlag.AlignLeft)
+        picture.addWidget(self.lighter, 0, Qt.AlignmentFlag.AlignLeft)
         self.lighter.setVisible(len(cameras) > 1)
         self.ok = self.add_buttons("Save")
 

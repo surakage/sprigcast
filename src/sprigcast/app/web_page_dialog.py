@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app import theme
 from sprigcast.app.card import FIELD_STYLE, CardDialog
+from sprigcast.app.card import section as card_section
 from sprigcast.app.live_stage import Switch
 from sprigcast.sources.browser import DEFAULT_CSS, DEFAULTS, STANDARD_FPS, page_fps
 
@@ -52,14 +53,8 @@ def _muted(text: str) -> QLabel:
     return label
 
 
-def _section() -> tuple[QFrame, QVBoxLayout]:
-    frame = QFrame()
-    frame.setObjectName("pageSection")
-    frame.setStyleSheet(f"#pageSection {{ background: {theme.CARD}; border-radius: 16px; }}")
-    box = QVBoxLayout(frame)
-    box.setContentsMargins(16, 14, 16, 14)
-    box.setSpacing(10)
-    return frame, box
+def _section(title: str = "") -> tuple[QFrame, QVBoxLayout]:
+    return card_section(title, 10)
 
 
 def _title(text: str) -> QLabel:
@@ -81,7 +76,7 @@ class WebPageDialog(CardDialog):
         self.switches: dict[str, Switch] = {}
 
         # Where the page comes from: a link, or an .html file on this PC.
-        where, box = _section()
+        where, box = _section("Page")
         tabs = QHBoxLayout()
         tabs.setSpacing(6)
         self.link_tab, self.file_tab = QPushButton("Link"), QPushButton("File on this PC")
@@ -125,7 +120,7 @@ class WebPageDialog(CardDialog):
         self.body.addWidget(where)
 
         # Size and frame rate, side by side.
-        look, box = _section()
+        look, box = _section("Picture")
         grid = QGridLayout()
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(8)
@@ -158,7 +153,7 @@ class WebPageDialog(CardDialog):
         self.body.addWidget(look)
 
         # Its sound, and how it rests.
-        how, box = _section()
+        how, box = _section("Sound and sleep")
         self._switch_row(box, "audio_to_mixer", bool(s["audio_to_mixer"]), "Sound in SprigCast",
                          "Its own strip under the canvas. Off: your speakers only.")
         self._switch_row(box, "mute", bool(s["mute"]), "Silent", "No sound from this page at all.")

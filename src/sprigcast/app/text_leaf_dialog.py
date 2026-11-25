@@ -51,6 +51,7 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app import theme
 from sprigcast.app.card import BOX_HEIGHT, CardDialog, combo
+from sprigcast.app.card import section as card_section
 from sprigcast.app.live_stage import Switch
 from sprigcast.app.media_dialog import CHIP, Choice
 from sprigcast.app.settings_dialog import FORM_STYLE
@@ -79,16 +80,7 @@ LOOKS = (  # one click sets the style; A to Z. Everything stays changeable on St
 
 
 def _section(title: str) -> tuple[QFrame, QVBoxLayout]:
-    frame = QFrame()
-    frame.setObjectName("leafSection")
-    frame.setStyleSheet(f"#leafSection {{ background: {theme.CARD}; border-radius: 16px; }}")
-    box = QVBoxLayout(frame)
-    box.setContentsMargins(18, 14, 18, 16)
-    box.setSpacing(10)
-    heading = QLabel(title)
-    heading.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-weight: 600; background: transparent;")
-    box.addWidget(heading)
-    return frame, box
+    return card_section(title, 10)
 
 
 def _row(box: QVBoxLayout, name: str, *widgets: QWidget, stretch_last: bool = True) -> QWidget:

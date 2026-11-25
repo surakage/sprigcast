@@ -47,6 +47,7 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app import theme
 from sprigcast.app.card import FIELD_STYLE, CardDialog, combo
+from sprigcast.app.card import section as card_section
 from sprigcast.app.live_stage import Switch
 
 CHIP = theme.button_style(15, "7px 14px")
@@ -76,17 +77,7 @@ def tuber_module():
 
 
 def _section(title: str) -> tuple[QFrame, QVBoxLayout]:
-    frame = QFrame()
-    frame.setObjectName("tuberSection")
-    frame.setStyleSheet(f"#tuberSection {{ background: {theme.CARD}; border: 1px solid {theme.EDGE};"
-                        " border-radius: 16px; }")
-    box = QVBoxLayout(frame)
-    box.setContentsMargins(18, 14, 18, 16)
-    box.setSpacing(12)
-    heading = QLabel(title)
-    heading.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-weight: 650; font-size: 15px; background: transparent;")
-    box.addWidget(heading)
-    return frame, box
+    return card_section(title, 12)
 
 
 def _label(text: str) -> QLabel:

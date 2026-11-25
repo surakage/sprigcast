@@ -901,7 +901,7 @@ class TunePage(QWidget):
         """A titled section card (the app's QGroupBox look: leaf, title, edge), padded inside."""
         frame = QGroupBox(title)
         box = QVBoxLayout(frame)
-        box.setContentsMargins(4, 8, 4, 4)
+        box.setContentsMargins(0, 0, 0, 0)  # the app's QGroupBox padding holds it off the edge and the title
         box.setSpacing(8)
         col.addWidget(frame)
         return frame, box
