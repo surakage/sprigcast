@@ -67,6 +67,7 @@ async function listFor(event, payload = {}) {
 	if (!fill) return null;
 	try {
 		const found = await fill();
+		if (found.some((item) => item?.group)) return found; // in sections, already in order
 		if (found.some((item) => item && typeof item === "object")) { // already label and value
 			return found.sort((a, b) => String(a.label).localeCompare(String(b.label)));
 		}
@@ -78,10 +79,14 @@ async function listFor(event, payload = {}) {
 	}
 }
 
-/** What a key can show or hide in a bloom: its own things, and the leaves inside its sprigs as "Sprig › Leaf". */
+/**
+ * What a key can show or hide in a bloom, in sections: Sprigs (every sprig in it), then Leaves in <bloom> and
+ * Leaves in <sprig> for each sprig. Values are paths ("Frame › Camera"), labels just the name.
+ */
 async function bloomItems(bloom) {
 	if (!bloom) return [];
-	const out = new Set();
+	const sprigs = [];
+	const leaves = new Map(); // section -> [{label, value}]
 	const named = async (where) => { // one entry per name, whichever shapes it's in
 		const seen = new Map();
 		for (const list of Object.values((await sprigcast.run("items.list", where)).shapes ?? {})) {
@@ -89,22 +94,26 @@ async function bloomItems(bloom) {
 		}
 		return [...seen.values()];
 	};
-	const walk = async (sprig, path, depth) => {
-		for (const item of await named({ sprig })) {
-			const here = path ? `${path}${NEST}${item.name}` : item.name;
-			out.add(here);
-			if (item.sprig && depth < 4) await walk(item.name, here, depth + 1);
+	const add = (item, path, section, depth) => {
+		const value = path ? `${path}${NEST}${item.name}` : item.name;
+		if (item.sprig) {
+			sprigs.push({ label: item.name, value, group: "Sprigs" });
+			return depth < 4 ? walk(item.name, value, depth + 1) : undefined;
 		}
+		if (!leaves.has(section)) leaves.set(section, []);
+		leaves.get(section).push({ label: item.name, value, group: `Leaves in ${section}` });
+		return undefined;
+	};
+	const walk = async (sprig, path, depth) => {
+		for (const item of await named({ sprig })) await add(item, path, sprig, depth);
 	};
 	for (const item of await named({ bloom })) {
-		if (item.sprig && item.name === bloom) {
-			await walk(item.name, "", 1); // the bloom's own sprig: what's in it belongs to the bloom
-		} else {
-			out.add(item.name);
-			if (item.sprig) await walk(item.name, item.name, 1);
-		}
+		if (item.sprig && item.name === bloom) await walk(item.name, "", 1); // the bloom's own sprig: its things are the bloom's
+		else await add(item, "", bloom, 1);
 	}
-	return [...out].map((name) => ({ label: name, value: name }));
+	const az = (a, b) => a.label.localeCompare(b.label);
+	const sections = [...leaves.keys()].sort((a, b) => (a === bloom ? -1 : b === bloom ? 1 : a.localeCompare(b)));
+	return [...sprigs.sort(az), ...sections.flatMap((section) => leaves.get(section).sort(az))];
 }
 
 async function sprigNames() {

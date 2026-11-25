@@ -98,7 +98,21 @@ function fillSelect(select, items) {
 	const options = [new Option(names.length || picked ? "Choose…" : "Open SprigCast to pick", "")];
 	options[0].disabled = true;
 	if (picked && !names.includes(picked)) options.push(new Option(picked, picked));
-	for (const item of listed) options.push(new Option(item.label ?? item.value, item.value));
+	const groups = new Map(); // a list in sections (Sprigs, Leaves in ...): one heading each
+	for (const item of listed) {
+		const option = new Option(item.label ?? item.value, item.value);
+		if (!item.group) {
+			options.push(option);
+			continue;
+		}
+		if (!groups.has(item.group)) {
+			const heading = document.createElement("optgroup");
+			heading.label = item.group;
+			groups.set(item.group, heading);
+			options.push(heading);
+		}
+		groups.get(item.group).appendChild(option);
+	}
 	select.replaceChildren(...options);
 	select.value = picked;
 }
