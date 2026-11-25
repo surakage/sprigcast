@@ -186,3 +186,30 @@ def test_own_window_offers_menus_and_popups(app):
     assert d.values()[0]["popups"] is False
     d.show_own.setChecked(False)
     assert not d.popups_row.isVisibleTo(d) and "popups" not in d.values()[0]
+
+
+@pytest.mark.parametrize("which", ["window", "game"])
+def test_a_long_window_title_does_not_cut_off_the_popup(app, which):
+    """PC 2026-11-25: a long window title made Window capture's body 715 px in a 434 px card; its fields, switches
+    and Save were cut off at the right. Game capture had the same."""
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app import theme
+    from sprigcast.app.capture_dialog import WindowCaptureDialog
+    from sprigcast.app.game_dialog import GameCaptureDialog
+    from sprigcast.sources.win32_enum import WindowInfo
+
+    QApplication.instance().setStyleSheet(theme.STYLESHEET)
+    long = "sprigcast - capture_dialog.py - Visual Studio Code - a very long window title that goes on and on"
+    windows = [WindowInfo(hwnd=1, title="Mozilla Firefox", process="firefox.exe"),
+               WindowInfo(hwnd=2, title=long, process="Code.exe")]
+    make = WindowCaptureDialog if which == "window" else GameCaptureDialog
+    d = make({"title": long, "process": "Code.exe"}, windows, False)
+    d.show()
+    QApplication.processEvents()
+    try:
+        scroll = d._scroll
+        assert scroll.widget().width() <= scroll.viewport().width()
+        assert d.ok.geometry().right() < scroll.widget().width()
+    finally:
+        d.close()
