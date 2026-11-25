@@ -4,6 +4,7 @@
 import streamDeck, { SingletonAction } from "@elgato/streamdeck";
 
 import { SprigCast, addSeconds, clockText, placeTitle, timerText } from "./sprigcast.js";
+import { NEST, itemTarget } from "./items.js";
 import { NoPageError, TELEPROMPTER_TITLES, teleprompterCommand, teleprompterPort, teleprompterSend } from "./teleprompter.js";
 
 const ID = "com.slothbloom.sprigcast";
@@ -53,6 +54,7 @@ async function listFor(event, payload = {}) {
 		getSounds: async () => (await sprigcast.run("sounds.list")).sounds.map((s) => s.name),
 		getSprigs: async () => (await sprigcast.run("sprigs.list")).sprigs.map((s) => s.name),
 		getSources: async () => (await sprigcast.run("sources.list")).sources.map((s) => s.name),
+		getItems: async () => bloomItems(payload.bloom),
 		getActions: async () => (await sprigcast.run("app.actions")).actions.map((a) => a.do),
 		getExpressions: async () => (await sprigcast.run("pngtuber.expressions")).expressions,
 		// A place's key keeps its id; the list shows its name ("Twitch (horizontal)").
@@ -74,6 +76,35 @@ async function listFor(event, payload = {}) {
 	} catch {
 		return [{ label: "Open SprigCast first", value: "", disabled: true }];
 	}
+}
+
+/** What a key can show or hide in a bloom: its own things, and the leaves inside its sprigs as "Sprig › Leaf". */
+async function bloomItems(bloom) {
+	if (!bloom) return [];
+	const out = new Set();
+	const named = async (where) => { // one entry per name, whichever shapes it's in
+		const seen = new Map();
+		for (const list of Object.values((await sprigcast.run("items.list", where)).shapes ?? {})) {
+			for (const item of list) seen.set(item.name, item);
+		}
+		return [...seen.values()];
+	};
+	const walk = async (sprig, path, depth) => {
+		for (const item of await named({ sprig })) {
+			const here = path ? `${path}${NEST}${item.name}` : item.name;
+			out.add(here);
+			if (item.sprig && depth < 4) await walk(item.name, here, depth + 1);
+		}
+	};
+	for (const item of await named({ bloom })) {
+		if (item.sprig && item.name === bloom) {
+			await walk(item.name, "", 1); // the bloom's own sprig: what's in it belongs to the bloom
+		} else {
+			out.add(item.name);
+			if (item.sprig) await walk(item.name, item.name, 1);
+		}
+	}
+	return [...out].map((name) => ({ label: name, value: name }));
 }
 
 async function sprigNames() {
@@ -178,25 +209,28 @@ class MuteSound extends SprigCastAction {
 }
 
 class ToggleItem extends SprigCastAction {
-	// Shape: both canvases (the default), or only the horizontal or vertical one.
+	// Shape: both canvases (the default), or only the horizontal or vertical one. The item is a bloom's own,
+	// or a leaf inside one of its sprigs ("Sprig › Leaf").
 	constructor() { super("item"); }
 	press(s, action) {
 		const verb = { show: "item.show", hide: "item.hide" }[s.mode] ?? "item.toggle";
 		const shape = itemShape(s);
-		return sprigcast.run(verb, { bloom: s.bloom, item: s.item, shape }).then((result) => {
+		const target = itemTarget(s);
+		return sprigcast.run(verb, { ...target, shape }).then((result) => {
 			if (typeof result?.visible === "boolean") {
 				const shapes = shape === "both" ? ["both", "horizontal", "vertical"] : [shape];
-				for (const one of shapes) sprigcast.state.items[`${s.bloom}/${s.item}|${one}`] = result.visible;
+				for (const one of shapes) sprigcast.state.items[itemKey(target, one)] = result.visible;
 				return action.setState(result.visible ? 0 : 1);
 			}
 		});
 	}
 	async paint(action, s) {
 		const shape = itemShape(s);
-		const key = `${s.bloom}/${s.item}|${shape}`;
-		if (sprigcast.state.items[key] === undefined && sprigcast.ready && s.bloom && s.item) {
+		const target = itemTarget(s);
+		const key = itemKey(target, shape);
+		if (sprigcast.state.items[key] === undefined && sprigcast.ready && (target.bloom || target.sprig) && target.item) {
 			try {
-				sprigcast.state.items[key] = (await sprigcast.run("item.status", { bloom: s.bloom, item: s.item, shape })).visible;
+				sprigcast.state.items[key] = (await sprigcast.run("item.status", { ...target, shape })).visible;
 			} catch {
 				return undefined;
 			}
@@ -207,6 +241,9 @@ class ToggleItem extends SprigCastAction {
 }
 
 const SHAPES = new Set(["both", "horizontal", "vertical"]);
+function itemKey(target, shape) {
+	return `${target.sprig ?? target.bloom}/${target.item}|${shape}`;
+}
 /** A key's Shape setting: both canvases unless it names one. */
 function itemShape(s) {
 	return SHAPES.has(s.shape) ? s.shape : "both";

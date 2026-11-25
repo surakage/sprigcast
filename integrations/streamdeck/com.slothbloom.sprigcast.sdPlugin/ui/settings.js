@@ -6,7 +6,7 @@
 const FIELDS = {
 	bloom: [["bloom", "Bloom", "getBlooms"], ["shape", "Shape", ["both", "horizontal", "vertical"]]],
 	mute: [["sound", "Sound", "getSounds"], ["mode", "Press", ["toggle", "mute", "unmute"]]],
-	item: [["bloom", "Bloom", "getBlooms"], ["item", "Item", "getSources"], ["mode", "Press", ["toggle", "show", "hide"]],
+	item: [["bloom", "Bloom", "getBlooms"], ["item", "Item", "getItems"], ["mode", "Press", ["toggle", "show", "hide"]],
 		["shape", "Shape", ["both", "horizontal", "vertical"]]],
 	screenshot: [["shape", "Shape", ["both", "horizontal", "vertical"]]],
 	"sprig-state": [["sprig", "Sprig", "getSprigs"], ["state", "State", null]],
@@ -79,6 +79,7 @@ function build(kind) {
 			settings[key] = input.value;
 			send("setSettings", settings);
 			if (key === "source") askLists("getFilters"); // a source's own filters
+			if (key === "bloom") askLists("getItems"); // what's in that bloom and its sprigs
 		};
 		input.addEventListener("change", save);
 		if (input.tagName !== "SELECT") input.addEventListener("input", save); // saved as you type: a press works at once
@@ -111,7 +112,8 @@ function askLists(only) {
 	const wanted = new Set([...document.querySelectorAll("select[data-source]")].map((s) => s.dataset.source));
 	for (const event of wanted) {
 		if (event === "getFilters" && !settings.source) continue; // pick a source first
-		if (!only || event === only) send("sendToPlugin", { event, source: settings.source });
+		if (event === "getItems" && !settings.bloom) continue; // pick a bloom first
+		if (!only || event === only) send("sendToPlugin", { event, source: settings.source, bloom: settings.bloom });
 	}
 }
 

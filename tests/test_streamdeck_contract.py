@@ -175,3 +175,18 @@ def test_the_place_key_gets_what_it_lights_from():
     session.events = {"output"}
     session.welcomed = True
     assert '"place": "out-1"' in session.event("place.changed", events[0])  # in the group the plugin asks for
+
+
+def test_show_or_hide_lists_and_changes_leaves_inside_sprigs():
+    """The Show or hide key's Item list walks items.list (bloom, then its sprigs) and a "Sprig › Leaf" pick
+    sends {sprig, item, shape}: both answer as the plugin expects."""
+    api, _ = _api(wrapped=True)
+    top = _ok(api, "items.list", bloom="Chatting")["shapes"]
+    own = [i for i in top["horizontal"] if i["sprig"] and i["name"] == "Chatting"]
+    assert own  # the bloom's own sprig, named after it
+    inside = _ok(api, "items.list", sprig="Chatting")["shapes"]["vertical"]
+    assert {"Alert", "Frame", "Cam"} <= {i["name"] for i in inside} and any(i["sprig"] for i in inside)
+    assert _ok(api, "item.toggle", sprig="Frame", item="Cam", shape="vertical") == {"visible": False}
+    assert _ok(api, "item.status", sprig="Frame", item="Cam", shape="vertical") == {"visible": False}
+    # Frame has one layout for both canvases here, so the vertical pick changed it everywhere.
+    assert _ok(api, "item.toggle", sprig="Frame", item="Cam") == {"visible": True}

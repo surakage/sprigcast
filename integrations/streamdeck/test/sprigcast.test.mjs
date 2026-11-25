@@ -379,3 +379,10 @@ test("tracks each place for the Place key: catch-up, place.changed, and none onc
 	assert.deepEqual(client.state.places, {});
 	client.want(false);
 });
+
+test("Show or hide: a leaf inside a sprig is picked as Sprig › Leaf", async () => {
+	const { itemTarget } = await import("../src/items.js");
+	assert.deepEqual(itemTarget({ bloom: "Show", item: "Website" }), { bloom: "Show", item: "Website" });
+	assert.deepEqual(itemTarget({ bloom: "Show", item: "Frame › Cam" }), { sprig: "Frame", item: "Cam" });
+	assert.deepEqual(itemTarget({ bloom: "Show", item: "Frame › Corner › Logo" }), { sprig: "Corner", item: "Logo" });
+});
