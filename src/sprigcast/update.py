@@ -31,6 +31,8 @@ from sprigcast import __version__
 log = logging.getLogger(__name__)
 
 REPO = "surakage/sprigcast"
+# What people see is always the website, never GitHub (user, 2026-11-25); GitHub is only read behind the scenes.
+SITE_URL = "https://sprigcast.slothbloom.com"
 LATEST_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
 HASHES_NAME = "SHA256.txt"
 _VERSION = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
@@ -83,7 +85,7 @@ def release_from_json(data: dict) -> Release | None:
     return Release(
         version=version,
         notes=str(data.get("body") or "").strip(),
-        page_url=str(data.get("html_url") or f"https://github.com/{REPO}/releases"),
+        page_url=SITE_URL,
         installer_url=str(setup.get("browser_download_url", "")),
         installer_size=int(setup.get("size") or 0),
         hashes_url=str(hashes.get("browser_download_url", "")),

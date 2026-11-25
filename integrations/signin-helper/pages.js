@@ -5,9 +5,11 @@
 
 import { LOGO } from "./logo.js";
 
-export const UPDATED = "November 21, 2026";
-const REPO = "https://github.com/surakage/sprigcast";
-const CONTACT = `${REPO}/issues`;
+export const UPDATED = "November 25, 2026";
+// People are always sent to the website, never to GitHub (user, 2026-11-25). /source links to the code (GPL).
+const SITE = "https://sprigcast.slothbloom.com";
+const SOURCE = `${SITE}/source`;
+const CONTACT = "https://discord.gg/fgMD33XrhM";
 
 const STYLE = `
 :root { color-scheme: dark; --bg: #0c1812; --bg2: #10211a; --card: #142a20; --card2: #183226; --line: #22402f;
@@ -177,8 +179,8 @@ function page(title, path, body) {
   <nav>
     <a href="/privacy"${on("/privacy")}>Privacy</a>
     <a href="/terms"${on("/terms")}>Terms</a>
-    <a href="${REPO}">GitHub</a>
-    <a class="btn main" href="${REPO}/releases/latest">Download</a>
+    <a href="${SITE}">Website</a>
+    <a class="btn main" href="${SITE}">Download</a>
   </nav>
 </div></header>
 <main>
@@ -189,10 +191,10 @@ ${body}
     <div><a class="brand" href="/">${logo(32)}SprigCast</a>
       <p>Free, open-source streaming and recording for Windows. Made by
       <a href="https://slothbloom.com" style="display:inline">Sloth Bloom</a>.</p></div>
-    <div><h4>Product</h4><a href="${REPO}/releases/latest">Download</a><a href="${REPO}">Source code</a>
+    <div><h4>Product</h4><a href="${SITE}">Download</a><a href="${SOURCE}">Source code</a>
       <a href="${CONTACT}">Contact and support</a></div>
     <div><h4>Legal</h4><a href="/privacy">Privacy policy</a><a href="/terms">Terms</a>
-      <a href="${REPO}/blob/main/LICENSE">License (GPL-3.0)</a></div>
+      <a href="${SOURCE}">License (GPL-3.0)</a></div>
   </div>
   <div class="legal"><div class="wrap"><p>© 2026 Sloth Bloom. YouTube is a trademark of Google LLC. SprigCast isn't
   made or endorsed by Google, YouTube, Kick or Twitch.</p></div></div>
@@ -210,9 +212,9 @@ export const HOME = page("SprigCast: free streaming and recording for Windows", 
     <p class="sub">SprigCast puts your camera, game, screen, pictures and sound into scenes, then streams them and
     records them on your PC. Easy to set up, with no accounts and no ads.</p>
     <div class="actions">
-      <a class="btn main" href="${REPO}/releases/latest"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+      <a class="btn main" href="${SITE}"><svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
       stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS.download}</svg>Download for Windows</a>
-      <a class="btn" href="${REPO}">View source code</a>
+      <a class="btn" href="${SOURCE}">View source code</a>
     </div>
     <p class="meta">Windows 10 and 11 · 64-bit · GPL-3.0</p>
   </div>
@@ -417,7 +419,7 @@ name, with no sign-in. Kick chat comes through Kick's official API by way of Spr
 <p>If this policy changes, the new version will be posted here with a new date.</p>
 
 <h2>Contact</h2>
-<p>Questions or requests about your data: open an issue at <a href="${CONTACT}">${CONTACT}</a>, or use
+<p>Questions or requests about your data: ask in #help on <a href="${CONTACT}">the SprigCast Discord</a>, or use
 the support email shown on the Google sign-in screen.</p>
 `));
 
@@ -425,7 +427,7 @@ export const TERMS = page("Terms · SprigCast", "/terms", policy("Terms",
   "The terms for using SprigCast and its sign-in helper.", `
 <h2>License</h2>
 <p>SprigCast is free, open-source software under the
-<a href="${REPO}/blob/main/LICENSE">GNU General Public License v3</a>. You can use, change and share it under that
+<a href="${SOURCE}">GNU General Public License v3</a>. You can use, change and share it under that
 license. It comes with no warranty: use it at your own risk.</p>
 
 <h2>Your content</h2>

@@ -270,7 +270,7 @@ class Updater(QObject):
         self._checking = False
         if error:
             if manual:
-                self._message("Couldn't check for updates", "GitHub didn't answer. Check your connection and "
+                self._message("Couldn't check for updates", "The update check got no answer. Check your connection and "
                               "try again.")
             return
         if release is None or not update.is_newer(release.version):

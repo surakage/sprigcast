@@ -13,9 +13,8 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from sprigcast.app.modal import modal
 from sprigcast.app import theme
-from sprigcast.app.support import TIP_URL
+from sprigcast.app.support import SITE_URL, SOURCE_URL, TIP_URL
 
-REPO_URL = "https://github.com/surakage/sprigcast"
 NOTICES = "THIRD-PARTY-NOTICES.txt"  # written next to python.exe by packaging/notices.py
 
 
@@ -27,7 +26,7 @@ def notices_path() -> Path | None:
 
 def licenses_url() -> str:
     path = notices_path()
-    return QUrl.fromLocalFile(str(path)).toString() if path else f"{REPO_URL}/blob/main/LICENSE"
+    return QUrl.fromLocalFile(str(path)).toString() if path else SOURCE_URL
 
 
 def about_page() -> QWidget:
@@ -74,8 +73,8 @@ def about_page() -> QWidget:
         line.setAlignment(Qt.AlignmentFlag.AlignCenter)
         line.setStyleSheet(style)
         layout.addWidget(line)
-    link = QLabel(f"<a href='{REPO_URL}' style='color: {theme.ACCENT}; text-decoration: none;'>"
-                  "github.com/surakage/sprigcast</a>")
+    link = QLabel(f"<a href='{SITE_URL}' style='color: {theme.ACCENT}; text-decoration: none;'>"
+                  "sprigcast.slothbloom.com</a>")
     link.setObjectName("aboutLink")
     link.setOpenExternalLinks(True)
     link.setAlignment(Qt.AlignmentFlag.AlignCenter)

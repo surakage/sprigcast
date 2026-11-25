@@ -5,7 +5,7 @@ From install to your first stream, and what to do when something goes wrong.
 ## 1. Install
 
 1. Download `SprigCast-Setup-<version>.exe` from the
-   [latest release](https://github.com/surakage/sprigcast/releases/latest).
+   [SprigCast website](https://sprigcast.slothbloom.com).
 2. Run it. SprigCast isn't signed yet, so Windows may say "Windows protected your PC". Choose **More info**,
    then **Run anyway**.
 3. Setup installs for your Windows account. Leave **SprigCast Camera** ticked if you want SprigCast as a

@@ -25,7 +25,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from release_notes import CHANGELOG, _shown, section  # noqa: E402
 
-REPO = "https://github.com/surakage/sprigcast"
+REPO = "https://github.com/surakage/sprigcast"  # test builds only live here (pre-releases)
+# A public release card sends people to the website, never to GitHub (user, 2026-11-25).
+SITE = "https://sprigcast.slothbloom.com"
 BANNER = "https://raw.githubusercontent.com/surakage/sprigcast/main/brand/sprigcast-banner.png"
 EMERALD = 0x2A9C5E  # brand/README.md: the sprig S
 MINT = 0x3ECF7F  # the app icon's S, for test builds
@@ -88,7 +90,7 @@ def changelog_summary(notes: str, tag: str) -> str:
         if len(entries) > PER_HEADING:
             lines.append(f"• …and {len(entries) - PER_HEADING} more")
         lines.append("")
-    return _fit(lines, f"…and more in the [full notes]({REPO}/releases/tag/{tag}).")
+    return _fit(lines, f"…and more in the [full notes]({SITE}/changelog).")
 
 
 def merged_since_last_test(tag: str) -> str:
@@ -123,6 +125,7 @@ def message(kind: str, tag: str, installer: Path, label: str | None) -> dict:
     page = f"{REPO}/releases/tag/{tag}"
     sha = _sha256(installer)
     if kind == "release":
+        download, page = SITE, f"{SITE}/changelog"
         version = tag.removeprefix("v")
         shown = _shown(version)
         notes = section(CHANGELOG.read_text(encoding="utf-8"), version) or ""
@@ -137,6 +140,7 @@ def message(kind: str, tag: str, installer: Path, label: str | None) -> dict:
     fields = [
         {"name": "Download", "value": f"[{installer.name}]({download})", "inline": True},
         {"name": "Size", "value": _size(installer), "inline": True},
+        {"name": "What's new", "value": f"[Full notes]({page})", "inline": True} if kind == "release" else
         {"name": "Release page", "value": f"[Notes and checksums]({page})", "inline": True},
         {"name": "SHA-256", "value": f"`{sha[:16]}…`", "inline": False},
     ]

@@ -36,7 +36,7 @@ def test_a_long_summary_stops_at_discords_limit():
         text = discord_post.changelog_summary(notes, "v0.4.0")
     finally:
         discord_post.PER_HEADING = 5
-    assert len(text) <= 4096 and text.endswith("(https://github.com/surakage/sprigcast/releases/tag/v0.4.0).")
+    assert len(text) <= 4096 and text.endswith("(https://sprigcast.slothbloom.com/changelog).")
 
 
 def test_release_and_test_cards(tmp_path, monkeypatch):
@@ -46,7 +46,8 @@ def test_release_and_test_cards(tmp_path, monkeypatch):
     assert release["title"] == "SprigCast Beta 0.4 is out"
     fields = {f["name"]: f["value"] for f in release["fields"]}
     assert fields["Size"] == "2 MB"
-    assert "releases/download/v0.4.0/SprigCast-Setup-0.4.0.exe" in fields["Download"]
+    assert fields["Download"] == "[SprigCast-Setup-0.4.0.exe](https://sprigcast.slothbloom.com)"
+    assert "github.com" not in str(release)  # a public card only ever points at the website
     monkeypatch.setattr(discord_post, "merged_since_last_test", lambda tag: "• Something (#1)")
     test = discord_post.message("test", "test-2026-11-22", setup, "Beta 0.3 test build 1 (abc1234)")["embeds"][0]
     assert test["title"] == "New tester build: Beta 0.3 test build 1 (abc1234)" and "image" not in test
