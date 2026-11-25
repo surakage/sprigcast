@@ -149,6 +149,8 @@ class TransitionPicture(QWidget):
 
     HOLD_A = 450  # ms on A before the change, and on B after it
     HOLD_B = 650
+    MAX_PIXELS_WIDE = 360  # the mix's size across, in pixels; painted scaled to the widget
+    TICK_MS = 33  # 30 pictures a second: smooth enough for a preview, half the work of 60
 
     def __init__(self, transition: Callable[[], Transition], parent: QWidget | None = None, wide: bool = False):
         super().__init__(parent)
@@ -158,7 +160,7 @@ class TransitionPicture(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._clock = QElapsedTimer()
         self._timer = QTimer(self)
-        self._timer.setInterval(16)
+        self._timer.setInterval(self.TICK_MS)
         self._timer.timeout.connect(self._step)
         self._loops_left = 0
         self.rest = 0.0  # where the picture waits between plays (0 = the A card)
@@ -261,6 +263,10 @@ class TransitionPicture(QWidget):
         import numpy as np
 
         dpr = max(1.0, self.devicePixelRatioF())
+        # Mixed at most MAX_PIXELS_WIDE across and drawn scaled up: the mix is NumPy on the window's thread, and
+        # at full size on the pop-up's screen it ran 60 times a second (a 4 GB AMD E2 laptop froze 8-13 s
+        # opening Transition settings, Mikedog151 2026-11-24).
+        dpr = min(dpr, self.MAX_PIXELS_WIDE / max(1, self.width()))
         w, h = max(2, round(self.width() * dpr)), max(2, round(self.height() * dpr))
         a, b, x, y = self._pictures(w, h, dpr)
         t = self.transition()
