@@ -127,3 +127,23 @@ def test_x264_picked_in_settings_isnt_called_no_gpu_encoder(monkeypatch):
     assert recorder.codec_label("libx264") == "x264 (CPU, picked in Settings)"
     monkeypatch.setattr(recorder, "_picked", "libx264")
     assert recorder.codec_label("libx264") == "x264 (CPU, no GPU encoder found)"
+
+
+def test_about_buttons_stay_round_under_the_app_style():
+    """The app's QPushButton min-height once beat setFixedHeight and drew them as flat 20 px boxes."""
+    from PySide6.QtWidgets import QApplication, QPushButton
+
+    from sprigcast.app import about, theme
+
+    app = QApplication.instance() or QApplication([])
+    old = app.styleSheet()
+    app.setStyleSheet(theme.STYLESHEET)
+    try:
+        page = about.about_page()
+        page.show()
+        app.processEvents()
+        for name in ("aboutLink", "aboutLicenses", "aboutTip"):
+            assert page.findChild(QPushButton, name).height() == about.PILL_H
+        page.close()
+    finally:
+        app.setStyleSheet(old)
