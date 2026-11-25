@@ -27,7 +27,7 @@ const FIELDS = {
 	// The THSV Teleprompter app, not SprigCast: [value, label] pairs, and its own port (8765 unless changed there).
 	teleprompter: [["command", "Press", [["toggle", "Play or pause"], ["start", "Start"], ["pause", "Pause"], ["reset", "Reset"],
 		["next", "Next"], ["prev", "Previous"], ["faster", "Faster"], ["slower", "Slower"], ["bigger", "Bigger text"],
-		["smaller", "Smaller text"], ["mirror", "Mirror"]]], ["tpPort", "Port", "port:8765"]],
+		["smaller", "Smaller text"], ["mirror", "Mirror"], ["loop", "Repeat section"]]], ["tpPort", "Port", "port:8765"]],
 };
 
 const OWN_APP = new Set(["teleprompter"]); // keys for other apps: no SprigCast connection box

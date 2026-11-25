@@ -6,7 +6,7 @@ import { NoPageError, TELEPROMPTER_TITLES, teleprompterCommand, teleprompterPort
 
 test("every command the teleprompter app takes is on the key", () => {
 	assert.deepEqual(Object.keys(TELEPROMPTER_TITLES).sort(),
-		["bigger", "faster", "mirror", "next", "pause", "prev", "reset", "slower", "smaller", "start", "toggle"]);
+		["bigger", "faster", "loop", "mirror", "next", "pause", "prev", "reset", "slower", "smaller", "start", "toggle"]);
 	assert.equal(teleprompterCommand({}), "toggle");
 	assert.equal(teleprompterCommand({ command: "faster" }), "faster");
 	assert.equal(teleprompterCommand({ command: "constructor" }), "toggle");

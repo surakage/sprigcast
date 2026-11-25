@@ -84,5 +84,5 @@ to 1920×960, makes a strong fifth one.
 ## Release notes for 0.5.0 (next upload, as a new version in the Maker Console)
 
 New Teleprompter key: runs the THSV Teleprompter app from your Stream Deck (play or pause, start, pause, reset,
-next, previous, faster, slower, bigger or smaller text, mirror). It works with the teleprompter window in the
+next, previous, faster, slower, bigger or smaller text, mirror, repeat section). It works with the teleprompter window in the
 background, and even while SprigCast is closed.

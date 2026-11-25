@@ -16,6 +16,7 @@ export const TELEPROMPTER_TITLES = {
 	bigger: "Bigger",
 	smaller: "Smaller",
 	mirror: "Mirror",
+	loop: "Repeat",
 };
 
 export function teleprompterCommand(settings = {}) {
