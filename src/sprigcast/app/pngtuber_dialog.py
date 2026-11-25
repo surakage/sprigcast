@@ -245,17 +245,23 @@ class Tile(QAbstractButton):
 
 class PngtuberDialog(CardDialog):
     """New or change a PNGtuber. level() (when set) is the followed sound's level in dB now, or None;
-    react(name) (when set) plays a reaction on the one on screen; save_outfit is asked for a name."""
+    react(name) (when set) plays a reaction on the one on screen; ask_name(title, label, suggested) asks for the
+    name of a new outfit or expression."""
 
     def __init__(self, title: str, settings: dict[str, Any], parent: QWidget | None = None,
                  listen_choices: list[tuple[str, str]] | None = None, level: Callable[[], float | None] | None = None,
                  react: Callable[[str], None] | None = None, primary: str = "Save",
-                 ask_name: Callable[[str], str | None] | None = None):
+                 ask_name: Callable[[str, str, str], str | None] | None = None):
         pngtuber = tuber_module()
 
         super().__init__(title, parent, width=640)
         self.s = {**pngtuber.PngtuberSource.defaults, **settings}
         self._ask_name = ask_name
+        pngtuber = tuber_module()
+        self.default = pngtuber.DEFAULT
+        self.picks: dict[str, dict[str, Path]] = {self.default: pngtuber.picked_pictures(self.s)}
+        self.picks.update(pngtuber.own_expressions(self.s))  # name -> state -> picture picked here
+        self.editing = self.default
         self.outfits: list[dict[str, Any]] = [dict(o) for o in (self.s.get("outfits") or []) if isinstance(o, dict)]
         self.outfit = str(self.s.get("outfit") or "")
 
@@ -271,13 +277,14 @@ class PngtuberDialog(CardDialog):
         browse.setCursor(Qt.CursorShape.PointingHandCursor)
         browse.clicked.connect(self._browse_folder)
         box.addLayout(_row("Folder", self.folder, browse))
+        self.face_row = QHBoxLayout()
+        self.face_row.setSpacing(8)
+        box.addLayout(self.face_row)
         tiles = QGridLayout()
         tiles.setHorizontalSpacing(10)
         self.tiles: dict[str, Tile] = {}
         for i, (state, label) in enumerate(TILES):
             tile = Tile(state, label)
-            picked = str(self.s.get(f"{state}_picture") or "").strip()
-            tile.path = Path(picked) if picked else None
             tile.clicked.connect(lambda _=False, t=tile: self._pick_picture(t))
             tile.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             tile.customContextMenuRequested.connect(lambda _p, t=tile: self._clear_picture(t))
@@ -374,36 +381,90 @@ class PngtuberDialog(CardDialog):
 
     def _pick_picture(self, tile: Tile) -> None:
         start = str(tile.path.parent) if tile.path else self.folder.text()
-        path, _ = QFileDialog.getOpenFileName(self, f"{tile.name} picture", start, PICTURE_FILTER)
+        name = tile.name if self.editing == self.default else f"{self.editing.title()} {tile.name.lower()}"
+        path, _ = QFileDialog.getOpenFileName(self, f"{name} picture", start, PICTURE_FILTER)
         if path:
-            tile.path = Path(path)
+            self.picks.setdefault(self.editing, {})[tile.state] = Path(path)
             self._show_pictures()
 
     def _clear_picture(self, tile: Tile) -> None:
-        if tile.path is not None:
-            tile.path = None
+        if self.picks.get(self.editing, {}).pop(tile.state, None) is not None:
             self._show_pictures()
 
-    def _show_pictures(self) -> None:
-        """Each tile shows its picture: the one picked, else the folder's, else the one it borrows (dimmed)."""
+    def _found(self) -> dict:
         pngtuber = tuber_module()
+        v = self._pictures_now()
+        return pngtuber.scan(pngtuber.model_folder(v), pngtuber.picked_pictures(v), pngtuber.own_expressions(v))
 
-        found = pngtuber.scan(pngtuber.model_folder(self.values()), pngtuber.picked_pictures(self.values()))
-        states = found.get(pngtuber.DEFAULT) or (next(iter(found.values())) if found else {})
+    def _show_pictures(self) -> None:
+        """The expression being edited: each tile shows the picture picked here, else the folder's, else the one it
+        borrows (dimmed)."""
+        pngtuber = tuber_module()
+        found = self._found()
+        picked = self.picks.get(self.editing, {})
+        states = {**found.get(self.editing, {}), **{k: v for k, v in picked.items() if v.is_file()}}
+        if self.editing == self.default and not states and found:
+            states = next(iter(found.values()))
         for state, tile in self.tiles.items():
+            tile.path = picked.get(state)
             if tile.path is not None:
                 tile.show_picture(tile.path, False)
                 continue
             use = pngtuber.pick_state(states, state)
             tile.show_picture(states.get(use) if use else None, use != state)
+        self._show_faces(found)
+
+    # Expressions ------------------------------------------------------------------------------------
+
+    def _show_faces(self, found: dict) -> None:
+        """Default, then each expression (the folder's and those made here), then + Add expression."""
+        pngtuber = tuber_module()
+        _clear(self.face_row)
+        self.face_row.addWidget(_label("Expressions"))
+        names = pngtuber.expression_order(set(found) | {n for n in self.picks if n != self.default} | {self.default})
+        self.face_chips: dict[str, QPushButton] = {}
+        for name in names:
+            chip = QPushButton(name.title())
+            chip.setStyleSheet(CHIP_ON if name == self.editing else CHIP)
+            chip.setCursor(Qt.CursorShape.PointingHandCursor)
+            mine = name != self.default and name in self.picks
+            chip.setToolTip("Its pictures · right-click to remove" if mine else "Its pictures")
+            chip.clicked.connect(lambda _=False, n=name: self._edit(n))
+            if mine:
+                chip.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+                chip.customContextMenuRequested.connect(lambda _p, n=name: self._remove_face(n))
+            self.face_row.addWidget(chip)
+            self.face_chips[name] = chip
+        add = QPushButton("+ Add expression")
+        add.setStyleSheet(CHIP)
+        add.setCursor(Qt.CursorShape.PointingHandCursor)
+        add.clicked.connect(self._add_face)
+        self.face_row.addWidget(add)
+        self.face_row.addStretch(1)
+
+    def _edit(self, name: str) -> None:
+        self.editing = name
+        self._show_pictures()
+
+    def _add_face(self) -> None:
+        name = self._ask_name("Add expression", "Expression name", "") if self._ask_name else None
+        name = (name or "").strip().lower()
+        if not name:
+            return
+        self.picks.setdefault(name, {})
+        self.editing = name
+        self._show_pictures()
+
+    def _remove_face(self, name: str) -> None:
+        self.picks.pop(name, None)
+        if self.editing == name:
+            self.editing = self.default
+        self._show_pictures()
 
     # Outfits ----------------------------------------------------------------------------------------
 
     def _show_outfits(self) -> None:
-        while self.outfit_row.count():
-            item = self.outfit_row.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
+        _clear(self.outfit_row)
         self.outfit_row.addWidget(_label("Outfits"))
         for outfit in self.outfits:
             name = str(outfit.get("name", ""))
@@ -422,16 +483,23 @@ class PngtuberDialog(CardDialog):
         self.outfit_row.addWidget(save)
         self.outfit_row.addStretch(1)
 
-    def _pictures_now(self) -> dict[str, str]:
-        out = {"folder": self.folder.text().strip()}
-        for state, tile in self.tiles.items():
-            out[f"{state}_picture"] = str(tile.path) if tile.path is not None else ""
+    def _pictures_now(self) -> dict[str, Any]:
+        """The folder and every picture picked here: the default's at the top, each expression's in
+        expression_pictures (an expression with none picked yet isn't kept)."""
+        out: dict[str, Any] = {"folder": self.folder.text().strip()}
+        mine = self.picks.get(self.default, {})
+        for state, _label in TILES:
+            out[f"{state}_picture"] = str(mine[state]) if state in mine else ""
+        out["expression_pictures"] = {
+            name: {f"{state}_picture": str(path) for state, path in states.items()}
+            for name, states in sorted(self.picks.items()) if name != self.default and states}
         return out
 
     def _save_outfit(self) -> None:
         pngtuber = tuber_module()
 
-        name = self._ask_name(pngtuber.outfit_name_for(self._pictures_now())) if self._ask_name else None
+        name = self._ask_name("Save as outfit", "Outfit name", pngtuber.outfit_name_for(self._pictures_now())) \
+            if self._ask_name else None
         if not name:
             return
         self.outfits = [o for o in self.outfits if str(o.get("name", "")).lower() != name.lower()]
@@ -441,10 +509,10 @@ class PngtuberDialog(CardDialog):
         self._show_outfits()
 
     def _wear(self, outfit: dict[str, Any]) -> None:
+        pngtuber = tuber_module()
         self.folder.setText(str(outfit.get("folder", "")))
-        for state, tile in self.tiles.items():
-            text = str(outfit.get(f"{state}_picture", "") or "")
-            tile.path = Path(text) if text else None
+        self.picks = {self.default: pngtuber.picked_pictures(outfit), **pngtuber.own_expressions(outfit)}
+        self.editing = self.default
         self.outfit = str(outfit.get("name", ""))
         self._show_pictures()
         self._show_outfits()
@@ -482,6 +550,16 @@ class PngtuberDialog(CardDialog):
             "outfits": self.outfits, "outfit": self.outfit,
         })
         return out
+
+
+def _clear(layout) -> None:
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        if widget is not None:
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
 
 
 def _nap_text(seconds: int) -> str:

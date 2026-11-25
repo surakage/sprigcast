@@ -168,7 +168,7 @@ def test_the_settings_card_round_trips_and_saves_outfits(tuber, tmp_path):  # no
     reacted = []
     d = PngtuberDialog("PNGtuber", {"folder": str(folder), "bounce": False, "talk_at": -40, "sleep_after": 60},
                        listen_choices=[("auto", "Auto (your mic)"), ("sound:mic", "Mic")], level=lambda: -20.0,
-                       react=reacted.append, ask_name=lambda suggested: suggested + " 2")
+                       react=reacted.append, ask_name=lambda title, label, suggested: suggested + " 2")
     try:
         v = d.values()
         assert v["bounce_style"] == "off" and v["talk_at"] == -40 and v["sleep_after"] == 60
@@ -204,3 +204,61 @@ def test_the_window_opens_the_pngtuber_card(tuber, tmp_path, monkeypatch):  # no
         d.close()
     finally:
         w.close()
+
+
+def test_expressions_made_in_its_settings(tuber, tmp_path, monkeypatch):  # noqa: F811
+    from sprigcast.app.pngtuber_dialog import PngtuberDialog
+
+    folder = _model(tmp_path / "m")
+    _picture(folder / "sad" / "idle.png", (90, 90, 200, 255))
+    happy = _picture(tmp_path / "Pog.png", (250, 230, 50, 255))
+    grin = _picture(tmp_path / "Grin.png", (250, 230, 50, 255), mouth=(0, 0, 0, 255))
+    new_sad = _picture(tmp_path / "Cry.png", (40, 40, 160, 255))
+    names = iter(["Happy"])
+    d = PngtuberDialog("PNGtuber", {"folder": str(folder)}, ask_name=lambda *a: next(names))
+    try:
+        assert list(d.face_chips) == ["default", "sad"]
+        d._add_face()
+        assert d.editing == "happy" and list(d.face_chips) == ["default", "happy", "sad"]
+        assert all(t.picture is None for t in d.tiles.values())  # nothing picked yet
+        picks = iter([str(happy), str(grin)])
+        monkeypatch.setattr("sprigcast.app.pngtuber_dialog.QFileDialog.getOpenFileName",
+                            lambda *a, **k: (next(picks), ""))
+        d._pick_picture(d.tiles["idle"])
+        d._pick_picture(d.tiles["talk"])
+        assert d.tiles["idle"].picture is not None and d.tiles["blink"].borrowed
+        d._edit("sad")  # swap one picture of a folder expression
+        monkeypatch.setattr("sprigcast.app.pngtuber_dialog.QFileDialog.getOpenFileName",
+                            lambda *a, **k: (str(new_sad), ""))
+        d._pick_picture(d.tiles["idle"])
+        v = d.values()
+        assert v["expression_pictures"] == {
+            "happy": {"idle_picture": str(happy), "talk_picture": str(grin)},
+            "sad": {"idle_picture": str(new_sad)}}
+        assert v["idle_picture"] == ""
+    finally:
+        d.close()
+    assert tuber.expressions_in(v) == ["default", "happy", "sad"]
+    found = tuber.scan(tuber.model_folder(v), tuber.picked_pictures(v), tuber.own_expressions(v))
+    assert found["sad"]["idle"] == new_sad and found["happy"]["talk"] == grin
+    model = tuber.load_model(tuber.model_folder(v), own=tuber.own_expressions(v))
+    assert set(model.expressions) == {"default", "happy", "sad"}
+    source = create_source("pngtuber", "t", v)
+    source._load(tuber.model_key(v))
+    assert source._model is not None and "happy" in source._model.pictures
+
+
+def test_a_garden_finds_and_packs_expression_pictures(tmp_path):
+    from sprigcast.core import gardens
+
+    pic = tmp_path / "Pog.png"
+    pic.write_bytes(b"x")
+    src = SourceConfig(id="t", kind="pngtuber", name="Avatar",
+                       settings={"sleep_picture": str(tmp_path / "zz.png"),
+                                 "expression_pictures": {"happy": {"idle_picture": str(pic)}}})
+    col = _collection()
+    col.sources.append(src)
+    wanted = gardens.wanted_files(col)
+    assert str(pic) in wanted and str(tmp_path / "zz.png") in wanted
+    assert gardens.replace_file(col, str(pic), "/new/Pog.png") == 1
+    assert src.settings["expression_pictures"]["happy"]["idle_picture"] == "/new/Pog.png"

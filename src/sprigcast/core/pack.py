@@ -18,6 +18,7 @@ import zipfile
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
+from sprigcast.core.gardens import file_holders
 from sprigcast.core.looks import FROM_FILE
 from sprigcast.core.scene import SceneCollection
 
@@ -29,8 +30,6 @@ PAGE_FOLDER_BYTES = 200 * 1024 ** 2  # a page's folder comes along whole when it
 PAGE_FOLDER_FILES = 2_000
 STORED = {".mp4", ".mkv", ".mov", ".webm", ".mp3", ".ogg", ".m4a", ".aac", ".flac", ".png", ".jpg", ".jpeg",
           ".webp", ".gif", ".avif", ".zip", ".woff", ".woff2"}  # already squeezed: zipping again only costs time
-FILE_KEYS = {"image": ("path",), "media": ("path",), "text": ("file",), "browser": ("file",),
-             "pngtuber": ("idle_picture", "talk_picture")}
 FOLDER_KEYS = {"slide_show": ("folder",)}
 MODEL_KEYS = {"pngtuber": ("folder",)}  # a folder whose subfolders come too (a PNGtuber's expressions)
 
@@ -50,8 +49,8 @@ def _slots(collection: SceneCollection) -> list[tuple[object, str, str]]:
     """Every file or folder setting as (holder, key, "file"|"page"|"folder"|"model"); holder is a dict or an object."""
     out: list[tuple[object, str, str]] = []
     for source in collection.sources:
-        for key in FILE_KEYS.get(source.kind, ()):
-            out.append((source.settings, key, "page" if source.kind == "browser" else "file"))
+        for holder, key in file_holders(source):
+            out.append((holder, key, "page" if source.kind == "browser" else "file"))
         for key in FOLDER_KEYS.get(source.kind, ()):
             out.append((source.settings, key, "folder"))
         for key in MODEL_KEYS.get(source.kind, ()):

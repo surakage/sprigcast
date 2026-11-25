@@ -644,7 +644,7 @@ def test_a_folder_without_a_model_is_logged_once_not_every_look(tuber, monkeypat
     _picture(folder / "Pog.png", (200, 150, 100, 255))
     _picture(folder / "Rage.png", (200, 150, 100, 255))
     source = create_source("pngtuber", "t", {"folder": str(folder)})
-    key = (folder,) + (None,) * len(tuber.PICKED)
+    key = tuber.model_key({"folder": str(folder)})
     with caplog.at_level(logging.INFO, logger=tuber.log.name):
         for _ in range(5):
             source._load(key)

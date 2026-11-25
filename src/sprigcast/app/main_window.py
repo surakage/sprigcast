@@ -5374,8 +5374,8 @@ class MainWindow(QMainWindow):
             if instance is not None and hasattr(instance, "react"):
                 instance.react(name)
 
-        def ask_name(suggested: str) -> str | None:
-            text, ok = popups.ask_text(self, "Save as outfit", "Outfit name", suggested, primary="Save")
+        def ask_name(title: str, label: str, suggested: str) -> str | None:
+            text, ok = popups.ask_text(self, title, label, suggested, primary="Save")
             return text.strip() or None if ok else None
 
         dialog = PngtuberDialog(title, settings, self, listen_choices=pngtuber._listen_choices(self.collection),

@@ -22,7 +22,8 @@ Draw every picture the same size, so nothing jumps when it changes.
 Pictures named anything else (Cozy.png, Pog.png...): pick them one by one in its settings (Idle, Talk,
 Half open, Yell, Blink, Sleep; one picture for both Idle and Talk just bounces). Picked Idle and Talk
 pictures replace the folder's own set; the others replace just that picture.
-An outfit is a saved set of folder and pictures, put on with one click, a hotkey or an app.
+Expressions can be made in its settings too: + Add expression, then pick its pictures (expression_pictures).
+An outfit is a saved set of folder, pictures and expressions, put on with one click, a hotkey or an app.
 
 It listens to a sound you already have in SprigCast (Auto: your mic), so it costs nothing extra and
 goes quiet when you mute. It can also listen to a mic straight from Windows. Settings: Talks above
@@ -175,7 +176,8 @@ def _pictures(folder: Path) -> list[Path]:
     return [p for p in _entries(folder, False) if p.suffix.lower() in PICTURES]
 
 
-def scan(folder: Path | None, picked: dict[str, Path] | None = None) -> dict[str, dict[str, Path]]:
+def scan(folder: Path | None, picked: dict[str, Path] | None = None,
+         own: dict[str, dict[str, Path]] | None = None) -> dict[str, dict[str, Path]]:
     """Expression -> state -> picture, from a model folder. Only expressions with idle or talk are kept.
     picked: idle and talk pictures chosen one by one; they're the default expression (the folder's own
     default is left out, its blinks wouldn't match them). Doesn't open any picture, so it's quick enough
@@ -187,7 +189,11 @@ def scan(folder: Path | None, picked: dict[str, Path] | None = None) -> dict[str
                           "talk": picked.get("talk") or picked["idle"]}
     elif picked and DEFAULT in found:  # a blink or a sleep picture of your own over the folder's
         found[DEFAULT] = {**found[DEFAULT], **picked}
-    return found
+    for name, states in (own or {}).items():  # expressions made in its settings (or pictures swapped in one)
+        states = {k: v for k, v in states.items() if v.is_file()}
+        if states:
+            found[name] = {**found.get(name, {}), **states}
+    return {e: st for e, st in found.items() if "idle" in st or "talk" in st}
 
 
 def _scan_folder(folder: Path) -> dict[str, dict[str, Path]]:
@@ -251,6 +257,20 @@ def picked_pictures(settings: dict[str, Any]) -> dict[str, Path]:
     return out
 
 
+def own_expressions(settings: dict[str, Any]) -> dict[str, dict[str, Path]]:
+    """Expressions made in its settings (expression_pictures: name -> {"<state>_picture": file}), as set."""
+    out: dict[str, dict[str, Path]] = {}
+    given = settings.get("expression_pictures")
+    for name, pictures in (given.items() if isinstance(given, dict) else ()):
+        name = str(name).strip().lower()
+        if not name or not isinstance(pictures, dict):
+            continue
+        states = picked_pictures(pictures)
+        if states:
+            out[name] = states
+    return out
+
+
 def model_folder(settings: dict[str, Any]) -> Path | None:
     """The model's folder: the sample sloth when nothing is picked; None for picked pictures alone."""
     folder = _path(settings, "folder")
@@ -262,8 +282,23 @@ def model_folder(settings: dict[str, Any]) -> Path | None:
 
 def model_key(settings: dict[str, Any]) -> tuple:
     """What the model is made from: a new one is loaded when this changes."""
-    picked = picked_pictures(settings)
-    return (model_folder(settings),) + tuple(picked.get(state) for state in PICKED)
+    return _key(model_folder(settings), picked_pictures(settings), own_expressions(settings))
+
+
+def _key(folder: Path | None, picked: dict[str, Path] | None, own: dict[str, dict[str, Path]] | None) -> tuple:
+    picked = picked or {}
+    mine = tuple(sorted((name, state, str(path)) for name, states in (own or {}).items()
+                        for state, path in states.items()))
+    return (folder, *(picked.get(state) for state in PICKED), mine)
+
+
+def _unkey(key: tuple) -> tuple[Path | None, dict[str, Path], dict[str, dict[str, Path]]]:
+    """model_key back into (folder, picked, own)."""
+    picked = {state: path for state, path in zip(PICKED, key[1:1 + len(PICKED)]) if path is not None}
+    own: dict[str, dict[str, Path]] = {}
+    for name, state, path in (key[1 + len(PICKED)] if len(key) > 1 + len(PICKED) else ()):
+        own.setdefault(name, {})[state] = Path(path)
+    return key[0], picked, own
 
 
 def _name(path: Path) -> str:
@@ -305,14 +340,13 @@ def expressions_in(settings: dict[str, Any]) -> list[str]:
     now = time.monotonic()
     cached = _SCANS.get(key)
     if cached is None:
-        cached = _SCANS[key] = (now, scan(key[0], picked_pictures(settings)))
+        cached = _SCANS[key] = (now, scan(*_unkey(key)))
     elif now - cached[0] > SCAN_FRESH_S and key not in _RESCANNING:
         _RESCANNING.add(key)
-        picked = picked_pictures(settings)
 
         def rescan():
             try:
-                _SCANS[key] = (time.monotonic(), scan(key[0], picked))
+                _SCANS[key] = (time.monotonic(), scan(*_unkey(key)))
             finally:
                 _RESCANNING.discard(key)
 
@@ -428,13 +462,13 @@ def _fit(frame, scale: float, box: tuple[int, int, int]) -> tuple[np.ndarray, in
 
 
 def load_model(folder: Path | None, box: tuple[int, int] = (W, H), picked: dict[str, Path] | None = None,
-               warn=None) -> Model:
+               warn=None, own: dict[str, dict[str, Path]] | None = None) -> Model:
     """Open and fit every picture of the model (on a worker thread: Pillow lets other threads run).
     picked: idle and talk pictures chosen one by one (see scan). warn(text): where a picture that
     won't open is told (the log)."""
     warn = warn or log.warning
-    found = scan(folder, picked)
-    _SCANS[(folder,) + tuple((picked or {}).get(state) for state in PICKED)] = (time.monotonic(), found)
+    found = scan(folder, picked, own)
+    _SCANS[_key(folder, picked, own)] = (time.monotonic(), found)
     if not found or any(not p.is_file() for p in (picked or {}).values()):
         raise ModelError(what_is_missing(folder, picked or {}))
     sizes: dict[tuple[str, str], tuple[int, int, int]] = {}
@@ -686,7 +720,7 @@ class PngtuberSource(Source):
     defaults = {"folder": "", "idle_picture": "", "talk_picture": "", "half_picture": "", "yell_picture": "",
                 "blink_picture": "", "sleep_picture": "", "listen_to": "auto", "talk_at": -38.0, "yell_at": -12.0,
                 "hold": 0.08, "sleep_after": 0, "bounce": True, "bounce_style": "", "bounce_strength": 1.0,
-                "sway": False, "shake": True, "blink": True, "outfits": [], "outfit": ""}
+                "sway": False, "shake": True, "blink": True, "expression_pictures": {}, "outfits": [], "outfit": ""}
     choices = {"listen_to": _listen_choices}
     placeholders = {"folder": "Sloth (built in)"}  # an empty Folder is the sample sloth
     sleeps = True  # off air it stops listening and lets the pictures go
@@ -807,11 +841,10 @@ class PngtuberSource(Source):
             log.log(level, text)
 
     def _load(self, key: tuple) -> None:
-        folder = key[0]
-        picked = {state: path for state, path in zip(PICKED, key[1:]) if path is not None}
+        folder, picked, own = _unkey(key)
         idle, talk = picked.get("idle"), picked.get("talk")
         try:
-            model = load_model(folder, picked=picked, warn=self._say)
+            model = load_model(folder, picked=picked, warn=self._say, own=own)
         except ModelError as exc:
             self.status = str(exc)
             self._failed, self._failed_at = key, time.monotonic()
@@ -1307,7 +1340,9 @@ def wear(api, sources, wanted: str) -> dict:
         outfit = next((o for o in outfits if str(o["name"]).strip().lower() == wanted), None)
         if outfit is None:
             continue
+        own = outfit.get("expression_pictures")
         source.settings = {**source.settings, **{k: str(outfit.get(k, "") or "") for k in OUTFIT_KEYS},
+                           "expression_pictures": dict(own) if isinstance(own, dict) else {},
                            "outfit": outfit["name"]}
         changed.append(source)
     if not changed:

@@ -529,8 +529,21 @@ class Shelf:
 
 # Missing files ------------------------------------------------------------------------------------
 
+TUBER_PICTURES = ("idle_picture", "talk_picture", "half_picture", "yell_picture", "blink_picture", "sleep_picture")
 FILE_KEYS = {"image": ("path",), "media": ("path",), "text": ("file",), "browser": ("file",),
-             "pngtuber": ("idle_picture", "talk_picture")}
+             "pngtuber": TUBER_PICTURES}
+
+
+def file_holders(source) -> list[tuple[dict, str]]:
+    """Each file setting of a source as (the dict holding it, its key): a PNGtuber's own expressions keep
+    their pictures one level in (expression_pictures: name -> {"idle_picture": ...})."""
+    out = [(source.settings, key) for key in FILE_KEYS.get(source.kind, ())]
+    if source.kind == "pngtuber":
+        own = source.settings.get("expression_pictures")
+        for pictures in (own.values() if isinstance(own, dict) else ()):
+            if isinstance(pictures, dict):
+                out += [(pictures, key) for key in TUBER_PICTURES if key in pictures]
+    return out
 
 
 def _usable(value: str) -> bool:
@@ -556,8 +569,8 @@ def wanted_files(collection: SceneCollection) -> list[str]:
     """Every file the garden points at (no disk reads)."""
     wanted: list[str] = []
     for source in collection.sources:
-        for key in FILE_KEYS.get(source.kind, ()):
-            wanted.append(str(source.settings.get(key, "") or ""))
+        for holder, key in file_holders(source):
+            wanted.append(str(holder.get(key, "") or ""))
         for flt in source.filters:
             if flt.kind == "lut" and flt.settings.get("look") == FROM_FILE:
                 wanted.append(str(flt.settings.get("file", "") or ""))
@@ -570,9 +583,9 @@ def replace_file(collection: SceneCollection, old: str, new: str) -> int:
     """Point everything that used `old` at `new`. Returns how many settings changed."""
     count = 0
     for source in collection.sources:
-        for key in FILE_KEYS.get(source.kind, ()):
-            if source.settings.get(key) == old:
-                source.settings[key] = new
+        for holder, key in file_holders(source):
+            if holder.get(key) == old:
+                holder[key] = new
                 count += 1
         for flt in source.filters:
             if flt.kind == "lut" and flt.settings.get("file") == old:
