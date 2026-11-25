@@ -139,7 +139,7 @@ def download(url: str, dest: Path, progress: Callable[[int, int], None] | None =
             total = int(getattr(reply, "headers", {}).get("Content-Length") or 0)
             while chunk := reply.read(256 * 1024):
                 if cancelled():
-                    raise InterruptedError("download cancelled")
+                    raise InterruptedError("download canceled")
                 out.write(chunk)
                 digest.update(chunk)
                 done += len(chunk)
