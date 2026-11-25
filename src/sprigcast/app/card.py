@@ -40,6 +40,33 @@ PRIMARY_PILL = theme.PRIMARY_STYLE + "QPushButton { border-radius: 17px; padding
     f"QPushButton:disabled {{ background: transparent; color: {theme.MUTED}; border: 1px solid {theme.BUTTON_OFF_EDGE}; }}"
 
 
+SECTION_NAME = "sectionCard"
+SECTION_STYLE = (f"#{SECTION_NAME} {{ background: {theme.SECTION}; border: 1px solid {theme.SECTION_EDGE};"
+                 " border-radius: 18px; }")
+
+
+def section(title: str = "", spacing: int = 12) -> tuple[QFrame, QVBoxLayout]:
+    """A titled section card, the way every area groups its parts (user 2026-11-25): its own rounded card with a
+    visible edge on the panel, so sections never blend into one flat surface. Returns (the card, its layout)."""
+    frame = QFrame()
+    frame.setObjectName(SECTION_NAME)
+    frame.setStyleSheet(SECTION_STYLE)
+    box = QVBoxLayout(frame)
+    box.setContentsMargins(18, 14, 18, 16)
+    box.setSpacing(spacing)
+    if title:
+        box.addWidget(section_title(title))
+    return frame, box
+
+
+def section_title(text: str) -> QLabel:
+    heading = QLabel(text)
+    heading.setObjectName("sectionTitle")
+    heading.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-weight: 650; font-size: {theme.SECTION_TITLE_PX}px;"
+                          " background: transparent;")
+    return heading
+
+
 def field_label(text: str) -> QLabel:
     label = QLabel(text)
     label.setStyleSheet(f"color: {theme.MUTED}; font-weight: 600; background: transparent;")
@@ -192,6 +219,12 @@ class CardDialog(QDialog):
         fit_width(self._scroll)
         super().showEvent(event)
         keep_on_screen(self)
+
+    def section(self, title: str = "", spacing: int = 12) -> QVBoxLayout:
+        """A titled section card added to the body; returns its layout to fill."""
+        frame, box = section(title, spacing)
+        self.body.addWidget(frame)
+        return box
 
     def line_edit(self, placeholder: str = "") -> QLineEdit:
         edit = QLineEdit()

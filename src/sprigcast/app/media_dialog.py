@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app import theme
 from sprigcast.app.card import CardDialog
+from sprigcast.app.card import section as card_section
 from sprigcast.app.live_stage import Switch
 from sprigcast.sources.media import MediaSource, clamp_speed, file_filter, is_sound_file
 
@@ -54,16 +55,7 @@ VOLUME_RANGE = (-60, 12)  # dB, the same as the sound strip's slider
 
 
 def _section(title: str) -> tuple[QFrame, QVBoxLayout]:
-    frame = QFrame()
-    frame.setObjectName("mediaSection")
-    frame.setStyleSheet(f"#mediaSection {{ background: {theme.CARD}; border-radius: 16px; }}")
-    box = QVBoxLayout(frame)
-    box.setContentsMargins(18, 14, 18, 16)
-    box.setSpacing(12)
-    heading = QLabel(title)
-    heading.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-weight: 600; background: transparent;")
-    box.addWidget(heading)
-    return frame, box
+    return card_section(title, 12)
 
 
 def _name(text: str) -> QLabel:

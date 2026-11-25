@@ -274,7 +274,7 @@ class CustomDocksDialog(CardDialog):
 
     def __init__(self, docks: list[CustomDock], parent: QWidget | None = None):
         super().__init__("Web panels", parent, width=700)
-        from sprigcast.app.card import combo
+        from sprigcast.app.card import combo, section
         from sprigcast.app.settings_dialog import FORM_STYLE, _form, _name
         from sprigcast.app.states_dialog import LIST_STYLE
 
@@ -287,9 +287,13 @@ class CustomDocksDialog(CardDialog):
         self.list.setStyleSheet(LIST_STYLE)
         self.list.setFixedHeight(190)
         self.list.currentRowChanged.connect(self._show)
-        body.addWidget(self.list, 1)
-        form_box = QWidget()
-        form = _form(form_box)
+        panels, panels_box = section("Panels", 10)
+        panels_box.addWidget(self.list)
+        body.addWidget(panels, 1)
+        details, details_box = section("Panel", 10)
+        form = _form()
+        details_box.addLayout(form)
+        details_box.addStretch(1)
         self.preset = combo()
         self.preset.addItems(list(PRESETS))
         self.preset.currentTextChanged.connect(self._preset_changed)
@@ -305,7 +309,7 @@ class CustomDocksDialog(CardDialog):
         form.addRow(_name("Channel"), self.channel)
         form.addRow(_name("Panel name"), self.name)
         form.addRow(_name("URL"), self.url)
-        body.addWidget(form_box, 2)
+        body.addWidget(details, 2)
         root.addLayout(body)
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -318,7 +322,7 @@ class CustomDocksDialog(CardDialog):
             button.setAutoDefault(False)
             row.addWidget(button)
         row.addStretch(1)
-        root.addLayout(row)
+        panels_box.addLayout(row)
         self.ok = self.add_buttons("Save")
         self._loading = False
         self._refill()

@@ -390,7 +390,7 @@ def test_a_load_that_ends_after_going_back_to_sleep_is_not_kept(tuber, monkeypat
     source, clock, level = _ready(tuber, monkeypatch, _model(tmp_path / "m"))
     source.asleep = True
     source.sleep()
-    source._load((tmp_path / "m", None, None))
+    source._load(tuber.model_key(source.settings))
     assert source._model is None
 
 
@@ -562,7 +562,7 @@ def test_a_model_folder_filled_later_is_found_without_a_restart(tuber, monkeypat
     clock = Clock()
     monkeypatch.setattr(tuber.time, "monotonic", clock)
     source = create_source("pngtuber", "t", {"folder": str(folder)})
-    source._load((folder, None, None))
+    source._load(tuber.model_key(source.settings))
     assert source.status == "No pictures in later" and source._model is None
     _model(folder)
     source._get_model()
@@ -644,7 +644,7 @@ def test_a_folder_without_a_model_is_logged_once_not_every_look(tuber, monkeypat
     _picture(folder / "Pog.png", (200, 150, 100, 255))
     _picture(folder / "Rage.png", (200, 150, 100, 255))
     source = create_source("pngtuber", "t", {"folder": str(folder)})
-    key = (folder, None, None)
+    key = tuber.model_key({"folder": str(folder)})
     with caplog.at_level(logging.INFO, logger=tuber.log.name):
         for _ in range(5):
             source._load(key)

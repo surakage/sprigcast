@@ -34,11 +34,13 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QTabWidget,
+    QVBoxLayout,
     QWidget,
 )
 
 from sprigcast.app import theme
 from sprigcast.app.card import BOX_HEIGHT, CardDialog, combo, field_label
+from sprigcast.app.card import section as card_section
 from sprigcast.core import style
 
 log = logging.getLogger(__name__)
@@ -130,6 +132,16 @@ def _form(parent: QWidget | None = None) -> QFormLayout:
     return form
 
 
+def _paged() -> QWidget:
+    """A tab's page: its fields on one section card."""
+    page = QWidget()
+    holder = QVBoxLayout(page)
+    holder.setContentsMargins(0, 0, 0, 0)
+    holder.addWidget(card_section()[0])
+    holder.addStretch(1)
+    return page
+
+
 def _name(text: str) -> QLabel:
     """A field's name, level with the middle of a one-line box (and the first line of a bigger one)."""
     label = field_label(text)
@@ -160,18 +172,20 @@ class SettingsDialog(CardDialog):
         if len(styled) < 2 or len(styled) == len(defaults):  # a colour or two alone stays on one page
             styled = []
         outer = self.body
-        if styled:
+        if styled:  # each page's fields on a section card of their own (user 2026-11-25: no flat areas)
             tabs = QTabWidget()
             tabs.setObjectName("formTabs")
-            page, style_page = QWidget(), QWidget()
-            form, style_form = _form(page), _form(style_page)
+            page, style_page = _paged(), _paged()
+            form, style_form = _form(), _form()
+            page.layout().itemAt(0).widget().layout().addLayout(form)
+            style_page.layout().itemAt(0).widget().layout().addLayout(style_form)
             tabs.addTab(page, "Settings")
             tabs.addTab(style_page, "Style")
             outer.addWidget(tabs)
         else:
             form = _form()
             style_form = form
-            outer.addLayout(form)
+            self.section().addLayout(form)
         for key, default in defaults.items():
             value = settings.get(key, default)
             widget = self._field(key, default, value)

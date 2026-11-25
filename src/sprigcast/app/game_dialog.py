@@ -24,7 +24,7 @@ from PySide6.QtCore import QFileInfo, QSize, Qt
 from PySide6.QtWidgets import QFileIconProvider, QHBoxLayout, QLabel, QWidget
 
 from sprigcast.app import theme
-from sprigcast.app.card import CardDialog, field_label
+from sprigcast.app.card import CardDialog
 from sprigcast.app.window_list import WindowCombo, add_window
 
 AUTO, HOTKEY = "Auto: any full-screen game", "Game in front, on a hotkey"
@@ -54,24 +54,25 @@ class GameCaptureDialog(CardDialog):
         self._list_windows = list_windows
         self._icons = QFileIconProvider()
         self.was_mode = str(settings.get("mode", "any"))
-        self.body.addWidget(field_label("Capture"))
+        pick = self.section("Capture")
         self.capture = WindowCombo(self._reload)
         self.capture.setStyleSheet(combo_style())
         self.capture.setFixedHeight(BOX_HEIGHT)
         self.capture.setIconSize(QSize(18, 18))
         self.capture.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.body.addWidget(self.capture)
+        pick.addWidget(self.capture)
         self.hotkey_note = QLabel("Set its key in Tools → Hotkeys.")
         self.hotkey_note.setStyleSheet(theme.MUTED_STYLE + "; font-size: 12px;")
-        self.body.addWidget(self.hotkey_note)
+        pick.addWidget(self.hotkey_note)
         self._fill(list(windows), (self.was_mode, str(settings.get("title", "")), str(settings.get("process", ""))))
 
         self.sound = Switch()
         self.sound.setChecked(has_sound)
-        self.body.addLayout(_row("Game sound", self.sound))
+        options = self.section("Options")
+        options.addLayout(_row("Game sound", self.sound))
         self.cursor = Switch()
         self.cursor.setChecked(bool(settings.get("cursor", False)))
-        self.body.addLayout(_row("Mouse pointer", self.cursor))
+        options.addLayout(_row("Mouse pointer", self.cursor))
         self.ok = self.add_buttons("Save")
         self.capture.currentIndexChanged.connect(lambda *_: self._mode_changed())
         self._mode_changed()

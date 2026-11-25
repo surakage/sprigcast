@@ -31,6 +31,7 @@ def _both(source, clock, seconds, step=1 / 60):
 
 
 def _pair(tuber, monkeypatch, folder, **settings):  # noqa: F811
+    settings.setdefault("shake", False)  # sway, shake and squash are only in the list (the old buffer just hops)
     painted, clock, level = _ready(tuber, monkeypatch, folder, **settings)
     listed, _clock, _level = _ready(tuber, monkeypatch, folder, **settings)
     monkeypatch.setattr(tuber.time, "monotonic", clock)

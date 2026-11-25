@@ -445,11 +445,12 @@ QToolButton:pressed {{ background: {PRESSED}; }}
 QToolButton:checked {{ background: {SELECT_BG}; color: {SELECT_TEXT}; border-color: {ACCENT}; }}
 QDialog, QMessageBox {{ background: {PANEL}; border: 1px solid {EDGE_STRONG}; }}
 QGroupBox {{
-    background: {SECTION}; border: 1px solid {SECTION_EDGE}; border-radius: 16px; margin-top: 22px;
-    padding: 12px 10px 10px 10px;
+    background: {SECTION}; border: 1px solid {SECTION_EDGE}; border-radius: 18px; margin-top: 0px;
+    padding: 46px 16px 14px 16px;
 }}
-QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px; color: {TEXT_BRIGHT};
-    font-size: {SECTION_TITLE_PX}px; font-weight: 600; }}
+QGroupBox[title=""] {{ padding-top: 14px; }}
+QGroupBox::title {{ subcontrol-origin: padding; subcontrol-position: top left; left: 18px; top: 14px; padding: 0px;
+    color: {TEXT_BRIGHT}; font-size: {SECTION_TITLE_PX}px; font-weight: 600; }}
 QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
     background: {FIELD}; color: {TEXT}; border: 1px solid {FIELD_EDGE}; border-radius: 10px; padding: 3px 8px;
 }}

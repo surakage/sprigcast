@@ -283,7 +283,8 @@ class FilterForm(QWidget):
 # On a PANEL pop-up, pills use the shared button look and number boxes are one step lighter.
 RAISED_PILL = theme.SMALL_PILL_STYLE
 # A part of the Filters window (the list, a filter's settings): a soft card on the window, so the parts read apart.
-SECTION_STYLE = "#{name} {{ background: %s; border: 1px solid %s; border-radius: 18px; }}" % (theme.CARD, theme.EDGE_STRONG)
+SECTION_STYLE = "#{name} {{ background: %s; border: 1px solid %s; border-radius: 18px; }}" % (theme.SECTION,
+                                                                                         theme.SECTION_EDGE)
 NUMBER_STYLE = (
     f"QSpinBox, QDoubleSpinBox, QLineEdit, QComboBox {{ background: {theme.RAISED}; color: {theme.TEXT};"
     f" border: none; border-radius: 12px; padding: 5px 10px; }}"

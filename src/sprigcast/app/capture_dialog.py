@@ -62,7 +62,7 @@ class DisplayCaptureDialog(CardDialog):
         from sprigcast.app.live_stage import Switch
 
         self.monitors = list(monitors)
-        self.body.addWidget(field_label("Screen"))
+        pick = self.section("Screen")
         self.screen = _combo(QComboBox())
         current = int(settings.get("monitor", 1))
         for m in self.monitors:
@@ -71,15 +71,16 @@ class DisplayCaptureDialog(CardDialog):
             self.screen.addItem(f"Monitor {current}", current)  # unplugged right now: keep it
         self.screen.setCurrentIndex(max(0, self.screen.findData(current)))
         self.screen.setAccessibleName("Screen")
-        self.body.addWidget(self.screen)
+        pick.addWidget(self.screen)
         self.cursor = Switch()
         self.cursor.setChecked(bool(settings.get("cursor", True)))
         self.cursor.setAccessibleName("Mouse pointer")
-        self.body.addLayout(_row("Mouse pointer", self.cursor))
+        options = self.section("Options")
+        options.addLayout(_row("Mouse pointer", self.cursor))
         self.show_own = Switch()
         self.show_own.setChecked(bool(settings.get("sprigcast", False)))
         self.show_own.setAccessibleName("Show SprigCast")
-        self.body.addLayout(_row("Show SprigCast", self.show_own))
+        options.addLayout(_row("Show SprigCast", self.show_own))
         self.ok = self.add_buttons("Save")
 
     def values(self) -> dict[str, Any]:
@@ -107,28 +108,29 @@ class WindowCaptureDialog(CardDialog):
         self.show_own = Switch()
         self.show_own.setChecked(bool(settings.get("sprigcast", False)))
         self._icons = QFileIconProvider()
-        self.body.addWidget(field_label("Window"))
+        pick = self.section("Window")
         self.window = _combo(WindowCombo(self._reload))
         self.window.setAccessibleName("Window")
-        self.body.addWidget(self.window)
+        pick.addWidget(self.window)
         if self.show_own.isChecked() and list_own is not None:
             windows = list_own()  # SprigCast's own windows too
         self._fill(list(windows), (str(settings.get("title", "")), str(settings.get("process", ""))))
 
-        self.body.addWidget(field_label("Find it again"))
+        pick.addWidget(field_label("Find it again"))
         self.match = _combo(QComboBox())
         for label, key in MATCHES:
             self.match.addItem(label, key)
         self.match.setCurrentIndex(max(0, self.match.findData(str(settings.get("match", "app")))))
         self.match.setAccessibleName("Find it again")
-        self.body.addWidget(self.match)
+        pick.addWidget(self.match)
 
         self.cursor = Switch()
         self.cursor.setChecked(bool(settings.get("cursor", True)))
         self.cursor.setAccessibleName("Mouse pointer")
-        self.body.addLayout(_row("Mouse pointer", self.cursor))
+        options = self.section("Options")
+        options.addLayout(_row("Mouse pointer", self.cursor))
         self.show_own.setAccessibleName("Show SprigCast")
-        self.body.addLayout(_row("Show SprigCast", self.show_own))
+        options.addLayout(_row("Show SprigCast", self.show_own))
         self.show_own.toggled.connect(lambda *_: self._reload())  # SprigCast's windows join or leave the list
         self.popups = Switch()
         self.popups.setChecked(bool(settings.get("popups", True)))
@@ -137,13 +139,13 @@ class WindowCaptureDialog(CardDialog):
         popups_layout = _row("Menus and pop-ups", self.popups)
         popups_layout.setContentsMargins(2, 0, 2, 0)
         self.popups_row.setLayout(popups_layout)
-        self.body.addWidget(self.popups_row)
+        options.addWidget(self.popups_row)
         self.window.currentIndexChanged.connect(lambda *_: self._show_popups_row())
         self.show_own.toggled.connect(lambda *_: self._show_popups_row())
         self.sound = Switch()
         self.sound.setChecked(has_sound)
         self.sound.setAccessibleName("Window sound")
-        self.body.addLayout(_row("Window sound", self.sound))
+        options.addLayout(_row("Window sound", self.sound))
         self.ok = self.add_buttons("Save")
         self.ok.setEnabled(self.window.count() > 0)
         self._show_popups_row()
