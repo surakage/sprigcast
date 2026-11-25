@@ -7,8 +7,8 @@
   "scripts": {
     "build": "rollup -c",
     "test": "node --test test/*.test.mjs",
-    "validate": "streamdeck validate com.sprigcast.sprigcast.sdPlugin",
-    "pack": "streamdeck pack com.sprigcast.sprigcast.sdPlugin --output dist --force"
+    "validate": "streamdeck validate com.slothbloom.sprigcast.sdPlugin",
+    "pack": "streamdeck pack com.slothbloom.sprigcast.sdPlugin --output dist --force"
   },
   "license": "MIT",
   "dependencies": {

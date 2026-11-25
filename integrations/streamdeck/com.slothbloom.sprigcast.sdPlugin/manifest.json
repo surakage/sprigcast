@@ -1,11 +1,11 @@
 {
   "Name": "SprigCast",
-  "Version": "0.3.0.0",
-  "Author": "SprigCast",
+  "Version": "0.4.0.0",
+  "Author": "SlothBloom",
   "Actions": [
     {
       "Name": "Show bloom",
-      "UUID": "com.sprigcast.sprigcast.bloom",
+      "UUID": "com.slothbloom.sprigcast.bloom",
       "Icon": "imgs/actions/bloom/icon",
       "Tooltip": "Put a bloom on air. Lights up while it's on air.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -28,7 +28,7 @@
     },
     {
       "Name": "Show or hide",
-      "UUID": "com.sprigcast.sprigcast.item",
+      "UUID": "com.slothbloom.sprigcast.item",
       "Icon": "imgs/actions/item/icon",
       "Tooltip": "Show or hide something in a bloom.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -51,7 +51,7 @@
     },
     {
       "Name": "Garden",
-      "UUID": "com.sprigcast.sprigcast.garden",
+      "UUID": "com.slothbloom.sprigcast.garden",
       "Icon": "imgs/actions/garden/icon",
       "Tooltip": "Switch to another garden (set of blooms). Lights while in use.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -74,7 +74,7 @@
     },
     {
       "Name": "Path",
-      "UUID": "com.sprigcast.sprigcast.path",
+      "UUID": "com.slothbloom.sprigcast.path",
       "Icon": "imgs/actions/path/icon",
       "Tooltip": "Switch to another path (where and how you go out). Lights while in use.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -97,7 +97,7 @@
     },
     {
       "Name": "Mute sound",
-      "UUID": "com.sprigcast.sprigcast.mute",
+      "UUID": "com.slothbloom.sprigcast.mute",
       "Icon": "imgs/actions/mute/icon",
       "Tooltip": "Mute or unmute a sound. Shows when it's muted.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -120,7 +120,7 @@
     },
     {
       "Name": "Sound volume",
-      "UUID": "com.sprigcast.sprigcast.volume",
+      "UUID": "com.slothbloom.sprigcast.volume",
       "Icon": "imgs/actions/volume/icon",
       "Tooltip": "Turn a sound up or down. On a Stream Deck + dial: turn for volume, press to mute.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -144,7 +144,7 @@
     },
     {
       "Name": "Go live",
-      "UUID": "com.sprigcast.sprigcast.live",
+      "UUID": "com.slothbloom.sprigcast.live",
       "Icon": "imgs/actions/live/icon",
       "Tooltip": "Start or stop the stream. Pink while live.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -167,7 +167,7 @@
     },
     {
       "Name": "Place",
-      "UUID": "com.sprigcast.sprigcast.place",
+      "UUID": "com.slothbloom.sprigcast.place",
       "Icon": "imgs/actions/place/icon",
       "Tooltip": "While live: start or stop sending to one place. Pink while it's live; says when it's reconnecting.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -190,7 +190,7 @@
     },
     {
       "Name": "Record",
-      "UUID": "com.sprigcast.sprigcast.record",
+      "UUID": "com.slothbloom.sprigcast.record",
       "Icon": "imgs/actions/record/icon",
       "Tooltip": "Start or stop recording. Pink while recording.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -213,7 +213,7 @@
     },
     {
       "Name": "Pause recording",
-      "UUID": "com.sprigcast.sprigcast.record-pause",
+      "UUID": "com.slothbloom.sprigcast.record-pause",
       "Icon": "imgs/actions/record-pause/icon",
       "Tooltip": "Pause the recording, or carry on in the same file. Lights while paused.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -236,7 +236,7 @@
     },
     {
       "Name": "Add chapter",
-      "UUID": "com.sprigcast.sprigcast.chapter",
+      "UUID": "com.slothbloom.sprigcast.chapter",
       "Icon": "imgs/actions/chapter/icon",
       "Tooltip": "Add a chapter mark to the recording at this moment.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -253,7 +253,7 @@
     },
     {
       "Name": "Clips",
-      "UUID": "com.sprigcast.sprigcast.clips",
+      "UUID": "com.slothbloom.sprigcast.clips",
       "Icon": "imgs/actions/clips/icon",
       "Tooltip": "Keep clips ready, or stop. Lights while ready.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -276,7 +276,7 @@
     },
     {
       "Name": "Save clip",
-      "UUID": "com.sprigcast.sprigcast.clip",
+      "UUID": "com.slothbloom.sprigcast.clip",
       "Icon": "imgs/actions/clip/icon",
       "Tooltip": "Save the last moments as a clip (Clips must be on).",
       "PropertyInspectorPath": "ui/settings.html",
@@ -293,7 +293,7 @@
     },
     {
       "Name": "Virtual camera",
-      "UUID": "com.sprigcast.sprigcast.camera",
+      "UUID": "com.slothbloom.sprigcast.camera",
       "Icon": "imgs/actions/camera/icon",
       "Tooltip": "Turn SprigCast Camera on or off. Lights while on.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -316,7 +316,7 @@
     },
     {
       "Name": "Screenshot",
-      "UUID": "com.sprigcast.sprigcast.screenshot",
+      "UUID": "com.slothbloom.sprigcast.screenshot",
       "Icon": "imgs/actions/screenshot/icon",
       "Tooltip": "Take a screenshot (with Snap added, it prints on stream).",
       "PropertyInspectorPath": "ui/settings.html",
@@ -333,7 +333,7 @@
     },
     {
       "Name": "Media",
-      "UUID": "com.sprigcast.sprigcast.media",
+      "UUID": "com.slothbloom.sprigcast.media",
       "Icon": "imgs/actions/media/icon",
       "Tooltip": "Play, pause, restart or stop a video or sound file. Lights while playing.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -356,7 +356,7 @@
     },
     {
       "Name": "Filter",
-      "UUID": "com.sprigcast.sprigcast.filter",
+      "UUID": "com.slothbloom.sprigcast.filter",
       "Icon": "imgs/actions/filter/icon",
       "Tooltip": "Turn a filter on or off. Lights while on.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -379,7 +379,7 @@
     },
     {
       "Name": "Transition",
-      "UUID": "com.sprigcast.sprigcast.transition",
+      "UUID": "com.slothbloom.sprigcast.transition",
       "Icon": "imgs/actions/transition/icon",
       "Tooltip": "Pick the transition and its length. Lights while it's the one in use.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -402,7 +402,7 @@
     },
     {
       "Name": "Sprig state",
-      "UUID": "com.sprigcast.sprigcast.sprig-state",
+      "UUID": "com.slothbloom.sprigcast.sprig-state",
       "Icon": "imgs/actions/sprig-state/icon",
       "Tooltip": "Switch a sprig to one of its Live states.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -419,7 +419,7 @@
     },
     {
       "Name": "Death count",
-      "UUID": "com.sprigcast.sprigcast.deaths",
+      "UUID": "com.slothbloom.sprigcast.deaths",
       "Icon": "imgs/actions/deaths/icon",
       "Tooltip": "Add, remove, reset or show the Death count plugin's count.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -436,7 +436,7 @@
     },
     {
       "Name": "PNGtuber",
-      "UUID": "com.sprigcast.sprigcast.pngtuber",
+      "UUID": "com.slothbloom.sprigcast.pngtuber",
       "Icon": "imgs/actions/pngtuber/icon",
       "Tooltip": "Change the PNGtuber plugin's expression: one you pick, the next one, or back to default.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -453,7 +453,7 @@
     },
     {
       "Name": "Stream timer",
-      "UUID": "com.sprigcast.sprigcast.timer",
+      "UUID": "com.slothbloom.sprigcast.timer",
       "Icon": "imgs/actions/timer/icon",
       "Tooltip": "Start or pause the Stream timer plugin's countdown or stopwatch. Shows the time.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -476,7 +476,7 @@
     },
     {
       "Name": "Reset timer",
-      "UUID": "com.sprigcast.sprigcast.timer-reset",
+      "UUID": "com.slothbloom.sprigcast.timer-reset",
       "Icon": "imgs/actions/timer-reset/icon",
       "Tooltip": "Put the Stream timer back to the start, stopped.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -493,7 +493,7 @@
     },
     {
       "Name": "Add time",
-      "UUID": "com.sprigcast.sprigcast.timer-add",
+      "UUID": "com.slothbloom.sprigcast.timer-add",
       "Icon": "imgs/actions/timer-add/icon",
       "Tooltip": "Add a minute (or the seconds you set) to the Stream timer.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -510,7 +510,7 @@
     },
     {
       "Name": "Instant replay",
-      "UUID": "com.sprigcast.sprigcast.replay",
+      "UUID": "com.slothbloom.sprigcast.replay",
       "Icon": "imgs/actions/replay/icon",
       "Tooltip": "Play the last seconds back on stream (Instant replay plugin).",
       "PropertyInspectorPath": "ui/settings.html",
@@ -527,7 +527,7 @@
     },
     {
       "Name": "Freeze",
-      "UUID": "com.sprigcast.sprigcast.freeze",
+      "UUID": "com.slothbloom.sprigcast.freeze",
       "Icon": "imgs/actions/freeze/icon",
       "Tooltip": "Hold a sprig or source still on its picture, then let it move again (Freeze plugin).",
       "PropertyInspectorPath": "ui/settings.html",
@@ -544,7 +544,7 @@
     },
     {
       "Name": "Run action",
-      "UUID": "com.sprigcast.sprigcast.run",
+      "UUID": "com.slothbloom.sprigcast.run",
       "Icon": "imgs/actions/run/icon",
       "Tooltip": "Run any SprigCast action, with its fields as JSON.",
       "PropertyInspectorPath": "ui/settings.html",
@@ -580,5 +580,5 @@
     "Debug": "disabled"
   },
   "URL": "https://sprigcast.slothbloom.com",
-  "UUID": "com.sprigcast.sprigcast"
+  "UUID": "com.slothbloom.sprigcast"
 }

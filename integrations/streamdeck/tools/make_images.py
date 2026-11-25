@@ -1,7 +1,7 @@
 """Draw the Stream Deck plugin's images (keys, action icons, plugin icons) from SVG.
 
 Run from the repo root with SprigCast's environment:  python integrations/streamdeck/tools/make_images.py
-Writes PNGs (1x and @2x) into com.sprigcast.sprigcast.sdPlugin/imgs.
+Writes PNGs (1x and @2x) into com.slothbloom.sprigcast.sdPlugin/imgs.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from PySide6.QtGui import QGuiApplication, QImage, QPainter
 from PySide6.QtSvg import QSvgRenderer
 
 HERE = Path(__file__).resolve().parent.parent
-IMGS = HERE / "com.sprigcast.sprigcast.sdPlugin" / "imgs"
+IMGS = HERE / "com.slothbloom.sprigcast.sdPlugin" / "imgs"
 BRAND = HERE.parent.parent / "brand"
 
 MINT = "#4fd88f"  # brand: the S

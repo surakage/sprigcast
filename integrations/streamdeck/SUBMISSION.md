@@ -1,64 +1,82 @@
-# Elgato Marketplace submission (prepared, not submitted)
+# Elgato Marketplace submission
 
-Nothing has been sent to Elgato. These are the steps and the listing, ready for when the owner decides to publish.
+Everything for the Marketplace listing. The pictures live in the project files under `streamdeck/marketplace/`
+(made from the real key images and the real settings panel). Checked against Elgato's maker guidelines
+(docs.elgato.com/guidelines/stream-deck/plugins and /guidelines/products) on 2026-11-25.
 
-## Before submitting
+## Rules this plugin meets
 
-- [ ] Try every key on a real Stream Deck with SprigCast running (see the checklist below).
-- [ ] Decide the plugin UUID for good: `com.sprigcast.sprigcast`. It can't change after publishing.
-- [ ] Set `Author` in the manifest to the name the listing should show, and bump `Version` (four numbers; now `0.3.0.0`).
-- [ ] Sign in to the Elgato Maker Console (https://maker.elgato.com) with the account that will own the listing.
-- [ ] Have a support link: the GitHub repository's issues page works.
-- [ ] Confirm the licence for the plugin's files (the repository's LICENSE covers them).
-
-## Hand test on a Stream Deck
-
-- [ ] Install `com.sprigcast.sprigcast.streamDeckPlugin` and drag a key on: with SprigCast open it connects by itself (no port or password).
-- [ ] Show bloom: switches, and the key lights for the bloom on air; switching in SprigCast moves the light.
-- [ ] Mute sound: toggles; muting in SprigCast changes the key.
-- [ ] Show or hide, Garden, Path, Go live, Record, Clips, Save clip, Virtual camera, Screenshot, Media, Filter,
-      Transition, Sprig state, Death count, PNGtuber, Run action.
-- [ ] Place: while live with two places, the key stops and starts one of them and the other carries on; pull the
-      network for a moment and the key says "Retrying", then goes back to pink.
-- [ ] Save clip with clips off shows "Clips starting"; a clip that couldn't be saved shows an alert, not a tick.
-- [ ] Sound volume on a key, and on a Stream Deck + dial (turn, press to mute, the level shows on the screen).
-- [ ] Close SprigCast: keys go dark and show "Not connected" when pressed; open it again: they work again within a few seconds.
-- [ ] A wrong password typed under Connection: the Connection line says "Wrong password"; clear it and it connects by itself.
-- [ ] Remove every SprigCast key from the profile: SprigCast's Connections page shows no app connected.
+- Plugin ID `com.slothbloom.sprigcast`: maker name + plugin name. Every key's ID starts with it. It can't change after publishing.
+- `Author` is the maker organization name, **SlothBloom**. It must match the name in the Maker Console.
+- 27 keys (Elgato allows 2 to 30). Keys that fail show the alert; list icons are white lines on transparent.
+- Icons: plugin 256/512, category 28/56, key list 20/40, keys 72/144, all PNG. App icon 288×288 for the store.
+- Settings save as they change. Nothing is collected, so no privacy policy is needed.
+- Free, no paywall. Links go to the website and Discord only (never GitHub).
+- Elgato asks makers to say when AI helped. The description's last line does that.
 
 ## Listing
 
 **Name:** SprigCast
 
-**Short description:** Control SprigCast, the light streaming app, from your Stream Deck.
+**Category / tags:** Streaming, Productivity
 
-**Description:**
-Switch blooms and gardens, mute and turn sounds (with dials on Stream Deck +), go live, record, keep clips, save
-clips, turn the virtual camera on, play media, flip filters, pick transitions and take screenshots in SprigCast,
-right from your Stream Deck. Keys light up to match SprigCast: the bloom on air, muted sounds, and pink while you're live or recording.
-SprigCast plugins work too: add to the Death count, change your PNGtuber's expression, change a sprig's Live state, or run any SprigCast action.
-The plugin connects only while a SprigCast key is on screen, so it adds nothing to your PC while idle.
-No setup: with SprigCast open on the same PC, the keys connect by themselves.
+**Price:** Free
 
-**Category:** Streaming / Productivity
+**Description** (987 characters; Elgato wants 250 to 1,500, and the first 250 show in search):
 
-**Platforms:** Windows 10 and newer (SprigCast is Windows-only), Stream Deck 7.1 or newer.
+Run SprigCast, the free and light streaming app for Windows, right from your Stream Deck. Switch blooms (scenes) and gardens, show or hide anything, mute sounds and turn them up or down (with dials on Stream Deck +), go live, record, save clips, start the virtual camera, play media, flip filters and pick transitions.
 
-**Support / website:** https://sprigcast.slothbloom.com
+Keys light up to match SprigCast: the bloom on air, muted sounds, and pink while you're live or recording. SprigCast plugins work too: Death count, PNGtuber expressions, Stream timer, Instant replay and Freeze. Pick from three key styles: Canopy, Color and Graphite.
 
-## Assets
+No setup: with SprigCast open on the same PC, keys connect by themselves. To run SprigCast on another PC, pair it with a 6-digit code from Settings > Connections > Pair a device.
 
-| Asset | Where | Notes |
+Requirements: Windows 10 or newer, Stream Deck 7.1 or newer, and SprigCast (free at sprigcast.slothbloom.com). The plugin only talks to SprigCast and collects no data. Made by SlothBloom with help from AI coding tools.
+
+**Release notes (0.4.0):**
+First Marketplace release. 27 keys for SprigCast: blooms, gardens, paths, sounds (dials on Stream Deck +), go live,
+places, record, clips, virtual camera, screenshots, media, filters, transitions, and SprigCast plugins. Three key
+styles. Keys go dark while SprigCast is closed and come back when it opens.
+
+**Additional links:**
+
+| Label | Link |
+| --- | --- |
+| Website | https://sprigcast.slothbloom.com |
+| Download SprigCast | https://sprigcast.slothbloom.com/download |
+| Support (Discord) | https://discord.gg/fgMD33XrhM |
+| Changelog | https://sprigcast.slothbloom.com/changelog |
+| Source code | https://sprigcast.slothbloom.com/source |
+
+## Pictures (project files, `streamdeck/marketplace/`)
+
+| Slot | File | Size |
 | --- | --- | --- |
-| Plugin icon 256×256 and 512×512 | `com.sprigcast.sprigcast.sdPlugin/imgs/plugin/marketplace.png`, `marketplace@2x.png` | the app icon |
-| Store icon 288×288 | `com.sprigcast.sprigcast.sdPlugin/imgs/plugin/store-icon-288.png` | upload in the Maker Console |
-| Category icon 28×28 and 56×56 | `imgs/plugin/category-icon*.png` | the white SprigCast S |
-| Action icons 20×20 and 40×40, key images 72×72 and 144×144 | `imgs/actions/*` | made by `tools/make_images.py`: one picture per key, thin white lines on transparent in the list; keys come in three styles (Canopy in the manifest, Colour and Graphite under `imgs/styles/`), picked under **Key style** in any key's settings |
-| Gallery pictures (1920×960 suggested) | to make | photos or renders of a Stream Deck with SprigCast keys, plus a SprigCast screenshot |
-| Thumbnail | to make | from the brand banner |
+| Thumbnail | `thumbnail.png` | 1920×960 PNG |
+| Gallery 1 | `gallery-1-all-keys.png` | 1920×960 PNG |
+| Gallery 2 | `gallery-2-keys-light-up.png` | 1920×960 PNG |
+| Gallery 3 | `gallery-3-key-styles.png` | 1920×960 PNG |
+| Gallery 4 | `gallery-4-no-setup.png` | 1920×960 PNG |
+| App icon | `app-icon-288.png` (same as `imgs/plugin/store-icon-288.png`) | 288×288 PNG |
 
-## Submitting
+Elgato needs at least 3 gallery items (up to 10). A phone photo of a real Stream Deck running these keys, cropped
+to 1920×960, makes a strong fifth one.
 
-1. `npm run build && npm run validate && npm run pack` → `dist/com.sprigcast.sprigcast.streamDeckPlugin`.
-2. Maker Console → new product → Stream Deck plugin → upload the file, fill in the listing above, add the assets.
-3. Submit for review. Elgato reviews and may ask for changes before it goes live.
+## Before submitting
+
+- [ ] Install the packed plugin on a real Stream Deck. The ID changed, so remove the old SprigCast plugin first
+      and drag the keys on again.
+- [ ] Quick key test: Show bloom, Mute sound, Go live (to a hidden test place), Record, Save clip, Virtual camera,
+      dial volume on Stream Deck +, close SprigCast (keys go dark), open it again (keys come back).
+
+## Submitting (Maker Console, maker.elgato.com)
+
+1. Home → **Create product** → **Stream Deck plugin** → upload `com.slothbloom.sprigcast.streamDeckPlugin`.
+2. Details: paste the name, description, tags, price (Free) and the links above.
+3. Media and release notes: thumbnail, the 4 gallery pictures, the 288 app icon, and the release notes.
+4. Leave "Automatically publish after being approved" ticked, then **Submit**.
+5. Elgato reviews in 4 to 10 working days and writes from maker@elgato.com if they want changes.
+
+## Building the file
+
+`npm ci && npm run build && npm test && npm run validate && npm run pack` → `dist/com.slothbloom.sprigcast.streamDeckPlugin`.
+(`validate` needs internet to check the website link.)
