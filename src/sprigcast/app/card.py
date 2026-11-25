@@ -62,15 +62,43 @@ def keep_on_screen(window: QWidget) -> None:
     if room is None or room.isEmpty():
         return
     width, height = QWidget.width(window), QWidget.height(window)  # (fields may be called "size" or "width")
-    if width > room.width() or height > room.height():
+    # A window with Windows' own frame (Settings) is its title bar and edges bigger than its inside: the inside
+    # is fitted to what's left, or the bottom, Save among it, ran under the taskbar on a 1280x720 screen at 150%.
+    outer = QWidget.frameGeometry(window)
+    extra_w, extra_h = max(0, outer.width() - width), max(0, outer.height() - height)
+    room_w, room_h = room.width() - extra_w, room.height() - extra_h
+    if width > room_w or height > room_h:
         small = QWidget.minimumSize(window)
-        QWidget.setMinimumSize(window, min(small.width(), room.width()), min(small.height(), room.height()))
-        QWidget.resize(window, min(width, room.width()), min(height, room.height()))
+        QWidget.setMinimumSize(window, min(small.width(), room_w), min(small.height(), room_h))
+        QWidget.resize(window, min(width, room_w), min(height, room_h))
     frame = QWidget.frameGeometry(window)
     x = min(max(frame.x(), room.left()), room.left() + room.width() - frame.width())
     y = min(max(frame.y(), room.top()), room.top() + room.height() - frame.height())
     if (x, y) != (frame.x(), frame.y()):
         QWidget.move(window, max(x, room.left()), max(y, room.top()))
+
+
+def fit_width(scroll: QScrollArea) -> None:
+    """Nothing in a pop-up's body asks to be wider than the card: a drop-down sized to its longest item (a window
+    title) made Window capture's body 715 px in a 434 px card, and its fields, switches and Save were cut off at
+    the right (PC 2026-11-25). Such a drop-down cuts long items short with … instead, as combo() does."""
+    inner = scroll.widget()
+    if inner is None:
+        return
+    for box in inner.findChildren(QComboBox):
+        if box.sizeAdjustPolicy() == QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon:
+            continue
+        policy = box.sizePolicy()
+        if policy.horizontalPolicy() == QSizePolicy.Policy.Fixed or box.minimumWidth() > 0:
+            continue  # a size set on purpose stays
+        box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        box.setMinimumContentsLength(min(box.minimumContentsLength() or 12, 12))
+        # Qt keeps the minimum it worked out from the longest item even after the policy changes: a set minimum
+        # (what the new policy asks for) is what the layout goes by instead.
+        box.setMinimumWidth(min(box.minimumSizeHint().width(), box.sizeHint().width()))
+        policy.setHorizontalPolicy(QSizePolicy.Policy.Expanding)
+        box.setSizePolicy(policy)
+        box.view().setTextElideMode(Qt.TextElideMode.ElideMiddle)
 
 
 class FitScroll(QScrollArea):
@@ -161,6 +189,7 @@ class CardDialog(QDialog):
         theme.paint_card_shadow(self, self._card)
 
     def showEvent(self, event) -> None:  # noqa: N802
+        fit_width(self._scroll)
         super().showEvent(event)
         keep_on_screen(self)
 

@@ -28,7 +28,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from PySide6.QtCore import QFileInfo, QSize, Qt
-from PySide6.QtWidgets import QComboBox, QFileIconProvider, QWidget
+from PySide6.QtWidgets import QComboBox, QFileIconProvider, QSizePolicy, QWidget
 
 from sprigcast.app import theme
 from sprigcast.app.card import CardDialog, field_label
@@ -43,6 +43,11 @@ def _combo(box: QComboBox) -> QComboBox:
 
     box.setStyleSheet(combo_style())
     box.setFixedHeight(BOX_HEIGHT)
+    # As wide as the card, not as the longest item: a long window title cut the pop-up off (PC 2026-11-25).
+    box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    box.setMinimumContentsLength(12)
+    box.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    box.view().setTextElideMode(Qt.TextElideMode.ElideMiddle)
     box.setIconSize(QSize(18, 18))
     box.setCursor(Qt.CursorShape.PointingHandCursor)
     box.setMaxVisibleItems(14)
