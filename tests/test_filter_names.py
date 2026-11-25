@@ -160,6 +160,10 @@ def test_before_and_after_asks_for_both_pictures():
     assert d.preview is not None
     d.show()
     app.processEvents()
+    assert asked == []  # not while the window is still coming up
+    from PySide6.QtTest import QTest
+
+    QTest.qWait(d.preview.FIRST_MS + 100)
     assert {(sid, raw) for sid, raw, _ in asked} == {("cam", True), ("cam", False)}
     assert all(limit <= 480 for _, _, limit in asked)
     assert d.preview.before is not None and d.preview.after is not None

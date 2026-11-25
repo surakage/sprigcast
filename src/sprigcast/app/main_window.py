@@ -4440,6 +4440,9 @@ class MainWindow(QMainWindow):
 
             def hear(sid: str, filters: list) -> Preview:
                 return Preview(sid, filters, device=device)
+        from sprigcast.app.theme import ui_burst
+
+        ui_burst()  # from the start: making the window's widgets hands Python's lock to the renderer quickly too
         modal(FiltersDialog(self.collection.source(source_id), self._changed, self, media, sounds=sounds,
                             collection=self.collection, grab=grab, hear=hear))
         if self._has_sound(self.collection.source(source_id)):
