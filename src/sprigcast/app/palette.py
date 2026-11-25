@@ -144,12 +144,35 @@ class CommandPalette(QDialog):
         self._filter("")
 
     def showEvent(self, event) -> None:  # noqa: N802
-        parent = self.parentWidget()
-        if parent is not None:
-            top = parent.mapToGlobal(parent.rect().topLeft())
-            self.move(top.x() + (parent.width() - self.width()) // 2, top.y() + 70)
+        self.place()
         self.search.setFocus()
         super().showEvent(event)
+
+    def place(self) -> None:
+        """Near the top of the window, centered, and wholly on the screen the window is (mostly) on. Centered on a
+        window that ran off a screen's edge, it opened partly on the next monitor (x -1260) and Windows refused to
+        draw it ("UpdateLayeredWindowIndirect failed", PC 2026-11-25)."""
+        from PySide6.QtGui import QGuiApplication
+
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        window = parent.window()
+        top = window.mapToGlobal(window.rect().topLeft())
+        middle = window.mapToGlobal(window.rect().center())
+        screen = QGuiApplication.screenAt(middle) or window.screen() or QGuiApplication.primaryScreen()
+        if screen is None:
+            return
+        if self.screen() is not screen:
+            self.setScreen(screen)
+        room = screen.availableGeometry()
+        width = min(self.width(), room.width())
+        height = min(max(self.height(), self.sizeHint().height()), room.height())
+        x = top.x() + (window.width() - width) // 2
+        y = top.y() + 70
+        x = min(max(x, room.left()), room.left() + room.width() - width)
+        y = min(max(y, room.top()), room.top() + room.height() - height)
+        self.move(x, y)
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
         if obj is self.search and isinstance(event, QKeyEvent) and event.type() == QKeyEvent.Type.KeyPress:

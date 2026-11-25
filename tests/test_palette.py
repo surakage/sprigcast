@@ -53,3 +53,27 @@ def test_typing_and_enter_runs_the_best_match_and_remembers_it(app):
     assert again.shown()[0].title.startswith("Just Chatting")  # recent first next time
     again.search.setText("zzzz")
     assert again.shown() == [None]  # just the "Nothing matches" row
+
+
+def test_the_palette_opens_wholly_on_the_windows_screen(app):
+    """PC 2026-11-25: centered on a window that ran off its screen's edge, it opened partly on the next monitor
+    (x -1260) and Windows refused to draw it. It stays wholly on the window's screen."""
+    from PySide6.QtWidgets import QWidget
+
+    window = QWidget()
+    window.resize(700, 400)
+    window.move(-600, -200)  # mostly off the screen's left and top
+    window.show()
+    palette = CommandPalette([Command("Go live", "Action", lambda: None)], window)
+    palette.show()
+    room = palette.screen().availableGeometry()
+    frame = palette.geometry()
+    assert room.contains(frame.topLeft()) and frame.right() <= room.right() and frame.left() >= room.left()
+    palette.close()
+    window.move(room.left() + 20, room.top() + 20)  # a window well on screen: near its top, centered
+    palette = CommandPalette([Command("Go live", "Action", lambda: None)], window)
+    palette.show()
+    top = window.mapToGlobal(window.rect().topLeft())
+    assert palette.y() == top.y() + 70 or palette.geometry().bottom() <= room.bottom()
+    palette.close()
+    window.close()
