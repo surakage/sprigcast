@@ -5,7 +5,7 @@ import streamDeck, { SingletonAction } from "@elgato/streamdeck";
 
 import { SprigCast, addSeconds, clockText, placeTitle, timerText } from "./sprigcast.js";
 
-const ID = "com.sprigcast.sprigcast";
+const ID = "com.slothbloom.sprigcast";
 const sprigcast = new SprigCast();
 const visible = new Set(); // action contexts on screen
 const all = [];

@@ -204,7 +204,7 @@ test("a password typed in the key settings wins over api.json", async () => {
 
 test("every key style has a picture for every key state", async () => {
 	const { readFileSync, existsSync } = await import("node:fs");
-	const root = new URL("../com.sprigcast.sprigcast.sdPlugin/", import.meta.url);
+	const root = new URL("../com.slothbloom.sprigcast.sdPlugin/", import.meta.url);
 	const manifest = JSON.parse(readFileSync(new URL("manifest.json", root), "utf8"));
 	const plugin = readFileSync(new URL("../src/plugin.js", import.meta.url), "utf8");
 	const styles = [...plugin.match(/STYLES = new Set\(\[([^\]]+)\]/)[1].matchAll(/"(\w+)"/g)].map((m) => m[1]);
@@ -253,7 +253,7 @@ test("a pairing code is sent once and the key it gets becomes the password", asy
 
 test("every key has a dark offline picture for when SprigCast is closed", async () => {
 	const { readFileSync, existsSync } = await import("node:fs");
-	const root = new URL("../com.sprigcast.sprigcast.sdPlugin/", import.meta.url);
+	const root = new URL("../com.slothbloom.sprigcast.sdPlugin/", import.meta.url);
 	const manifest = JSON.parse(readFileSync(new URL("manifest.json", root), "utf8"));
 	for (const action of manifest.Actions) {
 		const suffix = action.UUID.split(".").pop();
