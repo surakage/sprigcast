@@ -51,6 +51,24 @@ from sprigcast.output.stream import (
 log = logging.getLogger(__name__)
 
 
+class StallWatch:
+    """Notices a connection the server has stopped reading. YouTube (horizontal) took nothing for 23 s while
+    YouTube (vertical), on the same host, carried on: the 4 s backlog filled, 907 frames were dropped, and only
+    then did Windows end the connection (-10053); the reconnect after it took 2 s (PC live 2026-11-25). A fresh
+    connection is made once nothing has gone out for STALL_S with packets waiting, instead of waiting for that."""
+
+    def __init__(self, stall_s: float | None = None):
+        self.stall_s = STALL_S if stall_s is None else stall_s
+        self._frames = -1
+        self._moved = 0.0
+
+    def stalled(self, now: float, frames: int, backlog_bytes: int, live: bool) -> bool:
+        if not live or frames != self._frames or backlog_bytes <= 0:
+            self._frames, self._moved = frames, now  # sending, or nothing waiting to go (the encoder, not the network)
+            return False
+        return now - self._moved >= self.stall_s
+
+
 RECENT_STOP_S = 90.0  # a place started again this soon after stopping: its site may still be ending the last one
 _ended_at: dict[str, float] = {}  # a place's url (with its key; never logged) -> when its connection last closed
 
@@ -65,6 +83,7 @@ def _closed(name: str, url: str, began: float, how: str) -> None:
 
 SHARE_WITHIN = 0.4  # destinations whose bitrates are this close (of the higher one) share one encoder
 NETWORK_BEHIND_S = 0.25  # a send buffer this full means the upload is what's waited on (not the encoder, not Python)
+STALL_S = 5.0  # a live connection that sends nothing this long while packets wait is closed and made again
 LONE_LOWERS = 0.8  # one link alone behind may lower a shared bitrate this far (of what's set), no further
 
 
@@ -587,6 +606,7 @@ class StreamLink:
                 self._backlog_bytes, self._congested = stats.backlog_bytes, bool(stats.congested)
                 return stats
 
+            watch = StallWatch()
             while True:
                 stats = numbers()
                 state = stats.state_name
@@ -594,6 +614,8 @@ class StreamLink:
                     raise RuntimeError(stats.error_text or "the connection dropped")
                 if state == "finished":
                     return
+                if watch.stalled(time.monotonic(), stats.frames, stats.backlog_bytes, self.connected):
+                    raise RuntimeError(f"the server took nothing for {watch.stall_s:.0f} s; connecting again")
                 if state == "live" and not self.connected:
                     self._zero = stats.first_seconds
                     self.connected, self._connected_at, self.status = True, time.monotonic(), "live"

@@ -53,7 +53,8 @@ SERVICES: dict[str, Service] = {
     "twitch": Service("Twitch", "rtmp://live.twitch.tv/app", 6000, "horizontal",
                       "Key: Twitch Creator Dashboard → Settings → Stream → Primary Stream key.",
                       1920, 60, 6000, bandwidth_test=True),
-    "youtube": Service("YouTube", "rtmp://a.rtmp.youtube.com/live2", 20000, "horizontal",
+    # RTMPS on 443, as Kick and Facebook (which never dropped) go: plain RTMP on 1935 is the port networks shape.
+    "youtube": Service("YouTube", "rtmps://a.rtmps.youtube.com:443/live2", 20000, "horizontal",
                        "Key: YouTube Studio → Go live → Stream → Stream key.", 1920, 60, 9000),
     "kick": Service("Kick", "", 8000, "horizontal",
                     "Server and key: Kick dashboard → Settings → Stream URL & Key.", 1920, 60, 8000),
