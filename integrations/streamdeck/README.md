@@ -6,7 +6,7 @@ bloom is on air, a sound key shows when it's muted, and Go live and Record turn 
 | Key | Does | Lights | OBS plugin's |
 | --- | --- | --- | --- |
 | Show bloom | puts a bloom on air (both shapes, or one) | while it's on air | Scene |
-| Show or hide | (Shape: both canvases, or only horizontal or vertical) toggles, shows or hides an item in a bloom | while hidden | Source Visibility |
+| Show or hide | toggles, shows or hides an item in a bloom, on both canvases or only one (Shape) | while hidden | Source Visibility |
 | Garden | switches garden | while in use | Scene Collection |
 | Path | switches path | while in use | Profile |
 | Mute sound | toggles, mutes or unmutes a sound | while muted | Audio Mixer |
@@ -19,7 +19,7 @@ bloom is on air, a sound key shows when it's muted, and Go live and Record turn 
 | Clips | keeps clips ready, or stops | while ready | Replay Buffer |
 | Save clip | saves a clip | ✓ on success | Replay Buffer Save |
 | Virtual camera | SprigCast Camera on or off (set it up once in Settings) | while on | Virtual Camera |
-| Screenshot | takes a screenshot (Snap prints it on stream) | ✓ on success | Screenshot |
+| Screenshot | takes a screenshot of both canvases or only one (Shape); Snap prints it on stream | ✓ on success | Screenshot |
 | Media | play/pause, play, pause, restart or stop a video or sound file | while playing | Media Source Control |
 | Filter | turns a filter on, off, or toggles it | while on | Filter |
 | Transition | picks the transition and/or its length | while it's in use | Transition |
