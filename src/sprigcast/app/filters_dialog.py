@@ -125,7 +125,9 @@ class FilterForm(QWidget):
         form.setVerticalSpacing(14)
         for f in fields:
             self.rows[f.key] = self._widget(f, values.get(f.key, f.default))
-            form.addRow(f.label, self.rows[f.key])
+            label = QLabel(f.label)
+            label.setStyleSheet(f"color: {theme.TEXT}; background: transparent;")  # the theme's text, not Qt's dark
+            form.addRow(label, self.rows[f.key])
         self.changed.connect(self._show_rows)
         self._show_rows()
 
