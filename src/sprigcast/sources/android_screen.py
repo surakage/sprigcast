@@ -5,8 +5,10 @@ phone's Developer options), Android's own screen recorder (screenrecord, part of
 the PC through Android's USB tool (adb), and FFmpeg (PyAV) decodes it here: nothing is installed on the phone.
 
 screenrecord stops by itself after 3 minutes, so the next one starts a few seconds before that and takes over
-once its first picture is in: the picture carries on without a gap. Each new one also follows the phone turning
-between portrait and landscape. The phone's sound isn't sent (screenrecord has no sound).
+once its first picture is in: the picture carries on without a gap. The phone's turn is checked every
+TURN_CHECK_S too: screenrecord keeps the shape it started with (a landscape game came in squeezed into a portrait
+picture, PC 2026-11-26), so a turn starts the next one at once, in the new shape. The phone's sound isn't sent
+(screenrecord has no sound).
 """
 
 from __future__ import annotations
@@ -33,6 +35,8 @@ log = logging.getLogger(__name__)
 SEGMENT_S = 170.0  # screenrecord's own limit is 180 s: the next one starts before that
 RETRY_S = 2.0
 IDLE_S = 0.1  # adb quiet this long: the picture the parser holds is shown
+TURN_CHECK_S = 1.5  # how often the phone's turn is looked at while recording
+_TURN_WORDS = "'SurfaceOrientation|orientation=|mCurrentRotation|mRotation='"  # grep on the phone: a short answer
 SIZES = (("720p", 1280), ("1080p", 1920))
 DEFAULTS: dict[str, Any] = {"serial": "", "longest": 1280, "bitrate_kbps": 8000}
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
@@ -134,10 +138,17 @@ def parse_size(text: str) -> tuple[int, int] | None:
     return w, h
 
 
-def parse_turned(text: str) -> bool:
-    """`dumpsys input` -> True when the screen is turned a quarter (landscape on a phone)."""
-    found = re.search(r"SurfaceOrientation:\s*(\d)", text)
-    return bool(found) and found.group(1) in ("1", "3")
+def parse_turned(text: str) -> bool | None:
+    """`dumpsys input` (or `dumpsys window displays`) -> True when the screen is turned a quarter (landscape on a
+    phone), None when it doesn't say. Older Androids write "SurfaceOrientation: 1"; newer ones dropped that line
+    and write "orientation=ROTATION_90" on the display's viewport (the phone was always taken as portrait, PC
+    2026-11-26), or "mCurrentRotation=ROTATION_90" for the window manager."""
+    for pattern in (r"SurfaceOrientation:\s*(?:ROTATION_)?(\d+)", r"Viewport INTERNAL\b[^\n]*?orientation=(?:ROTATION_)?(\d+)",
+                    r"mCurrentRotation=(?:ROTATION_)?(\d+)", r"\bmRotation=(?:ROTATION_)?(\d+)"):
+        found = re.search(pattern, text)
+        if found:
+            return found.group(1) in ("1", "3", "90", "270")
+    return None
 
 
 def record_size(screen: tuple[int, int], turned: bool, longest: int) -> tuple[int, int]:
@@ -223,15 +234,23 @@ class AndroidScreenSource(Source):
             self.status = "no Android phone connected by USB"
         return None
 
-    def _command(self, adb: str, serial: str) -> list[str] | None:
+    def _turned(self, adb: str, serial: str) -> bool:
+        for what in (["input"], ["window", "displays"]):
+            turned = parse_turned(_run([adb, "-s", serial, "shell", "dumpsys", *what, "|", "grep", "-E",
+                                        _TURN_WORDS], timeout=8))
+            if turned is not None:
+                return turned
+        return False
+
+    def _command(self, adb: str, serial: str) -> tuple[list[str], bool] | None:
         screen = parse_size(_run([adb, "-s", serial, "shell", "wm", "size"]))
         if screen is None:
             return None
-        turned = parse_turned(_run([adb, "-s", serial, "shell", "dumpsys", "input"], timeout=8))
+        turned = self._turned(adb, serial)
         w, h = record_size(screen, turned, int(self.settings.get("longest") or 1280))
         bitrate = max(1000, min(40_000, int(self.settings.get("bitrate_kbps") or 8000))) * 1000
         return [adb, "-s", serial, "exec-out", "screenrecord", "--output-format=h264", "--size", f"{w}x{h}",
-                "--bit-rate", str(bitrate), "--time-limit", "180", "-"]
+                "--bit-rate", str(bitrate), "--time-limit", "180", "-"], turned
 
     def _run(self) -> None:
         segment = 0
@@ -242,18 +261,24 @@ class AndroidScreenSource(Source):
                 self._stop.wait(RETRY_S * 5)
                 continue
             serial = self._phone(adb)
-            command = self._command(adb, serial) if serial else None
-            if command is None:
+            made = self._command(adb, serial) if serial else None
+            if made is None:
                 self._stop.wait(RETRY_S)
                 continue
+            command, turned = made
             segment += 1
             mine = segment
             reader = threading.Thread(target=self._segment, args=(mine, command), name=f"android-{self.id}-{mine}",
                                       daemon=True)
             reader.start()
-            began = time.monotonic()
+            began = looked = time.monotonic()
             while not self._stop.is_set() and reader.is_alive() and time.monotonic() - began < SEGMENT_S:
                 self._stop.wait(0.25)
+                if time.monotonic() - looked >= TURN_CHECK_S and not self._stop.is_set():
+                    looked = time.monotonic()
+                    if self._turned(adb, serial) != turned:
+                        log.info("%s: the phone turned to %s", self.id, "portrait" if turned else "landscape")
+                        break  # the next recording, in the new shape, takes over once its first picture is in
             if not reader.is_alive() and self._current == mine and not self._stop.is_set():
                 self._stop.wait(RETRY_S)  # it ended early (unplugged, the screen recorder refused): again soon
 

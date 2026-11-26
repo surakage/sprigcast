@@ -6383,7 +6383,13 @@ class MainWindow(QMainWindow):
                 from sprigcast.app.phone_camera import PhoneDialog, sync
 
                 sync(self.collection)  # its page is ready before the code is shown
-                dialog = PhoneDialog(config.settings, self)
+                engine = getattr(self, "engine", None)
+                grab = None
+                if engine is not None:
+                    from sprigcast.app.filters_dialog import EngineGrab
+
+                    grab = EngineGrab(engine, self.collection)  # what SprigCast shows of it, live
+                dialog = PhoneDialog(config.settings, self, source_id=config.id, grab=grab)
             elif config.kind == "android_screen":
                 from sprigcast.app.android_screen_dialog import AndroidScreenDialog
 

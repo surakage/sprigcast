@@ -21,7 +21,14 @@ def test_devices_sizes_and_turning_are_read():
     assert screen.parse_size("Physical size: 1080x2400\n") == (1080, 2400)
     assert screen.parse_size("Physical size: 1440x3200\nOverride size: 1080x2400\n") == (1080, 2400)
     assert screen.parse_size("error") is None
-    assert screen.parse_turned("    SurfaceOrientation: 1\n") and not screen.parse_turned("SurfaceOrientation: 0")
+    assert screen.parse_turned("    SurfaceOrientation: 1\n") and screen.parse_turned("SurfaceOrientation: 0") is False
+    # newer Androids (PC 2026-11-26, a Galaxy S26 Ultra was always taken as portrait)
+    assert screen.parse_turned("  Viewport INTERNAL: displayId=0, uniqueId=local:1, port=0, orientation=ROTATION_90, "
+                               "logicalFrame=[0, 0, 3120, 1440]\n")
+    assert screen.parse_turned("Viewport INTERNAL: displayId=0, orientation=3, logicalFrame=[0, 0, 3120, 1440]")
+    assert screen.parse_turned("Viewport INTERNAL: displayId=0, orientation=0, logicalFrame=[0, 0, 1440, 3120]") is False
+    assert screen.parse_turned("    mCurrentRotation=ROTATION_270\n")
+    assert screen.parse_turned("Touch orientation=1") is None and screen.parse_turned("") is None
 
 
 def test_the_recorded_size_follows_the_screen_and_fits():
@@ -71,7 +78,8 @@ def fake_adb(tmp_path):
         elif "wm" in args:
             print("Physical size: 1080x2400")
         elif "dumpsys" in args:
-            print("SurfaceOrientation: 1")
+            turn = {str(tmp_path / "turn.txt")!r}
+            print(open(turn).read() if os.path.exists(turn) else "SurfaceOrientation: 1")
         elif "screenrecord" in args and os.environ.get("FAKE_STILL"):
             sys.stdout.buffer.write(open({str(still)!r}, "rb").read())
             sys.stdout.flush()
@@ -303,5 +311,29 @@ def test_a_still_screen_shows_its_picture(fake_adb, monkeypatch):
             time.sleep(0.05)
         assert frame is not None, source.status
         assert source.status.startswith("capturing")
+    finally:
+        source.stop()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in adb is a script")
+def test_turning_the_phone_starts_a_recording_in_the_new_shape(fake_adb, monkeypatch):
+    """screenrecord keeps the shape it started in: a turn starts the next one at once (PC 2026-11-26)."""
+    adb, log = fake_adb
+    monkeypatch.setattr(screen, "TURN_CHECK_S", 0.2)
+    source = screen.AndroidScreenSource("android-1", dict(screen.DEFAULTS))
+    source.adb_path = adb
+    source.start()
+    try:
+        deadline = time.monotonic() + 8
+        while source._current < 1 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert source._current == 1
+        (log.parent / "turn.txt").write_text("Viewport INTERNAL: displayId=0, orientation=ROTATION_0, x\n")
+        deadline = time.monotonic() + 8
+        while source._current < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert source._current == 2
+        calls = log.read_text()
+        assert "--size 1280x576" in calls and "--size 576x1280" in calls  # landscape, then portrait
     finally:
         source.stop()
