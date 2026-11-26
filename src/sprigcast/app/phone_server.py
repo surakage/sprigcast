@@ -792,5 +792,6 @@ async function report() {  // what this PC receives, for SprigCast's log
   fetch(`${base}/report`, {method: "POST", body: JSON.stringify(out)}).catch(() => {});
 }
 setInterval(report, 2000);
+document.getElementById("v").addEventListener("resize", report);  // the phone turned: SprigCast hears at once
 </script></body></html>
 """

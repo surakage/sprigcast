@@ -1407,14 +1407,17 @@ class SceneCollection(BaseModel):
         return moved, touched
 
     def fit_places(self, source_id: str, size: tuple[int, int]) -> bool:
-        """A source whose shape changed by itself (a phone turned between portrait and landscape, or its black
-        edges were trimmed: sources/android_screen.py, app/phone_camera.py): each of its places fits its canvas
-        again, as big as fits and centered (user 2026-11-26: "fits centered vertical and fits centered
-        horizontal" with no resizing after each turn). Returns whether a place moved."""
+        """A source whose shape changes by itself (a phone turned between portrait and landscape, or its black
+        edges trimmed: sources/android_screen.py, app/phone_camera.py): each of its places becomes a box the
+        size of its canvas that fits the picture in it, centered (user 2026-11-26: "fits centered vertical and
+        fits centered horizontal" with no resizing after each turn). The engine fits each picture as it comes,
+        so the first picture after a turn is already in place: refitting from the window after the engine said
+        the new size drew a frame or two at the old size first ("could be a bit smoother"). Returns whether a
+        place changed."""
         if min(size) <= 0:
             return False
         canvases = {c.id: c for c in self.canvases}
-        moved = False
+        changed = False
         for scene in self.scenes:
             canvas = canvases.get(scene.canvas)
             if canvas is None or canvas.width <= 0 or canvas.height <= 0:
@@ -1422,16 +1425,13 @@ class SceneCollection(BaseModel):
             for item in scene.items:
                 if item.source != source_id:
                     continue
-                k = min(canvas.width / size[0], canvas.height / size[1])
-                w, h = size[0] * k, size[1] * k
-                x, y = (canvas.width - w) / 2, (canvas.height - h) / 2
-                if item.bounded:
-                    item.bounds_size = (w, h)
-                else:
-                    item.scale, item.scale_y = k, None
-                item.x, item.y, item.crop = x, y, (0, 0, 0, 0)
-                moved = True
-        return moved
+                want = dict(x=0.0, y=0.0, scale=1.0, scale_y=None, crop=(0, 0, 0, 0), bounds="fit",
+                            bounds_size=(float(canvas.width), float(canvas.height)), bounds_align="center")
+                if any(getattr(item, k) != v for k, v in want.items()):
+                    for k, v in want.items():
+                        setattr(item, k, v)
+                    changed = True
+        return changed
 
     def overlay_boxes(self, scene: Scene, canvas_id: str) -> list[tuple[float, float, float, float]]:
         """Where the plugin sprigs on top of this bloom (a clock, now playing: a sprig holding one smaller

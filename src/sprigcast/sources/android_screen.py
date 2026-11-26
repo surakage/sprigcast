@@ -39,7 +39,7 @@ log = logging.getLogger(__name__)
 SEGMENT_S = 170.0  # screenrecord's own limit is 180 s: the next one starts before that
 RETRY_S = 2.0
 IDLE_S = 0.1  # adb quiet this long: the picture the parser holds is shown
-TURN_CHECK_S = 1.5  # how often the phone's turn is looked at while recording
+TURN_CHECK_S = 0.7  # how often the phone's turn is looked at while recording
 _TURN_WORDS = "'SurfaceOrientation|orientation=|mCurrentRotation|mRotation='"  # grep on the phone: a short answer
 SIZES = (("720p", 1280), ("1080p", 1920))
 DEFAULTS: dict[str, Any] = {"serial": "", "longest": 1280, "bitrate_kbps": 8000, "sound": True, "trim": True,
@@ -269,6 +269,7 @@ class AndroidScreenSource(Source):
         self._where: tuple[str, str] | None = None
         self._trim = None  # ((width, height), (left, top, right, bottom)) taken off each picture
         self._trim_seen = None
+        self._trims: dict[tuple[int, int], tuple[int, int, int, int]] = {}  # each shape's trim, kept for turning back
         self._trim_count = 0
         self._trim_at = 0.0
 
@@ -590,7 +591,14 @@ class AndroidScreenSource(Source):
         so a dark moment in a game doesn't trim it."""
         dims = (frame.width, frame.height)
         now = time.monotonic()
-        if now - self._trim_at >= TRIM_EVERY_S:
+        if self._trim is not None and self._trim[0] != dims:  # turned: this shape's trim, if it had one
+            self._trims[self._trim[0]] = self._trim[1]
+            self._trim = (dims, self._trims[dims]) if dims in self._trims else None
+            self._trim_at = 0.0  # and look at the new shape now, not up to a second later
+        elif self._trim is None and dims in self._trims:
+            self._trim = (dims, self._trims[dims])
+        every = TRIM_EVERY_S if self._trim is not None else TRIM_EVERY_S / 3  # a new shape settles sooner
+        if now - self._trim_at >= every:
             self._trim_at = now
             try:
                 plane = frame.planes[0]
@@ -603,6 +611,7 @@ class AndroidScreenSource(Source):
             self._trim_seen = seen
             if self._trim_count >= TRIM_SURE and seen != self._trim:
                 self._trim = seen
+                self._trims[dims] = edges
                 log.info("%s: black edges trimmed: %s", self.id, edges)
         if self._trim is None or self._trim[0] != dims or not any(self._trim[1]):
             return frame

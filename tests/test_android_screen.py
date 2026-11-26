@@ -356,7 +356,8 @@ def test_turning_the_phone_starts_a_recording_in_the_new_shape(fake_adb, monkeyp
 
 
 def test_a_place_fits_its_canvas_again_when_the_phone_turns():
-    """User 2026-11-26: fit automatically on every turn, centered, instead of resizing it each time."""
+    """User 2026-11-26: fit automatically on every turn, centered, and smoothly: the place becomes a box the size
+    of the canvas that the engine fits each picture into, so the first picture after a turn is already right."""
     from sprigcast.core.scene import Canvas, Scene, SceneCollection, SceneItem, SourceConfig
 
     col = SceneCollection(canvases=[Canvas(id="main", width=1920, height=1080)],
@@ -364,12 +365,12 @@ def test_a_place_fits_its_canvas_again_when_the_phone_turns():
                           scenes=[Scene(id="a", name="A", canvas="main", items=[
                               SceneItem(source="android-1", x=100, y=50, scale=0.5, crop=(4, 0, 0, 0))])])
     item = col.scenes[0].items[0]
-    assert col.fit_places("android-1", (1280, 576))  # landscape: as wide as the canvas, centered up and down
-    assert abs(1280 * item.scale - 1920) < 0.5 and abs(item.x) < 0.5 and abs(item.y - (1080 - 576 * 1.5) / 2) < 0.5
-    assert item.crop == (0, 0, 0, 0)
-    assert col.fit_places("android-1", (576, 1280))  # portrait: as tall as the canvas, centered across
-    assert abs(1280 * item.scale - 1080) < 0.5 and abs(item.y) < 0.5
-    assert abs(item.x + 576 * item.scale / 2 - 960) < 0.5
+    assert col.fit_places("android-1", (1280, 576))
+    assert item.bounded and item.bounds == "fit" and item.bounds_size == (1920.0, 1080.0)
+    assert (item.x, item.y, item.scale, item.crop, item.bounds_align) == (0.0, 0.0, 1.0, (0, 0, 0, 0), "center")
+    assert item.picture_scale((1280, 576))[0] == 1.5  # landscape: as wide as the canvas
+    assert abs(item.picture_scale((576, 1280))[1] - 1080 / 1280) < 1e-6  # portrait: as tall
+    assert not col.fit_places("android-1", (576, 1280))  # already fitting: nothing to save
     assert not col.fit_places("android-2", (576, 1280))
 
 
@@ -479,3 +480,19 @@ def test_a_bar_is_trimmed_only_once_its_steady(monkeypatch):
     assert source._trimmed(frame).width == 306
     clock[0] += 0.2
     assert source._trimmed(frame).width == 306  # between looks the trim stays
+
+
+
+def test_turning_back_uses_that_shapes_trim_at_once(monkeypatch):
+    """Smoother turns (user 2026-11-26): a shape trimmed before is trimmed from its first picture again."""
+    source = screen.AndroidScreenSource("android-1", dict(screen.DEFAULTS))
+    clock = [100.0]
+    monkeypatch.setattr(screen.time, "monotonic", lambda: clock[0])
+    wide, tall = _landscape_frame(14), _landscape_frame(0, w=176, h=320)
+    for _ in range(screen.TRIM_SURE):
+        source._trimmed(wide)
+        clock[0] += screen.TRIM_EVERY_S
+    assert source._trimmed(wide).width == 306
+    assert source._trimmed(tall).width == 176  # turned: nothing to trim there
+    clock[0] += 0.1
+    assert source._trimmed(wide).width == 306  # turned back: trimmed straight away
