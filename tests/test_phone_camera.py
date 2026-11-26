@@ -386,3 +386,17 @@ def test_the_phones_mic_is_heard_from_its_stream():
     0 blocks before, sound after)."""
     page = phone_server.VIEW_PAGE
     assert "createMediaStreamSource" in page and "v.__sprigcastPlain = true" in page and "v.muted = true" in page
+
+
+def test_a_turned_phone_reshapes_without_waiting_for_the_source_report():
+    from types import SimpleNamespace
+
+    from sprigcast.app.main_window import MainWindow
+
+    calls = []
+    win = SimpleNamespace(_turn_phone_cameras=lambda: True, _changed=lambda: calls.append("changed"))
+    MainWindow._phone_turn_tick(win)
+    assert calls == ["changed"]
+    win._turn_phone_cameras = lambda: False
+    MainWindow._phone_turn_tick(win)
+    assert calls == ["changed"]

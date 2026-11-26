@@ -4048,6 +4048,22 @@ class MainWindow(QMainWindow):
 
         if phone_camera.sync(self.collection):
             QTimer.singleShot(0, self, self._changed)  # a leaf's address moved to the port it got
+        has_phone = any(c.kind == "browser" and c.settings.get("phone") for c in self.collection.sources)
+        timer = getattr(self, "_phone_turn_timer", None)
+        if has_phone and timer is None:
+            # A turned phone reshapes its leaf within a quarter second, not on the next once-a-second source report.
+            timer = self._phone_turn_timer = QTimer(self)
+            timer.setInterval(250)
+            timer.timeout.connect(self._phone_turn_tick)
+        if timer is not None:
+            if has_phone and not timer.isActive():
+                timer.start()
+            elif not has_phone:
+                timer.stop()
+
+    def _phone_turn_tick(self) -> None:
+        if self._turn_phone_cameras():
+            self._changed()
 
     @staticmethod
     def _look_kind(config) -> str:
