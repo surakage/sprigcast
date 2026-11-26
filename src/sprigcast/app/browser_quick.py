@@ -83,7 +83,7 @@ Item {
         settings.localContentCanAccessFileUrls: true
         settings.showScrollBars: false
         settings.javascriptCanOpenWindows: false
-        settings.errorPageEnabled: true
+        settings.errorPageEnabled: false
         settings.focusOnNavigationEnabled: false
         onPermissionRequested: function(permission) { permission.deny() }
         onLoadingChanged: function(info) {
@@ -385,8 +385,15 @@ class QuickPage:
     def _loaded(self, ok: bool) -> None:
         self.dirty = True
         self.push_state()
-        if not ok:
-            log.info("browser source %s: page didn't load", self.id)
+        if ok:
+            self._retries = 0
+            return
+        if not getattr(self, "_retries", 0):  # once, not on every try
+            log.info("browser source %s: page didn't load; trying again on its own", self.id)
+        from sprigcast.app.browser_host import retry_soon
+
+        url = browser.page_url(self.settings)  # (a reload of a failed page reloads nothing: its address again)
+        retry_soon(self, lambda: self.root.setProperty("url", QUrl(url)) if url else None)
 
     def _media_note(self, message: str) -> None:
         from sprigcast.app import browser_host

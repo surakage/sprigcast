@@ -970,11 +970,20 @@ class SoundView(QWidget):
                 f"QPushButton:checked {{ background: {theme.ACCENT}; color: {theme.ACCENT_TEXT}; border-color: {theme.ACCENT};"
                 " font-weight: 650; }")
             b.clicked.connect(lambda _=False, m=mode: self.set_listen(m))
+            b.ensurePolished()
+            b.setMinimumWidth(b.sizeHint().width())  # never squeezed until its word is cut ("Afte", PC 2026-11-26)
             self.listen_buttons[mode] = b
             switch_row.addWidget(b)
         self.listen_buttons["off"].setChecked(True)
-        bottom = QHBoxLayout()
+        # The meters and the switch in a card of their own, held off its edges (PC 2026-11-26: "Before" sat on the
+        # window's edge and the switch's "After" was cut off).
+        self.bottom = QFrame(self)
+        self.bottom.setObjectName("soundMeters")
+        self.bottom.setStyleSheet(f"#soundMeters {{ background: {theme.CHROME}; border-radius: 14px; }}")
+        bottom = QHBoxLayout(self.bottom)
+        bottom.setContentsMargins(16, 10, 12, 10)
         bottom.setSpacing(14)
+        self.meters.setMinimumWidth(160)
         bottom.addWidget(self.meters, 1)
         bottom.addWidget(listen)
         bottom.addLayout(switch_row)
@@ -982,7 +991,7 @@ class SoundView(QWidget):
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(12)
         col.addWidget(self.panel)
-        col.addLayout(bottom)
+        col.addWidget(self.bottom)
         self.timer = QTimer(self)
         self.timer.setInterval(self.EVERY_MS)
         self.timer.timeout.connect(self._tick)

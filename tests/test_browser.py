@@ -466,3 +466,38 @@ def test_page_console_errors_are_logged_a_few_per_load(caplog):
     said = [r.getMessage() for r in caplog.records if "the page says" in r.getMessage()]
     assert len(said) == browser_host.ERRORS_LOGGED
     assert said[0] == "browser source browser-69: the page says: Error: Firebase: auth failed 0"
+
+
+def test_a_page_that_didnt_load_tries_again_on_its_own(monkeypatch):
+    """PC 2026-11-26: a Phone Camera's view loaded before SprigCast's phone server was up showed Chromium's
+    "can't be reached" page on the canvas and never came back. Now it shows nothing and loads again."""
+    import time
+
+    from PySide6.QtCore import QCoreApplication
+
+    from sprigcast.app import browser_host
+
+    app = QCoreApplication.instance() or QCoreApplication([])
+    monkeypatch.setattr(browser_host, "RETRY_FIRST_S", 0.05)
+
+    class Page:
+        pass
+
+    page, loads = Page(), []
+    browser_host.retry_soon(page, lambda: loads.append(1))
+    browser_host.retry_soon(page, lambda: loads.append(2))  # failed again before the first try: only the newest
+    end = time.monotonic() + 1
+    while time.monotonic() < end and not loads:
+        app.processEvents()
+        time.sleep(0.01)
+    time.sleep(0.15)
+    app.processEvents()
+    assert loads == [2]
+    page._closed = True
+    browser_host.retry_soon(page, lambda: loads.append(3))
+    time.sleep(0.1)
+    app.processEvents()
+    assert loads == [2]  # a closed page isn't loaded again
+    import inspect
+
+    assert "(A.ErrorPageEnabled, False)" in inspect.getsource(browser_host)  # never Chromium's error page
