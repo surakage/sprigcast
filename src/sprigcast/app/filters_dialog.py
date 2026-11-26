@@ -82,6 +82,45 @@ def media_of(source: SourceConfig) -> str:
     return "audio" if source.kind in AUDIO_KINDS else "video"
 
 
+# Copied filters (user 2026-11-26): one filter or all of a leaf's, from the Filters window or the Leaves menu,
+# pasted onto another leaf. Kept for the whole session, shared by every Filters window.
+COPIED_FILTERS: list[Filter] = []
+
+
+def copy_filters(filters: list[Filter]) -> int:
+    COPIED_FILTERS[:] = [f.model_copy(deep=True) for f in filters]
+    return len(COPIED_FILTERS)
+
+
+def filter_media(flt: Filter) -> str | None:
+    info = filter_kind(flt.kind)
+    return info.media if info is not None else None  # from a plugin that isn't loaded: not pasted
+
+
+def pasteable(medias: set[str], own_canvas: bool = False) -> list[Filter]:
+    """The copied filters that fit here: the right kind of filter (picture or sound), and on a canvas's own
+    list none of the ones that change the source itself."""
+    return [f for f in COPIED_FILTERS if filter_media(f) in medias and not (own_canvas and canvas_shared(f.kind))]
+
+
+def paste_filters(target: list[Filter], medias: set[str], own_canvas: bool = False) -> int:
+    """The copied filters onto `target`, a leaf's list. A picture effect the leaf already has takes the copied
+    settings in its place (one of each effect per leaf); anything else goes on the end. Returns how many."""
+    pasted = 0
+    for copied in pasteable(medias, own_canvas):
+        flt = copied.model_copy(deep=True, update={"id": new_filter_id()})
+        same = next((i for i, f in enumerate(target) if f.kind == flt.kind), None)
+        if filter_media(flt) == "video" and same is not None:
+            target[same] = flt.model_copy(update={"id": target[same].id})
+        else:
+            names, base, n = {f.name for f in target}, flt.name, 2
+            while flt.name in names:
+                flt.name, n = f"{base} {n}", n + 1
+            target.append(flt)
+        pasted += 1
+    return pasted
+
+
 def looks_folder() -> Path:
     """Documents\\SprigCast\\Looks: where SprigCast saves looks you make, and where it looks first for .cube files."""
     from PySide6.QtCore import QStandardPaths
@@ -1271,6 +1310,13 @@ class FiltersDialog(CardWindow):
         rename = QShortcut(QKeySequence(Qt.Key.Key_F2), self)  # F2 renames the picked filter, as in the library
         rename.setContext(Qt.ShortcutContext.WindowShortcut)
         rename.activated.connect(self.rename_selected)
+        for keys, slot in (("Ctrl+C", self.copy_selected), ("Ctrl+Shift+C", self.copy_all),
+                           ("Ctrl+V", self.paste)):
+            key = QShortcut(QKeySequence(keys), self)  # a text box being typed in keeps its own Ctrl+C and V
+            key.setContext(Qt.ShortcutContext.WindowShortcut)
+            key.activated.connect(slot)
+        self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.list.customContextMenuRequested.connect(self._list_menu)
         self.picker = AddPicker(self)
         self.picker.picked.connect(self.add)
         self.add_button = add = QPushButton("Add filter")
@@ -1500,6 +1546,54 @@ class FiltersDialog(CardWindow):
         self._refresh(self.list.currentRow())
         self.on_change(save=False)
         return True
+
+    def copy_selected(self) -> None:
+        flt = self._current()
+        if flt is not None:
+            copy_filters([flt])
+
+    def copy_all(self) -> None:
+        if self._shown():
+            copy_filters(self._shown())
+
+    def paste(self) -> int:
+        """The copied filters into this window's list (Apply still puts them on the stream)."""
+        pasted = paste_filters(self._editing(), {self.media}, self._own_canvas())
+        if pasted:
+            self._refresh(len(self._shown()) - 1)
+            self.on_change(save=False)
+        return pasted
+
+    def _list_menu(self, pos) -> None:
+        menu = self.list_menu(pos)
+        if menu.actions():
+            theme.ui_burst()
+            menu.exec(self.list.viewport().mapToGlobal(pos))
+        menu.deleteLater()
+
+    def list_menu(self, pos):
+        """The filter list's right-click menu: Copy (the filter under the pointer), Copy all, Paste."""
+        from PySide6.QtGui import QKeySequence
+        from PySide6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+
+        def entry(text: str, keys: str, slot) -> None:
+            action = menu.addAction(text)
+            action.setShortcut(QKeySequence(keys))
+            action.setShortcutVisibleInContextMenu(True)
+            action.triggered.connect(lambda _=False: slot())
+
+        on = self.list.itemAt(pos)
+        if on is not None:
+            self.list.setCurrentItem(on)
+            entry("Copy", "Ctrl+C", self.copy_selected)
+        if self._shown():
+            entry("Copy all", "Ctrl+Shift+C", self.copy_all)
+        count = len(pasteable({self.media}, self._own_canvas()))
+        if count:
+            entry("Paste" if count == 1 else f"Paste {count} filters", "Ctrl+V", self.paste)
+        return menu
 
     def _current(self) -> Filter | None:
         row, shown = self.list.currentRow(), self._shown()

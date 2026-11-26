@@ -99,6 +99,10 @@ QLabel#paletteHint {{ color: {theme.MUTED}; font-size: 8pt; }}
 """
 
 
+SHADOW = 24  # the card's shadow blur
+SHADOW_DROP = 8  # and how far it drops
+
+
 class CommandPalette(QDialog):
     """A floating search box near the top of the window. Enter runs, Esc closes, arrows move."""
 
@@ -111,12 +115,15 @@ class CommandPalette(QDialog):
         self.ran: Command | None = None
         self.recent = [str(k) for k in (QSettings().value(RECENT_KEY, []) or [])]
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(18, 10, 18, 24)  # room for the shadow
+        # Room for the whole shadow (its blur on every side, plus its drop below). A shadow wider than the window
+        # asked Windows to redraw past its edge, and it refused ("UpdateLayeredWindowIndirect failed ... dirty
+        # -5", PC 2026-11-26, as the list changed size while typing).
+        outer.setContentsMargins(SHADOW + 2, SHADOW + 2, SHADOW + 2, SHADOW + SHADOW_DROP + 2)
         card = QFrame()
         card.setObjectName("paletteCard")
         shadow = QGraphicsDropShadowEffect(card)
-        shadow.setBlurRadius(36)
-        shadow.setOffset(0, 10)
+        shadow.setBlurRadius(SHADOW)
+        shadow.setOffset(0, SHADOW_DROP)
         shadow.setColor(QColor(0, 0, 0, 190))
         card.setGraphicsEffect(shadow)
         outer.addWidget(card)
@@ -143,6 +150,13 @@ class CommandPalette(QDialog):
         self.setFixedWidth(600)
         self._filter("")
 
+    def open(self) -> None:
+        """Placed on the window's screen before it shows: moving a shown pop-up to another screen remakes its
+        window, which could lose it."""
+        self.adjustSize()
+        self.place()
+        super().open()
+
     def showEvent(self, event) -> None:  # noqa: N802
         self.place()
         self.search.setFocus()
@@ -163,7 +177,7 @@ class CommandPalette(QDialog):
         screen = QGuiApplication.screenAt(middle) or window.screen() or QGuiApplication.primaryScreen()
         if screen is None:
             return
-        if self.screen() is not screen:
+        if self.screen() is not screen and not self.isVisible():
             self.setScreen(screen)
         room = screen.availableGeometry()
         width = min(self.width(), room.width())

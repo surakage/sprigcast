@@ -1339,6 +1339,18 @@ class MainWindow(QMainWindow):
         if self._can_paste_own():
             menu.addAction(acts["paste_own"])
 
+    def _add_filter_copy_paste(self, menu: QMenu, item: SceneItem | None) -> None:
+        """Copy filters when the leaf has some; Paste filters once copied ones fit it (picture or sound)."""
+        from sprigcast.app.filters_dialog import pasteable
+
+        config = self.collection.source(item.source) if item is not None else None
+        if config is None:
+            return
+        if config.filters:
+            menu.addAction(self.item_actions["copy_filters"])
+        if pasteable(self._filter_medias(config)):
+            menu.addAction(self.item_actions["paste_filters"])
+
     def _source_menu(self, on_item: bool) -> QMenu:
         menu = QMenu(self)
         if not on_item:
@@ -1372,6 +1384,7 @@ class MainWindow(QMainWindow):
                 menu.addAction(acts[key])
             menu.addSeparator()
             self._add_copy_paste(menu, True)
+            self._add_filter_copy_paste(menu, item)
             menu.addSeparator()
             transform = menu.addMenu("Transform")
             for key in ("fit", "fill", "stretch", "center"):
@@ -2689,7 +2702,8 @@ class MainWindow(QMainWindow):
         self.palette_button.setStyleSheet(
             theme.button_style(19, "0", "QToolButton"))
         self.palette_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.palette_button.clicked.connect(lambda: self._open_palette())
+        # Opened once the click has finished, so the pop-up doesn't take the mouse in the middle of it
+        self.palette_button.clicked.connect(lambda: QTimer.singleShot(0, self, self._open_palette))
         self.screenshot_button.setStyleSheet(self.palette_button.styleSheet())
         bar.addWidget(self.palette_button)
         self.settings_button = QToolButton()
@@ -3228,6 +3242,7 @@ class MainWindow(QMainWindow):
                   ("Ctrl + wheel", "Zoom the canvas"), ("Space + drag, middle drag", "Pan the canvas"),
                   ("Ctrl+0", "Fit the canvas"), ("Alt + drag a side", "Crop"),
                   ("Ctrl+C", "Copy leaves"), ("Ctrl+V", "Paste leaves"), ("Ctrl+Shift+V", "Duplicate leaves"),
+                  ("Ctrl+Alt+C", "Copy a leaf's filters"), ("Ctrl+Alt+V", "Paste filters onto a leaf"),
                   ("Shift + drag a corner", "Free shape (or keep it, if Keep shape is off)")]
         seen, unique = set(), []
         for keys, text in lines:
@@ -5848,11 +5863,36 @@ class MainWindow(QMainWindow):
         self._changed()
         self._refresh_sources(keep_row=0 if front else len(scene.items) - 1)
 
+    def _twin_items(self, item: SceneItem) -> list[SceneItem]:
+        """The same leaf in this bloom's or sprig's other shapes (its vertical twin, say): Hide and Show change
+        it there too, as the Control API's item.hide does (PC 2026-11-26: Hide on a bloom's Webcam hid it on the
+        horizontal canvas only)."""
+        scene = self._scene()
+        if scene is None:
+            return []
+        layouts = (self.collection.linked_with(scene.id) if scene.kind == "show"
+                   else self.collection.shapes(self.collection.main_part(scene)))
+
+        def key(source_id: str):
+            config = next((c for c in self.collection.sources if c.id == source_id), None)
+            if config is not None and config.kind == PART_KIND:
+                part = self.collection.part_of(config)
+                return ("sprig", self.collection.main_part(part).id) if part is not None else source_id
+            return source_id
+
+        wanted = key(item.source)
+        return [other for layout in layouts if layout.id != scene.id
+                for other in layout.items if key(other.source) == wanted]
+
+    def _set_item_visible(self, item: SceneItem, visible: bool) -> None:
+        for each in (item, *self._twin_items(item)):
+            each.visible = visible
+
     def _toggle_item_visible(self) -> None:
         item = self._item()
         if item is None:
             return
-        item.visible = not item.visible
+        self._set_item_visible(item, not item.visible)
         self._changed()
         self._refresh_sources(keep_row=self.source_list.currentRow())
 
@@ -5879,6 +5919,8 @@ class MainWindow(QMainWindow):
             ("copy", "Copy", "Ctrl+C", self._copy_leaves),
             ("paste", "Paste", "Ctrl+V", lambda: self._paste_leaves()),
             ("paste_own", "Duplicate", "Ctrl+Shift+V", lambda: self._paste_leaves(own=True)),
+            ("copy_filters", "Copy filters", "Ctrl+Alt+C", self._copy_leaf_filters),
+            ("paste_filters", "Paste filters", "Ctrl+Alt+V", self._paste_leaf_filters),
             ("remove", "Remove", "Delete", self._remove_item),
         )
         for key, text, shortcut, slot in table:
@@ -5914,6 +5956,41 @@ class MainWindow(QMainWindow):
             count = len(self._leaf_clipboard)
             self.statusBar().showMessage(
                 "Copied " + (f"{count} leaves" if count > 1 else self._leaf_clipboard[0][1].name) + ".", 3000)
+
+    def _filter_medias(self, config: SourceConfig) -> set[str]:
+        from sprigcast.app.filters_dialog import media_of
+
+        return {media_of(config), "audio"} if config.kind == "browser" else {media_of(config)}  # a page: both
+
+    def _copy_leaf_filters(self) -> None:
+        """All the selected leaf's filters (picture and sound), to paste onto another leaf."""
+        from sprigcast.app.filters_dialog import copy_filters
+
+        item = self._item()
+        config = self.collection.source(item.source) if item is not None else None
+        if config is not None and config.filters:
+            count = copy_filters(config.filters)
+            self.statusBar().showMessage(f"Copied {count} filter{'s' if count > 1 else ''}.", 3000)
+
+    def _paste_leaf_filters(self) -> None:
+        """The copied filters onto the selected leaf: an effect it already has takes the copied settings."""
+        from sprigcast.app.filters_dialog import paste_filters
+
+        item = self._item()
+        if item is None:
+            return
+        config = self.collection.source(item.source)
+        pasted = paste_filters(config.filters, self._filter_medias(config))
+        if not pasted:
+            return
+        if self.collection.filter_twins(config) and self.collection.shares_filters(config):
+            self.collection.share_filters(config)  # a sprig's placement on each canvas
+        self._changed()
+        if self._has_sound(config):
+            self._refresh_audio_soon()  # the Sound card lists filter names
+        self._refresh_sources(keep_row=self.source_list.currentRow())
+        self._refresh_previews()
+        self.statusBar().showMessage(f"Pasted {pasted} filter{'s' if pasted > 1 else ''}.", 3000)
 
     def _can_paste_own(self) -> bool:
         return any(config.kind in self.OWN_COPY_KINDS for _, config in self._leaf_clipboard)
@@ -5992,7 +6069,7 @@ class MainWindow(QMainWindow):
         if scene is None:
             return
         index = len(scene.items) - 1 - self.source_list.row(row)
-        scene.items[index].visible = row.checkState() == Qt.CheckState.Checked
+        self._set_item_visible(scene.items[index], row.checkState() == Qt.CheckState.Checked)
         self._changed()
 
     def _show_spin_values(self, item: SceneItem) -> None:
@@ -8935,6 +9012,7 @@ class MainWindow(QMainWindow):
         theme.ui_burst()  # (as modal() does)
         palette = CommandPalette(self._palette_commands(), self)
         palette.open()
+        log.info("command search opened")
         return palette
 
     def _hotkey_note(self, text: str) -> None:
