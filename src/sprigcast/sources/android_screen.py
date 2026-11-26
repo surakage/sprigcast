@@ -40,6 +40,9 @@ SEGMENT_S = 170.0  # screenrecord's own limit is 180 s: the next one starts befo
 RETRY_S = 2.0
 IDLE_S = 0.1  # adb quiet this long: the picture the parser holds is shown
 TURN_CHECK_S = 0.7  # how often the phone's turn is looked at while recording
+WATCH_EVERY_S = 0.2  # how often the phone itself looks at its turn, sending each answer down one adb shell
+WATCH_FRESH_S = 1.0  # the watcher's answer older than this (it stopped): looked at the old way
+WATCH_MARK = "SPRIGCAST-LOOK"
 HOLD_MOST_S = 3.0  # a turned phone's last good picture stays at most this long while the next recording starts
 BOXED = 0.3  # dark this far in from both ends of the long side: the other shape boxed inside this one
 _TURN_WORDS = "'SurfaceOrientation|orientation=|mCurrentRotation|mRotation='"  # grep on the phone: a short answer
@@ -291,6 +294,8 @@ class AndroidScreenSource(Source):
         self._hold_at = 0.0
         self._not_turned: int | None = None  # this recording looked boxed but the phone hadn't turned
         self._look_now = threading.Event()  # a boxed picture: look at the phone's turn at once
+        self._watched: tuple[bool, float] | None = None  # (turned, when): the watcher's latest answer
+        self._watch_proc: subprocess.Popen | None = None
 
     # Source ---------------------------------------------------------------------------------------
 
@@ -304,6 +309,9 @@ class AndroidScreenSource(Source):
     def stop(self) -> None:
         self._stop.set()
         self._end_all()
+        watch, self._watch_proc, self._watched = self._watch_proc, None, None
+        if watch is not None:
+            _end(watch)
         proc = self._sound_proc
         if proc is not None:
             _end(proc)
@@ -486,11 +494,55 @@ class AndroidScreenSource(Source):
                 return turned
         return False
 
+    def _start_watch(self, adb: str, serial: str) -> None:
+        """One adb shell that looks at the phone's turn every WATCH_EVERY_S and says so: a turn is seen within
+        a fifth of a second, so the old recording's turned pictures (squeezed, sideways, the phone's own turning
+        animation) are held back from the start (PC 2026-11-26), and no adb is started for each look."""
+        proc = self._watch_proc
+        if proc is not None and proc.poll() is None:
+            return
+        loop = (f"while true; do dumpsys input | grep -E {_TURN_WORDS}; echo {WATCH_MARK}; "
+                f"sleep {WATCH_EVERY_S}; done")
+        try:
+            proc = subprocess.Popen([adb, "-s", serial, "shell", loop], stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, creationflags=_NO_WINDOW,
+                                    text=True, errors="replace")
+        except OSError:
+            return
+        self._watch_proc = proc
+        threading.Thread(target=self._watch_run, args=(proc,), name=f"android-{self.id}-turn", daemon=True).start()
+
+    def _watch_run(self, proc: subprocess.Popen) -> None:
+        lines: list[str] = []
+        try:
+            for line in proc.stdout:
+                if self._stop.is_set():
+                    break
+                if WATCH_MARK not in line:
+                    lines.append(line)
+                    continue
+                turned = parse_turned("".join(lines))
+                lines = []
+                if turned is None:
+                    continue  # this phone says it another way: looked at the old way (_turned)
+                before = self._watched
+                self._watched = (turned, time.monotonic())
+                if before is not None and before[0] != turned:
+                    self._look_now.set()
+        except (OSError, ValueError):
+            pass
+        finally:
+            _end(proc)
+
     def _command(self, adb: str, serial: str) -> tuple[list[str], bool] | None:
         screen = parse_size(_run([adb, "-s", serial, "shell", "wm", "size"]))
         if screen is None:
             return None
-        turned = self._turned(adb, serial)
+        watched = self._watched
+        if watched is not None and time.monotonic() - watched[1] < WATCH_FRESH_S:
+            turned = watched[0]  # the watcher's answer: no adb started to ask again
+        else:
+            turned = self._turned(adb, serial)
         w, h = record_size(screen, turned, int(self.settings.get("longest") or 1280))
         bitrate = max(1000, min(40_000, int(self.settings.get("bitrate_kbps") or 8000))) * 1000
         return [adb, "-s", serial, "exec-out", "screenrecord", "--output-format=h264", "--size", f"{w}x{h}",
@@ -517,11 +569,18 @@ class AndroidScreenSource(Source):
             reader = threading.Thread(target=self._segment, args=(mine, command), name=f"android-{self.id}-{mine}",
                                       daemon=True)
             reader.start()
+            self._start_watch(adb, serial)
             began = looked = time.monotonic()
             while not self._stop.is_set() and reader.is_alive() and time.monotonic() - began < SEGMENT_S:
                 asked = self._look_now.wait(0.25)
                 self._look_now.clear()
-                if (asked or time.monotonic() - looked >= TURN_CHECK_S) and not self._stop.is_set():
+                watched = self._watched
+                fresh = watched is not None and time.monotonic() - watched[1] < WATCH_FRESH_S
+                if fresh and watched[0] != turned and not self._stop.is_set():
+                    log.info("%s: the phone turned to %s", self.id, "portrait" if turned else "landscape")
+                    self._hold_from(mine)
+                    break
+                if (asked or (not fresh and time.monotonic() - looked >= TURN_CHECK_S)) and not self._stop.is_set():
                     looked = time.monotonic()
                     if self._turned(adb, serial) != turned:
                         log.info("%s: the phone turned to %s", self.id, "portrait" if turned else "landscape")
