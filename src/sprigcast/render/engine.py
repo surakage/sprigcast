@@ -1495,6 +1495,11 @@ class Engine:
         """The push-to-talk key went down or up (any thread): the mixer opens or closes the mic per block."""
         self.mixer.push_key(down)
 
+    # Sounds whose "monitor" setting means Stream + me ("monitor" on a display capture is its screen). Android
+    # Screen and web pages were left out, so their Stream + me opened no monitor when nothing else was
+    # monitored: the meter moved and nothing was heard (PC 2026-11-26).
+    MONITORED_KINDS = ("audio_input", "audio_output", "app_audio", "media", "android_screen", "browser")
+
     def _sync_audio_options(self) -> None:
         """Ducking settings to the mixer; start monitoring when a source is monitored, stop when none is."""
         audio = self._collection.audio
@@ -1522,7 +1527,7 @@ class Engine:
             self.monitor = make_monitor(self.mixer, device)
         monitoring = any(
             s.settings.get("monitor") and not s.settings.get("muted") for s in self._collection.sources_in_use()
-            if s.kind in ("audio_input", "audio_output", "app_audio", "media")
+            if s.kind in self.MONITORED_KINDS
         )
         if monitoring and not self._monitoring:
             self._monitoring = True

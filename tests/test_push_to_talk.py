@@ -169,3 +169,35 @@ def test_push_key_says_when_the_whole_combo_is_down(monkeypatch):
     listener.on_press("<ctrl>")
     push.stop()  # held as it stops: let go
     assert said == [True, False, True, False] and listener.stopped
+
+
+def test_stream_and_me_on_a_phone_or_page_sound_opens_the_monitor(monkeypatch):
+    """PC 2026-11-26: Android Screen's sound on Stream + me moved the meter but nothing was heard: only device
+    and file sounds opened the monitor. A display capture's "monitor" (its screen) still doesn't."""
+    from sprigcast.render import engine as engine_module
+    from sprigcast.render.engine import Engine
+
+    class Mix:
+        def set_ducking(self, d): pass
+        def set_push(self, *a): pass
+        def add_monitor_tap(self, cb): pass
+        def remove_monitor_tap(self, cb): pass
+
+    class Mon:
+        def __init__(self, device=None): self.running = False
+        def start(self): self.running = True
+        def stop(self): self.running = False
+        def write(self, b): pass
+
+    from sprigcast import sprigcore
+
+    monkeypatch.setattr(engine_module, "make_monitor", lambda mixer, device=None: Mon(device))
+    monkeypatch.setattr(sprigcore, "set_windows_ducking", lambda on: True)
+    for kind, settings, heard in (("android_screen", {"monitor": True}, True), ("browser", {"monitor": True}, True),
+                                  ("display_capture", {"monitor": 1}, False)):
+        e = Engine.__new__(Engine)
+        e.mixer, e.monitor, e._monitoring = Mix(), Mon(), False
+        e._collection = SceneCollection(canvases=[Canvas(id="horizontal", width=1920, height=1080)],
+                                        sources=[SourceConfig(id="s", kind=kind, name="S", settings=settings)])
+        e._sync_audio_options()
+        assert e._monitoring is heard, kind
