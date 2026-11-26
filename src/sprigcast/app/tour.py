@@ -132,8 +132,8 @@ def _grew(count: Callable[[Tour], int], key: str):
 
 def stops() -> list[Stop]:
     return [
-        Stop("Live", "Live and Build", "Live runs your show. Build is where you set it up. Switch any time, or press "
-             "Ctrl+1 and Ctrl+2.", _named("modePills"), mode="live", pip="pip-hello"),
+        Stop("Live", "Live and Build", "SprigCast has two sides. Build is where you set up your show, and Live is where "
+             "you run it. Switch any time, or press Ctrl+1 and Ctrl+2.", _named("modePills"), mode="live", pip="pip-hello"),
         Stop("Live", "What viewers see", "Your canvases, as they go out: horizontal, and vertical if you use it.",
              _attr("live_stage", "card"), mode="live"),
         Stop("Live", "Go live", "Starts your stream on every place that's switched on.",
@@ -149,8 +149,8 @@ def stops() -> list[Stop]:
         Stop("Live", "Destinations", "Where you stream. Switch a place on or off for the next Go live.",
              _attr("live_side", "where_card"), mode="live"),
         Stop("Live", "Chat", "Chat from your places, in one list.", _attr("chat_panel"), mode="live"),
-        Stop("Build", "Blooms and sprigs", "Blooms are your scenes. Sprigs are parts you use in many blooms, like a "
-             "camera with its frame.", _attr("library"), mode="build"),
+        Stop("Build", "Blooms and sprigs", "Blooms are your scenes. Leaves are what's in them: your camera, screen, "
+             "pictures and sound. Sprigs are groups of leaves you use in many blooms, like a camera with its frame.", _attr("library"), mode="build"),
         Stop("Build", "Make a bloom", "Try it: press + beside Blooms and pick New bloom. Next lights up once "
              "it's made.",
              _attr("library"), mode="build", done=_grew(_bloom_count, "blooms")),
@@ -160,10 +160,15 @@ def stops() -> list[Stop]:
              "your camera is in.", _attr("add_button"), mode="build", done=_grew(_leaf_count, "camera")),
         Stop("Build", "Add your screen", "Try it: press + Add again and pick Display Capture for your screen, or Game "
              "Capture for a game.", _attr("add_button"), mode="build", done=_grew(_leaf_count, "screen")),
+        Stop("Build", "Your phone", "+ Add has Phone Camera, your phone's camera over Wi-Fi with a code to scan, "
+             "and Android Screen, an Android phone's screen over USB for mobile games.", _attr("add_button"),
+             mode="build"),
         Stop("Build", "Sound", "Every sound in this bloom, with its own level, mute and settings.",
              _attr("sound_strips"), mode="build"),
         Stop("Build", "Filters", "Pick something on the canvas, then Filters adds looks like a background "
              "remover, color fixes or mic noise removal.", _attr("prop_filters"), mode="build"),
+        Stop("Build", "Search", "Find any command, bloom or setting here, or press Ctrl+K.",
+             _attr("palette_button"), mode="build"),
         Stop("Settings", "This PC", "Optimize for this PC picks the settings that fit your PC and your upload.",
              _settings_tab("General"), settings="General/This PC"),
         Stop("Settings", "Stream", "Add each place you stream to, with its key or sign-in.",
@@ -175,7 +180,7 @@ def stops() -> list[Stop]:
         Stop("Menus", "Gardens", "A garden is a whole setup: blooms, sounds and places. Keep one per show or game.",
              _menu("Gardens")),
         Stop("Menus", "Paths", "A path is a set of places to stream to, like Weekdays or Events.", _menu("Paths")),
-        Stop("Menus", "Tools", "Get started, the Stream doctor, Hotkeys and the Plugin store.", _menu("Tools")),
+        Stop("Menus", "Tools", "Get started, the Stream doctor, Hotkeys, the Plugin store and Check for updates.", _menu("Tools")),
         Stop("Menus", "Help", "Shortcuts, help on Discord, reporting a problem, and this tour again.", _menu("Help")),
         Stop("Done", "You're all set!", "That's the tour. Press Go live when you're ready. Help → Take the tour "
              "with Pip shows it again.", pip="pip-live"),
@@ -323,7 +328,15 @@ class _Card(QFrame):
         self.end.setVisible(not last)
         self.next.setText("Done" if last else "Next")
         self.next.setEnabled(ready)
+        self.fit()
+
+    def fit(self) -> None:
+        """As tall as its words wrap to at its width: adjustSize() went by a width it didn't have, and a stop's
+        last line was cut off (Your phone, 2026-11-26)."""
         self.adjustSize()
+        layout = self.layout()
+        if layout is not None and layout.hasHeightForWidth():
+            self.resize(CARD_W, max(self.height(), layout.totalHeightForWidth(CARD_W)))
 
 
 class Tour(QObject):
@@ -512,7 +525,7 @@ class Tour(QObject):
         self.shade.setGeometry(area)
         spot = self._spot()
         self.shade.hole = spot
-        self.card.adjustSize()
+        self.card.fit()
         w, h = self.card.width(), self.card.height()
         if spot is None:  # in the middle
             x, y = area.center().x() - w // 2, area.center().y() - h // 2

@@ -104,3 +104,22 @@ def test_the_menus_are_lit_up_in_the_menu_bar(window):
     bar = window.menuBar()
     assert t.shade.hole is not None and t.shade.hole.top() <= bar.height()
     t.end()
+
+
+def test_the_phone_and_search_stops_show_all_their_words(window):
+    """Phone Camera and Android Screen are part of the basic set-up; each stop's card is as tall as its words
+    (Your phone's last line was cut off)."""
+    from sprigcast.app import tour
+
+    stops = [s for s in tour.stops() if s.settings is None]
+    titles = [s.title for s in stops]
+    assert "Your phone" in titles and "Search" in titles
+    t = tour.start(window)
+    t.stops = stops
+    for title in ("Your phone", "Blooms and sprigs", "Search"):
+        t._go(titles.index(title))
+        _settle()
+        text = t.card.text
+        assert text.height() >= text.heightForWidth(text.width())
+    t.end()
+    _settle()

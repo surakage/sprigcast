@@ -210,15 +210,12 @@ def test_the_page_serves_with_truststore_standing_in(tmp_path, monkeypatch):
 
     Truststore.__module__ = "truststore._api"
 
-    class Injected:  # the ssl module as phone_server sees it, with truststore in place
-        SSLContext = Truststore
-
-        def __getattr__(self, name):
-            return getattr(ssl, name)
-
-    monkeypatch.setattr(phone_server, "ssl", Injected())
+    # In place in the ssl module itself, as inject_into_ssl() does: ssl.py's own property setters then went round
+    # and round through it (minimum_version: a stack overflow on every start, PC 2026-11-26).
+    monkeypatch.setattr(ssl, "SSLContext", Truststore)
     srv = phone_server.PhoneServer(tmp_path)
     srv.use(["code1"])
+    monkeypatch.setattr(ssl, "SSLContext", original)  # the test's own client
     try:
         assert _get(f"https://127.0.0.1:{srv.phone_port}/phone/code1")[0] == 200
     finally:
