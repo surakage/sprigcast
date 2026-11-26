@@ -6963,12 +6963,12 @@ class MainWindow(QMainWindow):
         self._record_pending = None
         errors = session.errors
         names = ", ".join(p.name for p in session.paths)
-        from sprigcast.core.pacing import memory_line
+        from sprigcast.core.pacing import log_with_memory
 
         eased = int(getattr(session, "eased", 0))
-        log.info("recording stopped after %.0f s: %s; %d frames dropped%s%s; memory: %s", session.elapsed,
-                 names or "no files", session.dropped, f", {eased} eased" if eased else "",
-                 f"; errors: {errors}" if errors else "", memory_line())
+        log_with_memory(log, "recording stopped after %.0f s: %s; %d frames dropped%s%s; memory: %s", session.elapsed,
+                        names or "no files", session.dropped, f", {eased} eased" if eased else "",
+                        f"; errors: {errors}" if errors else "")
         self._rest_soon()
         from sprigcast.output.naming import finish_later
 
@@ -7646,9 +7646,9 @@ class MainWindow(QMainWindow):
             self._cheer_goodbye(seconds)
         for line in lines[1:]:
             log.info("stream summary: %s", line)
-        from sprigcast.core.pacing import memory_line
+        from sprigcast.core.pacing import log_with_memory
 
-        log.info("stream stopped; memory: %s", memory_line())
+        log_with_memory(log, "stream stopped; memory: %s")
         self._rest_soon()
         report, self._stream_report = getattr(self, "_stream_report", None), None
         if report is not None:

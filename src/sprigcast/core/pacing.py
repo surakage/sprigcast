@@ -848,6 +848,21 @@ def raise_thread_priority(level: int = HIGHEST) -> bool:
         return False
 
 
+def log_with_memory(logger, message: str, *args) -> None:
+    """logger.info(message, *args, memory_line()) on a thread of its own: Windows works out the private working set
+    by walking the process's pages, and on a 4 GB PC that was paging it held the window 1.8 s right after the
+    stream stopped (Mikedog151 2026-11-25)."""
+    import threading
+
+    def work() -> None:
+        try:
+            logger.info(message, *args, memory_line())
+        except Exception:  # noqa: BLE001 (only a log line)
+            pass
+
+    threading.Thread(target=work, name="memory line", daemon=True).start()
+
+
 def memory_line() -> str:
     """Where memory is, for the log when a recording or the stream stops: what Task Manager shows, what is
     committed, how many Python objects (and which kinds most), and how many threads. Next to each other

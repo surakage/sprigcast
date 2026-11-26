@@ -26,6 +26,7 @@ import logging
 import secrets
 import socket
 import ssl
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -38,6 +39,8 @@ PHONE_PORT = 4466  # the phone's page (HTTPS, home network); the next free one w
 VIEW_PORT = 4467  # the leaf's own page (HTTP, this PC only)
 MAX_SDP = 64 * 1024
 SEEN_FOR_S = 6.0  # a phone not heard from in this long counts as gone
+HANDSHAKE_S = 15.0
+REQUEST_S = 30.0
 
 
 def new_code() -> str:
@@ -76,6 +79,44 @@ class Session:
         self.seen = 0.0  # when the phone last asked anything
 
 
+class _Server(ThreadingHTTPServer):
+    """One page's server. Its port is its own: on Windows SO_REUSEADDR let a second listener take a port that was
+    in use (PC 2026-11-26), so Windows binds it exclusively. The phone's TLS handshake runs on the request's own
+    thread (a browser that stalls there no longer holds up everyone else), and a request that fails is logged:
+    the app has no console, and a failure that went to it left the phone's page closing with nothing said."""
+
+    daemon_threads = True
+    allow_reuse_address = sys.platform != "win32"
+    context: ssl.SSLContext | None = None
+    _turned_down = False
+
+    def server_bind(self) -> None:
+        if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+    def process_request_thread(self, request, client_address) -> None:
+        try:
+            if self.context is not None:
+                request.settimeout(HANDSHAKE_S)
+                try:
+                    request = self.context.wrap_socket(request, server_side=True)
+                except (OSError, ValueError) as exc:  # most often a browser at its "not private" warning
+                    if not self._turned_down:
+                        self._turned_down = True
+                        log.info("phone camera: a browser closed the secure connection (%s)", type(exc).__name__)
+                    return
+                request.settimeout(REQUEST_S)
+            self.finish_request(request, client_address)
+        except Exception:  # noqa: BLE001
+            self.handle_error(request, client_address)
+        finally:
+            self.shutdown_request(request)
+
+    def handle_error(self, request, client_address) -> None:  # never the address in the log
+        log.exception("phone camera: a request to the %s failed", "phone page" if self.context else "view page")
+
+
 class PhoneServer:
     """Both pages and the meeting point. start() and stop() from the window; requests on the server's threads."""
 
@@ -87,7 +128,7 @@ class PhoneServer:
         self.phone_port = 0
         self.view_port = 0
         self.address = None
-        self._servers: list[ThreadingHTTPServer] = []
+        self._servers: list[_Server] = []
 
     # The window's side -----------------------------------------------------------------------------
 
@@ -140,18 +181,16 @@ class PhoneServer:
             s = self.sessions.get(code)
             return s is not None and s.state == "live" and time.monotonic() - s.seen < SEEN_FOR_S
 
-    def _listen(self, host: str, port: int, context: ssl.SSLContext | None) -> ThreadingHTTPServer:
+    def _listen(self, host: str, port: int, context: ssl.SSLContext | None) -> _Server:
         handler = _handler(self, phone=context is not None)
         last: OSError | None = None
         for p in [port, *range(port + 2, port + 40, 2), 0]:  # the phone's and the view's ports stay apart
             try:
-                server = ThreadingHTTPServer((host, p), handler)
+                server = _Server((host, p), handler)
             except OSError as exc:
                 last = exc
                 continue
-            server.daemon_threads = True
-            if context is not None:
-                server.socket = context.wrap_socket(server.socket, server_side=True)
+            server.context = context
             self._servers.append(server)
             return server
         raise last or OSError("no free port")
