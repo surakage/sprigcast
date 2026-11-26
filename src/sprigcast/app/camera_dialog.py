@@ -5,16 +5,18 @@ from __future__ import annotations
 from typing import Any
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSpinBox, QVBoxLayout, QWidget
 
 from sprigcast.app import theme
 from sprigcast.app.card import CardDialog, combo, field_label
 
 from sprigcast.core.device_makers import label as camera_label
 from sprigcast.sources.camera import (
+    MAX_DELAY_MS,
     SIZES,
     CameraDevice,
     choose_modes,
+    delay_of,
     dshow_modes,
     is_capture_card,
     mode_cost,
@@ -115,6 +117,25 @@ class CameraDialog(CardDialog):
         self.mirror = Switch()
         self.mirror.setChecked(bool(current.get("mirror", False)))
         options.addLayout(_row("Mirror", self.mirror))
+        # Held back to meet a voice that arrives late through other apps (Wave Link, NVIDIA Broadcast, Voicemod:
+        # about 0.4 s on the PC, 2026-11-25). A sound's own Delay can only make the sound later.
+        self.delay = QSpinBox()
+        self.delay.setObjectName("videoDelay")
+        self.delay.setRange(0, MAX_DELAY_MS)
+        self.delay.setSingleStep(10)
+        self.delay.setSuffix(" ms")
+        self.delay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.delay.setAccessibleName("Video delay")
+        self.delay.setToolTip("Holds the picture back to line it up with a voice that arrives late")
+        self.delay.setStyleSheet(
+            f"QSpinBox#videoDelay {{ background: {theme.FIELD}; border: 1px solid {theme.FIELD_EDGE};"
+            f" border-radius: 12px; padding: 6px 14px; color: {theme.TEXT}; }}"
+            f"QSpinBox#videoDelay:focus {{ border-color: {theme.ACCENT}; }}"
+            "QSpinBox#videoDelay::up-button, QSpinBox#videoDelay::down-button { subcontrol-origin: margin;"
+            " width: 0px; height: 0px; border: none; }")
+        self.delay.setFixedWidth(104)
+        self.delay.setValue(round(delay_of(current) * 1000))
+        options.addLayout(_row("Video delay", self.delay))
 
         self.note = QLabel()
         self.note.setWordWrap(True)
@@ -255,7 +276,8 @@ class CameraDialog(CardDialog):
         cam = self.device_choice()
         w, h, fps = self._ask()
         out = {"name": cam.name, "path": cam.path, "width": w, "height": h, "fps": fps,
-               "mirror": self.mirror.isChecked(), "pause_off_screen": self.pause.isChecked()}
+               "mirror": self.mirror.isChecked(), "pause_off_screen": self.pause.isChecked(),
+               "delay_ms": self.delay.value()}
         size = self.device_size.currentData()
         if self.custom.isChecked() and size:
             out.update(capture_mode="custom", capture_size=list(size), capture_fps=int(self.device_rate.currentData()

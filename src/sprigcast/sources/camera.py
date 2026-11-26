@@ -16,6 +16,7 @@ import re
 import sys
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
@@ -632,6 +633,28 @@ class _Feed:
                 pass
         self._restart.set()
 
+    def delay(self) -> float:
+        """The longest Video delay its sources ask for, in seconds: the engine's player holds one picture stream for
+        all of them."""
+        return max((delay_of(s.settings) for s in list(self.subscribers)), default=delay_of(self.settings))
+
+    def _apply_delay(self, player=None, fresh: bool = True) -> None:
+        """fresh: a newly opened player (told even 0); else only a change is told."""
+        player = player or self.player
+        if player is None:
+            return
+        seconds = self.delay()
+        was = getattr(self, "_delay_set", 0.0)
+        if not fresh and seconds == was:
+            return
+        if seconds != was:
+            log.info("%s: pictures held back %d ms (Video delay)", self.id, round(seconds * 1000))
+        self._delay_set = seconds
+        try:
+            player.set_delay(seconds)
+        except (sprigcore.NativeError, AttributeError) as exc:
+            log.info("%s: the engine can't hold this camera back: %s", self.id, exc)
+
     # Capture thread ------------------------------------------------------------------
 
     def _mode(self) -> tuple[int, int, int]:
@@ -711,6 +734,7 @@ class _Feed:
         try:
             player.set_picture("", (w, h))  # a camera bigger than the mode asked for is shrunk while decoding
             player.set_device(format_name, choices, fps, bool(self.settings.get("mirror")))
+            self._apply_delay(player)
         except sprigcore.NativeError as exc:
             player.close()
             log.info("%s: the engine can't read this camera (%s); Python reads it", self.id, exc)
@@ -757,6 +781,7 @@ class _Feed:
                         log.warning("%s: %r went away: %s", self.id, device.name, text)
                     lost = text
                 player.set_shrink(self.shrink())
+                self._apply_delay(player, fresh=False)  # a source's Video delay changed, or a source came or went
                 if self._signal_came(player, w, h, watch):
                     log.info("%s: %r was given a signal: opened again to read its sizes afresh", self.id, device.name)
                     forget_refusals(device.name)
@@ -1037,7 +1062,51 @@ _closing: dict[tuple, _Feed] = {}  # feeds told to stop without waiting (a sourc
 _feeds_lock = threading.Lock()
 
 
-_PER_SOURCE = ("pause_off_screen", "width", "height", "fps")  # a shared feed takes the biggest mode (_Feed.widen)
+_PER_SOURCE = ("pause_off_screen", "width", "height", "fps", "delay_ms")  # a shared feed takes the biggest mode
+# (_Feed.widen) and the longest delay (_Feed.delay)
+
+MAX_DELAY_MS = 1000
+
+
+def delay_of(settings: dict[str, Any]) -> float:
+    """A source's Video delay in seconds (settings["delay_ms"], 0 to MAX_DELAY_MS)."""
+    try:
+        return max(0, min(MAX_DELAY_MS, int(settings.get("delay_ms") or 0))) / 1000
+    except (TypeError, ValueError):
+        return 0.0
+
+
+class DelayLine:
+    """A camera's pictures held back `seconds` after they came (Python reads the camera; the engine's player
+    holds its own). The voice through Wave Link, NVIDIA Broadcast and Voicemod reached the stream about 0.4 s
+    after the mouth moved (the PC, 2026-11-25): holding the picture back as long lines them up again. Holds at
+    most MAX_HELD pictures; the newest due one is what shows."""
+
+    MAX_HELD = 128
+    _now = staticmethod(time.monotonic)
+
+    def __init__(self) -> None:
+        self._held: deque = deque()
+        self._lock = threading.Lock()
+
+    def put(self, item, now: float | None = None) -> None:
+        with self._lock:
+            self._held.append((self._now() if now is None else now, item))
+            while len(self._held) > self.MAX_HELD:
+                self._held.popleft()
+
+    def take(self, seconds: float, now: float | None = None):
+        """The newest picture that has waited `seconds`, or None (nothing new is due)."""
+        due = (self._now() if now is None else now) - seconds
+        found = None
+        with self._lock:
+            while self._held and self._held[0][0] <= due:
+                found = self._held.popleft()[1]
+        return found
+
+    def clear(self) -> None:
+        with self._lock:
+            self._held.clear()
 
 
 def _feed_key(settings: dict[str, Any]) -> tuple:
@@ -1061,6 +1130,7 @@ class CameraSource(Source):
         self._status = "starting"
         super().__init__(source_id, settings)
         self._frames: Mailbox[np.ndarray] = Mailbox()
+        self._held = DelayLine()  # with a Video delay, while Python reads the camera
         self._size = (int(settings.get("width", 1280)), int(settings.get("height", 720)))
         self.status = "starting"
 
@@ -1212,7 +1282,8 @@ class CameraSource(Source):
                 return None
             frame, self.channel_order = got
             return frame
-        item = self._frames.take()
+        seconds = delay_of(self.settings)
+        item = self._held.take(seconds) if seconds > 0 else self._frames.take()
         if item is None:
             return None
         frame, self.channel_order = item
@@ -1233,4 +1304,8 @@ class CameraSource(Source):
         if self.settings.get("mirror"):
             frame = mirror_picture(frame, order, size)
         self._size = self.fit(full or size)
-        self._frames.put((frame, order))
+        if delay_of(self.settings) > 0:  # kept a while: its own copy (the feed may reuse its picture)
+            self._held.put((frame.copy(), order))
+        else:
+            self._held.clear()
+            self._frames.put((frame, order))

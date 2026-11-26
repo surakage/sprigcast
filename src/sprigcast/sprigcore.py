@@ -25,7 +25,7 @@ from pathlib import Path
 
 log = logging.getLogger("sprigcast.native")
 
-INTERFACE_VERSION = 44  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
+INTERFACE_VERSION = 45  # include/sprigcore.h SC_INTERFACE_VERSION this module was written for
 PUSH_OFF, PUSH_TALK, PUSH_MUTE = 0, 1, 2  # sc_mixer_push_set modes
 DLL_NAME = "sprigcore.dll"
 
@@ -1483,6 +1483,7 @@ def _media_sigs() -> dict:
         "sc_media_ffmpeg_load_devices": (c_int, [text]),
         "sc_media_set_device": (c_int, [vp, text, text, c_int, c_int]),
         "sc_media_set_mirror": (c_int, [vp, c_int]),
+        "sc_media_set_delay": (c_int, [vp, ctypes.c_double]),
         "sc_media_control": (c_int, [vp, c_int, ctypes.c_double]),
         "sc_media_set_shrink": (c_int, [vp, ctypes.c_float]),
         "sc_media_info_get": (c_int, [vp, ctypes.POINTER(MediaInfo)]),
@@ -1761,6 +1762,10 @@ class MediaPlayer:
 
     def set_mirror(self, mirror: bool) -> None:
         self._call(self._lib.sc_media_set_mirror, int(bool(mirror)))
+
+    def set_delay(self, seconds: float) -> None:
+        """A camera's pictures shown this long after they came (at most 1 s): see sources/camera.py delay_ms."""
+        _check(self._call(self._lib.sc_media_set_delay, max(0.0, float(seconds))))
 
     def control(self, what: int, value: float = 0.0) -> None:
         _check(self._call(self._lib.sc_media_control, what, float(value)))

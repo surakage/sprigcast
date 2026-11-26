@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 44
+#define SC_INTERFACE_VERSION 45
 
 enum {
     SC_OK = 0,
@@ -944,6 +944,9 @@ SC_API int sc_media_set_file(sc_media *media, const char *path, int video, int p
  * sc_media_set_shrink makes it smaller, as for files. Needs sc_media_ffmpeg_load_devices. */
 SC_API int sc_media_set_device(sc_media *media, const char *format, const char *choices, int fps, int mirror);
 SC_API int sc_media_set_mirror(sc_media *media, int mirror);
+/* A camera's pictures shown `seconds` after they came (0 = the newest at once, the most is 1): to line a camera up
+ * with a sound that arrives late. Held pictures wait in memory (at most 128). */
+SC_API int sc_media_set_delay(sc_media *media, double seconds);
 SC_API int sc_media_control(sc_media *media, int what, double value);
 /* Shown at most `shrink` of its size anywhere (1, 1/2, 1/4): the next pictures are made that small. */
 SC_API int sc_media_set_shrink(sc_media *media, float shrink);

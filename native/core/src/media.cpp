@@ -143,6 +143,8 @@ AVPixelFormat pick_format(AVCodecContext *ctx, const AVPixelFormat *offered) {
 
 // ---- the player -----------------------------------------------------------------------------------------------
 
+constexpr size_t MAX_HELD_FRAMES = 128;   // a held-back camera keeps at most this many (1 s at 120 fps)
+constexpr double MAX_DELAY_S = 1.0;
 constexpr size_t AHEAD_FRAMES = 3;       // pictures decoded ahead of the one on screen (a 1080p picture is 3-5 MB)
 constexpr double AHEAD_AUDIO_S = 1.0;    // sound decoded ahead of what's playing
 constexpr double SYNC_S = 0.08;          // sound further off the clock than this is skipped or waited for
@@ -313,6 +315,9 @@ struct Core : std::enable_shared_from_this<Core> {
     std::string refusal_said;      // the modes a camera refused, as last logged (said again only when it changes)
     bool opening_said = false;     // "opening a camera" is in the log for this run of tries (until it opens)
     std::atomic<bool> mirror{false};
+    // A camera's pictures held back this long before they show (sc_media_set_delay): lines a camera up with a mic
+    // whose sound arrives late through other apps (a voice 0.4 s behind the mouth on the PC, 2026-11-25).
+    double live_delay = 0;
     bool loop = false, clear_on_end = false, restart_on_show = true;
     float speed_setting = 1.0f;
 
@@ -413,6 +418,20 @@ struct Core : std::enable_shared_from_this<Core> {
             on_screen = nullptr;
             on_screen_blank = true;
             ++screen_serial;
+            return;
+        }
+        if (live && live_delay > 0) {  // a held-back camera: the newest picture that has waited long enough
+            const double due = now_s() - live_delay;
+            size_t found = frames.size();
+            for (size_t i = 0; i < frames.size() && frames[i].first <= due; ++i) found = i;
+            if (found < frames.size()) {
+                on_screen = frames[found].second;
+                on_screen_blank = false;
+                ++screen_serial;
+                has_shown = true;
+                frames.erase(frames.begin(), frames.begin() + static_cast<std::ptrdiff_t>(found) + 1);
+                wake.notify_all();
+            }
             return;
         }
         if (live) {  // a camera: the newest picture, as soon as it's decoded
@@ -954,9 +973,21 @@ bool Core::rewind(Held &held) {
     return true;
 }
 
+PicturePtr card_to_memory(const Picture &on_card);
+
 bool Core::push_frame(double t, PicturePtr picture, uint64_t gen, uint64_t serial) {
     std::unique_lock<std::mutex> hold(lock);
-    if (live) {  // a camera never waits for the screen: an older picture nobody took is dropped
+    if (live && live_delay > 0) {  // held back: kept, by when it came, until it is due (advance)
+        if (picture->card) {  // the decoder's own textures are few: a held picture waits in memory
+            hold.unlock();
+            PicturePtr copy = card_to_memory(*picture);
+            hold.lock();
+            if (!copy) return current(gen, serial);
+            picture = std::move(copy);
+        }
+        t = now_s();
+        while (frames.size() >= MAX_HELD_FRAMES) frames.pop_front();
+    } else if (live) {  // a camera never waits for the screen: an older picture nobody took is dropped
         while (frames.size() >= 2) frames.pop_front();
     } else {
         wake.wait(hold, [&] { return !current(gen, serial) || frames.size() < AHEAD_FRAMES; });
@@ -1706,6 +1737,17 @@ SC_API int sc_media_set_device(sc_media *media, const char *format, const char *
 SC_API int sc_media_set_mirror(sc_media *media, int mirror) {
     if (!media) return SC_ERR_ARGUMENT;
     media->core->mirror.store(mirror != 0);
+    return SC_OK;
+}
+
+SC_API int sc_media_set_delay(sc_media *media, double seconds) {
+    if (!media || !(seconds >= 0)) return SC_ERR_ARGUMENT;
+    Core &c = *media->core;
+    std::lock_guard<std::mutex> hold(c.lock);
+    c.live_delay = std::min(seconds, MAX_DELAY_S);
+    if (c.live_delay <= 0) {  // from now on the newest picture only
+        while (c.frames.size() >= 2) c.frames.pop_front();
+    }
     return SC_OK;
 }
 

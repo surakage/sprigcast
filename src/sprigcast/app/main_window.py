@@ -4740,7 +4740,7 @@ class MainWindow(QMainWindow):
     def _swap_camera(self, source_id: str, device) -> None:
         """Point a camera source at another device, keeping its size and frame rate where that device can."""
         config = self.collection.source(source_id)
-        wanted = {k: config.settings[k] for k in ("width", "height", "fps", "mirror", "pause_off_screen")
+        wanted = {k: config.settings[k] for k in ("width", "height", "fps", "mirror", "pause_off_screen", "delay_ms")
                   if k in config.settings}
         dialog = CameraDialog([device], {"name": device.name, "path": device.path, **wanted}, self,
                               max_fps=self._camera_max_fps())
