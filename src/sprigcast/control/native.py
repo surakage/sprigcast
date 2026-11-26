@@ -49,6 +49,7 @@ API_VERSION = 0  # 0 = preview: names and fields may still change. 1 once it set
 FEATURES = (
     "bloom.new",           # bloom.new, bloom.remove, source.new, item.add
     "places.status",       # stream.status places, place.start, place.stop
+    "youtube.viewers",     # youtube.viewers: how many watch on YouTube while live there
     "screenshot.source",   # screenshot.take with source or bloom
     "plugins.enabled",     # plugins.list: id, enabled, store plugins not added
     "plugin.missing",      # plugin_missing error
@@ -1385,6 +1386,16 @@ class NativeApi:
         out = self._status(self.host.stream_status())
         out["places"] = self._places_now()
         return out
+
+    @action("youtube.viewers", "While live on YouTube: how many watch, in all and on each YouTube stream "
+            "(read from YouTube at most once a minute; never waits). Not live there or not signed in: live false.")
+    def youtube_viewers(self, data):
+        from sprigcast.output.youtube_viewers import viewers
+
+        running = getattr(self.host, "stream_places", dict)() or {}
+        places = [(o.canvas, o.key_ref) for o in self.col.outputs
+                  if o.type == "stream" and o.service == "youtube" and o.id in running]
+        return viewers(places)
 
     def _places_now(self) -> list[dict[str, Any]]:
         """Each place: id, name, on (sending now), reconnecting, seconds, skipped and frames."""

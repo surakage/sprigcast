@@ -113,6 +113,7 @@ These codes are never renamed; new ones may be added. `app.actions` returns ever
 | --- | --- |
 | `bloom.new` | bloom.new, bloom.remove, source.new, item.add |
 | `places.status` | stream.status places, place.start, place.stop |
+| `youtube.viewers` | youtube.viewers |
 | `screenshot.source` | screenshot.take with source or bloom |
 | `plugins.enabled` | plugins.list: id, enabled, store plugins not added |
 | `plugin.missing` | plugin_missing error |
@@ -438,6 +439,14 @@ A Text source's settings (`source.get` shows them all, `source.set` changes the 
 | --- | --- | --- |
 | `transition.get` | The usual transition, its length and (Move) how it moves. | none |
 | `transition.set` | Change the usual transition, its length and (Move) how it moves. | `kind` (optional): cut, fade, move, slide, swipe, wipe, leaf, bloom, stinger, `ms` (optional): length in milliseconds, 50 to 20000, `easing` (optional): Move only: smooth, ease_out, ease_in, linear, spring, `unmatched` (optional): Move only, what only one bloom shows: fade, scale, slide |
+
+### youtube
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `youtube.viewers` | While live on YouTube: how many watch, in all and on each YouTube stream (read from YouTube at most once a minute; never waits). Not live there or not signed in: live false. | none |
+
+The answer while live: `{"live": true, "viewers": 4, "broadcasts": [{"canvas": "horizontal", "viewers": 3}, {"canvas": "vertical", "viewers": 1}], "updatedAt": "2026-11-26T23:20:00Z"}`. `viewers` is null until the first read is in (a few seconds after going live or the first ask). A vertical stream that joins the horizontal one through YouTube's Dual stream is counted once, with it. Nobody asking: nothing is read from YouTube.
 
 ## Web page sources
 

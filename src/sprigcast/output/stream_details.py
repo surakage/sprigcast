@@ -182,6 +182,10 @@ def sign_out(service: str) -> None:
     except Exception:  # noqa: BLE001
         log.warning("stream details: couldn't clear the %s sign-in", service, exc_info=True)
     _remember(service, "")
+    if service == "youtube":
+        from sprigcast.output import youtube_viewers
+
+        youtube_viewers.forget()
     if not raw:
         return
     try:
