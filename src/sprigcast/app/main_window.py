@@ -2709,6 +2709,9 @@ class MainWindow(QMainWindow):
         self.palette_button.setCursor(Qt.CursorShape.PointingHandCursor)
         # Opened once the click has finished, so the pop-up doesn't take the mouse in the middle of it
         self.palette_button.clicked.connect(lambda: QTimer.singleShot(0, self, self._open_palette))
+        # The first click after start-up opened nothing and logged nothing once (PC 2026-11-26): say when the button
+        # itself first hears a press, so the next log tells a lost click from a pop-up that didn't show.
+        self.palette_button.pressed.connect(self._palette_first_press)
         self.screenshot_button.setStyleSheet(self.palette_button.styleSheet())
         bar.addWidget(self.palette_button)
         self.settings_button = QToolButton()
@@ -9083,6 +9086,11 @@ class MainWindow(QMainWindow):
         made = build_starter(self.collection, choice)
         self._after_starter(made)
         return made
+
+    def _palette_first_press(self) -> None:
+        if not getattr(self, "_palette_pressed", False):
+            self._palette_pressed = True
+            log.info("command search: button pressed (first time)")
 
     def _open_palette(self) -> CommandPalette:
         theme.ui_burst()  # (as modal() does)

@@ -40,6 +40,10 @@ EXTRA = [
      "Web page sources and web panels. The full list of Chromium's parts and licenses is at "
      "https://source.chromium.org/chromium/chromium/src/+/main:LICENSE and in Qt WebEngine's attributions "
      "(https://doc.qt.io/qt-6/qtwebengine-licensing.html)."),
+    ("adb (Android platform-tools)", "Apache 2.0 / Android SDK terms",
+     "Not shipped with SprigCast: downloaded from Google on request, for Android Screen, into SprigCast's app "
+     "data with Google's NOTICE.txt beside it. It runs as a separate program. Terms: "
+     "https://developer.android.com/studio/terms"),
     ("Qt WebEngine with H.264/AAC", "LGPL 3.0",
      "An unmodified Qt WebEngine source release built with proprietary_codecs on, so web pages can play MP4 "
      "clips (packaging/webengine_codecs.py says how). H.264 and AAC may be covered by patents in some "

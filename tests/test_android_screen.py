@@ -158,3 +158,67 @@ def test_phone_leaves_are_listed_as_their_own_kind(tmp_path, monkeypatch):
         assert [c.name for c in w._existing_of_kind("browser:phone")] == ["Phone Camera"]
     finally:
         w.close()
+
+
+def test_adb_is_unpacked_from_googles_zip_with_its_notice(tmp_path):
+    import zipfile
+
+    zip_path = tmp_path / "platform-tools.zip"
+    with zipfile.ZipFile(zip_path, "w") as z:
+        for name in ("adb.exe", "adb", "AdbWinApi.dll", "AdbWinUsbApi.dll", "NOTICE.txt", "fastboot.exe",
+                     "source.properties"):
+            z.writestr(f"platform-tools/{name}", name)
+        z.writestr("platform-tools/lib64/libc++.so", "x")
+        z.writestr("../evil", "x")
+    adb = screen.install_adb(zip_path, tmp_path / "home")
+    kept = sorted(p.name for p in (tmp_path / "home" / "platform-tools").iterdir())
+    assert kept == ["AdbWinApi.dll", "AdbWinUsbApi.dll", "NOTICE.txt", "adb", "adb.exe", "source.properties"]
+    assert adb.name in ("adb", "adb.exe") and not (tmp_path / "evil").exists()
+
+
+def test_a_downloaded_adb_is_found(tmp_path, monkeypatch):
+    monkeypatch.setattr(screen.shutil, "which", lambda name: None)
+    monkeypatch.delenv("ANDROID_HOME", raising=False)
+    monkeypatch.delenv("ANDROID_SDK_ROOT", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "none"))
+    monkeypatch.setattr(screen.Path, "home", lambda: tmp_path / "nohome")
+    monkeypatch.setattr(screen, "ADB_HOME", tmp_path / "adb")
+    assert screen.find_adb() is None
+    name = "adb.exe" if sys.platform == "win32" else "adb"
+    (tmp_path / "adb" / "platform-tools").mkdir(parents=True)
+    (tmp_path / "adb" / "platform-tools" / name).write_text("x")
+    assert screen.find_adb() == str(tmp_path / "adb" / "platform-tools" / name)
+
+
+def test_the_download_card_fetches_and_closes():
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    from sprigcast.app.android_screen_dialog import AdbDownloadCard
+
+    calls = []
+
+    def fake(progress, cancelled):
+        progress(3_500_000, 7_000_000)
+        calls.append(True)
+
+    card = AdbDownloadCard(download=fake)
+    card.start()
+    for _ in range(100):
+        app.processEvents()
+        if card.result():
+            break
+        time.sleep(0.02)
+    assert calls and card.result() == 1
+
+    def broken(progress, cancelled):
+        raise OSError("no network")
+
+    card2 = AdbDownloadCard(download=broken)
+    card2.start()
+    for _ in range(100):
+        app.processEvents()
+        if card2.go.isEnabled():
+            break
+        time.sleep(0.02)
+    assert card2.go.text() == "Try again" and "try again" in card2.progress.text()
