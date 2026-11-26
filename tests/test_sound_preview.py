@@ -241,3 +241,24 @@ def test_the_wave_takes_column_peaks_in_one_step_and_a_slow_paint_slows_the_view
     for _ in range(30):
         view._paced(1.0)  # quick again: back up to the full rate
     assert view.timer.interval() == SoundView.EVERY_MS
+
+
+def test_a_picked_listen_button_keeps_its_whole_word():
+    """26r (2026-11-26): "After" was cut to "Afte" once picked, in its bolder type."""
+    app = _app()
+    from PySide6.QtGui import QFont, QFontMetrics
+
+    from sprigcast.app.filters_dialog import FiltersDialog
+
+    source = SourceConfig(id="mic", kind="audio_input", name="Mic",
+                          filters=[Filter(id="e", kind="echo_reducer", name="Echo Reducer")])
+    d = FiltersDialog(source, lambda save=True: None, hear=lambda sid, filters: FakeHear())
+    d.resize(664, 628)
+    d.show()
+    d.sound_view.listen_buttons["after"].click()
+    app.processEvents()
+    for b in d.sound_view.listen_buttons.values():
+        bold = QFont(b.font())
+        bold.setWeight(QFont.Weight(650))
+        assert b.width() >= QFontMetrics(bold).horizontalAdvance(b.text()) + 2 * 16
+    d.reject()

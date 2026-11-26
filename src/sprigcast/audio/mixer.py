@@ -83,7 +83,10 @@ class Ducking:
 def is_voice(source) -> bool:
     """Whether a source leads ducking: mics do unless switched off ("duck_voice": False)."""
     settings = getattr(source, "settings", {}) or {}
-    return bool(settings.get("duck_voice", getattr(source, "kind", "") == "audio_input"))
+    kind = getattr(source, "kind", "")
+    # A Phone Camera's sound is the phone's mic: a voice too, even one added before new ones were marked so
+    # (26r, 2026-11-26: the recording's voice track, named "Mic", stayed silent with only the phone's mic).
+    return bool(settings.get("duck_voice", kind == "audio_input" or (kind == "browser" and bool(settings.get("phone")))))
 
 
 def is_monitored(source) -> bool:

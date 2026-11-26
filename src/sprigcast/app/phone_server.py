@@ -742,7 +742,18 @@ canvas { position: fixed; inset: 0; visibility: hidden; }</style></head>
   const v = document.getElementById("v"), held = document.getElementById("held");
   let n = 0;
   const wide = (w, h) => w > h * 1.05 ? 1 : h > w * 1.05 ? -1 : 0;
+  // No new picture for STALE_MS (the phone's screen went off, its page closed): the leaf goes blank instead of
+  // keeping the last picture frozen, and shows again with the next picture (26r, 2026-11-26).
+  const STALE_MS = 2000;
+  let last = performance.now(), when = -1;
+  setInterval(() => {
+    if (!v.requestVideoFrameCallback && v.currentTime !== when) { when = v.currentTime; last = performance.now(); }
+    const stale = performance.now() - last > STALE_MS;
+    v.style.visibility = stale ? "hidden" : "visible";
+    if (stale) held.style.visibility = "hidden";
+  }, 250);
   const look = () => {
+    if (v.requestVideoFrameCallback) { last = performance.now(); v.style.visibility = "visible"; }
     const pic = wide(v.videoWidth, v.videoHeight), page = wide(innerWidth, innerHeight);
     const turning = pic !== 0 && page !== 0 && pic !== page;
     if (turning) {

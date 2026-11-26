@@ -22,7 +22,7 @@ AUDIO_KINDS = ("audio_input", "audio_output", "app_audio", "media")
 
 
 def is_voice(settings: dict, kind: str) -> bool:
-    return bool(settings.get("duck_voice", kind == "audio_input"))
+    return bool(settings.get("duck_voice", kind == "audio_input" or (kind == "browser" and bool(settings.get("phone")))))
 
 
 def _slider(low: int, high: int, value: float, fmt: str, name: str = "") -> tuple[QWidget, QSlider]:

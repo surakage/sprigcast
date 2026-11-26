@@ -403,3 +403,26 @@ def test_a_turned_phone_reshapes_without_waiting_for_the_source_report():
     win._turn_phone_cameras = lambda: False
     MainWindow._phone_turn_tick(win)
     assert calls == ["changed"]
+
+
+def test_the_view_goes_blank_when_the_phone_stops_sending():
+    """26r (2026-11-26): with the phone's screen off or its page closed, the leaf kept the last picture frozen.
+    No new picture for STALE_MS hides it (checked in Chromium: hidden 3 s after a stream stopped)."""
+    page = phone_server.VIEW_PAGE
+    assert "STALE_MS = 2000" in page and 'v.style.visibility = stale ? "hidden" : "visible"' in page
+
+
+def test_an_older_phone_camera_is_a_voice_too():
+    """26r (2026-11-26): a Phone Camera added before new ones were marked a voice left the recording's voice track
+    (named "Mic") silent."""
+    from types import SimpleNamespace
+
+    from sprigcast.app.ducking_dialog import is_voice as shown_voice
+    from sprigcast.audio.mixer import is_voice, source_tracks
+
+    old = SimpleNamespace(kind="browser", name="Phone Camera", settings={"phone": "abc", "audio_to_mixer": True})
+    page = SimpleNamespace(kind="browser", name="Alerts", settings={})
+    assert is_voice(old) and "voice" in source_tracks(old) and shown_voice(old.settings, old.kind)
+    assert not is_voice(page) and "voice" not in source_tracks(page)
+    old.settings["duck_voice"] = False  # switched off by hand: stays off
+    assert not is_voice(old)
