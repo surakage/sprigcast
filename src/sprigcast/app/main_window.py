@@ -1909,7 +1909,9 @@ class MainWindow(QMainWindow):
         panel = QWidget()
         panel.setStyleSheet(theme.SOFT_FIELD_STYLE)
         col = QVBoxLayout(panel)
-        col.setContentsMargins(6, 0, 16, 8)  # breathing room from the window edge
+        # The scroll bar brings its own gap, so the right margin is small: wider, and the cards were cut off under
+        # the scroll bar whenever it showed (26s: Filters and every card's right edge, the user's screenshot).
+        col.setContentsMargins(2, 0, 6, 12)
         col.setSpacing(10)
 
         self.prop_sections: list[QWidget] = []  # hidden while nothing is selected

@@ -248,3 +248,25 @@ def test_a_sprigs_icon_follows_its_leaves(tmp_path, monkeypatch):
         assert icon_kind() == "empty"
     finally:
         w.close()
+
+
+def test_the_inspector_fits_beside_its_scroll_bar(tmp_path, monkeypatch):
+    """26s (2026-11-26): on a 979 px tall window the inspector scrolled, and its scroll bar covered Filters and the
+    right edge of every card. The page now fits in what the scroll bar leaves."""
+    from PySide6.QtWidgets import QApplication, QScrollArea
+
+    col, w = _window(tmp_path, monkeypatch)
+    try:
+        w.resize(1886, 979)
+        w.show()
+        w._set_mode("build")
+        w.source_list.setCurrentRow(0)
+        w._refresh_properties()
+        QApplication.processEvents()
+        area = w.prop_name
+        while area is not None and not isinstance(area, QScrollArea):
+            area = area.parentWidget()
+        bar = area.verticalScrollBar().sizeHint().width()
+        assert area.widget().minimumSizeHint().width() <= area.width() - bar
+    finally:
+        w.close()
