@@ -123,11 +123,11 @@ def test_the_leaves_menu_offers_copy_and_paste(tmp_path, monkeypatch):
     try:
         _select(w, "p1", "text-1")
         texts = [a.text() for a in w._source_menu(True).actions()]
-        assert "Copy" in texts and "Paste" not in texts and "Paste as its own copy" not in texts
+        assert "Copy" in texts and "Paste" not in texts and "Duplicate" not in texts
         assert not w.item_actions["paste"].isEnabled()
         w.item_actions["copy"].trigger()
         texts = [a.text() for a in w._source_menu(False).actions()]
-        assert "Paste" in texts and "Paste as its own copy" in texts
+        assert "Paste" in texts and "Duplicate" in texts
         assert w.item_actions["paste"].isEnabled()
     finally:
         w.close()

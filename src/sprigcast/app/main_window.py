@@ -3228,7 +3228,7 @@ class MainWindow(QMainWindow):
         lines += [("Ctrl+1", "Live"), ("Ctrl+2", "Build"), ("Ctrl+K", "Search"), ("Ctrl+,", "Settings"),
                   ("Ctrl + wheel", "Zoom the canvas"), ("Space + drag, middle drag", "Pan the canvas"),
                   ("Ctrl+0", "Fit the canvas"), ("Alt + drag a side", "Crop"),
-                  ("Ctrl+C", "Copy leaves"), ("Ctrl+V", "Paste leaves"), ("Ctrl+Shift+V", "Paste as its own copy"),
+                  ("Ctrl+C", "Copy leaves"), ("Ctrl+V", "Paste leaves"), ("Ctrl+Shift+V", "Duplicate leaves"),
                   ("Shift + drag a corner", "Free shape (or keep it, if Keep shape is off)")]
         seen, unique = set(), []
         for keys, text in lines:
@@ -5879,7 +5879,7 @@ class MainWindow(QMainWindow):
             ("rename", "Rename…", "F2", self._rename_selected),
             ("copy", "Copy", "Ctrl+C", self._copy_leaves),
             ("paste", "Paste", "Ctrl+V", lambda: self._paste_leaves()),
-            ("paste_own", "Paste as its own copy", "Ctrl+Shift+V", lambda: self._paste_leaves(own=True)),
+            ("paste_own", "Duplicate", "Ctrl+Shift+V", lambda: self._paste_leaves(own=True)),
             ("remove", "Remove", "Delete", self._remove_item),
         )
         for key, text, shortcut, slot in table:
@@ -5895,7 +5895,7 @@ class MainWindow(QMainWindow):
             self.item_actions[key] = action
 
     # Copy and paste leaves (user 2026-11-26): from one sprig to another, with their place, size, crop and effects.
-    # Paste puts the same leaf in (it runs once, its settings and filters stay shared); Paste as its own copy makes
+    # Paste puts the same leaf in (it runs once, its settings and filters stay shared); Duplicate makes
     # a separate leaf to change on its own, for the kinds that don't open a device (a camera or capture opened
     # twice breaks, so those are always shared).
     OWN_COPY_KINDS = ("text", "image", "color", "browser", "media", "chat", "pngtuber")
