@@ -422,7 +422,7 @@ def test_the_phones_sound_reaches_the_mixer(fake_adb, tmp_path):
         calls = log.read_text()
         assert f"push {jar} {screen.SOUND_ON_PHONE}" in calls and screen.SOUND_CLASS in calls
         time.sleep(0.6)  # the mixer reads nothing for a while: it never falls more than a moment behind
-        assert source._sound_frames <= screen.SOUND_KEEP_S * screen.SOUND_RATE + 960
+        assert source._sound_frames <= (screen.SOUND_KEEP_S + screen.SHOW_AFTER_S) * screen.SOUND_RATE + 960
         recording = source._thread
         source.update({**source.settings, "volume_db": -6.0, "muted": True})
         assert source._thread is recording and source.gain == 0.0  # the picture didn't start again
@@ -551,3 +551,21 @@ def test_the_last_good_picture_stays_through_a_turn(monkeypatch):
     assert not source._held(1, turned)  # held too long (no next recording): it shows anyway
     source._hold, source._not_turned = None, 3
     assert not source._held(3, turned)  # the phone hadn't turned: a dark scene, shown
+
+
+def test_a_turn_takes_back_the_pictures_still_waiting(monkeypatch):
+    """26o (2026-11-26): each turn still showed 1-2 frames sent while the phone was turning (sideways in the old
+    box, the phone's own turning animation). Pictures wait SHOW_AFTER_S, so a turn found later can take them back."""
+    source = screen.AndroidScreenSource("android-1", dict(screen.DEFAULTS))
+    now = [100.0]
+    monkeypatch.setattr(screen.time, "monotonic", lambda: now[0])
+    old, new = np.zeros((4, 8, 4), np.uint8), np.ones((8, 4, 4), np.uint8)
+    source._waiting = [(99.9, 1, old, 1, (8, 4)), (99.95, 1, old, 2, (8, 4)), (100.0, 2, new, 3, (4, 8))]
+    source._release()
+    assert source._frames.take() is None  # none is SHOW_AFTER_S old yet
+    source._hold_from(1)  # the turn: recording 1's waiting pictures never show
+    assert [w[1] for w in source._waiting] == [2]
+    now[0] += screen.SHOW_AFTER_S
+    source._release()
+    picture, order = source._frames.take()
+    assert order == 3 and picture is new and source._size == (4, 8)
