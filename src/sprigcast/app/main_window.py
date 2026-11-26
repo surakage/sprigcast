@@ -1336,8 +1336,8 @@ class MainWindow(QMainWindow):
         acts["paste"].setEnabled(bool(self._leaf_clipboard))
         if self._leaf_clipboard:  # nothing copied yet: no Paste row making the menu longer
             menu.addAction(acts["paste"])
-        if self._can_paste_own():
-            menu.addAction(acts["paste_own"])
+        if on_item:
+            menu.addAction(acts["duplicate"])  # one step, no Copy first (Ctrl+Shift+V pastes copies as their own)
 
     def _add_filter_copy_paste(self, menu: QMenu, item: SceneItem | None) -> None:
         """Copy filters when the leaf has some; Paste filters once copied ones fit it (picture or sound)."""
@@ -3241,7 +3241,8 @@ class MainWindow(QMainWindow):
         lines += [("Ctrl+1", "Live"), ("Ctrl+2", "Build"), ("Ctrl+K", "Search"), ("Ctrl+,", "Settings"),
                   ("Ctrl + wheel", "Zoom the canvas"), ("Space + drag, middle drag", "Pan the canvas"),
                   ("Ctrl+0", "Fit the canvas"), ("Alt + drag a side", "Crop"),
-                  ("Ctrl+C", "Copy leaves"), ("Ctrl+V", "Paste leaves"), ("Ctrl+Shift+V", "Duplicate leaves"),
+                  ("Ctrl+C", "Copy leaves"), ("Ctrl+V", "Paste leaves"), ("Ctrl+D", "Duplicate leaves"),
+                  ("Ctrl+Shift+V", "Paste as separate leaves"),
                   ("Ctrl+Alt+C", "Copy a leaf's filters"), ("Ctrl+Alt+V", "Paste filters onto a leaf"),
                   ("Shift + drag a corner", "Free shape (or keep it, if Keep shape is off)")]
         seen, unique = set(), []
@@ -5937,7 +5938,8 @@ class MainWindow(QMainWindow):
             ("rename", "Rename…", "F2", self._rename_selected),
             ("copy", "Copy", "Ctrl+C", self._copy_leaves),
             ("paste", "Paste", "Ctrl+V", lambda: self._paste_leaves()),
-            ("paste_own", "Duplicate", "Ctrl+Shift+V", lambda: self._paste_leaves(own=True)),
+            ("paste_own", "Paste as separate leaves", "Ctrl+Shift+V", lambda: self._paste_leaves(own=True)),
+            ("duplicate", "Duplicate", "Ctrl+D", self._duplicate_leaves),
             ("copy_filters", "Copy filters", "Ctrl+Alt+C", self._copy_leaf_filters),
             ("paste_filters", "Paste filters", "Ctrl+Alt+V", self._paste_leaf_filters),
             ("remove", "Remove", "Delete", self._remove_item),
@@ -5961,6 +5963,27 @@ class MainWindow(QMainWindow):
     OWN_COPY_KINDS = ("text", "image", "color", "browser", "media", "chat", "pngtuber")
 
     def _copy_leaves(self) -> None:
+        picked = self._picked_leaves()
+        if picked:
+            self._leaf_clipboard = picked
+            count = len(picked)
+            self.statusBar().showMessage(
+                "Copied " + (f"{count} leaves" if count > 1 else picked[0][1].name) + ".", 3000)
+
+    def _duplicate_leaves(self) -> None:
+        """Duplicate (Ctrl+D): the selected leaves again in this sprig, in one step (no Copy first), a little down
+        and right so the new one shows. A text, picture, page... is a separate leaf to change on its own; a camera
+        or capture is the same leaf placed again (opened twice it breaks)."""
+        picked = self._picked_leaves()
+        if not picked:
+            return
+        for item, _ in picked:
+            item.x += 40
+            item.y += 40
+        self._paste_leaves(own=True, leaves=picked)
+
+    def _picked_leaves(self) -> list:
+        """The selected leaves as (item, source) copies, bottom first as they're stacked."""
         scene = self._scene()
         rows = sorted({self.source_list.row(r) for r in self.source_list.selectedItems()}, reverse=True)
         if scene is None or not rows:
@@ -5969,12 +5992,8 @@ class MainWindow(QMainWindow):
         indices = [len(scene.items) - 1 - row for row in rows] if scene is not None else []
         picked = [scene.items[i] for i in indices if 0 <= i < len(scene.items)]  # bottom first, as stacked
         sources = {c.id: c for c in self.collection.sources}
-        self._leaf_clipboard = [(item.model_copy(deep=True), sources[item.source].model_copy(deep=True))
-                                for item in picked if item.source in sources]
-        if self._leaf_clipboard:
-            count = len(self._leaf_clipboard)
-            self.statusBar().showMessage(
-                "Copied " + (f"{count} leaves" if count > 1 else self._leaf_clipboard[0][1].name) + ".", 3000)
+        return [(item.model_copy(deep=True), sources[item.source].model_copy(deep=True))
+                for item in picked if item.source in sources]
 
     def _filter_medias(self, config: SourceConfig) -> set[str]:
         from sprigcast.app.filters_dialog import media_of
@@ -6011,20 +6030,18 @@ class MainWindow(QMainWindow):
         self._refresh_previews()
         self.statusBar().showMessage(f"Pasted {pasted} filter{'s' if pasted > 1 else ''}.", 3000)
 
-    def _can_paste_own(self) -> bool:
-        return any(config.kind in self.OWN_COPY_KINDS for _, config in self._leaf_clipboard)
-
-    def _paste_leaves(self, own: bool = False) -> None:
+    def _paste_leaves(self, own: bool = False, leaves: list | None = None) -> None:
         """The copied leaves on top of the selected sprig (a bloom's own sprig, for a bloom), where they were."""
         scene = self._scene()
-        if scene is None or not self._leaf_clipboard:
+        leaves = self._leaf_clipboard if leaves is None else leaves
+        if scene is None or not leaves:
             return
-        if scene.kind == "show" and any(config.kind != PART_KIND for _, config in self._leaf_clipboard):
+        if scene.kind == "show" and any(config.kind != PART_KIND for _, config in leaves):
             scene = self._open_bloom_sprig(scene)  # blooms hold sprigs only
         sources = {c.id: c for c in self.collection.sources}
         names = {c.name.casefold() for c in self.collection.sources}
         pasted, refused = 0, []
-        for item, copied in self._leaf_clipboard:
+        for item, copied in leaves:
             config = sources.get(copied.id)
             if copied.kind == PART_KIND:  # a sprig: its own placement (its "just in this bloom" tweaks live there)
                 part = next((s for s in self.collection.scenes if s.id == copied.settings.get("scene")), None)
