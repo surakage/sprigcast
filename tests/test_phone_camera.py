@@ -220,3 +220,23 @@ def test_the_page_serves_with_truststore_standing_in(tmp_path, monkeypatch):
         assert _get(f"https://127.0.0.1:{srv.phone_port}/phone/code1")[0] == 200
     finally:
         srv.use([])
+
+
+def test_the_leaf_page_says_what_it_receives(server, caplog):
+    """On the PC the leaf stayed black with no word why (2026-11-26): its page now reports what arrives (once
+    per change, nothing personal), and asks for VP8 first, decoded the same way in every page engine."""
+    import logging
+
+    view = server.view_url("code1")
+    assert b"setCodecPreferences" in _get(view)[1]
+    report = {"connection": "connected", "codec": "video/VP8", "frames": 12, "width": 1280, "height": 720,
+              "audio": "arriving", "player": "playing-4"}
+    with caplog.at_level(logging.INFO, logger="sprigcast.app.phone_server"):
+        _get(view + "/report", json.dumps(report).encode())
+        _get(view + "/report", json.dumps(report).encode())  # the same again: not logged twice
+        _get(view + "/report", b"not json")
+    lines = [r.getMessage() for r in caplog.records if "on this PC" in r.getMessage()]
+    assert lines == ["phone camera: on this PC: connection connected, video video/VP8, pictures arriving (1280x720), "
+                     "sound arriving, player playing-4"]
+    assert phone_server._report_line(json.dumps({"codec": "<script>x</script>", "frames": "lots"})).startswith(
+        "connection -, video scriptx/script, no pictures yet")

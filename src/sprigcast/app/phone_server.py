@@ -78,6 +78,7 @@ class Session:
         self.answer = ""
         self.state = ""
         self.seen = 0.0  # when the phone last asked anything
+        self.report = ""  # what the leaf's page last said it receives (logged when it changes)
 
 
 def _plain_ssl_context() -> type:
@@ -89,6 +90,31 @@ def _plain_ssl_context() -> type:
         if cls.__module__ == "ssl" and cls.__name__ == "SSLContext":
             return cls
     return ssl.SSLContext
+
+
+def _report_line(text: str) -> str:
+    """The leaf's page's report (connection, codec, pictures decoded, size) as one short line for the log: what
+    the PC receives, so a leaf that stays black says why (PC 2026-11-26). Nothing personal is in it."""
+    try:
+        r = json.loads(text)
+    except ValueError:
+        return ""
+    if not isinstance(r, dict):
+        return ""
+
+    def word(key: str) -> str:
+        return "".join(c for c in str(r.get(key) or "-") if c.isalnum() or c in "/-._")[:24]
+
+    def number(key: str) -> int:
+        try:
+            return max(0, int(r.get(key) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    pictures = number("frames")
+    return (f"connection {word('connection')}, video {word('codec')}, "
+            f"{'pictures arriving' if pictures else 'no pictures yet'} ({number('width')}x{number('height')}), "
+            f"sound {word('audio')}, player {word('player')}")
 
 
 class _Server(ThreadingHTTPServer):
@@ -325,6 +351,13 @@ def _handler(server: PhoneServer, phone: bool):
                 elif phone and what == "state":
                     session.state, session.seen = text.strip()[:16], time.monotonic()
                     reply = b"{}"
+                elif not phone and what == "report":
+                    line = _report_line(text)
+                    changed = line != session.report
+                    session.report = line
+                    reply = b"{}"
+                    if line and changed:
+                        log.info("phone camera: on this PC: %s", line)
                 elif not phone and what == "answer":
                     session.answer_id = int((query.get("id") or ["0"])[0] or 0)
                     session.answer = text
@@ -502,6 +535,14 @@ async function answer(offer) {
     v.play().catch(() => {});
   };
   await pc.setRemoteDescription({type: "offer", sdp: offer.sdp});
+  try {  // VP8 first: decoded in software the same way everywhere (H.264's path varies with the page engine)
+    const codecs = RTCRtpReceiver.getCapabilities("video").codecs;
+    const rank = (c) => /vp8/i.test(c.mimeType) ? 0 : /vp9/i.test(c.mimeType) ? 1 : 2;
+    const ordered = codecs.slice().sort((a, b) => rank(a) - rank(b));
+    for (const t of pc.getTransceivers()) {
+      if (t.receiver.track && t.receiver.track.kind === "video") t.setCodecPreferences(ordered);
+    }
+  } catch (x) {}
   await pc.setLocalDescription(await pc.createAnswer());
   await gathered(pc);
   await fetch(`${base}/answer?id=${offer.id}`, {method: "POST", body: pc.localDescription.sdp});
@@ -514,5 +555,24 @@ async function look() {
   setTimeout(look, 500);
 }
 look();
+async function report() {  // what this PC receives, for SprigCast's log
+  if (!pc) return;
+  const v = document.getElementById("v");
+  const out = {connection: pc.connectionState, frames: 0, width: v.videoWidth, height: v.videoHeight,
+               codec: "-", audio: "-", player: v.paused ? "paused" : `playing-${v.readyState}`};
+  try {
+    const stats = await pc.getStats();
+    stats.forEach((s) => {
+      if (s.type === "inbound-rtp" && s.kind === "video") {
+        out.frames = s.framesDecoded || 0;
+        const c = s.codecId && stats.get(s.codecId);
+        if (c) out.codec = c.mimeType;
+      }
+      if (s.type === "inbound-rtp" && s.kind === "audio") out.audio = (s.packetsReceived || 0) > 0 ? "arriving" : "none";
+    });
+  } catch (x) {}
+  fetch(`${base}/report`, {method: "POST", body: JSON.stringify(out)}).catch(() => {});
+}
+setInterval(report, 2000);
 </script></body></html>
 """
