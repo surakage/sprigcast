@@ -566,11 +566,14 @@ def run() -> None:
         workers.run(lambda: (warm.warm(), warm.warm_encoders(*encoders), _warm_art(), warm.keep_aside()),
                     name="warm-up")
 
-    QTimer.singleShot(warm.WARM_AFTER_MS, warm_up)
+    warm_after = warm.warm_after_ms()  # later on a PC with little memory (core/warm.py)
+    QTimer.singleShot(warm_after, warm_up)
     from sprigcast.app.theme import warm_card_shadow
 
-    QTimer.singleShot(warm.WARM_AFTER_MS + 1_000, lambda: warm_card_shadow(window))  # the shadow pop-ups share
-    QTimer.singleShot(warm.WARM_AFTER_MS + 3_000, window.warm_settings)  # Settings opens faster the first time
+    QTimer.singleShot(warm_after + 1_000, lambda: warm_card_shadow(window))  # the shadow pop-ups share
+    QTimer.singleShot(warm_after + 3_000, window.warm_settings)  # Settings opens faster the first time
+    if warm_after != warm.WARM_AFTER_MS:
+        logging.getLogger(__name__).info("warm-up: in %d s, slowly (this PC has little memory)", warm_after // 1000)
     workers.run(warm.warm_keyring, name="warm-keyring")  # now: a stream key or chat sign-in may want it soon
     QTimer.singleShot(20_000, pacing.trim_working_set_later)  # start-up's one-time pages (imports, shaders) go back
     from sprigcast.app import engine_warning

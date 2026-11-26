@@ -81,10 +81,10 @@ def make(target: Path, stream_report: Path | None, *, collection=None, log_folde
         z.writestr("summary.txt", scrub(_summary(KIND, None)))
         z.writestr("about.txt", scrub("\n".join(about) + "\n"))
         if stream_report is not None and stream_report.is_file():
-            z.writestr(f"logs/{stream_report.name}", scrub(tester_report._read(stream_report)))
+            tester_report._copy_scrubbed(z, f"logs/{stream_report.name}", stream_report, scrub)
         day_log = folder / f"sprigcast {now:%Y-%m-%d}.log"
         if day_log.is_file():
-            z.writestr(f"logs/{day_log.name}", scrub(tester_report._read(day_log, DAY_LOG_TAIL)))
+            tester_report._copy_scrubbed(z, f"logs/{day_log.name}", day_log, scrub, DAY_LOG_TAIL)
     return target
 
 
