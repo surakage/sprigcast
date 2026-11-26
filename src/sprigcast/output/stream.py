@@ -352,6 +352,7 @@ class Streamer(Recorder):
         self.delay_s = 0.0  # Settings → Stream → Quality → Stream delay: packets wait this long before they're sent
         self._delay_line = None
         self._connected_at = 0.0
+        self._first_live_at = 0.0  # the first time it went live: the summary averages from here, reconnects or not
         # Auto-pilot needs a target bitrate to steer; constant-quality encoding has none.
         self.autopilot = Autopilot(bitrate_kbps) if auto_bitrate and self.encoder.rate_control != "cqp" else None
         self._want_kbps = self._applied_kbps = bitrate_kbps
@@ -428,7 +429,9 @@ class Streamer(Recorder):
         encode_ms = 1000 * self.encode_seconds / max(1, self.frames)
         budget_ms = 1000 / self.fps
         waiting, waits = self._network_share()
-        live_s = max(1e-6, time.monotonic() - (self._connected_at or self.started_at))
+        # From the first time it went live: since the last reconnect only, a stream that reconnected 8 minutes
+        # before the end read 2127 kbps where it had carried about 390 (Mikedog151, 2026-11-24)
+        live_s = max(1e-6, time.monotonic() - (self._first_live_at or self.started_at))
         average = f"averaged {self.bytes_out * 8 / 1000 / live_s:.0f} kbps (set {self.bitrate_kbps})"
         line = (
             f"{self.name}: {self.dropped} of {total} frames dropped ({loss:.1%}), {average}. "
@@ -504,13 +507,20 @@ class Streamer(Recorder):
                     self._direct.set_bitrate(k)
                 except Exception as exc:  # keep streaming at the old bitrate rather than stop
                     log.warning("stream %s: couldn't change the bitrate to %d kbps: %s", self.name, k, exc)
-            else:
+                self._applied_kbps = k
+        if self._direct is None:
+            from sprigcast.output.recorder import next_rate
+
+            if getattr(self, "_applied_limits", None) is None:
+                self._applied_limits = rate_limits(self.codec, self.encoder, self._applied_kbps)
+            step = next_rate(self.codec, self.encoder, (self._applied_kbps, *self._applied_limits), self._want_kbps)
+            if step is not None:  # going down: the bitrate first, its limits on the next picture (see next_rate)
+                k, peak, buffer = step
                 ctx = stream.codec_context
                 ctx.bit_rate = k * 1000
-                peak, buffer = rate_limits(self.codec, self.encoder, k)
                 if peak:
                     ctx.max_bit_rate, ctx.rc_buffer_size = peak * 1000, buffer * 1000
-            self._applied_kbps = k
+                self._applied_kbps, self._applied_limits = k, (peak, buffer)
         super()._write_video(container, stream, frame, pts)
 
     def push_frame(self, frame) -> None:
@@ -530,6 +540,7 @@ class Streamer(Recorder):
     def _open(self):
         container, video, audio = super()._open()
         self._applied_kbps = self.bitrate_kbps  # a fresh encoder starts at the set bitrate; _write_video steers it
+        self._applied_limits = None
         self._send_q = queue.Queue()
         self._send_error = None
         self._backlog_bytes = 0
@@ -587,6 +598,7 @@ class Streamer(Recorder):
             if not self.connected and self.bytes_out and self._send_error is None:
                 self.connected = True
                 self._connected_at = time.monotonic()
+                self._first_live_at = self._first_live_at or self._connected_at
                 self.status = "live"
                 log_live(self)
 

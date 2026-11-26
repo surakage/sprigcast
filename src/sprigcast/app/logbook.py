@@ -254,11 +254,37 @@ class LiveFlvQuiet(logging.Filter):
         return True
 
 
+class X264KeyQuiet(logging.Filter):
+    """x264 turning a keyframe SprigCast lines up across tracks into a plain I picture because its own keyframe
+    is near it ("forced frame type (1) at N was changed to frame type (2)"): x264's own keyframe interval still
+    gives one every 2 s, so it isn't worth a line each time (1,281 lines, a third of Mikedog151's log, 2026-11-24). The first
+    one is logged as information; the rest are counted and left out."""
+
+    FOUND = "forced frame type"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen = 0
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if self.FOUND not in str(record.msg):
+            return True
+        self.seen += 1
+        if self.seen > 1:
+            return False
+        record.levelno, record.levelname = logging.INFO, "INFO"
+        record.msg = f"{record.msg} (x264 keeps its own keyframes every 2 s; later ones aren't logged)"
+        return True
+
+
 def quiet_live_flv() -> None:
     for name in ("libav.flv", "libav.aac"):
         logger = logging.getLogger(name)
         if not any(isinstance(f, LiveFlvQuiet) for f in logger.filters):
             logger.addFilter(LiveFlvQuiet())
+    x264 = logging.getLogger("libav.libx264")
+    if not any(isinstance(f, X264KeyQuiet) for f in x264.filters):
+        x264.addFilter(X264KeyQuiet())
 
 
 class _Formatter(logging.Formatter):
@@ -400,6 +426,25 @@ class StreamReport:
         self._writer = threading.Thread(target=self._write_lines, name="sprigcast-stream-report", daemon=True)
         self._writer.start()
 
+    def _preset_words(self, enc) -> str:
+        """The preset and tuning the streams' encoders really use: an x264 stream showed NVENC's "preset p2, tuning
+        hq" (Mikedog151, 2026-11-24). One entry per kind of encoder in use."""
+        from sprigcast.output.recorder import family, video_options
+
+        words = []
+        for codec in dict.fromkeys(str(getattr(st, "codec", "") or "") for _, st in self.session.streamers):
+            if not codec:
+                continue
+            try:
+                opts = video_options(codec, enc, 1000)
+            except Exception:  # noqa: BLE001 (a report line is never worth stopping for)
+                opts = {}
+            parts = [f"preset {opts['preset']}"] if opts.get("preset") else []
+            if opts.get("tune"):
+                parts.append(f"tuning {opts['tune']}")
+            words.append(f"{family(codec) or codec} " + ", ".join(parts) if parts else codec)
+        return "; ".join(words) or f"preset {enc.preset}, tuning {enc.tuning}"
+
     def _write(self, text: str) -> None:
         if self._file is None:
             return
@@ -433,7 +478,7 @@ class StreamReport:
         shared = getattr(self.session, "shared", [])
         if collection is not None:
             enc = collection.stream_encoder
-            self._write(f"Stream encoder settings: {enc.rate_control}, preset {enc.preset}, tuning {enc.tuning}, "
+            self._write(f"Stream encoder settings: {enc.rate_control}, {self._preset_words(enc)}, "
                         f"B-frames {enc.b_frames}, look-ahead {enc.lookahead}, multipass {enc.multipass}, "
                         f"keyframes every {enc.keyint_sec or 2} s, audio {enc.audio_kbps} kbps")
         self._write(f"{len(self.session.streamers)} destination(s), {len(shared)} shared encoder(s)")

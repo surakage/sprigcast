@@ -152,10 +152,14 @@ class CommandPalette(QDialog):
 
     def open(self) -> None:
         """Placed on the window's screen before it shows: moving a shown pop-up to another screen remakes its
-        window, which could lose it."""
+        window, which could lose it. Shown, not opened as a window-modal dialog: a pop-up needs no modality, and
+        Windows spent the first click after a modal one closed on giving the main window back, so the 🔍 button
+        missed every other click (PC 2026-11-26, build 45740776996)."""
         self.adjustSize()
         self.place()
-        super().open()
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def showEvent(self, event) -> None:  # noqa: N802
         self.place()

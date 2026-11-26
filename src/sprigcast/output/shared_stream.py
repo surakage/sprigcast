@@ -181,6 +181,7 @@ class SharedStreamEncoder(FileTap, ReplayBuffer):
     def _open(self):
         result = super()._open()
         self._applied_kbps = self.bitrate_kbps
+        self._applied_limits = None  # a fresh encoder starts with the set bitrate's limits
         return result
 
     def _keep(self, p: _Packet) -> None:
@@ -272,15 +273,23 @@ class SharedStreamEncoder(FileTap, ReplayBuffer):
     def _writer_before(self, writer) -> None:
         """The engine's writer encodes (packets mode): the bitrate steered here goes to it before the next picture."""
         self._steer()
-        if self._want_kbps != self._applied_kbps:
-            k = self._want_kbps
-            peak, buffer = rate_limits(self.codec, self.encoder, k)
+        step = self._next_rate()
+        if step is not None:
+            k, peak, buffer = step
             try:
                 writer.set_bitrate(k, peak or 0, buffer or 0)
             except Exception as exc:  # noqa: BLE001
                 log.warning("shared stream: couldn't change the bitrate to %d kbps: %s", k, exc)
-            self._applied_kbps = k
+            self._applied_kbps, self._applied_limits = k, (peak, buffer)
         super()._writer_before(writer)
+
+    def _next_rate(self) -> tuple[int, int, int] | None:
+        from sprigcast.output.recorder import next_rate
+
+        limits = getattr(self, "_applied_limits", None)
+        if limits is None:
+            limits = self._applied_limits = rate_limits(self.codec, self.encoder, self._applied_kbps)
+        return next_rate(self.codec, self.encoder, (self._applied_kbps, *limits), self._want_kbps)
 
     def _write_video(self, container, stream, frame, pts: int | None = None) -> None:
         self._steer()
@@ -291,13 +300,14 @@ class SharedStreamEncoder(FileTap, ReplayBuffer):
                     self._direct.set_bitrate(k)
                 except Exception as exc:
                     log.warning("shared stream: couldn't change the bitrate to %d kbps: %s", k, exc)
-            else:
-                ctx = stream.codec_context
-                ctx.bit_rate = k * 1000
-                peak, buffer = rate_limits(self.codec, self.encoder, k)
-                if peak:
-                    ctx.max_bit_rate, ctx.rc_buffer_size = peak * 1000, buffer * 1000
-            self._applied_kbps = k
+                self._applied_kbps = k
+        if self._direct is None and (step := self._next_rate()) is not None:
+            k, peak, buffer = step
+            ctx = stream.codec_context
+            ctx.bit_rate = k * 1000
+            if peak:
+                ctx.max_bit_rate, ctx.rc_buffer_size = peak * 1000, buffer * 1000
+            self._applied_kbps, self._applied_limits = k, (peak, buffer)
         super()._write_video(container, stream, frame, pts)
 
 
@@ -340,6 +350,7 @@ class StreamLink:
         self._sender = None  # the engine sends this connection itself (sprigcore.StreamLinkSender)
         self._zero = 0.0  # seconds of the first packet sent on this connection
         self._connected_at = 0.0
+        self._first_live_at = 0.0  # the first time it went live: the summary averages from here, reconnects or not
         self._health: tuple | None = None
         self._held: tuple[str, str, float] | None = None
         self._stop = threading.Event()
@@ -492,7 +503,9 @@ class StreamLink:
         loss = self.dropped / total
         running = max(1e-6, time.monotonic() - self.started_at)
         waiting = self.behind_seconds / running
-        live_s = max(1e-6, time.monotonic() - (self._connected_at or self.started_at))
+        # From the first time it went live: since the last reconnect only, a stream that reconnected 8 minutes
+        # before the end read 2127 kbps where it had carried about 390 (Mikedog151, 2026-11-24)
+        live_s = max(1e-6, time.monotonic() - (self._first_live_at or self.started_at))
         average = f"averaged {self.bytes_out * 8 / 1000 / live_s:.0f} kbps (set {self.bitrate_kbps})"
         line = (f"{self.name}: {self.dropped} of {total} frames dropped ({loss:.1%}), {average}, sharing an encoder; "
                 f"waiting on the network {waiting:.0%} of the time (sending {self.mux_seconds / running:.0%}), "
@@ -619,6 +632,7 @@ class StreamLink:
                 if state == "live" and not self.connected:
                     self._zero = stats.first_seconds
                     self.connected, self._connected_at, self.status = True, time.monotonic(), "live"
+                    self._first_live_at = self._first_live_at or self._connected_at
                     log_live(self)
                 if self._stop.wait(0.1):
                     numbers()  # as they stand at the end, for the summary
@@ -682,6 +696,7 @@ class StreamLink:
             self.frames += 1
         if not self.connected:
             self.connected, self._connected_at, self.status = True, time.monotonic(), "live"
+            self._first_live_at = self._first_live_at or self._connected_at
             log_live(self)
 
     def _session(self) -> None:
