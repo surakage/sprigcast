@@ -71,6 +71,10 @@ def has_sound(source: SourceConfig) -> bool:
         from sprigcast.sources.browser import sound_to_mixer
 
         return sound_to_mixer(source.settings)
+    if source.kind == "android_screen":
+        from sprigcast.sources.android_screen import sound_on
+
+        return sound_on(source.settings)
     return False
 
 

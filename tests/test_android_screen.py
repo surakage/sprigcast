@@ -6,6 +6,7 @@ import sys
 import textwrap
 import time
 
+import numpy as np
 import pytest
 
 from sprigcast.sources import android_screen as screen
@@ -80,6 +81,18 @@ def fake_adb(tmp_path):
         elif "dumpsys" in args:
             turn = {str(tmp_path / "turn.txt")!r}
             print(open(turn).read() if os.path.exists(turn) else "SurfaceOrientation: 1")
+        elif "push" in args:
+            print("1 file pushed")
+        elif "app_process" in args and os.environ.get("FAKE_OLD"):
+            sys.stderr.write("sprigcast-sound: needs Android 11 or newer (this phone has API 29)\\n")
+            sys.exit(2)
+        elif "app_process" in args:
+            import struct
+            block = struct.pack("<2h", 16384, -16384) * 960  # 20 ms: left half up, right half down
+            for _ in range(500):
+                sys.stdout.buffer.write(block)
+                sys.stdout.flush()
+                time.sleep(0.02)
         elif "screenrecord" in args and os.environ.get("FAKE_STILL"):
             sys.stdout.buffer.write(open({str(still)!r}, "rb").read())
             sys.stdout.flush()
@@ -161,7 +174,7 @@ def test_the_pop_up_lists_ready_phones_and_keeps_choices():
             break
         time.sleep(0.02)
     assert [dialog.phone.itemText(i) for i in range(dialog.phone.count())] == ["Pixel 8"]
-    assert dialog.values() == {"serial": "A1", "longest": 1920, "bitrate_kbps": 12000}
+    assert dialog.values() == {"serial": "A1", "longest": 1920, "bitrate_kbps": 12000, "sound": True}
     dialog.deleteLater()
 
 
@@ -355,3 +368,69 @@ def test_a_place_turns_with_the_phone():
     assert not col.turn_places("android-1", (1280, 576), (1280, 576))  # no turn, nothing moves
     assert col.turn_places("android-1", (1280, 576), (576, 1280))
     assert abs(576 * item.scale - 486) < 0.5 and abs(1280 * item.sy - 1080) < 0.5 and abs(item.y) < 0.5
+
+
+
+def test_pcm_becomes_the_mixers_samples():
+    import struct
+
+    out = screen.pcm_to_float(struct.pack("<4h", 16384, -32768, 0, 32767) + b"x")
+    assert out.shape == (2, 2) and out.dtype == np.float32
+    assert out[0].tolist() == [0.5, -1.0] and out[1][0] == 0.0
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in adb is a script")
+def test_the_phones_sound_reaches_the_mixer(fake_adb, tmp_path):
+    """User 2026-11-26: the phone's sound didn't come through. The helper's sound is read like a mic."""
+    adb, log = fake_adb
+    jar = tmp_path / "sprigcast-sound.jar"
+    jar.write_bytes(b"helper")
+    source = screen.AndroidScreenSource("android-1", dict(screen.DEFAULTS))
+    source.adb_path, source.sound_jar = adb, jar
+    source.start()
+    try:
+        deadline = time.monotonic() + 8
+        block = np.zeros((480, 2), np.float32)
+        while not block.any() and time.monotonic() < deadline:
+            time.sleep(0.05)
+            block = source.read_block(480)
+        assert block.any(), source.sound_note
+        heard = block[np.abs(block).sum(axis=1) > 0]
+        assert np.allclose(heard[0], [0.5, -0.5]) and source.gain == 1.0
+        calls = log.read_text()
+        assert f"push {jar} {screen.SOUND_ON_PHONE}" in calls and screen.SOUND_CLASS in calls
+        time.sleep(0.6)  # the mixer reads nothing for a while: it never falls more than a moment behind
+        assert source._sound_frames <= screen.SOUND_KEEP_S * screen.SOUND_RATE + 960
+        recording = source._thread
+        source.update({**source.settings, "volume_db": -6.0, "muted": True})
+        assert source._thread is recording and source.gain == 0.0  # the picture didn't start again
+    finally:
+        source.stop()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in adb is a script")
+def test_an_older_phone_says_why_it_has_no_sound(fake_adb, tmp_path, monkeypatch):
+    adb, log = fake_adb
+    monkeypatch.setenv("FAKE_OLD", "1")
+    jar = tmp_path / "sprigcast-sound.jar"
+    jar.write_bytes(b"helper")
+    source = screen.AndroidScreenSource("android-1", dict(screen.DEFAULTS))
+    source.adb_path, source.sound_jar = adb, jar
+    source.start()
+    try:
+        deadline = time.monotonic() + 8
+        while not source._sound_given_up and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert source._sound_given_up and "Android 11" in source.sound_note
+        assert log.read_text().count("app_process") == 1  # not tried again and again
+    finally:
+        source.stop()
+
+
+def test_phone_sound_is_listed_and_can_be_switched_off():
+    from sprigcast.app.audio_page import has_sound
+    from sprigcast.core.scene import SourceConfig
+
+    on = SourceConfig(id="android-1", kind="android_screen", name="Phone", settings=dict(screen.DEFAULTS))
+    off = SourceConfig(id="android-2", kind="android_screen", name="Phone", settings={**screen.DEFAULTS, "sound": False})
+    assert has_sound(on) and not has_sound(off)

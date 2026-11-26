@@ -4215,6 +4215,10 @@ class MainWindow(QMainWindow):
             from sprigcast.sources.browser import sound_to_mixer
 
             return sound_to_mixer(config.settings)
+        if config.kind == "android_screen":
+            from sprigcast.sources.android_screen import sound_on
+
+            return sound_on(config.settings)
         return False
 
     def _refresh_audio_soon(self) -> None:
@@ -6445,6 +6449,8 @@ class MainWindow(QMainWindow):
         if blank and config.settings != before:
             self._name_after_pick(config, blank)
         self._changed()
+        if config.kind == "android_screen" and config.settings.get("sound", True) != before.get("sound", True):
+            self._refresh_audio_soon()  # Phone sound switched: listed in Sound or not
         self._refresh_sources(keep_row=self.source_list.currentRow())
         return True
 

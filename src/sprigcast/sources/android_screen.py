@@ -7,8 +7,12 @@ the PC through Android's USB tool (adb), and FFmpeg (PyAV) decodes it here: noth
 screenrecord stops by itself after 3 minutes, so the next one starts a few seconds before that and takes over
 once its first picture is in: the picture carries on without a gap. The phone's turn is checked every
 TURN_CHECK_S too: screenrecord keeps the shape it started with (a landscape game came in squeezed into a portrait
-picture, PC 2026-11-26), so a turn starts the next one at once, in the new shape. The phone's sound isn't sent
-(screenrecord has no sound).
+picture, PC 2026-11-26), so a turn starts the next one at once, in the new shape.
+
+The phone's sound (user 2026-11-26): screenrecord has none, so SprigCast copies its own small helper
+(android/sound, built with the installer) to the phone's temporary folder and runs it as the USB debugging shell:
+it sends what the phone plays as 48 kHz stereo PCM over the same cable, and the mixer reads it like a mic
+(read_block). Android 11 or newer; nothing is installed, and the phone plays through SprigCast while it runs.
 """
 
 from __future__ import annotations
@@ -38,7 +42,13 @@ IDLE_S = 0.1  # adb quiet this long: the picture the parser holds is shown
 TURN_CHECK_S = 1.5  # how often the phone's turn is looked at while recording
 _TURN_WORDS = "'SurfaceOrientation|orientation=|mCurrentRotation|mRotation='"  # grep on the phone: a short answer
 SIZES = (("720p", 1280), ("1080p", 1920))
-DEFAULTS: dict[str, Any] = {"serial": "", "longest": 1280, "bitrate_kbps": 8000}
+DEFAULTS: dict[str, Any] = {"serial": "", "longest": 1280, "bitrate_kbps": 8000, "sound": True}
+SOUND_JAR = "sprigcast-sound.jar"
+SOUND_ON_PHONE = "/data/local/tmp/sprigcast-sound.jar"
+SOUND_CLASS = "com.slothbloom.sprigcast.Sound"
+SOUND_RATE = 48000
+SOUND_KEEP_S = 0.25  # more than this waiting (the mixer fell behind): the oldest goes, so it never lags
+SOUND_RETRY_S = 3.0
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 # Google's adb isn't shipped with SprigCast: one already on the PC is used, or it's downloaded from Google when
@@ -128,6 +138,27 @@ def list_phones(adb: str | None = None) -> list[dict[str, str]]:
     return parse_devices(_run([adb, "devices", "-l"])) if adb else []
 
 
+def sound_on(settings: dict[str, Any]) -> bool:
+    """Whether the leaf brings the phone's sound (listed in Sound, mixed like a mic)."""
+    return bool(settings.get("sound", True))
+
+
+def sound_helper() -> Path | None:
+    """The phone sound helper SprigCast ships (built into the installed package by packaging/build_windows.ps1;
+    from source, android/sound/build), or None."""
+    here = Path(__file__).resolve()
+    for path in (here.with_name(SOUND_JAR), here.parents[3] / "android" / "sound" / "build" / SOUND_JAR):
+        if path.is_file():
+            return path
+    return None
+
+
+def pcm_to_float(data: bytes) -> np.ndarray:
+    """48 kHz stereo 16-bit PCM -> N x 2 float32 (an odd byte or half a pair at the end is left out)."""
+    usable = len(data) // 4 * 4
+    return (np.frombuffer(data[:usable], dtype="<i2").astype(np.float32) / 32768.0).reshape(-1, 2)
+
+
 def parse_size(text: str) -> tuple[int, int] | None:
     """`wm size` -> the size the screen draws at now (an override wins over the physical size)."""
     sizes = dict(re.findall(r"(Physical|Override) size:\s*(\d+x\d+)", text))
@@ -180,6 +211,15 @@ class AndroidScreenSource(Source):
         self._current = 0  # the segment whose pictures show
         self._procs: dict[int, subprocess.Popen] = {}
         self.adb_path = None  # tests set it
+        self.sound_jar: Path | None = None  # tests set it
+        self.sound_note = ""  # why the phone's sound isn't coming ("" while it is, or before it's tried)
+        self._sound_lock = threading.Lock()
+        self._sound: list[np.ndarray] = []
+        self._sound_frames = 0
+        self._sound_thread: threading.Thread | None = None
+        self._sound_proc: subprocess.Popen | None = None
+        self._sound_given_up = False
+        self._where: tuple[str, str] | None = None
 
     # Source ---------------------------------------------------------------------------------------
 
@@ -193,20 +233,137 @@ class AndroidScreenSource(Source):
     def stop(self) -> None:
         self._stop.set()
         self._end_all()
+        proc = self._sound_proc
+        if proc is not None:
+            _end(proc)
+        if self._sound_thread is not None and self._sound_thread is not threading.current_thread():
+            self._sound_thread.join(timeout=3)
+        self._sound_thread = None
+        self._sound_given_up = False
+        with self._sound_lock:
+            self._sound, self._sound_frames = [], 0
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout=3)
         self._thread = None
 
+    VIDEO_KEYS = ("serial", "longest", "bitrate_kbps")
+
     def update(self, settings: dict[str, Any]) -> None:
+        """Only a change to the picture's settings starts the recording again: the Sound card's volume, mute and
+        the rest are read from the settings as they are."""
         before = dict(self.settings)
         super().update(settings)
-        if before != self.settings and self._thread is not None:
+        if self._thread is None:
+            return
+        if any(before.get(k) != self.settings.get(k) for k in self.VIDEO_KEYS):
             self.stop()
             self.start()
+        elif bool(before.get("sound", True)) != bool(self.settings.get("sound", True)):
+            if not self.settings.get("sound", True):
+                proc = self._sound_proc
+                if proc is not None:
+                    _end(proc)
+                self.sound_note = ""
+            self._sound_given_up = False
+            if self.settings.get("sound", True) and self._where is not None:
+                self._start_sound(*self._where)
 
     @property
     def size(self) -> tuple[int, int]:
         return self._size
+
+    # Sound: read by the mixer like a mic (read_block, gain) -------------------------------------------
+
+    @property
+    def gain(self) -> float:
+        if not sound_on(self.settings) or self.settings.get("muted"):
+            return 0.0
+        return float(10 ** (float(self.settings.get("volume_db", 0.0)) / 20))
+
+    def read_block(self, n: int) -> np.ndarray:
+        out = np.zeros((n, 2), dtype=np.float32)
+        filled = 0
+        with self._sound_lock:
+            while filled < n and self._sound:
+                chunk = self._sound[0]
+                take = min(n - filled, len(chunk))
+                out[filled:filled + take] = chunk[:take]
+                filled += take
+                if take == len(chunk):
+                    self._sound.pop(0)
+                else:
+                    self._sound[0] = chunk[take:]
+            self._sound_frames -= filled
+        return out
+
+    def _heard(self, samples: np.ndarray) -> None:
+        with self._sound_lock:
+            self._sound.append(samples)
+            self._sound_frames += len(samples)
+            while self._sound_frames > SOUND_KEEP_S * SOUND_RATE and len(self._sound) > 1:
+                self._sound_frames -= len(self._sound.pop(0))
+
+    def _start_sound(self, adb: str, serial: str) -> None:
+        if not sound_on(self.settings) or self._sound_given_up:
+            return
+        if self._sound_thread is not None and self._sound_thread.is_alive():
+            return
+        jar = self.sound_jar or sound_helper()
+        if jar is None:
+            self.sound_note = "this copy of SprigCast has no phone sound helper"
+            return
+        self._sound_thread = threading.Thread(target=self._sound_run, args=(adb, serial, jar),
+                                              name=f"android-{self.id}-sound", daemon=True)
+        self._sound_thread.start()
+
+    def _sound_run(self, adb: str, serial: str, jar: Path) -> None:
+        """Copy the helper to the phone and read what it sends, again after a few seconds if it stops."""
+        while not self._stop.is_set():
+            if not self.settings.get("sound", True):
+                return  # switched off (update ended the helper)
+            pushed = _run([adb, "-s", serial, "push", str(jar), SOUND_ON_PHONE], timeout=15)
+            command = [adb, "-s", serial, "exec-out", f"CLASSPATH={SOUND_ON_PHONE}", "app_process", "/",
+                       SOUND_CLASS]
+            try:
+                proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        creationflags=_NO_WINDOW, bufsize=0)
+            except OSError as exc:
+                self.sound_note = f"couldn't start: {exc}"
+                return
+            self._sound_proc = proc
+            heard = False
+            try:
+                while not self._stop.is_set():
+                    data = proc.stdout.read(SOUND_RATE // 50 * 4)  # 20 ms
+                    if not data:
+                        break
+                    if not heard:
+                        heard = True
+                        self.sound_note = ""
+                        log.info("%s: the phone's sound is coming", self.id)
+                    self._heard(pcm_to_float(data))
+            except (OSError, ValueError):
+                pass
+            finally:
+                _end(proc)
+                self._sound_proc = None
+            if self._stop.is_set():
+                return
+            said = ""
+            try:
+                said = (proc.stderr.read() or b"").decode("utf-8", "replace")
+            except (OSError, ValueError):
+                pass
+            line = next((ln.split(":", 1)[1].strip() for ln in said.splitlines()
+                         if ln.startswith("sprigcast-sound:") and "trying anyway" not in ln), "")
+            line = line or (pushed.strip().splitlines() or ["it stopped"])[-1][:200]
+            self.sound_note = line
+            if "Android 11" in line or "refused" in line:
+                log.info("%s: no phone sound: %s", self.id, line)
+                self._sound_given_up = True  # the phone can't: not tried again until the leaf restarts
+                return
+            log.info("%s: the phone's sound stopped (%s); trying again", self.id, line)
+            self._stop.wait(SOUND_RETRY_S)
 
     def video_frame(self) -> np.ndarray | None:
         item = self._frames.take()
@@ -266,6 +423,8 @@ class AndroidScreenSource(Source):
                 self._stop.wait(RETRY_S)
                 continue
             command, turned = made
+            self._where = (adb, serial)
+            self._start_sound(adb, serial)
             segment += 1
             mine = segment
             reader = threading.Thread(target=self._segment, args=(mine, command), name=f"android-{self.id}-{mine}",
@@ -351,7 +510,8 @@ class AndroidScreenSource(Source):
                 return True
             picture, order, size = camera_picture(frame, None)
             self._size = size
-            self.status = f"capturing {size[0]}x{size[1]}"
+            note = self.sound_note if sound_on(self.settings) else ""
+            self.status = f"capturing {size[0]}x{size[1]}" + (f"; no phone sound: {note}" if note else "")
             self._frames.put((picture, order))
         return False
 

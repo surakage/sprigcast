@@ -86,6 +86,33 @@ New-Item -ItemType Directory -Force $engineDir | Out-Null
 Copy-Item (Join-Path $build "core\Release\sprigcore.dll") $engineDir
 Copy-Item (Join-Path $build "core\Release\SprigCastCapture.exe") $engineDir
 
+# 2b3. Android Screen's phone sound helper (android/sound, SprigCast's own Java), compiled with the Android SDK the
+#      build machine has (GitHub's Windows runners come with one) into the small jar SprigCast copies to a phone.
+$sdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { $env:ANDROID_SDK_ROOT }
+if ($sdk -and (Test-Path (Join-Path $sdk "platforms")) -and (Test-Path (Join-Path $sdk "build-tools"))) {
+    $platform = Get-ChildItem (Join-Path $sdk "platforms") -Directory |
+        Where-Object { $_.Name -match '^android-(\d+)$' -and [int]$Matches[1] -ge 31 -and (Test-Path (Join-Path $_.FullName "android.jar")) } |
+        Sort-Object { [int]($_.Name -replace '^android-', '') } | Select-Object -Last 1
+    $buildTools = Get-ChildItem (Join-Path $sdk "build-tools") -Directory |
+        Where-Object { $_.Name -match '^\d+\.\d+\.\d+$' -and (Test-Path (Join-Path $_.FullName "d8.bat")) } |
+        Sort-Object { [version]$_.Name } | Select-Object -Last 1
+    if (-not $platform -or -not $buildTools) { throw "The Android SDK has no platform 31+ or no build tools with d8" }
+    $soundBuild = Join-Path $build "sound"
+    $classes = Join-Path $soundBuild "classes"
+    New-Item -ItemType Directory -Force $classes | Out-Null
+    $javac = if ($env:JAVA_HOME) { Join-Path $env:JAVA_HOME "bin\javac.exe" } else { "javac" }
+    $sources = Get-ChildItem (Join-Path $root "android\sound\src") -Recurse -Filter *.java | ForEach-Object { $_.FullName }
+    & $javac -source 8 -target 8 -nowarn -encoding UTF-8 -classpath (Join-Path $platform.FullName "android.jar") -d $classes $sources
+    $classFiles = Get-ChildItem $classes -Recurse -Filter *.class | ForEach-Object { $_.FullName }
+    $jar = Join-Path $soundBuild "sprigcast-sound.jar"
+    & (Join-Path $buildTools.FullName "d8.bat") --release --min-api 30 --output $jar $classFiles
+    if (-not (Test-Path $jar)) { throw "The phone sound helper didn't build" }
+    Copy-Item $jar (Join-Path $build "python\Lib\site-packages\sprigcast\sources")
+    Write-Host "Phone sound helper: $((Get-Item $jar).Length) bytes ($($platform.Name), build tools $($buildTools.Name))"
+} else {
+    Write-Warning "No Android SDK (ANDROID_HOME): Android Screen won't bring the phone's sound"
+}
+
 # 2c. SprigCast.exe next to python312.dll: the app runs as SprigCast.exe, so other tools can recognise it.
 #     Built against the bundled Python's headers, before step 3 removes them.
 & $python (Join-Path $PSScriptRoot "make_icon.py") (Join-Path $build "sprigcast.ico")
