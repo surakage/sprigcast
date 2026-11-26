@@ -11,9 +11,9 @@ between portrait and landscape. The phone's sound isn't sent (screenrecord has n
 
 from __future__ import annotations
 
-import io
 import logging
 import os
+import queue
 import re
 import shutil
 import subprocess
@@ -32,6 +32,7 @@ log = logging.getLogger(__name__)
 
 SEGMENT_S = 170.0  # screenrecord's own limit is 180 s: the next one starts before that
 RETRY_S = 2.0
+IDLE_S = 0.1  # adb quiet this long: the picture the parser holds is shown
 SIZES = (("720p", 1280), ("1080p", 1920))
 DEFAULTS: dict[str, Any] = {"serial": "", "longest": 1280, "bitrate_kbps": 8000}
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
@@ -271,35 +272,34 @@ class AndroidScreenSource(Source):
         with self._lock:
             self._procs[mine] = proc
         try:
-            container = av.open(_Pipe(proc.stdout), format="h264", mode="r",
-                                options={"probesize": "2048", "analyzeduration": "0", "fflags": "nobuffer"})
-            stream = container.streams.video[0]
-            stream.codec_context.thread_count = 1
-            try:  # each picture out as soon as it's in: a still screen sends few, and none waited behind
+            # Our own parser rather than av.open(): FFmpeg's h264 parser hands a picture out only once the next
+            # one starts, and a still screen sends no next one (screenrecord sends a picture when the screen
+            # changes): the leaf stayed on "starting" for minutes (PC 2026-11-26). Here, once adb has sent
+            # nothing for IDLE_S, the parser is flushed and the picture it holds shows.
+            codec = av.CodecContext.create("h264", "r")
+            codec.thread_count = 1
+            try:  # each picture out of the decoder as soon as it's in
                 from av.codec.context import Flags
 
-                stream.codec_context.flags |= Flags.low_delay
+                codec.flags |= Flags.low_delay
             except (ImportError, AttributeError, TypeError, ValueError):
                 pass
-            for frame in container.decode(stream):
-                if self._stop.is_set():
+            chunks: queue.Queue = queue.Queue(maxsize=256)
+            threading.Thread(target=_read_into, args=(proc.stdout, chunks), name=f"android-{self.id}-read",
+                             daemon=True).start()
+            held = ended = False
+            while not ended and not self._stop.is_set():
+                try:
+                    data = chunks.get(timeout=IDLE_S)
+                except queue.Empty:
+                    if not held:
+                        continue
+                    data = None
+                ended = data is _EOF
+                packets = codec.parse(None if data is None or ended else data)
+                held = not (data is None or ended)
+                if self._show(mine, (f for packet in packets for f in codec.decode(packet)), camera_picture):
                     break
-                with self._lock:
-                    if self._current < mine:  # the newest one's first picture: it takes over
-                        old = [p for n, p in self._procs.items() if n < mine]
-                        self._current = mine
-                    else:
-                        old = []
-                    behind = self._current > mine
-                for p in old:
-                    _end(p)
-                if behind:
-                    break
-                picture, order, size = camera_picture(frame, None)
-                self._size = size
-                self.status = f"capturing {size[0]}x{size[1]}"
-                self._frames.put((picture, order))
-            container.close()
         except Exception as exc:  # noqa: BLE001 (unplugged mid-stream, a phone that can't record: tried again)
             if not self._stop.is_set():
                 log.info("%s: the phone's screen stopped: %s", self.id, exc)
@@ -308,6 +308,28 @@ class AndroidScreenSource(Source):
             with self._lock:
                 self._procs.pop(mine, None)
 
+    def _show(self, mine: int, frames, camera_picture) -> bool:
+        """Show these pictures; True when a newer recording has taken over (this one ends)."""
+        for frame in frames:
+            if self._stop.is_set():
+                return True
+            with self._lock:
+                if self._current < mine:  # the newest one's first picture: it takes over
+                    old = [p for n, p in self._procs.items() if n < mine]
+                    self._current = mine
+                else:
+                    old = []
+                behind = self._current > mine
+            for p in old:
+                _end(p)
+            if behind:
+                return True
+            picture, order, size = camera_picture(frame, None)
+            self._size = size
+            self.status = f"capturing {size[0]}x{size[1]}"
+            self._frames.put((picture, order))
+        return False
+
     def _end_all(self) -> None:
         with self._lock:
             procs = list(self._procs.values())
@@ -315,25 +337,21 @@ class AndroidScreenSource(Source):
             _end(p)
 
 
-class _Pipe(io.RawIOBase):
-    """adb's output as a stream that says it can't seek. PyAV seeks a file object that doesn't say so, and
-    seeking a Windows pipe fails ("[Errno 22] Invalid argument" every second or two, PC 2026-11-26)."""
+_EOF = b""
 
-    def __init__(self, raw) -> None:
-        super().__init__()
-        self._raw = raw
 
-    def readable(self) -> bool:
-        return True
-
-    def seekable(self) -> bool:
-        return False
-
-    def readinto(self, buffer) -> int:
-        return self._raw.readinto(buffer) or 0
-
-    def close(self) -> None:
-        super().close()
+def _read_into(pipe, chunks: queue.Queue) -> None:
+    """adb's output into `chunks` as it comes, then _EOF."""
+    try:
+        while True:
+            data = pipe.read(65536)
+            if not data:
+                break
+            chunks.put(data)
+    except (OSError, ValueError):
+        pass
+    finally:
+        chunks.put(_EOF)
 
 
 def _end(proc: subprocess.Popen) -> None:
