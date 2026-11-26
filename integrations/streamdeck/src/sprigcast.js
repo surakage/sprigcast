@@ -382,7 +382,9 @@ export class SprigCast extends EventEmitter {
 		else if (event === "item.changed") {
 			// In a bloom, or in a sprig (and the blooms whose own sprig it is): a key names either
 			for (const holder of [message.bloom, message.sprig, ...(message.blooms ?? [])]) {
-				if (holder) st.items[`${holder}/${message.item}`] = message.visible;
+				if (!holder) continue;
+				st.items[`${holder}/${message.item}|${message.shape}`] = message.visible; // per shape
+				delete st.items[`${holder}/${message.item}|both`]; // "both" keys ask again (shown anywhere)
 			}
 		} else if (event === "sprig.state") st.sprigs[message.sprig] = message.state ?? null;
 		else if (event === "app.closing") this._tries = 0; // look again soon: it's likely a restart

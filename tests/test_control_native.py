@@ -536,3 +536,21 @@ def test_a_full_look_writes_out_only_the_settings_that_changed(monkeypatch):
     host.collection.sources.remove(mic)  # a source gone: nothing of it is kept
     api.changes()
     assert "mic" not in api._written
+
+
+def test_item_found_in_each_shape_on_its_own():
+    """Stream Deck's Show or hide changed only the vertical canvas: there the item sat in the bloom itself, while
+    the horizontal bloom held it inside its sprig. Each shape is now looked at on its own."""
+    api, host = _api()
+    col = host.collection
+    chat_h = col.scene("chat-h")
+    chat_h.items = [i for i in chat_h.items if i.source != "cam"]  # horizontal: Cam only inside the Frame sprig
+    assert _ok(api, "item.toggle", bloom="Chatting", item="Cam") == {"visible": False}
+    assert not col.scene("p-frame").items[0].visible and not col.scene("chat-v").items[0].visible
+    assert _ok(api, "item.status", bloom="Chatting", item="Cam") == {"visible": False}
+    _ok(api, "item.show", bloom="Chatting", item="Cam", shape="horizontal")
+    assert col.scene("p-frame").items[0].visible and not col.scene("chat-v").items[0].visible
+    # Shown in one shape only: a toggle hides it everywhere (shown anywhere counts as shown).
+    assert _ok(api, "item.status", bloom="Chatting", item="Cam") == {"visible": True}
+    assert _ok(api, "item.toggle", bloom="Chatting", item="Cam") == {"visible": False}
+    assert not col.scene("p-frame").items[0].visible and not col.scene("chat-v").items[0].visible
