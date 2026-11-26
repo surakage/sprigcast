@@ -132,6 +132,8 @@ def _report_line(text: str) -> str:
             return 0
 
     pictures = number("frames")
+    if r.get("cleared") is True:
+        return "the phone stopped sending; picture cleared (nothing new for 2 s)"
     return (f"connection {word('connection')}, video {word('codec')}, "
             f"{'pictures arriving' if pictures else 'no pictures yet'} ({number('width')}x{number('height')}), "
             f"sound {word('audio')}, player {word('player')}")
@@ -471,7 +473,10 @@ def _handler(server: PhoneServer, phone: bool):
                     session.state, session.seen = "connecting", time.monotonic()
                     reply = json.dumps({"id": session.offer_id}).encode()
                 elif phone and what == "state":
-                    session.state, session.seen = text.strip()[:16], time.monotonic()
+                    state = text.strip()[:16]
+                    if state == "ended" and session.state != "ended":
+                        log.info("phone camera: the phone stopped sending")
+                    session.state, session.seen = state, time.monotonic()
                     reply = b"{}"
                 elif not phone and what == "report":
                     line = _report_line(text)
@@ -751,6 +756,7 @@ canvas { position: fixed; inset: 0; visibility: hidden; }</style></head>
     const stale = performance.now() - last > STALE_MS;
     v.style.visibility = stale ? "hidden" : "visible";
     if (stale) held.style.visibility = "hidden";
+    if (stale !== cleared) { cleared = stale; report(); }  // said in SprigCast's log as it happens
   }, 250);
   const look = () => {
     if (v.requestVideoFrameCallback) { last = performance.now(); v.style.visibility = "visible"; }
@@ -773,7 +779,7 @@ canvas { position: fixed; inset: 0; visibility: hidden; }</style></head>
   addEventListener("resize", () => { if (wide(v.videoWidth, v.videoHeight) === wide(innerWidth, innerHeight)) held.style.visibility = "hidden"; });
 })();
 const base = location.pathname.replace(/\\/$/, "");
-let pc = null, have = 0;
+let pc = null, have = 0, cleared = false;
 function gathered(peer) {
   return new Promise((done) => {
     if (peer.iceGatheringState === "complete") return done();
@@ -831,7 +837,7 @@ async function report() {  // what this PC receives, for SprigCast's log
   if (!pc) return;
   const v = document.getElementById("v");
   const out = {connection: pc.connectionState, frames: 0, width: v.videoWidth, height: v.videoHeight,
-               codec: "-", audio: "-", player: v.paused ? "paused" : `playing-${v.readyState}`};
+               codec: "-", audio: "-", player: v.paused ? "paused" : `playing-${v.readyState}`, cleared};
   try {
     const stats = await pc.getStats();
     stats.forEach((s) => {

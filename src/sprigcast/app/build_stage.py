@@ -47,7 +47,7 @@ from sprigcast.app.library import SPRIG_MIME
 from sprigcast.app.live_stage import heading
 
 LEFT_WIDTH = 290
-RIGHT_WIDTH = 320
+RIGHT_WIDTH = 328  # the inspector's cards fit beside its scroll bar (26s: Filters and the cards cut off on the right)
 
 
 class BuildBar(QWidget):

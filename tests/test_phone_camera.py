@@ -426,3 +426,12 @@ def test_an_older_phone_camera_is_a_voice_too():
     assert not is_voice(page) and "voice" not in source_tracks(page)
     old.settings["duck_voice"] = False  # switched off by hand: stays off
     assert not is_voice(old)
+
+
+def test_a_cleared_picture_is_said_in_the_log():
+    """26s (2026-11-26): the blank leaf worked, but nothing in the log said when, so the 2 s couldn't be timed."""
+    import json
+
+    assert "cleared" in phone_server._report_line(json.dumps({"cleared": True, "frames": 10}))
+    assert "pictures arriving" in phone_server._report_line(json.dumps({"cleared": False, "frames": 10}))
+    assert "if (stale !== cleared) { cleared = stale; report(); }" in phone_server.VIEW_PAGE
