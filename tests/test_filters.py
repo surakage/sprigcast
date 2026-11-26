@@ -365,3 +365,27 @@ def test_the_hdr_game_look_brings_hdr10_down_to_sdr():
     assert ("hdr_sdr", "HDR game to SDR") in looks.LOOKS
     table = looks.look("hdr_sdr")
     assert table.shape == (looks.SIZE,) * 3 + (3,) and 0.0 <= table.min() and table.max() <= 1.0
+
+
+def test_the_echo_reducer_takes_the_rooms_echo_off_and_leaves_the_voice():
+    """User 2026-11-26: "are adding echo filter?" A burst, then the room ringing it out for 0.6 s."""
+    from sprigcast.core.filters import EchoReducer
+
+    rng = np.random.default_rng(1)
+    plain = rng.standard_normal((48000, 2)).astype(np.float32) * 0.1
+    same = EchoReducer(settings_for("echo_reducer", {"amount": 0}))
+    out = np.concatenate([same.process(plain[i:i + 480]) for i in range(0, len(plain), 480)])
+    assert np.allclose(out[512:10512], plain[:10000], atol=1e-4)  # nothing taken: the same sound, 10.7 ms later
+
+    t = np.arange(48000) / 48000
+    room = np.where(t < 0.1, 1.0, np.exp(-6.9 * (t - 0.1) / 0.6))
+    voice = (rng.standard_normal(48000) * room * 0.2)[:, None].repeat(2, 1).astype(np.float32)
+    reducer = EchoReducer(settings_for("echo_reducer", {"room_s": 0.6}))
+    out = np.concatenate([reducer.process(voice[i:i + 333]) for i in range(0, len(voice), 333)])
+
+    def db(a):
+        return 10 * np.log10(np.mean(a ** 2))
+
+    assert db(voice[:1200]) - db(out[512:1712]) < 0.5  # the start of a word passes
+    assert db(voice[12000:24000]) - db(out[12512:24512]) > 5  # its echo is turned down
+    assert len(out) == len(voice)
