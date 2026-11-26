@@ -143,7 +143,9 @@ def source_id_prefix(kind: str) -> str:
 RETIRED_FILTER_KINDS = ("vst", "background")  # VST3 sound filters, Background remover (removed 2026-11-17)
 
 ALIGNS = ("top_left", "top", "top_right", "left", "center", "right", "bottom_left", "bottom", "bottom_right")
-BOUNDS = ("off", "fit", "fill", "stretch")  # off: drawn at its scale; else squeezed into a box of bounds_size
+BOUNDS = ("off", "fit", "fill", "stretch", "fill_same")  # off: drawn at its scale; else squeezed into a box of
+# bounds_size. fill_same: fills a box of its own shape (landscape in landscape) and fits one turned the other way
+# (a phone turned portrait on a landscape canvas), decided for each picture as it comes
 
 
 def align_share(align: str) -> tuple[float, float]:
@@ -211,7 +213,8 @@ class SceneItem(BaseModel):
         bw, bh = self.bounds_size
         if self.bounds == "stretch":
             return bw / cw, bh / ch
-        k = (min if self.bounds == "fit" else max)(bw / cw, bh / ch)
+        fill = self.bounds == "fill" or (self.bounds == "fill_same" and (cw >= ch) == (bw >= bh))
+        k = (max if fill else min)(bw / cw, bh / ch)
         return k, k
 
     def picture_rect(self, source_size: tuple[int, int]) -> tuple[float, float, float, float]:
@@ -1406,15 +1409,20 @@ class SceneCollection(BaseModel):
                 touched.append(config)
         return moved, touched
 
-    def fit_places(self, source_id: str, size: tuple[int, int]) -> bool:
-        """A source whose shape changed by itself (a phone turned between portrait and landscape, or its black
-        edges were trimmed: sources/android_screen.py, app/phone_camera.py): each of its places fits its canvas
-        again, as big as fits and centered (user 2026-11-26: "fits centered vertical and fits centered
-        horizontal" with no resizing after each turn). Returns whether a place moved."""
+    def fit_places(self, source_id: str, size: tuple[int, int], fill: bool = False) -> bool:
+        """A source whose shape changes by itself (a phone turned between portrait and landscape, or its black
+        edges trimmed: sources/android_screen.py, app/phone_camera.py): each of its places becomes a box the
+        size of its canvas that fits the picture in it, centered (user 2026-11-26: "fits centered vertical and
+        fits centered horizontal" with no resizing after each turn). The engine fits each picture as it comes,
+        so the first picture after a turn is already in place: refitting from the window after the engine said
+        the new size drew a frame or two at the old size first ("could be a bit smoother"). With `fill`, a
+        picture the canvas's shape fills it, its excess sides cropped (user 2026-11-26: a 19.5:9 phone left gaps
+        top and bottom on a 16:9 canvas), and one turned the other way still fits. Returns whether a place
+        changed."""
         if min(size) <= 0:
             return False
         canvases = {c.id: c for c in self.canvases}
-        moved = False
+        changed = False
         for scene in self.scenes:
             canvas = canvases.get(scene.canvas)
             if canvas is None or canvas.width <= 0 or canvas.height <= 0:
@@ -1422,16 +1430,13 @@ class SceneCollection(BaseModel):
             for item in scene.items:
                 if item.source != source_id:
                     continue
-                k = min(canvas.width / size[0], canvas.height / size[1])
-                w, h = size[0] * k, size[1] * k
-                x, y = (canvas.width - w) / 2, (canvas.height - h) / 2
-                if item.bounded:
-                    item.bounds_size = (w, h)
-                else:
-                    item.scale, item.scale_y = k, None
-                item.x, item.y, item.crop = x, y, (0, 0, 0, 0)
-                moved = True
-        return moved
+                want = dict(x=0.0, y=0.0, scale=1.0, scale_y=None, crop=(0, 0, 0, 0), bounds="fill_same" if fill else "fit",
+                            bounds_size=(float(canvas.width), float(canvas.height)), bounds_align="center")
+                if any(getattr(item, k) != v for k, v in want.items()):
+                    for k, v in want.items():
+                        setattr(item, k, v)
+                    changed = True
+        return changed
 
     def overlay_boxes(self, scene: Scene, canvas_id: str) -> list[tuple[float, float, float, float]]:
         """Where the plugin sprigs on top of this bloom (a clock, now playing: a sprig holding one smaller

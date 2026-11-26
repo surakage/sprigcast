@@ -177,7 +177,7 @@ def test_the_pop_up_lists_ready_phones_and_keeps_choices():
         time.sleep(0.02)
     assert [dialog.phone.itemText(i) for i in range(dialog.phone.count())] == ["Pixel 8"]
     assert dialog.values() == {"serial": "A1", "longest": 1920, "bitrate_kbps": 12000, "sound": True,
-                                     "trim": True}
+                                     "trim": True, "fill": True}
     dialog.deleteLater()
 
 
@@ -356,7 +356,8 @@ def test_turning_the_phone_starts_a_recording_in_the_new_shape(fake_adb, monkeyp
 
 
 def test_a_place_fits_its_canvas_again_when_the_phone_turns():
-    """User 2026-11-26: fit automatically on every turn, centered, instead of resizing it each time."""
+    """User 2026-11-26: fit automatically on every turn, centered, and smoothly: the place becomes a box the size
+    of the canvas that the engine fits each picture into, so the first picture after a turn is already right."""
     from sprigcast.core.scene import Canvas, Scene, SceneCollection, SceneItem, SourceConfig
 
     col = SceneCollection(canvases=[Canvas(id="main", width=1920, height=1080)],
@@ -364,13 +365,20 @@ def test_a_place_fits_its_canvas_again_when_the_phone_turns():
                           scenes=[Scene(id="a", name="A", canvas="main", items=[
                               SceneItem(source="android-1", x=100, y=50, scale=0.5, crop=(4, 0, 0, 0))])])
     item = col.scenes[0].items[0]
-    assert col.fit_places("android-1", (1280, 576))  # landscape: as wide as the canvas, centered up and down
-    assert abs(1280 * item.scale - 1920) < 0.5 and abs(item.x) < 0.5 and abs(item.y - (1080 - 576 * 1.5) / 2) < 0.5
-    assert item.crop == (0, 0, 0, 0)
-    assert col.fit_places("android-1", (576, 1280))  # portrait: as tall as the canvas, centered across
-    assert abs(1280 * item.scale - 1080) < 0.5 and abs(item.y) < 0.5
-    assert abs(item.x + 576 * item.scale / 2 - 960) < 0.5
+    assert col.fit_places("android-1", (1280, 576))
+    assert item.bounded and item.bounds == "fit" and item.bounds_size == (1920.0, 1080.0)
+    assert (item.x, item.y, item.scale, item.crop, item.bounds_align) == (0.0, 0.0, 1.0, (0, 0, 0, 0), "center")
+    assert item.picture_scale((1280, 576))[0] == 1.5  # landscape: as wide as the canvas
+    assert abs(item.picture_scale((576, 1280))[1] - 1080 / 1280) < 1e-6  # portrait: as tall
+    assert not col.fit_places("android-1", (576, 1280))  # already fitting: nothing to save
     assert not col.fit_places("android-2", (576, 1280))
+    # Fill the canvas (user 2026-11-26: a 19.5:9 phone left gaps top and bottom): landscape fills it, its
+    # excess sides cropped, and portrait on the same landscape canvas still fits whole.
+    assert col.fit_places("android-1", (1280, 576), fill=True) and item.bounds == "fill_same"
+    assert item.picture_scale((1280, 576))[0] == 1080 / 576
+    x, y, w, h = item.picture_rect((1280, 576))
+    assert (y, h) == (0.0, 1080.0) and x < 0 and abs(x * 2 + w - 1920) < 1e-6  # centered, sides spill
+    assert abs(item.picture_scale((576, 1280))[1] - 1080 / 1280) < 1e-6
 
 
 
@@ -479,3 +487,59 @@ def test_a_bar_is_trimmed_only_once_its_steady(monkeypatch):
     assert source._trimmed(frame).width == 306
     clock[0] += 0.2
     assert source._trimmed(frame).width == 306  # between looks the trim stays
+
+
+
+def test_turning_back_uses_that_shapes_trim_at_once(monkeypatch):
+    """Smoother turns (user 2026-11-26): a shape trimmed before is trimmed from its first picture again."""
+    source = screen.AndroidScreenSource("android-1", dict(screen.DEFAULTS))
+    clock = [100.0]
+    monkeypatch.setattr(screen.time, "monotonic", lambda: clock[0])
+    wide, tall = _landscape_frame(14), _landscape_frame(0, w=176, h=320)
+    for _ in range(screen.TRIM_SURE):
+        source._trimmed(wide)
+        clock[0] += screen.TRIM_EVERY_S
+    assert source._trimmed(wide).width == 306
+    assert source._trimmed(tall).width == 176  # turned: nothing to trim there
+    clock[0] += 0.1
+    assert source._trimmed(wide).width == 306  # turned back: trimmed straight away
+
+
+def _boxed_frame(w: int, h: int, inner: int):
+    """The other shape shrunk into the middle of the long side, black around it."""
+    import av
+
+    picture = np.zeros((h, w, 3), np.uint8)
+    if w >= h:
+        picture[:, (w - inner) // 2:(w + inner) // 2] = 200
+    else:
+        picture[(h - inner) // 2:(h + inner) // 2, :] = 200
+    return av.VideoFrame.from_ndarray(picture, format="rgb24").reformat(format="yuv420p")
+
+
+def test_a_phone_turned_under_the_old_recording_is_noticed():
+    """PC 2026-11-26: after a turn, the old recording showed the phone boxed in black in the old shape."""
+    def luma(frame):
+        plane = frame.planes[0]
+        return np.frombuffer(plane, np.uint8).reshape(frame.height, plane.line_size)[:, :frame.width]
+
+    assert screen.boxed(luma(_boxed_frame(320, 176, 80)))  # portrait inside landscape
+    assert screen.boxed(luma(_boxed_frame(176, 320, 80)))  # landscape inside portrait
+    assert not screen.boxed(luma(_landscape_frame(14)))  # the cutout strip isn't a turn
+    assert not screen.boxed(np.full((176, 320), 16, np.uint8))  # nor is a black screen
+    assert not screen.boxed(luma(_boxed_frame(320, 176, 300)))
+
+
+def test_the_last_good_picture_stays_through_a_turn(monkeypatch):
+    """Smoother turns (PC 2026-11-26): the old recording's boxed pictures never show; a dark picture that only
+    looked turned shows again once the phone says it didn't turn."""
+    source = screen.AndroidScreenSource("android-1", dict(screen.DEFAULTS))
+    good, turned = _landscape_frame(0), _boxed_frame(320, 176, 80)
+    assert not source._held(1, good)
+    assert source._held(1, turned) and source._look_now.is_set()
+    assert source._held(1, good)  # held until the next recording takes over
+    assert not source._held(2, good)  # the next recording's pictures show at once
+    monkeypatch.setattr(screen, "HOLD_MOST_S", 0.0)
+    assert not source._held(1, turned)  # held too long (no next recording): it shows anyway
+    source._hold, source._not_turned = None, 3
+    assert not source._held(3, turned)  # the phone hadn't turned: a dark scene, shown

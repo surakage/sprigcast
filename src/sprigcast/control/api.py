@@ -391,11 +391,11 @@ class ControlApi:
             "positionX": x, "positionY": y, "rotation": item.rotation,
             "scaleX": sx, "scaleY": sy, "width": w, "height": h,
             "sourceWidth": sw, "sourceHeight": sh, "alignment": _obs_align(item.align),
-            "boundsType": BOUNDS_TO_OBS[item.bounds if item.bounded else "off"],
+            "boundsType": BOUNDS_TO_OBS.get(item.bounds if item.bounded else "off", "OBS_BOUNDS_SCALE_INNER"),
             "boundsAlignment": _obs_align(item.bounds_align),
             "boundsWidth": float(item.bounds_size[0]), "boundsHeight": float(item.bounds_size[1]),
             "cropLeft": left, "cropTop": top, "cropRight": right, "cropBottom": bottom,
-            "cropToBounds": item.bounded and item.bounds == "fill",
+            "cropToBounds": item.bounded and item.bounds in ("fill", "fill_same"),
         }
 
     # General -------------------------------------------------------------------------

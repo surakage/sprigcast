@@ -378,3 +378,25 @@ def test_the_phone_page_sends_the_mic_unless_turned_off():
     page = phone_server.PHONE_PAGE
     assert page.index('<option value="on">On</option>') < page.index('<option value="off">Off</option>')
     assert "sprigcast-mic" in page
+
+
+def test_the_phones_mic_is_heard_from_its_stream():
+    """PC 2026-11-26: the phone's mic arrived at the leaf's page but the mixer heard silence: Web Audio hears a
+    WebRTC stream only through createMediaStreamSource (checked end to end in Chromium with the page sound script:
+    0 blocks before, sound after)."""
+    page = phone_server.VIEW_PAGE
+    assert "createMediaStreamSource" in page and "v.__sprigcastPlain = true" in page and "v.muted = true" in page
+
+
+def test_a_turned_phone_reshapes_without_waiting_for_the_source_report():
+    from types import SimpleNamespace
+
+    from sprigcast.app.main_window import MainWindow
+
+    calls = []
+    win = SimpleNamespace(_turn_phone_cameras=lambda: True, _changed=lambda: calls.append("changed"))
+    MainWindow._phone_turn_tick(win)
+    assert calls == ["changed"]
+    win._turn_phone_cameras = lambda: False
+    MainWindow._phone_turn_tick(win)
+    assert calls == ["changed"]

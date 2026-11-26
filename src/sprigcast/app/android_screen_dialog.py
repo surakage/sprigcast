@@ -163,6 +163,10 @@ class AndroidScreenDialog(CardDialog):
         self.trim.setChecked(bool(self.settings_in.get("trim", True)))
         self.trim.setAccessibleName("Trim black edges")
         picture.addLayout(_row("Trim black edges", self.trim))
+        self.fill = Switch()
+        self.fill.setChecked(bool(self.settings_in.get("fill", True)))
+        self.fill.setAccessibleName("Fill the canvas")
+        picture.addLayout(_row("Fill the canvas", self.fill))
 
         sound = self.section("Sound")
         self.sound = Switch()
@@ -228,4 +232,5 @@ class AndroidScreenDialog(CardDialog):
     def values(self) -> dict[str, Any]:
         serial = self.phone.currentData() or str(self.settings_in.get("serial") or "")
         return {"serial": serial, "longest": int(self.size.currentData()), "bitrate_kbps": int(self.bitrate.currentData()),
-                "sound": self.sound.isChecked(), "trim": self.trim.isChecked()}
+                "sound": self.sound.isChecked(), "trim": self.trim.isChecked(),
+                "fill": self.fill.isChecked()}
