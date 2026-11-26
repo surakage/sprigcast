@@ -38,6 +38,7 @@ log = logging.getLogger(__name__)
 
 SEGMENT_S = 170.0  # screenrecord's own limit is 180 s: the next one starts before that
 RETRY_S = 2.0
+DAMAGED_MOST = 50  # damaged pictures in a row from the phone: the recording starts again
 IDLE_S = 0.1  # adb quiet this long: the picture the parser holds is shown
 TURN_CHECK_S = 0.7  # how often the phone's turn is looked at while recording
 WATCH_EVERY_S = 0.2  # how often the phone itself looks at its turn, sending each answer down one adb shell
@@ -556,7 +557,7 @@ class AndroidScreenSource(Source):
                 "--bit-rate", str(bitrate), "--time-limit", "180", "-"], turned
 
     def _run(self) -> None:
-        segment = 0
+        segment = failed = 0
         while not self._stop.is_set():
             adb = self._adb()
             if adb is None:
@@ -595,8 +596,12 @@ class AndroidScreenSource(Source):
                         break  # the next recording, in the new shape, takes over once its first picture is in
                     if asked:
                         self._hold, self._not_turned = None, mine  # only a dark picture: it shows again
-            if not reader.is_alive() and self._current == mine and not self._stop.is_set():
-                self._stop.wait(RETRY_S)  # it ended early (unplugged, the screen recorder refused): again soon
+            if not reader.is_alive() and not self._stop.is_set():
+                # It ended early (unplugged, the screen recorder refused): again soon, and later each time it
+                # ends without a picture. One that never showed a picture went round with no wait at all: about
+                # 160 "stopped" lines a minute on 26o (2026-11-26).
+                failed = 0 if self._current == mine else failed + 1
+                self._stop.wait(min(RETRY_S * 2 ** min(failed, 4), 30.0))
 
     def _segment(self, mine: int, command: list[str]) -> None:
         """One screenrecord: its pictures show from its first one on (the one before then ends)."""
@@ -629,6 +634,7 @@ class AndroidScreenSource(Source):
             threading.Thread(target=_read_into, args=(proc.stdout, chunks), name=f"android-{self.id}-read",
                              daemon=True).start()
             held = ended = False
+            damaged = [0]
             while not ended and not self._stop.is_set():
                 try:
                     data = chunks.get(timeout=IDLE_S)
@@ -639,7 +645,7 @@ class AndroidScreenSource(Source):
                 ended = data is _EOF
                 packets = codec.parse(None if data is None or ended else data)
                 held = not (data is None or ended)
-                if self._show(mine, (f for packet in packets for f in codec.decode(packet)), camera_picture):
+                if self._show(mine, self._decoded(codec, packets, damaged), camera_picture):
                     break
         except Exception as exc:  # noqa: BLE001 (unplugged mid-stream, a phone that can't record: tried again)
             if not self._stop.is_set():
@@ -648,6 +654,26 @@ class AndroidScreenSource(Source):
             _end(proc)
             with self._lock:
                 self._procs.pop(mine, None)
+
+    def _decoded(self, codec, packets, damaged: list[int]):
+        """The pictures in these packets. A damaged one is skipped (the decoder picks up again at the next whole
+        picture) instead of ending the recording; only a run of them with nothing good between ends it."""
+        import av
+
+        bad = av.InvalidDataError
+        for packet in packets:
+            try:
+                frames = codec.decode(packet)
+            except bad:
+                damaged[0] += 1
+                if damaged[0] == 1:
+                    log.info("%s: a damaged picture from the phone was skipped", self.id)
+                if damaged[0] >= DAMAGED_MOST:
+                    raise
+                continue
+            if frames:
+                damaged[0] = min(damaged[0], 1)  # (logged once per recording)
+            yield from frames
 
     def _hold_from(self, mine: int) -> None:
         """The phone turned under recording `mine`: its pictures (squeezed or boxed in the old shape) don't show,

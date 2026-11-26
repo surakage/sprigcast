@@ -559,6 +559,11 @@ class Preview(QWidget):
         image = self._inner_image
         if image is not None and self.inner is not None and self.inner_size == (image.width(), image.height()):
             p.fillRect(r, shade)
+            if self.transparent:  # the part's see-through areas look as they did, not dimmed (26q, 2026-11-26)
+                p.save()
+                p.setClipRect(part.intersected(r))
+                self._paint_checker(p, r)
+                p.restore()
             _x, _y, scale, left, top = self.inner
             p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             p.drawImage(part, image, QRectF(left, top, w / scale, h / scale))
