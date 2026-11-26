@@ -566,6 +566,11 @@ def run() -> None:
         workers.run(lambda: (warm.warm(), warm.warm_encoders(*encoders), _warm_art(), warm.keep_aside()),
                     name="warm-up")
 
+    from sprigcast.sources import android_screen
+
+    # Where Google's adb goes if Android Screen downloads it for you (sources/android_screen.py)
+    android_screen.ADB_HOME = Path(QStandardPaths.writableLocation(
+        QStandardPaths.StandardLocation.AppDataLocation)) / "adb"
     warm_after = warm.warm_after_ms()  # later on a PC with little memory (core/warm.py)
     QTimer.singleShot(warm_after, warm_up)
     from sprigcast.app.theme import warm_card_shadow
