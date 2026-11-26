@@ -90,7 +90,7 @@ bool item_quad(const sc_item &it, int sw_i, int sh_i, Corner out[4]) {
     const double cw = std::max(0.0, sw - left - right), ch = std::max(0.0, sh - top - bottom);
     if (sw == 0 || sh == 0 || cw == 0 || ch == 0) return false;
     const double scale = it.scale, scale_y = it.scale_y < 0 ? it.scale : it.scale_y;
-    const bool bounded = it.bounds >= 1 && it.bounds <= 3 && it.bounds_size[0] > 0 && it.bounds_size[1] > 0;
+    const bool bounded = it.bounds >= 1 && it.bounds <= 4 && it.bounds_size[0] > 0 && it.bounds_size[1] > 0;
     double bw = cw * scale, bh = ch * scale_y;  // drawn_size
     double sx = scale, sy = scale_y;             // picture_scale
     if (bounded) {
@@ -100,7 +100,8 @@ bool item_quad(const sc_item &it, int sw_i, int sh_i, Corner out[4]) {
             sx = bw / cw;
             sy = bh / ch;
         } else {
-            double k = it.bounds == 1 ? std::min(bw / cw, bh / ch) : std::max(bw / cw, bh / ch);
+            const bool fill = it.bounds == 2 || (it.bounds == 4 && (cw >= ch) == (bw >= bh));
+            double k = fill ? std::max(bw / cw, bh / ch) : std::min(bw / cw, bh / ch);
             sx = sy = k;
         }
     }

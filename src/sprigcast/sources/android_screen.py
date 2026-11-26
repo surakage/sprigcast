@@ -44,7 +44,7 @@ HOLD_MOST_S = 3.0  # a turned phone's last good picture stays at most this long 
 BOXED = 0.3  # dark this far in from both ends of the long side: the other shape boxed inside this one
 _TURN_WORDS = "'SurfaceOrientation|orientation=|mCurrentRotation|mRotation='"  # grep on the phone: a short answer
 SIZES = (("720p", 1280), ("1080p", 1920))
-DEFAULTS: dict[str, Any] = {"serial": "", "longest": 1280, "bitrate_kbps": 8000, "sound": True, "trim": True,
+DEFAULTS: dict[str, Any] = {"serial": "", "longest": 1280, "bitrate_kbps": 8000, "sound": True, "trim": True, "fill": True,
                             "monitor": True}  # you hear the phone through the PC (Android plays it here, not there)
 TRIM_EVERY_S = 1.0
 TRIM_SURE = 3

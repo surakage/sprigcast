@@ -143,7 +143,9 @@ def source_id_prefix(kind: str) -> str:
 RETIRED_FILTER_KINDS = ("vst", "background")  # VST3 sound filters, Background remover (removed 2026-11-17)
 
 ALIGNS = ("top_left", "top", "top_right", "left", "center", "right", "bottom_left", "bottom", "bottom_right")
-BOUNDS = ("off", "fit", "fill", "stretch")  # off: drawn at its scale; else squeezed into a box of bounds_size
+BOUNDS = ("off", "fit", "fill", "stretch", "fill_same")  # off: drawn at its scale; else squeezed into a box of
+# bounds_size. fill_same: fills a box of its own shape (landscape in landscape) and fits one turned the other way
+# (a phone turned portrait on a landscape canvas), decided for each picture as it comes
 
 
 def align_share(align: str) -> tuple[float, float]:
@@ -211,7 +213,8 @@ class SceneItem(BaseModel):
         bw, bh = self.bounds_size
         if self.bounds == "stretch":
             return bw / cw, bh / ch
-        k = (min if self.bounds == "fit" else max)(bw / cw, bh / ch)
+        fill = self.bounds == "fill" or (self.bounds == "fill_same" and (cw >= ch) == (bw >= bh))
+        k = (max if fill else min)(bw / cw, bh / ch)
         return k, k
 
     def picture_rect(self, source_size: tuple[int, int]) -> tuple[float, float, float, float]:
@@ -1406,14 +1409,16 @@ class SceneCollection(BaseModel):
                 touched.append(config)
         return moved, touched
 
-    def fit_places(self, source_id: str, size: tuple[int, int]) -> bool:
+    def fit_places(self, source_id: str, size: tuple[int, int], fill: bool = False) -> bool:
         """A source whose shape changes by itself (a phone turned between portrait and landscape, or its black
         edges trimmed: sources/android_screen.py, app/phone_camera.py): each of its places becomes a box the
         size of its canvas that fits the picture in it, centered (user 2026-11-26: "fits centered vertical and
         fits centered horizontal" with no resizing after each turn). The engine fits each picture as it comes,
         so the first picture after a turn is already in place: refitting from the window after the engine said
-        the new size drew a frame or two at the old size first ("could be a bit smoother"). Returns whether a
-        place changed."""
+        the new size drew a frame or two at the old size first ("could be a bit smoother"). With `fill`, a
+        picture the canvas's shape fills it, its excess sides cropped (user 2026-11-26: a 19.5:9 phone left gaps
+        top and bottom on a 16:9 canvas), and one turned the other way still fits. Returns whether a place
+        changed."""
         if min(size) <= 0:
             return False
         canvases = {c.id: c for c in self.canvases}
@@ -1425,7 +1430,7 @@ class SceneCollection(BaseModel):
             for item in scene.items:
                 if item.source != source_id:
                     continue
-                want = dict(x=0.0, y=0.0, scale=1.0, scale_y=None, crop=(0, 0, 0, 0), bounds="fit",
+                want = dict(x=0.0, y=0.0, scale=1.0, scale_y=None, crop=(0, 0, 0, 0), bounds="fill_same" if fill else "fit",
                             bounds_size=(float(canvas.width), float(canvas.height)), bounds_align="center")
                 if any(getattr(item, k) != v for k, v in want.items()):
                     for k, v in want.items():

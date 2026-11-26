@@ -177,7 +177,7 @@ def test_the_pop_up_lists_ready_phones_and_keeps_choices():
         time.sleep(0.02)
     assert [dialog.phone.itemText(i) for i in range(dialog.phone.count())] == ["Pixel 8"]
     assert dialog.values() == {"serial": "A1", "longest": 1920, "bitrate_kbps": 12000, "sound": True,
-                                     "trim": True}
+                                     "trim": True, "fill": True}
     dialog.deleteLater()
 
 
@@ -372,6 +372,13 @@ def test_a_place_fits_its_canvas_again_when_the_phone_turns():
     assert abs(item.picture_scale((576, 1280))[1] - 1080 / 1280) < 1e-6  # portrait: as tall
     assert not col.fit_places("android-1", (576, 1280))  # already fitting: nothing to save
     assert not col.fit_places("android-2", (576, 1280))
+    # Fill the canvas (user 2026-11-26: a 19.5:9 phone left gaps top and bottom): landscape fills it, its
+    # excess sides cropped, and portrait on the same landscape canvas still fits whole.
+    assert col.fit_places("android-1", (1280, 576), fill=True) and item.bounds == "fill_same"
+    assert item.picture_scale((1280, 576))[0] == 1080 / 576
+    x, y, w, h = item.picture_rect((1280, 576))
+    assert (y, h) == (0.0, 1080.0) and x < 0 and abs(x * 2 + w - 1920) < 1e-6  # centered, sides spill
+    assert abs(item.picture_scale((576, 1280))[1] - 1080 / 1280) < 1e-6
 
 
 

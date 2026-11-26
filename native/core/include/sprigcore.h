@@ -188,7 +188,7 @@ typedef struct sc_item {
     float x, y, scale, scale_y, rotation;  /* scale_y < 0: the same as scale */
     int align;             /* index in core/scene.py ALIGNS */
     int crop[4];           /* left, top, right, bottom */
-    int bounds;            /* index in BOUNDS: 0 off, 1 fit, 2 fill, 3 stretch */
+    int bounds;            /* index in BOUNDS: 0 off, 1 fit, 2 fill, 3 stretch, 4 fill_same */
     float bounds_size[2];
     int bounds_align;
     float fade;            /* 0..1, items fading in or out */

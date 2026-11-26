@@ -2066,7 +2066,8 @@ class MainWindow(QMainWindow):
                                        f" border-color: {theme.EDGE}; border-radius: 16px; padding-left: 14px; }}")
         self.bounds_mode.setFixedHeight(36)
         self.bounds_mode.setCursor(Qt.CursorShape.PointingHandCursor)
-        for key, text in (("off", "Off"), ("fit", "Fit inside"), ("fill", "Fill and crop"), ("stretch", "Stretch")):
+        for key, text in (("off", "Off"), ("fit", "Fit inside"), ("fill", "Fill and crop"),
+                          ("fill_same", "Fill, fit when turned"), ("stretch", "Stretch")):
             self.bounds_mode.addItem(text, key)
         self.bounds_mode.currentIndexChanged.connect(lambda _i: self._on_bounds_mode())
         self.bounds_grid = PinGrid(lambda align: self._on_pin_picked("bounds_align", align))
@@ -4232,7 +4233,8 @@ class MainWindow(QMainWindow):
                 continue
             before = seen.get(config.id)
             seen[config.id] = tuple(size)
-            if before is not None and before != tuple(size) and self.collection.fit_places(config.id, tuple(size)):
+            if before is not None and before != tuple(size) \
+                    and self.collection.fit_places(config.id, tuple(size), fill=bool(config.settings.get("fill", True))):
                 turned = True  # turned, or its black edges trimmed: fits its canvas again
         return turned
 
@@ -6482,6 +6484,11 @@ class MainWindow(QMainWindow):
         self._changed()
         if config.kind == "android_screen" and config.settings.get("sound", True) != before.get("sound", True):
             self._refresh_audio_soon()  # Phone sound switched: listed in Sound or not
+        if config.kind == "android_screen" and config.settings.get("fill", True) != before.get("fill", True):
+            fill = bool(config.settings.get("fill", True))
+            shape = self.__dict__.get("_phone_shapes", {}).get(config.id)
+            if shape and self.collection.fit_places(config.id, shape, fill=fill):
+                self._changed()
         self._refresh_sources(keep_row=self.source_list.currentRow())
         return True
 
