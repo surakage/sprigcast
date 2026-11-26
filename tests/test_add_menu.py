@@ -46,7 +46,7 @@ def test_add_menu_is_a_to_z_with_the_new_entries(tmp_path, monkeypatch):
         assert middle == sorted(middle, key=str.lower)
         # User, 2026-11-20: professional names, and each entry adds one leaf (double-click picks what it shows)
         # Sounds are added from the Sound card's + (user, 2026-11-20), so they're not listed here
-        assert middle == ["Browser", "Chat", "Color", "Display Capture", "Game Capture", "Image", "Mirror", "Text",
+        assert middle == ["Browser", "Chat", "Color", "Display Capture", "Game Capture", "Image", "Mirror", "Phone Camera", "Text",
                           "Video Capture", "Video File", "Window Capture"]
         submenus = [a.text() for a in w.add_source_menu.actions() if a.menu() is not None]
         assert submenus == labels  # every kind opens to New… and what you have of it
