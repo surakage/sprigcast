@@ -51,6 +51,18 @@ def test_release_and_test_cards(tmp_path, monkeypatch):
     monkeypatch.setattr(discord_post, "merged_since_last_test", lambda tag: "• Something (#1)")
     test = discord_post.message("test", "test-2026-11-22", setup, "Beta 0.3 test build 1 (abc1234)")["embeds"][0]
     assert test["title"] == "New tester build: Beta 0.3 test build 1 (abc1234)" and "image" not in test
+    assert "github.com" not in str(test)  # a tester card points at the website's test page too
+    fields = {f["name"]: f["value"] for f in test["fields"]}
+    assert fields["Download"] == "[SprigCast-Setup-0.4.0.exe](https://sprigcast.slothbloom.com/test)"
+
+
+def test_tester_list_names_pull_requests_without_links(monkeypatch):
+    log = {("tag", "--list", "test-*", "--sort=-creatordate"): "test-2026-11-26l\ntest-2026-11-26k\n",
+           ("log", "--first-parent", "--format=%H%x09%s", "test-2026-11-26l..HEAD"): "abc\tPhone Camera pairing (#958)\n"}
+    monkeypatch.setattr(discord_post.subprocess, "run",
+                        lambda args, **kw: type("R", (), {"stdout": log.get(tuple(args[1:]), "")})())
+    text = discord_post.merged_since_last_test("test-2026-11-26m")
+    assert text == "Since test-2026-11-26l:\n• Phone Camera pairing (#958)" and "github" not in text
 
 
 def test_no_webhook_posts_nothing(tmp_path, monkeypatch, capsys):
