@@ -24,6 +24,7 @@ import ipaddress
 import json
 import logging
 import secrets
+import _ssl
 import socket
 import ssl
 import sys
@@ -161,7 +162,9 @@ class PhoneServer:
 
     def start(self) -> None:
         context = _plain_ssl_context()(ssl.PROTOCOL_TLS_SERVER)
-        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        # Set on the C layer: ssl.py's own setter goes through the module's SSLContext, which with truststore in
+        # its place called itself until the stack ran out (every start crashed 15 s in, PC 2026-11-26).
+        _ssl._SSLContext.minimum_version.__set__(context, ssl.TLSVersion.TLSv1_2)
         self.address = lan_address()
         cert, key = self._certificate()
         context.load_cert_chain(cert, key)
