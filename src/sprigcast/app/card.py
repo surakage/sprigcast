@@ -138,6 +138,7 @@ class FitScroll(QScrollArea):
         self.setWidgetResizable(True)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)  # until it doesn't fit (_refit)
         self.setStyleSheet("QScrollArea { background: transparent; }")
         self.viewport().setStyleSheet("background: transparent")
 
@@ -146,9 +147,47 @@ class FitScroll(QScrollArea):
         widget.installEventFilter(self)  # its layout changing (rows shown or hidden) resizes the pop-up
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802
-        if event.type() == QEvent.Type.LayoutRequest and watched is self.widget():
+        if watched is self.widget() and event.type() in (QEvent.Type.LayoutRequest, QEvent.Type.Resize):
             self.updateGeometry()
+            if not self._refit_queued:
+                self._refit_queued = True
+                QTimer.singleShot(0, self, self._refit)
         return super().eventFilter(watched, event)
+
+    _refit_queued = False
+
+    def _need(self) -> int:
+        """The height that shows everything at the width the pop-up has (no scroll bar taking any of it)."""
+        inner = self.widget()
+        wide = self.width() if self.isVisible() else 0
+        card = self.parentWidget()
+        if wide <= 0 and card is not None and card.layout() is not None:
+            margins = card.layout().contentsMargins()
+            wide = card.minimumWidth() - margins.left() - margins.right() - 2  # (the card's edge)
+        height = inner.sizeHint().height()
+        if wide > 0 and inner.hasHeightForWidth():
+            height = inner.heightForWidth(wide)
+        # Never less than what it can't be squeezed below, nor than what it really laid out at: on the PC the
+        # Android Screen pop-up was asked for less, had a scroll bar with room to spare, and Cancel and Save sat
+        # cut off at its bottom (2026-11-26).
+        height = max(height, inner.minimumSizeHint().height())
+        if self.isVisible() and self.verticalScrollBar().maximum() > 0:
+            height = max(height, inner.height())
+        return height
+
+    def _refit(self) -> None:
+        """Everything showing, and a scroll bar only when the screen is too small for it all."""
+        self._refit_queued = False
+        if self.widget() is None:
+            return
+        fits = self._need() <= self._room()
+        want = Qt.ScrollBarPolicy.ScrollBarAlwaysOff if fits else Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        if self.verticalScrollBarPolicy() != want:
+            self.setVerticalScrollBarPolicy(want)
+        self.updateGeometry()
+        window = self.window()
+        if window is not None and window.isVisible() and window.layout() is not None:
+            window.layout().activate()
 
     def _room(self) -> int:
         room = screen_room(self.window())
@@ -158,16 +197,7 @@ class FitScroll(QScrollArea):
         inner = self.widget()
         if inner is None:
             return super().sizeHint()
-        hint = inner.sizeHint()
-        wide = self.width() if self.isVisible() else 0
-        card = self.parentWidget()
-        if wide <= 0 and card is not None and card.layout() is not None:
-            margins = card.layout().contentsMargins()
-            wide = card.minimumWidth() - margins.left() - margins.right() - 2  # (the card's edge)
-        height = hint.height()
-        if wide > 0 and inner.hasHeightForWidth():
-            height = inner.heightForWidth(wide)
-        return QSize(hint.width(), max(60, min(height, self._room())))
+        return QSize(inner.sizeHint().width(), max(60, min(self._need(), self._room())))
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802
         return self.sizeHint()

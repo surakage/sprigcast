@@ -269,3 +269,47 @@ def test_the_pop_up_stays_whole_when_its_answer_comes_in():
     assert grown.frameGeometry().bottom() <= room.bottom()
     dialog.deleteLater()
     grown.deleteLater()
+
+
+def test_a_pipe_that_cant_seek_is_read_without_seeking(fake_adb, tmp_path):
+    """On Windows a pipe says it can seek and then fails with "[Errno 22] Invalid argument" when PyAV seeks it:
+    the phone's screen never showed (PC 2026-11-26). adb's output is read as a stream that can't seek."""
+    import io
+    import subprocess
+
+    av = pytest.importorskip("av")
+    adb, _ = fake_adb
+
+    class WindowsPipe(io.RawIOBase):  # a real pipe, behaving as Windows' does
+        def __init__(self, raw):
+            self.raw = raw
+
+        def readable(self):
+            return True
+
+        def seekable(self):
+            return True
+
+        def seek(self, *args):
+            raise OSError(22, "Invalid argument")
+
+        def tell(self):
+            raise OSError(22, "Invalid argument")
+
+        def readinto(self, b):
+            return self.raw.readinto(b)
+
+    proc = subprocess.Popen([adb, "exec-out", "screenrecord", "-"], stdout=subprocess.PIPE, bufsize=0)
+    try:
+        container = av.open(screen._Pipe(WindowsPipe(proc.stdout)), format="h264", mode="r",
+                            options={"probesize": "2048", "analyzeduration": "0", "fflags": "nobuffer"})
+        frames = 0
+        for _ in container.decode(container.streams.video[0]):
+            frames += 1
+            if frames >= 5:
+                break
+        container.close()
+        assert frames >= 5
+    finally:
+        proc.kill()
+        proc.wait()

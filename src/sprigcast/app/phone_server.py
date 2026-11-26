@@ -79,6 +79,17 @@ class Session:
         self.seen = 0.0  # when the phone last asked anything
 
 
+def _plain_ssl_context() -> type:
+    """Python's own SSLContext. On Windows main.py has truststore stand in for it (web requests then trust what
+    Windows trusts), and truststore's checks the other side's certificate once the handshake is done: a phone
+    has none, so every connection to the phone's page was closed right after its handshake, with nothing sent
+    (PC 2026-11-26). The phone's page is a server: it needs Python's own."""
+    for cls in ssl.SSLContext.__mro__:
+        if cls.__module__ == "ssl" and cls.__name__ == "SSLContext":
+            return cls
+    return ssl.SSLContext
+
+
 class _Server(ThreadingHTTPServer):
     """One page's server. Its port is its own: on Windows SO_REUSEADDR let a second listener take a port that was
     in use (PC 2026-11-26), so Windows binds it exclusively. The phone's TLS handshake runs on the request's own
@@ -88,7 +99,7 @@ class _Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = sys.platform != "win32"
     context: ssl.SSLContext | None = None
-    _turned_down = False
+    _turned_down = 0
 
     def server_bind(self) -> None:
         if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
@@ -102,9 +113,10 @@ class _Server(ThreadingHTTPServer):
                 try:
                     request = self.context.wrap_socket(request, server_side=True)
                 except (OSError, ValueError) as exc:  # most often a browser at its "not private" warning
-                    if not self._turned_down:
-                        self._turned_down = True
-                        log.info("phone camera: a browser closed the secure connection (%s)", type(exc).__name__)
+                    self._turned_down += 1
+                    if self._turned_down <= 10:  # what it was, the first few times (never the address)
+                        log.info("phone camera: a secure connection didn't open (%s: %s)", type(exc).__name__,
+                                 str(exc)[:200])
                     return
                 request.settimeout(REQUEST_S)
             self.finish_request(request, client_address)
@@ -148,7 +160,7 @@ class PhoneServer:
             self.stop()
 
     def start(self) -> None:
-        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context = _plain_ssl_context()(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
         self.address = lan_address()
         cert, key = self._certificate()
