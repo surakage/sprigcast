@@ -110,6 +110,9 @@ GLYPHS = {
                     '<rect x="37" y="34" width="9" height="32" rx="3" fill="{c}"/><rect x="54" y="34" width="9" height="32" rx="3" fill="{c}"/>',
     # Add chapter: a bookmark on a timeline (a mark in the recording).
     "chapter": f'<path d="M34 12h32v46L50 46 34 58z" fill="{{c}}"/><path d="M12 78h76" {SW}/><path d="M50 70v16" {SW}/>',
+    # Teleprompter: a page of lines with an arrow scrolling it up (runs the THSV Teleprompter app).
+    "teleprompter": f'<rect x="10" y="10" width="58" height="80" rx="10" {SW}/><path d="M24 30h30M24 44h30M24 58h18" {SW}/>'
+                    f'<path d="M86 74V28M77 37l9-9 9 9" {SW}/>',
     # Run action: braces round a play mark (runs any SprigCast action).
     "run": f'<path d="M30 16q-12 0-12 12v10q0 12-10 12q10 0 10 12v10q0 12 12 12M70 16q12 0 12 12v10q0 12 10 12q-10 0-10 12v10q0 12-12 12" {SW}/>'
            '<path d="M42 36l22 14-22 14z" fill="{c}"/>',
@@ -144,6 +147,7 @@ KEYS = {
     "chapter": (("chapter", MINT), None),
     "pngtuber": (("pngtuber", MINT), None),
     "run": (("run", MINT), None),
+    "teleprompter": (("teleprompter", MINT), None),
 }
 
 
@@ -154,7 +158,7 @@ GROUP = {"bloom": "scene", "item": "scene", "garden": "scene", "path": "scene", 
          "clips": "capture", "clip": "capture", "screenshot": "capture", "camera": "capture",
          "filter": "fx", "deaths": "fx", "pngtuber": "fx", "run": "fx",
          "timer": "fx", "timer-reset": "fx", "timer-add": "fx", "replay": "capture", "freeze": "fx",
-         "record-pause": "capture", "chapter": "capture"}
+         "record-pause": "capture", "chapter": "capture", "teleprompter": "sound"}
 GROUP_TILE = {"scene": ("#1f7a4d", "#0b3322"), "sound": ("#1f6f86", "#0a2b38"), "capture": ("#8a6a1e", "#3a2a08"),
               "fx": ("#5b4a9a", "#221a45"), "live": ("#b4305f", "#4a0f26")}
 

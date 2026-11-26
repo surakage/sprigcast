@@ -6,7 +6,7 @@ bloom is on air, a sound key shows when it's muted, and Go live and Record turn 
 | Key | Does | Lights | OBS plugin's |
 | --- | --- | --- | --- |
 | Show bloom | puts a bloom on air (both shapes, or one) | while it's on air | Scene |
-| Show or hide | toggles, shows or hides an item in a bloom | while hidden | Source Visibility |
+| Show or hide | toggles, shows or hides an item in a bloom, or a leaf inside one of its sprigs (picked as "Sprig › Leaf"), on both canvases or only one (Shape) | while hidden | Source Visibility |
 | Garden | switches garden | while in use | Scene Collection |
 | Path | switches path | while in use | Profile |
 | Mute sound | toggles, mutes or unmutes a sound | while muted | Audio Mixer |
@@ -19,7 +19,7 @@ bloom is on air, a sound key shows when it's muted, and Go live and Record turn 
 | Clips | keeps clips ready, or stops | while ready | Replay Buffer |
 | Save clip | saves a clip | ✓ on success | Replay Buffer Save |
 | Virtual camera | SprigCast Camera on or off (set it up once in Settings) | while on | Virtual Camera |
-| Screenshot | takes a screenshot (Snap prints it on stream) | ✓ on success | Screenshot |
+| Screenshot | takes a screenshot of both canvases or only one (Shape); Snap prints it on stream | ✓ on success | Screenshot |
 | Media | play/pause, play, pause, restart or stop a video or sound file | while playing | Media Source Control |
 | Filter | turns a filter on, off, or toggles it | while on | Filter |
 | Transition | picks the transition and/or its length | while it's in use | Transition |
@@ -32,6 +32,7 @@ bloom is on air, a sound key shows when it's muted, and Go live and Record turn 
 | Freeze | freezes a sprig or source (for its usual time or the seconds you set), toggles, or lets it go (Freeze plugin) | ✓ and Frozen or Moving | |
 | PNGtuber | shows an expression (for some seconds, or until changed), the next one, or default (PNGtuber plugin) | ✓ and the expression's name | |
 | Run action | any SprigCast action with JSON fields | ✓ on success | |
+| Teleprompter | the THSV Teleprompter app: play or pause, start, pause, reset, next, previous, faster, slower, bigger or smaller text, mirror, repeat section (GET `/control/<command>` on its port, 8765 unless changed) | ✓ on success; works without SprigCast | the command |
 
 Not here on purpose: Studio Mode (SprigCast has none: a bloom goes straight on air).
 

@@ -479,19 +479,20 @@ class NativeApi:
         return out
 
     def _items(self, data: dict[str, Any]) -> tuple[Scene, list[SceneItem]]:
-        """The holder and the items named by "item". Blooms hold sprigs only, so an item that isn't in the bloom
-        itself is looked for in the bloom's own sprig: {"bloom": "Chatting", "item": "Cam"} finds the Cam."""
+        """The holder and the items named by "item", in every asked shape. Blooms hold sprigs only, so an item
+        that isn't in a bloom shape itself is looked for in that shape's own sprig: {"bloom": "Chatting", "item":
+        "Cam"} finds the Cam. Each shape is looked at on its own, so an item that sits in the bloom itself in one
+        shape and in its sprig in the other is still found in both."""
         holder, layouts = self._holder(data)
         wanted = _get(data, "item", str)
-        items = self._matching_items(layouts, wanted)
-        if not items and data.get("sprig") is None:
-            inner = []
-            for layout in layouts:
+        items: list[SceneItem] = []
+        for layout in layouts:
+            found = self._matching_items([layout], wanted)
+            if not found and data.get("sprig") is None:
                 sprig = self.col.bloom_sprig(layout)
-                shape = None if sprig is None else self.col.shape_for(sprig, layout.canvas)
-                if shape is not None and all(shape.id != s.id for s in inner):
-                    inner.append(shape)
-            items = self._matching_items(inner, wanted)
+                if sprig is not None:
+                    found = self._matching_items([self.col.shape_for(sprig, layout.canvas)], wanted)
+            items += [item for item in found if all(item is not seen for seen in items)]
         if not items:
             raise _missing(f"{holder.name!r} has no item {wanted!r}.", "item", wanted)
         return holder, items
@@ -749,7 +750,7 @@ class NativeApi:
 
     def _set_items(self, data, visible: bool | None):
         _, items = self._items(data)
-        on = (not items[0].visible) if visible is None else visible
+        on = (not any(item.visible for item in items)) if visible is None else visible  # shown anywhere: hide all
         for item in items:
             item.visible = on
         self.host.commit("items")
@@ -774,7 +775,7 @@ class NativeApi:
             bloom="?bloom it's in", sprig="?sprig it's in", shape="?both (default), horizontal or vertical")
     def item_status(self, data):
         _, items = self._items(data)
-        return {"visible": items[0].visible}
+        return {"visible": any(item.visible for item in items)}
 
     @action("item.place", "Move, size or turn something inside a bloom or sprig (only the fields you give change).",
             item="name or id", bloom="?bloom it's in", sprig="?sprig it's in",

@@ -1,6 +1,6 @@
 {
   "Name": "SprigCast",
-  "Version": "0.4.0.0",
+  "Version": "0.5.0.0",
   "Author": "SlothBloom",
   "Actions": [
     {
@@ -556,6 +556,22 @@
           "Image": "imgs/actions/run/key0",
           "TitleAlignment": "bottom",
           "ShowTitle": true
+        }
+      ]
+    },
+    {
+      "Name": "Teleprompter",
+      "UUID": "com.slothbloom.sprigcast.teleprompter",
+      "Icon": "imgs/actions/teleprompter/icon",
+      "Tooltip": "Run the THSV Teleprompter app: start, pause, scroll speed, text size and more.",
+      "PropertyInspectorPath": "ui/settings.html",
+      "Controllers": [
+        "Keypad"
+      ],
+      "States": [
+        {
+          "Image": "imgs/actions/teleprompter/key0",
+          "TitleAlignment": "bottom"
         }
       ]
     }

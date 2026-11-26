@@ -93,9 +93,11 @@ test("an item in a bloom's own sprig lights a key set to the bloom", async () =>
 	const sc = new SprigCast({ port: 4456, WebSocketClass: FakeSocket });
 	sc.want(true);
 	await welcome(FakeSocket.last);
-	FakeSocket.last.say({ event: "item.changed", sprig: "Chatting 2", blooms: ["Chatting"], item: "Cam", visible: false });
-	assert.equal(sc.state.items["Chatting/Cam"], false);
-	assert.equal(sc.state.items["Chatting 2/Cam"], false);
+	sc.state.items["Chatting/Cam|both"] = true; // a both-shapes key's answer from before
+	FakeSocket.last.say({ event: "item.changed", sprig: "Chatting 2", blooms: ["Chatting"], item: "Cam", shape: "vertical", visible: false });
+	assert.equal(sc.state.items["Chatting/Cam|vertical"], false);
+	assert.equal(sc.state.items["Chatting 2/Cam|vertical"], false);
+	assert.equal(sc.state.items["Chatting/Cam|both"], undefined); // asks again: still shown horizontally?
 	sc.want(false);
 });
 
@@ -376,4 +378,11 @@ test("tracks each place for the Place key: catch-up, place.changed, and none onc
 	socket.say({ event: "stream.changed", on: false });
 	assert.deepEqual(client.state.places, {});
 	client.want(false);
+});
+
+test("Show or hide: a leaf inside a sprig is picked as Sprig › Leaf", async () => {
+	const { itemTarget } = await import("../src/items.js");
+	assert.deepEqual(itemTarget({ bloom: "Show", item: "Website" }), { bloom: "Show", item: "Website" });
+	assert.deepEqual(itemTarget({ bloom: "Show", item: "Frame › Cam" }), { sprig: "Frame", item: "Cam" });
+	assert.deepEqual(itemTarget({ bloom: "Show", item: "Frame › Corner › Logo" }), { sprig: "Corner", item: "Logo" });
 });

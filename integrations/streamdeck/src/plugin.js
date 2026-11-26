@@ -4,6 +4,8 @@
 import streamDeck, { SingletonAction } from "@elgato/streamdeck";
 
 import { SprigCast, addSeconds, clockText, placeTitle, timerText } from "./sprigcast.js";
+import { NEST, itemTarget } from "./items.js";
+import { NoPageError, TELEPROMPTER_TITLES, teleprompterCommand, teleprompterPort, teleprompterSend } from "./teleprompter.js";
 
 const ID = "com.slothbloom.sprigcast";
 const sprigcast = new SprigCast();
@@ -52,6 +54,7 @@ async function listFor(event, payload = {}) {
 		getSounds: async () => (await sprigcast.run("sounds.list")).sounds.map((s) => s.name),
 		getSprigs: async () => (await sprigcast.run("sprigs.list")).sprigs.map((s) => s.name),
 		getSources: async () => (await sprigcast.run("sources.list")).sources.map((s) => s.name),
+		getItems: async () => bloomItems(payload.bloom),
 		getActions: async () => (await sprigcast.run("app.actions")).actions.map((a) => a.do),
 		getExpressions: async () => (await sprigcast.run("pngtuber.expressions")).expressions,
 		// A place's key keeps its id; the list shows its name ("Twitch (horizontal)").
@@ -64,6 +67,7 @@ async function listFor(event, payload = {}) {
 	if (!fill) return null;
 	try {
 		const found = await fill();
+		if (found.some((item) => item?.group)) return found; // in sections, already in order
 		if (found.some((item) => item && typeof item === "object")) { // already label and value
 			return found.sort((a, b) => String(a.label).localeCompare(String(b.label)));
 		}
@@ -73,6 +77,43 @@ async function listFor(event, payload = {}) {
 	} catch {
 		return [{ label: "Open SprigCast first", value: "", disabled: true }];
 	}
+}
+
+/**
+ * What a key can show or hide in a bloom, in sections: Sprigs (every sprig in it), then Leaves in <bloom> and
+ * Leaves in <sprig> for each sprig. Values are paths ("Frame › Camera"), labels just the name.
+ */
+async function bloomItems(bloom) {
+	if (!bloom) return [];
+	const sprigs = [];
+	const leaves = new Map(); // section -> [{label, value}]
+	const named = async (where) => { // one entry per name, whichever shapes it's in
+		const seen = new Map();
+		for (const list of Object.values((await sprigcast.run("items.list", where)).shapes ?? {})) {
+			for (const item of list) seen.set(item.name, item);
+		}
+		return [...seen.values()];
+	};
+	const add = (item, path, section, depth) => {
+		const value = path ? `${path}${NEST}${item.name}` : item.name;
+		if (item.sprig) {
+			sprigs.push({ label: item.name, value, group: "Sprigs" });
+			return depth < 4 ? walk(item.name, value, depth + 1) : undefined;
+		}
+		if (!leaves.has(section)) leaves.set(section, []);
+		leaves.get(section).push({ label: item.name, value, group: `Leaves in ${section}` });
+		return undefined;
+	};
+	const walk = async (sprig, path, depth) => {
+		for (const item of await named({ sprig })) await add(item, path, sprig, depth);
+	};
+	for (const item of await named({ bloom })) {
+		if (item.sprig && item.name === bloom) await walk(item.name, "", 1); // the bloom's own sprig: its things are the bloom's
+		else await add(item, "", bloom, 1);
+	}
+	const az = (a, b) => a.label.localeCompare(b.label);
+	const sections = [...leaves.keys()].sort((a, b) => (a === bloom ? -1 : b === bloom ? 1 : a.localeCompare(b)));
+	return [...sprigs.sort(az), ...sections.flatMap((section) => leaves.get(section).sort(az))];
 }
 
 async function sprigNames() {
@@ -177,21 +218,28 @@ class MuteSound extends SprigCastAction {
 }
 
 class ToggleItem extends SprigCastAction {
+	// Shape: both canvases (the default), or only the horizontal or vertical one. The item is a bloom's own,
+	// or a leaf inside one of its sprigs ("Sprig › Leaf").
 	constructor() { super("item"); }
 	press(s, action) {
 		const verb = { show: "item.show", hide: "item.hide" }[s.mode] ?? "item.toggle";
-		return sprigcast.run(verb, { bloom: s.bloom, item: s.item }).then((result) => {
+		const shape = itemShape(s);
+		const target = itemTarget(s);
+		return sprigcast.run(verb, { ...target, shape }).then((result) => {
 			if (typeof result?.visible === "boolean") {
-				sprigcast.state.items[`${s.bloom}/${s.item}`] = result.visible;
+				const shapes = shape === "both" ? ["both", "horizontal", "vertical"] : [shape];
+				for (const one of shapes) sprigcast.state.items[itemKey(target, one)] = result.visible;
 				return action.setState(result.visible ? 0 : 1);
 			}
 		});
 	}
 	async paint(action, s) {
-		const key = `${s.bloom}/${s.item}`;
-		if (sprigcast.state.items[key] === undefined && sprigcast.ready && s.bloom && s.item) {
+		const shape = itemShape(s);
+		const target = itemTarget(s);
+		const key = itemKey(target, shape);
+		if (sprigcast.state.items[key] === undefined && sprigcast.ready && (target.bloom || target.sprig) && target.item) {
 			try {
-				sprigcast.state.items[key] = (await sprigcast.run("item.status", { bloom: s.bloom, item: s.item })).visible;
+				sprigcast.state.items[key] = (await sprigcast.run("item.status", { ...target, shape })).visible;
 			} catch {
 				return undefined;
 			}
@@ -199,6 +247,15 @@ class ToggleItem extends SprigCastAction {
 		const shown = sprigcast.state.items[key];
 		return typeof shown === "boolean" ? action.setState(shown ? 0 : 1) : undefined;
 	}
+}
+
+const SHAPES = new Set(["both", "horizontal", "vertical"]);
+function itemKey(target, shape) {
+	return `${target.sprig ?? target.bloom}/${target.item}|${shape}`;
+}
+/** A key's Shape setting: both canvases unless it names one. */
+function itemShape(s) {
+	return SHAPES.has(s.shape) ? s.shape : "both";
 }
 
 class SoundVolume extends SprigCastAction {
@@ -366,7 +423,7 @@ class SaveClip extends SprigCastAction {
 
 class Screenshot extends SprigCastAction {
 	constructor() { super("screenshot", 1); this.okAfterPress = true; }
-	press() { return sprigcast.run("screenshot.take"); }
+	press(s) { return sprigcast.run("screenshot.take", { shape: itemShape(s) }); }
 	said() { return "Saved"; }
 }
 
@@ -469,11 +526,44 @@ class RunAction extends SprigCastAction {
 	}
 }
 
+/**
+ * Teleprompter: runs the THSV Teleprompter app (its own local web control, GET /control/<command>), not
+ * SprigCast. It works whether SprigCast is open or not, so it never goes dark or opens a SprigCast connection.
+ */
+class TeleprompterKey extends SprigCastAction {
+	constructor() { super("teleprompter", 1); }
+	async onWillAppear(ev) {
+		await this.dress(ev.action);
+		return this.paint(ev.action, ev.payload.settings);
+	}
+	onWillDisappear() {}
+	async dress(action) {
+		if (!action.isKey()) return;
+		if (keyStyle === "canopy") return action.setImage();
+		return action.setImage(`imgs/styles/${keyStyle}/${this.suffix}/key0@2x.png`);
+	}
+	async onSendToPlugin() {}
+	async onKeyDown(ev) {
+		const s = ev.payload.settings;
+		try {
+			await teleprompterSend(teleprompterCommand(s), teleprompterPort(s));
+			await ev.action.showOk();
+		} catch (error) {
+			streamDeck.logger.warn(`${this.manifestId}: ${error.message}`);
+			await ev.action.showAlert();
+			await flash(ev.action, error instanceof NoPageError ? "No page\nopen" : "Not\nrunning");
+			setTimeout(() => this.paint(ev.action, s).catch(() => {}), 1900);
+		}
+	}
+	paint(action, s) { return action.setTitle(TELEPROMPTER_TITLES[teleprompterCommand(s)]); }
+	repaintAll() { return Promise.resolve(); } // nothing from SprigCast changes it
+}
+
 const actions = [new ShowBloom(), new MuteSound(), new SoundVolume(), new ToggleItem(), new GoLive(), new PlaceKey(), new Record(), new RecordPause(), new RecordChapter(),
 	new ClipsKey(), new SaveClip(), new CameraKey(), new Screenshot(), new MediaKey(), new FilterKey(),
 	new TransitionKey(), new GardenKey(), new PathKey(), new SprigStateAction(), new DeathCount(), new Pngtuber(),
 	new TimerKey(), new TimerReset(), new TimerAdd(), new ReplayKey(), new FreezeKey(),
-	new RunAction()];
+	new RunAction(), new TeleprompterKey()];
 for (const action of actions) streamDeck.actions.registerAction(action);
 
 sprigcast.on("changed", () => all.forEach((a) => a.repaintAll().catch(() => {})));

@@ -6,7 +6,9 @@
 const FIELDS = {
 	bloom: [["bloom", "Bloom", "getBlooms"], ["shape", "Shape", ["both", "horizontal", "vertical"]]],
 	mute: [["sound", "Sound", "getSounds"], ["mode", "Press", ["toggle", "mute", "unmute"]]],
-	item: [["bloom", "Bloom", "getBlooms"], ["item", "Item", "getSources"], ["mode", "Press", ["toggle", "show", "hide"]]],
+	item: [["bloom", "Bloom", "getBlooms"], ["item", "Item", "getItems"], ["mode", "Press", ["toggle", "show", "hide"]],
+		["shape", "Shape", ["both", "horizontal", "vertical"]]],
+	screenshot: [["shape", "Shape", ["both", "horizontal", "vertical"]]],
 	"sprig-state": [["sprig", "Sprig", "getSprigs"], ["state", "State", null]],
 	volume: [["sound", "Sound", "getSounds"], ["mode", "Press", ["change", "set"]], ["step", "Change (dB)", null],
 		["db", "Set to (dB)", null]],
@@ -24,7 +26,13 @@ const FIELDS = {
 	pngtuber: [["mode", "Press", ["expression", "next", "reset"]], ["expression", "Expression", "getExpressions"],
 		["seconds", "For seconds", null]],
 	run: [["action", "Action", "getActions"], ["fields", "Fields (JSON)", "json"]],
+	// The THSV Teleprompter app, not SprigCast: [value, label] pairs, and its own port (8765 unless changed there).
+	teleprompter: [["command", "Press", [["toggle", "Play or pause"], ["start", "Start"], ["pause", "Pause"], ["reset", "Reset"],
+		["next", "Next"], ["prev", "Previous"], ["faster", "Faster"], ["slower", "Slower"], ["bigger", "Bigger text"],
+		["smaller", "Smaller text"], ["mirror", "Mirror"], ["loop", "Repeat section"]]], ["tpPort", "Port", "port:8765"]],
 };
+
+const OWN_APP = new Set(["teleprompter"]); // keys for other apps: no SprigCast connection box
 
 let socket, context, settings = {}, globals = {};
 
@@ -42,10 +50,19 @@ function build(kind) {
 		let input;
 		if (Array.isArray(source)) {
 			input = document.createElement("select");
-			for (const value of source) input.add(new Option(value[0].toUpperCase() + value.slice(1), value));
+			for (const value of source) {
+				if (Array.isArray(value)) input.add(new Option(value[1], value[0]));
+				else input.add(new Option(value[0].toUpperCase() + value.slice(1), value));
+			}
 		} else if (source === "json") {
 			input = document.createElement("textarea");
 			input.placeholder = '{"bloom": "BRB"}';
+		} else if (typeof source === "string" && source.startsWith("port:")) {
+			input = document.createElement("input");
+			input.type = "number";
+			input.min = "1";
+			input.max = "65535";
+			input.placeholder = source.slice(5);
 		} else if (source) {
 			input = document.createElement("select");
 			input.dataset.source = source;
@@ -55,19 +72,22 @@ function build(kind) {
 			input = document.createElement("input");
 		}
 		input.id = `f-${key}`;
-		if (input.tagName !== "SELECT" || Array.isArray(source)) input.value = settings[key] ?? (Array.isArray(source) ? source[0] : "");
+		const first = Array.isArray(source) ? (Array.isArray(source[0]) ? source[0][0] : source[0]) : "";
+		if (input.tagName !== "SELECT" || Array.isArray(source)) input.value = settings[key] ?? first;
 		const save = () => {
 			if (settings[key] === input.value) return;
 			settings[key] = input.value;
 			send("setSettings", settings);
 			if (key === "source") askLists("getFilters"); // a source's own filters
+			if (key === "bloom") askLists("getItems"); // what's in that bloom and its sprigs
 		};
 		input.addEventListener("change", save);
 		if (input.tagName !== "SELECT") input.addEventListener("input", save); // saved as you type: a press works at once
 		row.appendChild(input);
 		form.appendChild(row);
 	}
-	if (!(FIELDS[kind] ?? []).length) document.getElementById("connection").open = true;
+	if (OWN_APP.has(kind)) document.getElementById("connection").hidden = true;
+	else if (!(FIELDS[kind] ?? []).length) document.getElementById("connection").open = true;
 }
 
 /** Every name SprigCast has, plus the one picked now (even if SprigCast doesn't have it right now). */
@@ -78,7 +98,21 @@ function fillSelect(select, items) {
 	const options = [new Option(names.length || picked ? "Choose…" : "Open SprigCast to pick", "")];
 	options[0].disabled = true;
 	if (picked && !names.includes(picked)) options.push(new Option(picked, picked));
-	for (const item of listed) options.push(new Option(item.label ?? item.value, item.value));
+	const groups = new Map(); // a list in sections (Sprigs, Leaves in ...): one heading each
+	for (const item of listed) {
+		const option = new Option(item.label ?? item.value, item.value);
+		if (!item.group) {
+			options.push(option);
+			continue;
+		}
+		if (!groups.has(item.group)) {
+			const heading = document.createElement("optgroup");
+			heading.label = item.group;
+			groups.set(item.group, heading);
+			options.push(heading);
+		}
+		groups.get(item.group).appendChild(option);
+	}
 	select.replaceChildren(...options);
 	select.value = picked;
 }
@@ -92,7 +126,8 @@ function askLists(only) {
 	const wanted = new Set([...document.querySelectorAll("select[data-source]")].map((s) => s.dataset.source));
 	for (const event of wanted) {
 		if (event === "getFilters" && !settings.source) continue; // pick a source first
-		if (!only || event === only) send("sendToPlugin", { event, source: settings.source });
+		if (event === "getItems" && !settings.bloom) continue; // pick a bloom first
+		if (!only || event === only) send("sendToPlugin", { event, source: settings.source, bloom: settings.bloom });
 	}
 }
 
