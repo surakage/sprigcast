@@ -1396,8 +1396,7 @@ class MainWindow(QMainWindow):
             if item is not None:
                 self._fill_plugin_menu(menu, item.source)
             menu.addSeparator()
-            count = len(self.source_list.selectedItems())
-            turn = menu.addAction(f"Group into {a(PART)}…" if count < 2 else f"Group these {count} into {a(PART)}…")
+            turn = menu.addAction("Group…")  # one word (user 2026-11-26); it asks the new sprig's name
             turn.setToolTip(f"Move the selected sources into a new reusable {PART}, right where they are")
             turn.triggered.connect(self._turn_into_part)
             if visual:

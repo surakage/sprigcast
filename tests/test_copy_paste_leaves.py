@@ -128,6 +128,7 @@ def test_the_leaves_menu_offers_copy_and_paste(tmp_path, monkeypatch):
         w.item_actions["copy"].trigger()
         texts = [a.text() for a in w._source_menu(False).actions()]
         assert "Paste" in texts and "Duplicate" in texts
+        assert "Group…" in [a.text() for a in w._source_menu(True).actions()]
         assert w.item_actions["paste"].isEnabled()
     finally:
         w.close()
