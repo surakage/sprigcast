@@ -186,6 +186,9 @@ def sign_out(service: str) -> None:
         from sprigcast.output import youtube_viewers
 
         youtube_viewers.forget()
+    from sprigcast.output import viewer_counts
+
+    viewer_counts.forget(service)
     if not raw:
         return
     try:

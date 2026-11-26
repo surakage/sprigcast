@@ -114,6 +114,7 @@ These codes are never renamed; new ones may be added. `app.actions` returns ever
 | `bloom.new` | bloom.new, bloom.remove, source.new, item.add |
 | `places.status` | stream.status places, place.start, place.stop |
 | `youtube.viewers` | youtube.viewers |
+| `viewers.counts` | viewers.counts |
 | `screenshot.source` | screenshot.take with source or bloom |
 | `plugins.enabled` | plugins.list: id, enabled, store plugins not added |
 | `plugin.missing` | plugin_missing error |
@@ -447,6 +448,14 @@ A Text source's settings (`source.get` shows them all, `source.set` changes the 
 | `youtube.viewers` | While live on YouTube: how many watch, in all and on each YouTube stream (read from YouTube at most once a minute; never waits). Not live there or not signed in: live false. | none |
 
 The answer while live: `{"live": true, "viewers": 4, "broadcasts": [{"canvas": "horizontal", "viewers": 3}, {"canvas": "vertical", "viewers": 1}], "updatedAt": "2026-11-26T23:20:00Z"}`. `viewers` is null until the first read is in (a few seconds after going live or the first ask). A vertical stream that joins the horizontal one through YouTube's Dual stream is counted once, with it. Nobody asking: nothing is read from YouTube.
+
+### viewers
+
+| Action | What it does | Fields |
+| --- | --- | --- |
+| `viewers.counts` | While live: how many watch on each platform (YouTube, Twitch, Kick), read at most once a minute; never waits. A platform not live: live false; viewers null: no number yet. | none |
+
+The answer: `{"platforms": {"youtube": {"live": true, "viewers": 4, "broadcasts": [...]}, "twitch": {"live": true, "viewers": 5}, "kick": {"live": false}}, "updatedAt": "2026-11-26T23:20:00Z"}`. A platform is live when SprigCast is sending to one of its places. `viewers` is null until the first read is in, or while the platform doesn't show the stream as live yet. `"signedIn": false` means SprigCast has no Twitch or Kick sign-in to read it with (Settings → Stream). YouTube's entry is youtube.viewers's answer. Each platform is read only while it's live and someone keeps asking, at most once a minute, with the sign-in SprigCast already has.
 
 ## Web page sources
 

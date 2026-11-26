@@ -50,6 +50,7 @@ FEATURES = (
     "bloom.new",           # bloom.new, bloom.remove, source.new, item.add
     "places.status",       # stream.status places, place.start, place.stop
     "youtube.viewers",     # youtube.viewers: how many watch on YouTube while live there
+    "viewers.counts",      # viewers.counts: how many watch on YouTube, Twitch and Kick while live there
     "screenshot.source",   # screenshot.take with source or bloom
     "plugins.enabled",     # plugins.list: id, enabled, store plugins not added
     "plugin.missing",      # plugin_missing error
@@ -1396,6 +1397,18 @@ class NativeApi:
         places = [(o.canvas, o.key_ref) for o in self.col.outputs
                   if o.type == "stream" and o.service == "youtube" and o.id in running]
         return viewers(places)
+
+    @action("viewers.counts", "While live: how many watch on each platform (YouTube, Twitch, Kick), read at most "
+            "once a minute; never waits. A platform not live: live false; viewers null: no number yet.")
+    def viewers_counts(self, data):
+        from sprigcast.output.viewer_counts import counts
+
+        running = getattr(self.host, "stream_places", dict)() or {}
+        live_on: dict[str, list] = {}
+        for o in self.col.outputs:
+            if o.type == "stream" and o.id in running and o.service:
+                live_on.setdefault(o.service, []).append((o.canvas, o.key_ref))
+        return counts(live_on)
 
     def _places_now(self) -> list[dict[str, Any]]:
         """Each place: id, name, on (sending now), reconnecting, seconds, skipped and frames."""

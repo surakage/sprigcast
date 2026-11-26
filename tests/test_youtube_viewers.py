@@ -99,3 +99,73 @@ def test_the_api_asks_only_about_youtube_places_sending_now(monkeypatch):
                           host=SimpleNamespace(stream_places=lambda: {"o1": {}, "o2": {}}))
     assert NativeApi.youtube_viewers(api, {}) == {"live": False}
     assert asked == [[("horizontal", "k1")]]
+
+
+# viewers.counts: YouTube, Twitch and Kick in one answer (user, 2026-11-26) --------------------------------
+
+
+@pytest.fixture
+def platforms(monkeypatch, youtube):
+    from sprigcast.output import viewer_counts as vc
+
+    reads = {"twitch": 0, "kick": 0}
+    numbers = {"twitch": 5, "kick": 11}
+
+    def reader(name):
+        def read():
+            reads[name] += 1
+            if numbers[name] == "signed out":
+                raise sd.NeedsSignIn("not signed in")
+            return numbers[name]
+        return read
+
+    for name in ("twitch", "kick"):
+        monkeypatch.setattr(vc._counts[name], "read", reader(name))
+        vc._counts[name].forget()
+    yield vc, reads, numbers
+    for name in ("twitch", "kick"):
+        vc._counts[name].forget()
+
+
+def _counts_settled(vc, live_on):
+    deadline = time.monotonic() + 3
+    while (yv._reading or any(c.busy for c in vc._counts.values())) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    return vc.counts(live_on)
+
+
+def test_counts_for_each_platform_live_now(platforms):
+    vc, reads, _numbers = platforms
+    live_on = {"youtube": [("horizontal", "key-h")], "twitch": [("horizontal", None)]}
+    first = vc.counts(live_on)["platforms"]
+    assert first["twitch"] == {"live": True, "viewers": None} and first["kick"] == {"live": False}
+    got = _counts_settled(vc, live_on)
+    assert got["platforms"]["youtube"]["viewers"] == 7 and got["platforms"]["twitch"] == {"live": True, "viewers": 5}
+    assert got["platforms"]["kick"] == {"live": False} and reads["kick"] == 0 and got["updatedAt"]
+    vc.counts(live_on)
+    assert reads["twitch"] == 1  # not again within the minute
+
+
+def test_a_platform_without_a_sign_in_says_so(platforms):
+    vc, _reads, numbers = platforms
+    numbers["kick"] = "signed out"
+    live_on = {"kick": [("vertical", None)]}
+    vc.counts(live_on)
+    assert _counts_settled(vc, live_on)["platforms"]["kick"] == {"live": True, "viewers": None, "signedIn": False}
+
+
+def test_the_api_groups_places_sending_now_by_platform(monkeypatch):
+    from types import SimpleNamespace
+
+    from sprigcast.control.native import NativeApi
+    from sprigcast.output import viewer_counts
+
+    asked = []
+    monkeypatch.setattr(viewer_counts, "counts", lambda live_on: asked.append(live_on) or {"platforms": {}})
+    outputs = [SimpleNamespace(id="o1", type="stream", service="youtube", canvas="horizontal", key_ref="k1"),
+               SimpleNamespace(id="o2", type="stream", service="twitch", canvas="horizontal", key_ref="k2"),
+               SimpleNamespace(id="o3", type="stream", service="kick", canvas="vertical", key_ref="k3")]
+    api = SimpleNamespace(col=SimpleNamespace(outputs=outputs),
+                          host=SimpleNamespace(stream_places=lambda: {"o1": {}, "o2": {}}))
+    NativeApi.viewers_counts(api, {})
+    assert asked == [{"youtube": [("horizontal", "k1")], "twitch": [("horizontal", "k2")]}]
