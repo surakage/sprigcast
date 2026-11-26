@@ -40,6 +40,8 @@ SEGMENT_S = 170.0  # screenrecord's own limit is 180 s: the next one starts befo
 RETRY_S = 2.0
 IDLE_S = 0.1  # adb quiet this long: the picture the parser holds is shown
 TURN_CHECK_S = 0.7  # how often the phone's turn is looked at while recording
+HOLD_MOST_S = 3.0  # a turned phone's last good picture stays at most this long while the next recording starts
+BOXED = 0.3  # dark this far in from both ends of the long side: the other shape boxed inside this one
 _TURN_WORDS = "'SurfaceOrientation|orientation=|mCurrentRotation|mRotation='"  # grep on the phone: a short answer
 SIZES = (("720p", 1280), ("1080p", 1920))
 DEFAULTS: dict[str, Any] = {"serial": "", "longest": 1280, "bitrate_kbps": 8000, "sound": True, "trim": True,
@@ -186,6 +188,19 @@ def black_edges(y: np.ndarray) -> tuple[int, int, int, int]:
             run(cols[::-1], int(w * TRIM_MOST)), run(rows[::-1], int(h * TRIM_MOST)))
 
 
+def boxed(y: np.ndarray) -> bool:
+    """True when a picture's luma looks like the phone turned under a recording still in the old shape: the
+    screen shrunk into the middle, with wide black on both ends of the long side and something lit between."""
+    h, w = y.shape
+    along = y[::8, :] if w >= h else y[:, ::8].T  # the long side across
+    n = along.shape[1]
+    ends = int(n * BOXED)
+    if ends < 2:
+        return False
+    return bool(along[:, :ends].max() < DARK and along[:, n - ends:].max() < DARK
+                and along[:, ends:n - ends].max() >= DARK * 2)
+
+
 def crop_yuv(frame, left: int, top: int, right: int, bottom: int):
     """A 4:2:0 frame with its edges cut off (the size stays even across, and a multiple of 4 down)."""
     import av
@@ -272,6 +287,10 @@ class AndroidScreenSource(Source):
         self._trims: dict[tuple[int, int], tuple[int, int, int, int]] = {}  # each shape's trim, kept for turning back
         self._trim_count = 0
         self._trim_at = 0.0
+        self._hold: int | None = None  # this recording's pictures wait: the phone turned under it
+        self._hold_at = 0.0
+        self._not_turned: int | None = None  # this recording looked boxed but the phone hadn't turned
+        self._look_now = threading.Event()  # a boxed picture: look at the phone's turn at once
 
     # Source ---------------------------------------------------------------------------------------
 
@@ -500,12 +519,16 @@ class AndroidScreenSource(Source):
             reader.start()
             began = looked = time.monotonic()
             while not self._stop.is_set() and reader.is_alive() and time.monotonic() - began < SEGMENT_S:
-                self._stop.wait(0.25)
-                if time.monotonic() - looked >= TURN_CHECK_S and not self._stop.is_set():
+                asked = self._look_now.wait(0.25)
+                self._look_now.clear()
+                if (asked or time.monotonic() - looked >= TURN_CHECK_S) and not self._stop.is_set():
                     looked = time.monotonic()
                     if self._turned(adb, serial) != turned:
                         log.info("%s: the phone turned to %s", self.id, "portrait" if turned else "landscape")
+                        self._hold_from(mine)
                         break  # the next recording, in the new shape, takes over once its first picture is in
+                    if asked:
+                        self._hold, self._not_turned = None, mine  # only a dark picture: it shows again
             if not reader.is_alive() and self._current == mine and not self._stop.is_set():
                 self._stop.wait(RETRY_S)  # it ended early (unplugged, the screen recorder refused): again soon
 
@@ -560,6 +583,28 @@ class AndroidScreenSource(Source):
             with self._lock:
                 self._procs.pop(mine, None)
 
+    def _hold_from(self, mine: int) -> None:
+        """The phone turned under recording `mine`: its pictures (squeezed or boxed in the old shape) don't show;
+        the last good one stays until the next recording's first picture, so the turn is one clean cut."""
+        if self._hold != mine:
+            self._hold, self._hold_at = mine, time.monotonic()
+
+    def _held(self, mine: int, frame) -> bool:
+        if self._hold == mine and time.monotonic() - self._hold_at < HOLD_MOST_S:
+            return True
+        if self._not_turned == mine or self._hold == mine:  # held too long (no next recording): show it anyway
+            return False
+        try:
+            plane = frame.planes[0]
+            y = np.frombuffer(plane, np.uint8).reshape(frame.height, plane.line_size)[:, :frame.width]
+            looks_turned = boxed(y)
+        except (ValueError, TypeError):
+            looks_turned = False
+        if looks_turned:
+            self._hold_from(mine)
+            self._look_now.set()
+        return looks_turned
+
     def _show(self, mine: int, frames, camera_picture) -> bool:
         """Show these pictures; True when a newer recording has taken over (this one ends)."""
         for frame in frames:
@@ -576,6 +621,8 @@ class AndroidScreenSource(Source):
                 _end(p)
             if behind:
                 return True
+            if self._held(mine, frame):
+                continue
             if self.settings.get("trim", True):
                 frame = self._trimmed(frame)
             picture, order, size = camera_picture(frame, None)

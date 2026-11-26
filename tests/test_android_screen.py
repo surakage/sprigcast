@@ -496,3 +496,43 @@ def test_turning_back_uses_that_shapes_trim_at_once(monkeypatch):
     assert source._trimmed(tall).width == 176  # turned: nothing to trim there
     clock[0] += 0.1
     assert source._trimmed(wide).width == 306  # turned back: trimmed straight away
+
+
+def _boxed_frame(w: int, h: int, inner: int):
+    """The other shape shrunk into the middle of the long side, black around it."""
+    import av
+
+    picture = np.zeros((h, w, 3), np.uint8)
+    if w >= h:
+        picture[:, (w - inner) // 2:(w + inner) // 2] = 200
+    else:
+        picture[(h - inner) // 2:(h + inner) // 2, :] = 200
+    return av.VideoFrame.from_ndarray(picture, format="rgb24").reformat(format="yuv420p")
+
+
+def test_a_phone_turned_under_the_old_recording_is_noticed():
+    """PC 2026-11-26: after a turn, the old recording showed the phone boxed in black in the old shape."""
+    def luma(frame):
+        plane = frame.planes[0]
+        return np.frombuffer(plane, np.uint8).reshape(frame.height, plane.line_size)[:, :frame.width]
+
+    assert screen.boxed(luma(_boxed_frame(320, 176, 80)))  # portrait inside landscape
+    assert screen.boxed(luma(_boxed_frame(176, 320, 80)))  # landscape inside portrait
+    assert not screen.boxed(luma(_landscape_frame(14)))  # the cutout strip isn't a turn
+    assert not screen.boxed(np.full((176, 320), 16, np.uint8))  # nor is a black screen
+    assert not screen.boxed(luma(_boxed_frame(320, 176, 300)))
+
+
+def test_the_last_good_picture_stays_through_a_turn(monkeypatch):
+    """Smoother turns (PC 2026-11-26): the old recording's boxed pictures never show; a dark picture that only
+    looked turned shows again once the phone says it didn't turn."""
+    source = screen.AndroidScreenSource("android-1", dict(screen.DEFAULTS))
+    good, turned = _landscape_frame(0), _boxed_frame(320, 176, 80)
+    assert not source._held(1, good)
+    assert source._held(1, turned) and source._look_now.is_set()
+    assert source._held(1, good)  # held until the next recording takes over
+    assert not source._held(2, good)  # the next recording's pictures show at once
+    monkeypatch.setattr(screen, "HOLD_MOST_S", 0.0)
+    assert not source._held(1, turned)  # held too long (no next recording): it shows anyway
+    source._hold, source._not_turned = None, 3
+    assert not source._held(3, turned)  # the phone hadn't turned: a dark scene, shown
