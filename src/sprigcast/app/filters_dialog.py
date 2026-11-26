@@ -971,7 +971,11 @@ class SoundView(QWidget):
                 " font-weight: 650; }")
             b.clicked.connect(lambda _=False, m=mode: self.set_listen(m))
             b.ensurePolished()
-            b.setMinimumWidth(b.sizeHint().width())  # never squeezed until its word is cut ("Afte", PC 2026-11-26)
+            # Never squeezed until its word is cut ("Afte", PC 2026-11-26), measured in the bolder type it has
+            # when picked: the plain word's width still cut "After" once it was picked (26r).
+            bold = QFont(b.font())
+            bold.setWeight(QFont.Weight(650))
+            b.setMinimumWidth(max(b.sizeHint().width(), QFontMetrics(bold).horizontalAdvance(text) + 2 * 16 + 2 + 8))
             self.listen_buttons[mode] = b
             switch_row.addWidget(b)
         self.listen_buttons["off"].setChecked(True)
