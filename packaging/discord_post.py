@@ -25,9 +25,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from release_notes import CHANGELOG, _shown, section  # noqa: E402
 
-REPO = "https://github.com/surakage/sprigcast"  # test builds only live here (pre-releases)
-# A public release card sends people to the website, never to GitHub (user, 2026-11-25).
+# Every card sends people to the website, never to GitHub (user, 2026-11-25). Test builds have their own
+# page there that always offers the newest one.
 SITE = "https://sprigcast.slothbloom.com"
+TEST_PAGE = f"{SITE}/test"
 BANNER = "https://raw.githubusercontent.com/surakage/sprigcast/main/brand/sprigcast-banner.png"
 EMERALD = 0x2A9C5E  # brand/README.md: the sprig S
 MINT = 0x3ECF7F  # the app icon's S, for test builds
@@ -113,16 +114,15 @@ def merged_since_last_test(tag: str) -> str:
         if title.startswith("Merge pull request"):
             body = git("log", "-1", "--format=%b", commit)
             title = (body.strip().splitlines() or [f"Pull request #{pr}"])[0]
-        lines.append(f"• {_first_sentence(title)} ([#{pr}]({REPO}/pull/{pr}))")
+        lines.append(f"• {_first_sentence(title)} (#{pr})")
     if not lines:
         return "Fixes and small changes since the last test build."
     since = f"Since {tags[0]}:" if tags else "Latest changes:"
-    return _fit([since, *lines], f"…and more in the [commit list]({REPO}/commits/{tag}).")
+    return _fit([since, *lines], f"…and more on the [tester page]({TEST_PAGE}).")
 
 
 def message(kind: str, tag: str, installer: Path, label: str | None) -> dict:
-    download = f"{REPO}/releases/download/{tag}/{installer.name}"
-    page = f"{REPO}/releases/tag/{tag}"
+    download = page = TEST_PAGE
     sha = _sha256(installer)
     if kind == "release":
         download, page = SITE, f"{SITE}/changelog"
@@ -141,7 +141,7 @@ def message(kind: str, tag: str, installer: Path, label: str | None) -> dict:
         {"name": "Download", "value": f"[{installer.name}]({download})", "inline": True},
         {"name": "Size", "value": _size(installer), "inline": True},
         {"name": "What's new", "value": f"[Full notes]({page})", "inline": True} if kind == "release" else
-        {"name": "Release page", "value": f"[Notes and checksums]({page})", "inline": True},
+        {"name": "Tester page", "value": f"[Guide and checksums]({page})", "inline": True},
         {"name": "SHA-256", "value": f"`{sha[:16]}…`", "inline": False},
     ]
     embed = {"title": title, "url": page, "description": text, "color": color, "fields": fields,

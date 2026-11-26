@@ -6,9 +6,8 @@ When they do, your reports are what get them fixed.
 
 ## 1. Download and install
 
-1. Download **SprigCast-Setup-….exe** (for example SprigCast-Setup-0.3.0.exe) under **Assets** at the bottom of the test release page (this page, if
-   you're reading it on GitHub). The newest test build is always listed at
-   https://github.com/surakage/sprigcast/releases .
+1. Download **SprigCast-Setup-….exe** (for example SprigCast-Setup-0.4.0.exe) from the tester page,
+   https://sprigcast.slothbloom.com/test . It always has the newest test build.
 2. Run it. SprigCast isn't signed yet, so Windows will probably say **"Windows protected your PC"**. Click
    **More info**, then **Run anyway**. (Your antivirus may ask too. That's the same reason.)
 3. Setup installs for your Windows account only. Leave **SprigCast Camera** ticked if you want to use SprigCast
