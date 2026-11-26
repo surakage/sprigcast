@@ -6,6 +6,7 @@ import json
 import socket
 import ssl
 import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -151,3 +152,45 @@ def test_add_phone_camera_puts_in_a_phone_leaf_and_starts_its_page(tmp_path, mon
     finally:
         w.close()
         phone_camera._server.use([])
+
+
+def test_a_browser_stalled_at_the_handshake_holds_up_no_one(server):
+    """The secure handshake runs on each request's own thread: a connection that sends nothing (a browser at its
+    warning page) didn't stop the next phone getting its page."""
+    stalled = socket.create_connection(("127.0.0.1", server.phone_port), timeout=5)
+    try:
+        assert _get(f"https://127.0.0.1:{server.phone_port}/phone/code1")[0] == 200
+    finally:
+        stalled.close()
+
+
+def test_a_failed_request_is_logged(server, monkeypatch, caplog):
+    """The app has no console: a request that fails says so in the log instead of closing with nothing said."""
+    import logging
+
+    from sprigcast.app import phone_server
+
+    monkeypatch.setattr(phone_server, "PHONE_PAGE", None)  # .encode() fails
+    with caplog.at_level(logging.ERROR, logger="sprigcast.app.phone_server"):
+        with pytest.raises(Exception):
+            _get(f"https://127.0.0.1:{server.phone_port}/phone/code1")
+        deadline = time.monotonic() + 3
+        while "phone page failed" not in caplog.text and time.monotonic() < deadline:
+            time.sleep(0.05)
+    assert "a request to the phone page failed" in caplog.text
+    assert "AttributeError" in caplog.text
+
+
+def test_the_page_port_is_its_own(server):
+    """While the phone page holds its port, nothing else can listen on it."""
+    import sys
+
+    other = socket.socket()
+    try:
+        if sys.platform != "win32":
+            other.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        with pytest.raises(OSError):
+            other.bind(("0.0.0.0", server.phone_port))
+            other.listen()
+    finally:
+        other.close()

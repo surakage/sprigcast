@@ -132,6 +132,8 @@ class AndroidScreenDialog(CardDialog):
         self.status = QLabel()
         self.status.setWordWrap(True)
         self.status.setStyleSheet(f"color: {theme.MUTED}; background: transparent; padding: 2px 4px;")
+        # Room for two lines from the start: the answer comes after the pop-up is up, and the pop-up stays put.
+        self.status.setMinimumHeight(self.status.fontMetrics().lineSpacing() * 2 + 4)
         phone.addWidget(self.status)
         self.again = QPushButton("Look again")
         self.again.setStyleSheet(theme.button_style(17, "9px 18px"))

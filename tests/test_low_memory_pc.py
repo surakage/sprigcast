@@ -82,3 +82,35 @@ def test_no_card_shadow_with_little_memory(monkeypatch):
 
     theme.paint_card_shadow(object(), Card())
     assert made == []
+
+
+def test_the_memory_line_is_worked_out_off_the_window(monkeypatch):
+    """Windows' private working set took 1.8 s on a paging 4 GB PC, on the window's thread, right after a stop."""
+    import logging
+    import threading
+    import time
+
+    from sprigcast.core import pacing
+
+    seen = {}
+
+    def slow():
+        seen["thread"] = threading.current_thread().name
+        return "Task Manager 1 MB"
+
+    monkeypatch.setattr(pacing, "memory_line", slow)
+    lines = []
+
+    class Keep(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+
+    logger = logging.getLogger("test.memory")
+    logger.setLevel(logging.INFO)
+    logger.addHandler(Keep())
+    pacing.log_with_memory(logger, "stream stopped; memory: %s")
+    deadline = time.monotonic() + 3
+    while not lines and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert lines == ["stream stopped; memory: Task Manager 1 MB"]
+    assert seen["thread"] == "memory line"

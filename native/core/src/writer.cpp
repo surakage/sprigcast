@@ -244,6 +244,7 @@ struct Core {
     void offer_files(const std::vector<std::shared_ptr<File>> &to, const std::shared_ptr<const Encoded> &p);
     void end_files(const std::vector<std::shared_ptr<File>> &gone);
     std::atomic<int> want_kbps{0}, want_max{0}, want_buffer{0};  // sc_writer_set_bitrate, applied before a picture
+    int held_max = 0, held_buffer = 0;  // a lower max rate waiting one picture for the bitrate (writer thread)
     bool key_next = false;  // sc_writer_keyframe: the next picture queued starts a keyframe (under `lock`)
     FramePtr i420;
 
@@ -518,10 +519,25 @@ void Core::encode_video(AVFrame *frame, bool key) {
     if (frame) {
         const int kbps = want_kbps.exchange(0);
         if (kbps > 0) {  // a stream steering its bitrate: x264 and NVENC take it from the next picture
+            const int64_t was = venc->bit_rate;
             venc->bit_rate = static_cast<int64_t>(kbps) * 1000;
             const int peak = want_max.exchange(0), buffer = want_buffer.exchange(0);
-            if (peak > 0) venc->rc_max_rate = static_cast<int64_t>(peak) * 1000;
-            if (buffer > 0) venc->rc_buffer_size = buffer * 1000;
+            // FFmpeg hands x264 the max rate before the bitrate, so a max under the bitrate it has now made x264
+            // warn "max bitrate less than average bitrate, assuming CBR". Python steps the bitrate down first and
+            // the max after, but with this thread behind both arrived before one picture (Mikedog151 2026-11-25):
+            // the lower max then waits for the next picture, once the bitrate is in.
+            if (peak > 0 && static_cast<int64_t>(peak) * 1000 < was) {
+                held_max = peak;
+                held_buffer = buffer;
+            } else {
+                held_max = held_buffer = 0;
+                if (peak > 0) venc->rc_max_rate = static_cast<int64_t>(peak) * 1000;
+                if (buffer > 0) venc->rc_buffer_size = buffer * 1000;
+            }
+        } else if (held_max > 0) {
+            venc->rc_max_rate = static_cast<int64_t>(held_max) * 1000;
+            if (held_buffer > 0) venc->rc_buffer_size = held_buffer * 1000;
+            held_max = held_buffer = 0;
         }
         frame->pict_type = key ? AV_PICTURE_TYPE_I : AV_PICTURE_TYPE_NONE;
     }

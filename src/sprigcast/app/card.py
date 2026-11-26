@@ -11,7 +11,7 @@ Drag it by any empty spot. Esc cancels, Enter presses the main button.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QSize, Qt
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
@@ -219,6 +219,13 @@ class CardDialog(QDialog):
         fit_width(self._scroll)
         super().showEvent(event)
         keep_on_screen(self)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        # A pop-up that grows once it's up (a line of status text after a search) grew down past its screen's free
+        # part, Cancel and Save cut off at the bottom (Android Screen, PC 2026-11-26): it's kept on screen again.
+        if self.isVisible() and event.oldSize().isValid() and event.size().height() > event.oldSize().height():
+            QTimer.singleShot(0, self, lambda: keep_on_screen(self))
 
     def section(self, title: str = "", spacing: int = 12) -> QVBoxLayout:
         """A titled section card added to the body; returns its layout to fill."""

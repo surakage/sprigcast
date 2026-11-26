@@ -222,3 +222,50 @@ def test_the_download_card_fetches_and_closes():
             break
         time.sleep(0.02)
     assert card2.go.text() == "Try again" and "try again" in card2.progress.text()
+
+
+def test_the_pop_up_stays_whole_when_its_answer_comes_in():
+    """The answer (two lines on "needs adb") came after the pop-up was up: it grew down past the screen's free part
+    and Cancel and Save were cut off (PC 2026-11-26). Two lines are kept from the start, and a pop-up that grows
+    anyway is kept on screen."""
+    import threading
+
+    from PySide6.QtWidgets import QApplication, QWidget
+
+    app = QApplication.instance() or QApplication([])
+    from sprigcast.app.android_screen_dialog import AndroidScreenDialog
+    from sprigcast.app.card import CardDialog
+
+    gate = threading.Event()
+    dialog = AndroidScreenDialog({}, lister=lambda: (gate.wait(5), ["no adb"])[1])
+    dialog._asked = True
+    dialog.show()
+    room = dialog.screen().availableGeometry()
+    dialog.move(room.left() + 10, room.bottom() - QWidget.height(dialog) + 1)  # resting on the bottom edge
+    for _ in range(5):
+        app.processEvents()
+    before = QWidget.height(dialog)
+    gate.set()
+    for _ in range(100):
+        app.processEvents()
+        if "adb" in dialog.status.text():
+            break
+        time.sleep(0.02)
+    for _ in range(10):
+        app.processEvents()
+        time.sleep(0.01)
+    assert "adb" in dialog.status.text()
+    assert QWidget.height(dialog) == before
+    assert dialog.frameGeometry().bottom() <= room.bottom()
+
+    grown = CardDialog("Grows")
+    grown.show()
+    grown.move(room.left() + 10, room.bottom() - QWidget.height(grown) + 1)
+    app.processEvents()
+    grown.body.addWidget(QWidget(minimumHeight=80))
+    for _ in range(10):
+        app.processEvents()
+        time.sleep(0.01)
+    assert grown.frameGeometry().bottom() <= room.bottom()
+    dialog.deleteLater()
+    grown.deleteLater()
