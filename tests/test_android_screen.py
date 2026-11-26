@@ -84,15 +84,17 @@ def fake_adb(tmp_path):
         elif "push" in args:
             print("1 file pushed")
         elif "app_process" in args and os.environ.get("FAKE_OLD"):
-            sys.stderr.write("sprigcast-sound: needs Android 11 or newer (this phone has API 29)\\n")
-            sys.exit(2)
+            sys.stdout.write("sprigcast-sound: needs Android 11 or newer (this phone has API 29)\\n")
+            sys.exit(2)  # (exec-out sends the error output down the same pipe)
         elif "app_process" in args:
             import struct
             block = struct.pack("<2h", 16384, -16384) * 960  # 20 ms: left half up, right half down
-            for _ in range(500):
-                sys.stdout.buffer.write(block)
+            sys.stdout.buffer.write(b"sprigcast-sound: no bound app (x), trying anyway\\nSPRIGCAST-SOUND-START\\n")
+            data = block * 500
+            for at in range(0, len(data), 3001):  # pieces that aren't whole frames
+                sys.stdout.buffer.write(data[at:at + 3001])
                 sys.stdout.flush()
-                time.sleep(0.02)
+                time.sleep(0.01)
         elif "screenrecord" in args and os.environ.get("FAKE_STILL"):
             sys.stdout.buffer.write(open({str(still)!r}, "rb").read())
             sys.stdout.flush()
@@ -396,8 +398,11 @@ def test_the_phones_sound_reaches_the_mixer(fake_adb, tmp_path):
             time.sleep(0.05)
             block = source.read_block(480)
         assert block.any(), source.sound_note
-        heard = block[np.abs(block).sum(axis=1) > 0]
-        assert np.allclose(heard[0], [0.5, -0.5]) and source.gain == 1.0
+        time.sleep(0.3)
+        heard = source.read_block(4800)
+        heard = heard[np.abs(heard).sum(axis=1) > 0]
+        assert len(heard) and np.allclose(heard, [0.5, -0.5])  # every sample in its place, no text in the sound
+        assert source.gain == 1.0
         calls = log.read_text()
         assert f"push {jar} {screen.SOUND_ON_PHONE}" in calls and screen.SOUND_CLASS in calls
         time.sleep(0.6)  # the mixer reads nothing for a while: it never falls more than a moment behind

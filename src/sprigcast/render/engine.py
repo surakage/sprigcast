@@ -1531,6 +1531,7 @@ class Engine:
         )
         if monitoring and not self._monitoring:
             self._monitoring = True
+            log.info("monitoring: on, through %s", "a chosen device" if device else "the Windows default")
             self.monitor.start()
             self.mixer.add_monitor_tap(self.monitor.write)
         elif not monitoring and self._monitoring:

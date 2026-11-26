@@ -51,6 +51,7 @@ DARK = 28  # luma (16 is video black)
 SOUND_JAR = "sprigcast-sound.jar"
 SOUND_ON_PHONE = "/data/local/tmp/sprigcast-sound.jar"
 SOUND_CLASS = "com.slothbloom.sprigcast.Sound"
+SOUND_START = b"SPRIGCAST-SOUND-START\n"  # the helper's line just before its sound
 SOUND_RATE = 48000
 SOUND_KEEP_S = 0.25  # more than this waiting (the mixer fell behind): the oldest goes, so it never lags
 SOUND_RETRY_S = 3.0
@@ -156,6 +157,12 @@ def sound_helper() -> Path | None:
         if path.is_file():
             return path
     return None
+
+
+def _helper_notes(text: bytes) -> list[str]:
+    """The helper's "sprigcast-sound: ..." lines (short, nothing personal in them)."""
+    lines = text.decode("utf-8", "replace").splitlines()
+    return [ln.split(":", 1)[1].strip()[:200] for ln in lines if ln.startswith("sprigcast-sound:")]
 
 
 def pcm_to_float(data: bytes) -> np.ndarray:
@@ -375,17 +382,34 @@ class AndroidScreenSource(Source):
                 self.sound_note = f"couldn't start: {exc}"
                 return
             self._sound_proc = proc
-            heard = False
+            # adb's exec-out sends what the helper writes to its error output down the same pipe: everything
+            # before its SOUND_START line is text (notes, or why it couldn't), and only after it comes sound.
+            # The sound is read in whole 4-byte frames, the odd bytes kept for the next read: dropping them
+            # shifted every sample after and the phone's sound came as loud noise (meter at 0 dB, PC 2026-11-26).
+            prelude, rest, started = b"", b"", False
             try:
                 while not self._stop.is_set():
                     data = proc.stdout.read(SOUND_RATE // 50 * 4)  # 20 ms
                     if not data:
                         break
-                    if not heard:
-                        heard = True
+                    if not started:
+                        prelude += data
+                        at = prelude.find(SOUND_START)
+                        if at < 0:
+                            if len(prelude) > 64 * 1024:
+                                prelude = prelude[-4096:]
+                            continue
+                        data, prelude = prelude[at + len(SOUND_START):], prelude[:at]
+                        started = True
                         self.sound_note = ""
-                        log.info("%s: the phone's sound is coming", self.id)
-                    self._heard(pcm_to_float(data))
+                        notes = _helper_notes(prelude)
+                        log.info("%s: the phone's sound is coming%s", self.id,
+                                 f" ({'; '.join(notes)})" if notes else "")
+                    data = rest + data
+                    usable = len(data) // 4 * 4
+                    rest = data[usable:]
+                    if usable:
+                        self._heard(pcm_to_float(data[:usable]))
             except (OSError, ValueError):
                 pass
             finally:
@@ -393,13 +417,12 @@ class AndroidScreenSource(Source):
                 self._sound_proc = None
             if self._stop.is_set():
                 return
-            said = ""
+            said = b"" if started else prelude
             try:
-                said = (proc.stderr.read() or b"").decode("utf-8", "replace")
+                said += proc.stderr.read() or b""
             except (OSError, ValueError):
                 pass
-            line = next((ln.split(":", 1)[1].strip() for ln in said.splitlines()
-                         if ln.startswith("sprigcast-sound:") and "trying anyway" not in ln), "")
+            line = next((n for n in _helper_notes(said) if "trying anyway" not in n), "")
             line = line or (pushed.strip().splitlines() or ["it stopped"])[-1][:200]
             self.sound_note = line
             if "Android 11" in line or "refused" in line:
