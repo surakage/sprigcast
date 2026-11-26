@@ -97,6 +97,8 @@ class Session:
         self.state = ""
         self.seen = 0.0  # when the phone last asked anything
         self.report = ""  # what the leaf's page last said it receives (logged when it changes)
+        self.video = (0, 0)  # the phone's picture as it arrives, turned the way the phone is held
+        self.video_at = 0.0
 
 
 def _plain_ssl_context() -> type:
@@ -133,6 +135,16 @@ def _report_line(text: str) -> str:
     return (f"connection {word('connection')}, video {word('codec')}, "
             f"{'pictures arriving' if pictures else 'no pictures yet'} ({number('width')}x{number('height')}), "
             f"sound {word('audio')}, player {word('player')}")
+
+
+def _report_size(text: str) -> tuple[int, int] | None:
+    """The width and height in the leaf's page's report (what the phone sends, as it's held), or None."""
+    try:
+        r = json.loads(text)
+        w, h = int(r.get("width") or 0), int(r.get("height") or 0)
+    except (ValueError, TypeError, AttributeError):
+        return None
+    return (w, h) if 0 < w <= 8192 and 0 < h <= 8192 else None
 
 
 class _Server(ThreadingHTTPServer):
@@ -302,6 +314,14 @@ class PhoneServer:
         except OSError as exc:
             log.warning("phone camera: couldn't keep the paired phones: %s", exc)
 
+    def video_size(self, code: str) -> tuple[int, int] | None:
+        """The phone's picture as the leaf last received it (turned as the phone is held), while it's sending."""
+        with self.lock:
+            s = self.sessions.get(code)
+            if s is None or not s.video_at or time.monotonic() - s.video_at > SEEN_FOR_S:
+                return None
+            return s.video
+
     def connected(self, code: str) -> bool:
         with self.lock:
             s = self.sessions.get(code)
@@ -455,6 +475,9 @@ def _handler(server: PhoneServer, phone: bool):
                     reply = b"{}"
                 elif not phone and what == "report":
                     line = _report_line(text)
+                    size = _report_size(text)
+                    if size:
+                        session.video, session.video_at = size, time.monotonic()
                     changed = line != session.report
                     session.report = line
                     reply = b"{}"
@@ -500,6 +523,18 @@ input.pin { width: 100%; background: #0e1412; color: var(--text); border: 1px so
             margin: 4px 0 12px; }
 .pair h2 { font-size: 17px; margin: 2px 2px 10px; }
 .wrong { color: var(--live); }
+body.full { overflow: hidden; }
+body.full video#me { position: fixed; inset: 0; width: 100vw; height: 100vh; max-height: none; border-radius: 0;
+                     aspect-ratio: auto !important; z-index: 10; }
+.over { display: none; position: fixed; z-index: 11; }
+body.full .over { display: flex; }
+#fullstate { top: max(14px, env(safe-area-inset-top)); left: 14px; align-items: center; gap: 8px;
+             background: rgba(12, 18, 15, 0.72); border-radius: 999px; padding: 8px 14px; font-size: 15px; }
+#fullstate .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--soft); }
+#fullstate.live .dot { background: var(--live); box-shadow: 0 0 10px var(--live); }
+#unfull { top: max(14px, env(safe-area-inset-top)); right: 14px; flex: none; width: 48px; min-height: 48px;
+          height: 48px; padding: 0; border-radius: 50%; background: rgba(12, 18, 15, 0.72); font-size: 22px;
+          align-items: center; justify-content: center; }
 .state { display: flex; align-items: center; gap: 10px; padding: 4px 2px 12px; color: var(--soft); }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--soft); flex: none; }
 .live .dot { background: var(--live); box-shadow: 0 0 10px var(--live); }
@@ -523,6 +558,8 @@ p { color: var(--soft); margin: 8px 2px 0; }
   <div class="row"><button class="go" id="connect">Connect</button></div>
   <p id="pairnote">Open the Phone Camera leaf's settings on your PC to see the code.</p>
 </div>
+<div class="over" id="fullstate"><span class="dot"></span><span id="fullwords">Not sending yet</span></div>
+<button class="over" id="unfull" aria-label="Leave full screen">&times;</button>
 <div id="main" class="hidden">
 <div class="card">
   <div class="state" id="state"><span class="dot"></span><span id="words">Not sending yet</span></div>
@@ -533,7 +570,8 @@ p { color: var(--soft); margin: 8px 2px 0; }
     <button class="go" id="go">Start</button>
     <button id="flip">Switch camera</button>
   </div>
-  <label>Microphone <select id="mic"><option value="off">Off</option><option value="on">On</option></select></label>
+  <div class="row" style="margin-top: 10px"><button id="full">Full screen</button></div>
+  <label>Microphone <select id="mic"><option value="on">On</option><option value="off">Off</option></select></label>
   <label>Quality <select id="quality"><option value="720">720p</option><option value="1080">1080p</option>
     <option value="480">480p</option></select></label>
   <p>Keep this page open while you stream. Your phone talks to your PC directly over your Wi-Fi.</p>
@@ -543,7 +581,18 @@ p { color: var(--soft); margin: 8px 2px 0; }
 const base = location.pathname.replace(/\\/$/, "");
 const $ = (id) => document.getElementById(id);
 let pc = null, stream = null, facing = "user", wake = null, offerId = 0, running = false;
-const say = (text, live) => { $("words").textContent = text; $("state").classList.toggle("live", !!live); };
+const say = (text, live) => {
+  $("words").textContent = $("fullwords").textContent = text;
+  $("state").classList.toggle("live", !!live); $("fullstate").classList.toggle("live", !!live);
+};
+function full(on) {  // the camera view fills the phone's screen (user 2026-11-26)
+  document.body.classList.toggle("full", on);
+  try {
+    if (on && document.documentElement.requestFullscreen && !document.fullscreenElement) {
+      document.documentElement.requestFullscreen({navigationUI: "hide"}).catch(() => {});
+    } else if (!on && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  } catch (e) {}
+}
 const store = "sprigcast-key:" + base;
 let key = "";
 try { key = localStorage.getItem(store) || ""; } catch (e) {}
@@ -560,7 +609,7 @@ async function post(what, body) {
   return r;
 }
 async function connect() {
-  const digits = $("pin").value.replace(/\D/g, "");
+  const digits = $("pin").value.replace(/\\D/g, "");
   if (digits.length !== 6) { $("pairnote").textContent = "The code has 6 digits."; return; }
   $("connect").disabled = true;
   const r = await fetch(`${base}/pair`, {method: "POST", body: digits, cache: "no-store"}).catch(() => null);
@@ -607,7 +656,7 @@ async function start() {
     running = false; $("go").textContent = "Start"; return;
   }
   $("me").srcObject = stream;
-  $("me").onloadedmetadata = () => {  // the whole picture SprigCast gets, in its own shape
+  $("me").onloadedmetadata = $("me").onresize = () => {  // the whole picture SprigCast gets, in its shape (turns too)
     const v = $("me");
     if (v.videoWidth && v.videoHeight) { v.style.aspectRatio = `${v.videoWidth} / ${v.videoHeight}`; v.classList.add("sized"); }
   };
@@ -662,10 +711,17 @@ async function keepAwake() {
 }
 $("go").onclick = () => { if (running) stop(); else { keepAwake(); start(); } };
 $("connect").onclick = connect;
+$("full").onclick = () => full(true);
+$("unfull").onclick = () => full(false);
+document.addEventListener("fullscreenchange", () => { if (!document.fullscreenElement) full(false); });
 $("pin").addEventListener("keydown", (e) => { if (e.key === "Enter") connect(); });
 if (key) paired(); else unpaired();
 $("flip").onclick = () => { facing = facing === "user" ? "environment" : "user"; if (running) start(); };
-$("mic").onchange = $("quality").onchange = () => { if (running) start(); };
+try { const m = localStorage.getItem("sprigcast-mic"); if (m === "on" || m === "off") $("mic").value = m; } catch (e) {}
+$("mic").onchange = $("quality").onchange = () => {
+  try { localStorage.setItem("sprigcast-mic", $("mic").value); } catch (e) {}
+  if (running) start();
+};
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && running) keepAwake(); });
 setInterval(() => { if (running && pc && pc.connectionState === "connected") post("state", "live").catch(() => {}); }, 2000);
 </script>

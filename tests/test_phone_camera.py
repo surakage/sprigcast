@@ -342,3 +342,39 @@ def test_the_pop_up_shows_the_code_and_what_sprigcast_shows(tmp_path, monkeypatc
         assert stopped
     finally:
         srv.use([])
+
+
+def test_a_leaf_that_follows_the_phone_turns_with_it(server, monkeypatch):
+    """User 2026-11-26: turned landscape, the leaf stayed 720x1280. The leaf's page reports the picture as it
+    arrives; a leaf that follows the phone takes that shape and its places turn (the phone stays connected)."""
+    from sprigcast.app import phone_camera
+    from sprigcast.core.scene import SourceConfig
+
+    monkeypatch.setattr(phone_camera, "_server", server)
+    view = server.view_url("code1")
+    leaf = SourceConfig(id="browser-1", kind="browser", name="Phone Camera",
+                        settings={**phone_camera.new_settings(vertical=True), "phone": "code1"})
+    fixed = SourceConfig(id="browser-2", kind="browser", name="Phone Camera",
+                         settings={**phone_camera.new_settings(vertical=True), "phone": "code1",
+                                   phone_camera.FOLLOW: False})
+
+    class Garden:
+        sources = [leaf, fixed]
+
+    assert phone_camera.turned(Garden) == []  # nothing reported yet
+    _get(view + "/report", json.dumps({"width": 720, "height": 1280}).encode())
+    assert phone_camera.turned(Garden) == []  # already that shape
+    _get(view + "/report", json.dumps({"width": 1280, "height": 720}).encode())
+    assert server.video_size("code1") == (1280, 720)
+    assert phone_camera.turned(Garden) == [(leaf, (720, 1280), (1280, 720))]
+    assert (leaf.settings["width"], leaf.settings["height"]) == (1280, 720)
+    assert (fixed.settings["width"], fixed.settings["height"]) == (720, 1280)  # set to Portrait: stays
+    assert phone_camera.turned(Garden) == []
+    _get(view + "/report", json.dumps({"width": "x"}).encode())  # nonsense changes nothing
+    assert server.video_size("code1") == (1280, 720)
+
+
+def test_the_phone_page_sends_the_mic_unless_turned_off():
+    page = phone_server.PHONE_PAGE
+    assert page.index('<option value="on">On</option>') < page.index('<option value="off">Off</option>')
+    assert "sprigcast-mic" in page
