@@ -569,3 +569,21 @@ def test_a_turn_takes_back_the_pictures_still_waiting(monkeypatch):
     source._release()
     picture, order = source._frames.take()
     assert order == 3 and picture is new and source._size == (4, 8)
+
+
+def test_a_damaged_picture_is_skipped_not_the_whole_recording():
+    """26o (2026-11-26): "Invalid data found when processing input" ended the recording, about 160 times a minute.
+    A damaged picture is now skipped; only a long run of them starts the recording again."""
+    av = pytest.importorskip("av")
+    source = screen.AndroidScreenSource("android-1", dict(screen.DEFAULTS))
+
+    class Codec:
+        def decode(self, packet):
+            if packet == "bad":
+                raise av.InvalidDataError(1094995529, "Invalid data found when processing input")
+            return [packet]
+
+    damaged = [0]
+    assert list(source._decoded(Codec(), ["a", "bad", "b"], damaged)) == ["a", "b"]
+    with pytest.raises(av.InvalidDataError):
+        list(source._decoded(Codec(), ["bad"] * screen.DAMAGED_MOST, [0]))
