@@ -47,11 +47,22 @@ def fake_adb(tmp_path):
                 out.mux(packet)
         for packet in stream.encode(None):
             out.mux(packet)
+    still = tmp_path / "still.h264"  # a still screen: one picture, then nothing
+    with av.open(str(still), "w", format="h264") as out:
+        stream = out.add_stream("libx264", rate=30)
+        stream.width, stream.height, stream.pix_fmt = 320, 176, "yuv420p"
+        stream.options = {"tune": "zerolatency"}  # as a phone's encoder: no pictures held back for reordering
+        import numpy as np
+
+        for packet in stream.encode(av.VideoFrame.from_ndarray(np.full((176, 320, 3), 90, np.uint8), format="rgb24")):
+            out.mux(packet)
+        for packet in stream.encode(None):
+            out.mux(packet)
     log = tmp_path / "calls.txt"
     script = tmp_path / "adb"
     script.write_text(textwrap.dedent(f"""\
         #!{sys.executable}
-        import sys, time
+        import os, sys, time
         args = sys.argv[1:]
         open({str(log)!r}, "a").write(" ".join(args) + "\\n")
         if args[:1] == ["devices"]:
@@ -61,6 +72,10 @@ def fake_adb(tmp_path):
             print("Physical size: 1080x2400")
         elif "dumpsys" in args:
             print("SurfaceOrientation: 1")
+        elif "screenrecord" in args and os.environ.get("FAKE_STILL"):
+            sys.stdout.buffer.write(open({str(still)!r}, "rb").read())
+            sys.stdout.flush()
+            time.sleep(30)  # the screen doesn't change: nothing more
         elif "screenrecord" in args:
             data = open({str(clip)!r}, "rb").read()
             for _ in range(150):  # a phone keeps sending while its screen changes
@@ -271,45 +286,22 @@ def test_the_pop_up_stays_whole_when_its_answer_comes_in():
     grown.deleteLater()
 
 
-def test_a_pipe_that_cant_seek_is_read_without_seeking(fake_adb, tmp_path):
-    """On Windows a pipe says it can seek and then fails with "[Errno 22] Invalid argument" when PyAV seeks it:
-    the phone's screen never showed (PC 2026-11-26). adb's output is read as a stream that can't seek."""
-    import io
-    import subprocess
-
-    av = pytest.importorskip("av")
+@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in adb is a script")
+def test_a_still_screen_shows_its_picture(fake_adb, monkeypatch):
+    """screenrecord sends a picture only when the screen changes, and FFmpeg's parser held the one it had until the
+    next began: a still phone screen left the leaf on "starting" for minutes (PC 2026-11-26)."""
     adb, _ = fake_adb
-
-    class WindowsPipe(io.RawIOBase):  # a real pipe, behaving as Windows' does
-        def __init__(self, raw):
-            self.raw = raw
-
-        def readable(self):
-            return True
-
-        def seekable(self):
-            return True
-
-        def seek(self, *args):
-            raise OSError(22, "Invalid argument")
-
-        def tell(self):
-            raise OSError(22, "Invalid argument")
-
-        def readinto(self, b):
-            return self.raw.readinto(b)
-
-    proc = subprocess.Popen([adb, "exec-out", "screenrecord", "-"], stdout=subprocess.PIPE, bufsize=0)
+    monkeypatch.setenv("FAKE_STILL", "1")
+    source = screen.AndroidScreenSource("android-1", dict(screen.DEFAULTS))
+    source.adb_path = adb
+    source.start()
     try:
-        container = av.open(screen._Pipe(WindowsPipe(proc.stdout)), format="h264", mode="r",
-                            options={"probesize": "2048", "analyzeduration": "0", "fflags": "nobuffer"})
-        frames = 0
-        for _ in container.decode(container.streams.video[0]):
-            frames += 1
-            if frames >= 5:
-                break
-        container.close()
-        assert frames >= 5
+        frame = None
+        deadline = time.monotonic() + 6
+        while frame is None and time.monotonic() < deadline:
+            frame = source.video_frame()
+            time.sleep(0.05)
+        assert frame is not None, source.status
+        assert source.status.startswith("capturing")
     finally:
-        proc.kill()
-        proc.wait()
+        source.stop()
