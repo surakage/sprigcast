@@ -1406,41 +1406,30 @@ class SceneCollection(BaseModel):
                 touched.append(config)
         return moved, touched
 
-    def turn_places(self, source_id: str, old: tuple[int, int], new: tuple[int, int]) -> bool:
-        """A source that turned between portrait and landscape (a phone's screen, sources/android_screen.py):
-        each place turns with it around its own middle, its long side as long as before, kept on its canvas
-        (user 2026-11-26: the leaf stayed a tall box with the landscape picture small inside). Returns whether
-        a place moved."""
-        if min(*old, *new) <= 0 or (old[0] > old[1]) == (new[0] > new[1]):
+    def fit_places(self, source_id: str, size: tuple[int, int]) -> bool:
+        """A source whose shape changed by itself (a phone turned between portrait and landscape, or its black
+        edges were trimmed: sources/android_screen.py, app/phone_camera.py): each of its places fits its canvas
+        again, as big as fits and centered (user 2026-11-26: "fits centered vertical and fits centered
+        horizontal" with no resizing after each turn). Returns whether a place moved."""
+        if min(size) <= 0:
             return False
         canvases = {c.id: c for c in self.canvases}
         moved = False
         for scene in self.scenes:
             canvas = canvases.get(scene.canvas)
+            if canvas is None or canvas.width <= 0 or canvas.height <= 0:
+                continue
             for item in scene.items:
                 if item.source != source_id:
                     continue
-                if item.bounded:
-                    w0, h0 = item.bounds_size
-                    w, h = h0, w0
-                else:
-                    w0, h0 = old[0] * item.scale, old[1] * item.sy
-                    k = max(w0, h0) / max(new)
-                    w, h = new[0] * k, new[1] * k
-                if canvas is not None and canvas.width > 0 and canvas.height > 0:
-                    fit = min(1.0, canvas.width / w, canvas.height / h)
-                    w, h = w * fit, h * fit
-                cx, cy = item.x + w0 / 2, item.y + h0 / 2
-                x, y = cx - w / 2, cy - h / 2
-                if canvas is not None:
-                    x = min(max(x, 0.0), max(0.0, canvas.width - w))
-                    y = min(max(y, 0.0), max(0.0, canvas.height - h))
-                item.x, item.y = x, y
+                k = min(canvas.width / size[0], canvas.height / size[1])
+                w, h = size[0] * k, size[1] * k
+                x, y = (canvas.width - w) / 2, (canvas.height - h) / 2
                 if item.bounded:
                     item.bounds_size = (w, h)
                 else:
-                    item.scale = w / new[0]
-                    item.scale_y = None if item.scale_y is None else h / new[1]
+                    item.scale, item.scale_y = k, None
+                item.x, item.y, item.crop = x, y, (0, 0, 0, 0)
                 moved = True
         return moved
 

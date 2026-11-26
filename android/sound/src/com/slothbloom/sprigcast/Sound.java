@@ -6,7 +6,8 @@
 // 48 kHz stereo 16-bit PCM, which SprigCast reads (sources/android_screen.py). While it runs, the phone plays its
 // sound through SprigCast instead of its own speaker (Android sends its whole output to the recording).
 //
-// Errors go to its error output as one line starting "sprigcast-sound:", and it ends with:
+// Notes and errors go to its error output as lines starting "sprigcast-sound:" (adb's exec-out sends them down the
+// same pipe), then the line SPRIGCAST-SOUND-START, then only sound. It ends with:
 //   2  this Android is older than 11      3  the phone refused to record      1  anything else
 package com.slothbloom.sprigcast;
 
@@ -34,6 +35,7 @@ public final class Sound {
     static final int SHELL_UID = 2000;
     static final int RATE = 48000;
     static final int REMOTE_SUBMIX = 8;  // MediaRecorder.AudioSource.REMOTE_SUBMIX: everything the phone plays
+    static final String START = "SPRIGCAST-SOUND-START\n";  // the sound follows this line
 
     private Sound() {}
 
@@ -65,10 +67,14 @@ public final class Sound {
         byte[] buffer = new byte[RATE / 100 * 4 * 2];  // 20 ms
         OutputStream out = new FileOutputStream(FileDescriptor.out);
         try {
+            // adb sends the error output down the same pipe: this line tells SprigCast the sound starts here,
+            // and nothing more is written to the error output after it.
+            out.write(START.getBytes("US-ASCII"));
+            out.flush();
             while (true) {
                 int n = record.read(buffer, 0, buffer.length);
                 if (n < 0) {
-                    fail(1, "reading the sound failed (" + n + ")");
+                    System.exit(1);  // nothing more to say: the error output would land in the sound
                 }
                 if (n > 0) {
                     out.write(buffer, 0, n);

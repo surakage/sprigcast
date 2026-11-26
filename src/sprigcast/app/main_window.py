@@ -3467,7 +3467,7 @@ class MainWindow(QMainWindow):
                     self._refresh_audio_soon()
                 if self._start_sizes:
                     self._place_new_sources(event.sizes)
-                turned = self._turn_phone_screens(event.sizes, event.statuses)
+                turned = self._turn_phone_screens(event.sizes, event.statuses) | self._turn_phone_cameras()
                 moved, touched = self.collection.keep_cards_put(event.sizes)  # a clock card's box grew or shrank
                 moved = moved or turned
                 if moved:
@@ -4188,9 +4188,24 @@ class MainWindow(QMainWindow):
 
     AUDIO_KINDS = ("audio_input", "audio_output", "app_audio")
 
+    def _turn_phone_cameras(self) -> bool:
+        """Phone Camera leaves that follow the phone: turned, the leaf takes the new shape and its places fit
+        their canvas again."""
+        if "sprigcast.app.phone_camera" not in sys.modules:
+            return False
+        from sprigcast.app import phone_camera
+
+        moved = False
+        for config, old, new in phone_camera.turned(self.collection):
+            log.info("phone camera: the phone turned to %s", "landscape" if new[0] > new[1] else "portrait")
+            self.collection.fit_places(config.id, new)
+            moved = True
+        return moved
+
     def _turn_phone_screens(self, sizes: dict, statuses: dict) -> bool:
-        """An Android Screen that turned: its places turn with it (Collection.turn_places). Only sizes it is
-        capturing at count (before its first picture it says a size of its own)."""
+        """An Android Screen whose shape changed (turned, or its black edges trimmed): its places fit their
+        canvas again (Collection.fit_places). Only sizes it is capturing at count (before its first picture it
+        says a size of its own)."""
         seen = self.__dict__.setdefault("_phone_shapes", {})
         turned = False
         for config in self.collection.sources:
@@ -4201,8 +4216,8 @@ class MainWindow(QMainWindow):
                 continue
             before = seen.get(config.id)
             seen[config.id] = tuple(size)
-            if before is not None and self.collection.turn_places(config.id, before, tuple(size)):
-                turned = True
+            if before is not None and before != tuple(size) and self.collection.fit_places(config.id, tuple(size)):
+                turned = True  # turned, or its black edges trimmed: fits its canvas again
         return turned
 
     def _has_sound(self, config) -> bool:

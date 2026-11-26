@@ -16,6 +16,7 @@ from sprigcast.app.card import CardDialog, combo, section
 log = logging.getLogger(__name__)
 
 SHAPES = (("Landscape", (1280, 720)), ("Portrait", (720, 1280)))
+FOLLOW = "follow"  # settings: the leaf turns with the phone (user 2026-11-26), the default for new leaves
 _server = None
 
 
@@ -47,7 +48,7 @@ def new_settings(vertical: bool = False) -> dict[str, Any]:
     code = new_code()
     w, h = SHAPES[1 if vertical else 0][1]
     return {**DEFAULTS, "phone": code, "url": f"http://127.0.0.1:{VIEW_PORT}/view/{code}", "width": w, "height": h,
-            "keep_running": True, "audio_to_mixer": True, "css": "body { background: transparent; margin: 0; }"}
+            FOLLOW: True, "keep_running": True, "audio_to_mixer": True, "css": "body { background: transparent; margin: 0; }"}
 
 
 def sync(collection) -> bool:
@@ -69,6 +70,28 @@ def sync(collection) -> bool:
             config.settings = {**config.settings, "url": url}
             changed = True
     return changed
+
+
+def turned(collection) -> list[tuple[Any, tuple[int, int], tuple[int, int]]]:
+    """Phone Camera leaves that follow the phone and whose picture now comes the other way up (the phone was
+    turned): each one's shape is set to match, and (leaf, old size, new size) is returned so the window turns
+    its places fit their canvas again (Collection.fit_places) and saves. The page only resizes: the phone stays connected."""
+    if _server is None or not _server.running:
+        return []
+    out = []
+    for config in collection.sources:
+        if not is_phone(config) or not config.settings.get(FOLLOW, True):
+            continue
+        video = _server.video_size(config.settings["phone"])
+        if video is None or video[0] == video[1]:
+            continue
+        old = (int(config.settings.get("width", 1280)), int(config.settings.get("height", 720)))
+        if (old[0] > old[1]) == (video[0] > video[1]):
+            continue
+        new = SHAPES[0][1] if video[0] > video[1] else SHAPES[1][1]
+        config.settings = {**config.settings, "width": new[0], "height": new[1]}
+        out.append((config, old, new))
+    return out
 
 
 def qr_picture(text: str, size: int = 220) -> QPixmap:
@@ -282,11 +305,12 @@ class PhoneDialog(CardDialog):
         label = QLabel("Shape")
         label.setStyleSheet(f"color: {theme.TEXT}; background: transparent;")
         self.shape = combo(10)
+        self.shape.addItem("Follow the phone", None)
         for name, size in SHAPES:
             self.shape.addItem(name, size)
         portrait = int(settings.get("height", 720)) > int(settings.get("width", 1280))
-        self.shape.setCurrentIndex(1 if portrait else 0)
-        self.shape.setFixedWidth(150)
+        self.shape.setCurrentIndex(0 if settings.get(FOLLOW, True) else 2 if portrait else 1)
+        self.shape.setFixedWidth(190)
         shape_row.addWidget(label, 1)
         shape_row.addWidget(self.shape)
         state.addLayout(shape_row)
@@ -331,5 +355,8 @@ class PhoneDialog(CardDialog):
         super().done(result)
 
     def values(self) -> dict[str, Any]:
-        w, h = self.shape.currentData()
-        return {"width": w, "height": h}
+        size = self.shape.currentData()
+        if size is None:  # follows the phone: the shape it has now, until the phone turns
+            return {FOLLOW: True}
+        w, h = size
+        return {"width": w, "height": h, FOLLOW: False}
