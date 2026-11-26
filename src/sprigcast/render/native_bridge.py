@@ -989,7 +989,13 @@ class NativeCanvases:
                 had.link(None)
 
     def _count_drops(self, slot: int, out: int, dropped: int, canvas_id: str = "", key: tuple = ()) -> None:
-        gone = dropped - self._dropped.get((slot, out), 0)
+        if (slot, out) not in self._dropped:
+            # A new or reused output: the engine's count may run on from the output that had this slot before,
+            # so the first number seen is where this one starts ("dropped 6803 frames" the moment a stream
+            # reconnected, when it had lost 870 in all: Mikedog151, 2026-11-24).
+            self._dropped[(slot, out)] = dropped
+            return
+        gone = dropped - self._dropped[(slot, out)]
         if gone > 0:
             self._dropped[(slot, out)] = dropped
             self.output_drops += gone

@@ -211,3 +211,33 @@ def test_sound_window_cancel_drops_the_changes():
     assert source.filters == []
     d.reject()
     assert source.filters == []
+
+
+def test_the_wave_takes_column_peaks_in_one_step_and_a_slow_paint_slows_the_view():
+    """Mikedog151's AMD E2 (2026-11-24): the waveform held the window 0.6-1.9 s a paint, once a second."""
+    import numpy as np
+
+    from sprigcast.app.filters_dialog import SoundView, column_peaks
+
+    samples = np.zeros(24000, np.float32)
+    samples[23999] = -0.5  # the newest sample, in the last column
+    samples[5] = 2.0  # clipped: never more than full height
+    peaks = column_peaks(samples, 200)
+    assert len(peaks) == 200 and peaks[-1] == 0.5 and peaks[0] == 1.0 and peaks[100] == 0.0
+    assert len(column_peaks(np.ones(10, np.float32), 40)) == 40  # fewer samples than columns
+
+    class Quiet:
+        def snapshot(self):
+            return np.zeros(100, np.float32), np.zeros(100, np.float32), (-90.0, -90.0, -90.0, -90.0)
+
+        def set_listen(self, mode):
+            pass
+
+    _app()
+    view = SoundView(Quiet(), lambda: None)
+    assert view.timer.interval() == SoundView.EVERY_MS
+    view._paced(400.0)  # one very slow paint: down to twice a second
+    assert view.timer.interval() == SoundView.SLOWEST_MS
+    for _ in range(30):
+        view._paced(1.0)  # quick again: back up to the full rate
+    assert view.timer.interval() == SoundView.EVERY_MS

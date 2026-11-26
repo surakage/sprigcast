@@ -545,6 +545,24 @@ def rate_limits(codec: str, enc, bitrate_kbps: int) -> tuple[int, int]:
     return 0, 0
 
 
+def next_rate(codec: str, enc, applied: tuple[int, int, int], want_kbps: int) -> tuple[int, int, int] | None:
+    """The (bitrate, max rate, buffer) in kbps to give the encoder before its next picture, or None for no change.
+
+    FFmpeg hands x264 the max rate before the bitrate, so stepping down both at once had x264 see a max below
+    the old average for a moment ("max bitrate less than average bitrate, assuming CBR" on every auto-pilot step
+    down, Mikedog151 2026-11-24). Going down, the bitrate goes first with the old limits, and the limits follow
+    on the next picture. `applied` is what the encoder has now."""
+    peak, buffer = rate_limits(codec, enc, want_kbps)
+    k, old_peak, old_buffer = applied
+    if want_kbps != k:
+        if want_kbps < k and peak and old_peak:
+            return want_kbps, max(peak, old_peak), max(buffer, old_buffer)
+        return want_kbps, peak, buffer
+    if (peak, buffer) != (old_peak, old_buffer) and peak:
+        return k, peak, buffer
+    return None
+
+
 def video_options(codec: str, enc, bitrate_kbps: int, hrd: bool = True) -> dict[str, str]:
     """FFmpeg encoder options for Settings → Stream → Quality's choices (core.scene.EncoderSettings).
 

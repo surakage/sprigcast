@@ -8,6 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import (
     QEvent,
+    QLineF,
     QObject,
     QPoint,
     QPointF,
@@ -911,6 +912,20 @@ def bands(samples, count: int = 40, low_hz: float = 60.0, high_hz: float = 16000
     return np.maximum(out, SPECTRUM_LOW)
 
 
+def column_peaks(samples, columns: int):
+    """The loudest sample in each of `columns` even slices, 0 to 1, in one NumPy step. A slice at a time in Python
+    (np.array_split and a loop) held the window 0.6-1.9 s a paint on an AMD E2 (Mikedog151, 2026-11-24)."""
+    import numpy as np
+
+    data = np.abs(np.asarray(samples, dtype=np.float32))
+    if columns <= 0:
+        return np.zeros(0, np.float32)
+    if len(data) < columns:
+        data = np.pad(data, (columns - len(data), 0))
+    per = len(data) // columns
+    return np.minimum(1.0, data[len(data) - per * columns:].reshape(columns, per).max(axis=1))
+
+
 class SoundView(QWidget):
     """The live view over a sound filter's settings: the curve, the spectrum or the waveform (by the picked
     filter), twin Before/After meters, and the Listen switch. Draws from preview.snapshot() 15 times a second,
@@ -919,6 +934,8 @@ class SoundView(QWidget):
     HEIGHT = 286
     PANEL_HEIGHT = 196
     EVERY_MS = 66
+    SLOWEST_MS = 500  # a slow PC: the view still moves, twice a second
+    PAINT_BUDGET_MS = 12  # a paint that takes longer than this slows the view down
 
     def __init__(self, preview, selected: Callable[[], Filter | None], parent: QWidget | None = None):
         super().__init__(parent)
@@ -987,6 +1004,20 @@ class SoundView(QWidget):
         self.panel.update()
         self.meters.update()
 
+    def _paced(self, took_ms: float) -> None:
+        """Keep the view's paints a small share of the window's time: one over budget halves the rate (to twice
+        a second at the slowest), and quick ones bring it back up. On a slow PC the view moves less smoothly
+        instead of holding the window (Mikedog151's E2, 2026-11-24)."""
+        now = self.timer.interval()
+        if took_ms > self.PAINT_BUDGET_MS:
+            wanted = min(self.SLOWEST_MS, max(now * 2, int(took_ms * 8)))
+        elif took_ms < self.PAINT_BUDGET_MS / 3:
+            wanted = max(self.EVERY_MS, now - 33)
+        else:
+            wanted = now
+        if wanted != now:
+            self.timer.setInterval(wanted)
+
     def view(self) -> str:
         flt = self.selected()
         return view_for(flt.kind if flt is not None else None)
@@ -1013,7 +1044,16 @@ class SoundView(QWidget):
         p.drawText(text_box, Qt.AlignmentFlag.AlignCenter, text)
         return chip
 
-    def _paint_panel(self, _event) -> None:
+    def _paint_panel(self, event) -> None:
+        import time
+
+        started = time.perf_counter()
+        try:
+            self._draw_panel(event)
+        finally:
+            self._paced((time.perf_counter() - started) * 1000)
+
+    def _draw_panel(self, _event) -> None:
         before, after, levels = self.preview.snapshot()
         p = QPainter(self.panel)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -1043,22 +1083,19 @@ class SoundView(QWidget):
         p.end()
 
     def _paint_wave(self, p: QPainter, box: QRectF, before, after) -> None:
-        import numpy as np
-
         mid = box.center().y()
         p.setPen(QPen(QColor(theme.EDGE_STRONG), 1))
         p.drawLine(QPointF(box.left(), mid), QPointF(box.right(), mid))
         columns = max(1, int(box.width() / 3))
+        step = box.width() / columns
         for samples, color, alpha in ((before, theme.MUTED, 110), (after, theme.ACCENT, 255)):
-            chunks = np.array_split(np.abs(samples), columns)
             c = QColor(color)
             c.setAlpha(alpha)
             p.setPen(QPen(c, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-            for i, chunk in enumerate(chunks):
-                level = min(1.0, float(chunk.max()) if len(chunk) else 0.0)
-                h = max(1.0, level * box.height() / 2)
-                x = box.left() + (i + 0.5) * box.width() / columns
-                p.drawLine(QPointF(x, mid - h), QPointF(x, mid + h))
+            levels = column_peaks(samples, columns)
+            p.drawLines([QLineF(x, mid - h, x, mid + h) for x, h in
+                         zip((box.left() + (i + 0.5) * step for i in range(columns)),
+                             (max(1.0, float(v) * box.height() / 2) for v in levels))])
 
     def _paint_spectrum(self, p: QPainter, box: QRectF, before, after) -> None:
         low, high = SPECTRUM_LOW, 0.0
@@ -1317,8 +1354,7 @@ class FiltersDialog(CardWindow):
             key.activated.connect(slot)
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.customContextMenuRequested.connect(self._list_menu)
-        self.picker = AddPicker(self)
-        self.picker.picked.connect(self.add)
+        self._picker: AddPicker | None = None  # made on first use: one less pop-up to build as the window opens
         self.add_button = add = QPushButton("Add filter")
         add.setIcon(icons.icon("plus", theme.TEXT, 16))
         add.setStyleSheet(RAISED_PILL)
@@ -1510,6 +1546,13 @@ class FiltersDialog(CardWindow):
         if shown:
             self.list.setCurrentRow(max(0, min(select or 0, len(shown) - 1)))
         self._show_selected(self.list.currentRow())
+
+    @property
+    def picker(self) -> AddPicker:
+        if self._picker is None:
+            self._picker = AddPicker(self)
+            self._picker.picked.connect(self.add)
+        return self._picker
 
     def _fill_add_menu(self) -> None:
         """The Add filter picker's tiles: this window's kind of filter, plugins too."""

@@ -77,3 +77,18 @@ def test_the_palette_opens_wholly_on_the_windows_screen(app):
     assert palette.y() == top.y() + 70 or palette.geometry().bottom() <= room.bottom()
     palette.close()
     window.close()
+
+
+def test_the_palette_opens_without_holding_the_window(app):
+    """A window-modal pop-up made Windows spend the first click after it closed on the main window: the 🔍 button
+    missed every other click (PC 2026-11-26)."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QWidget
+
+    window = QWidget()
+    window.show()
+    palette = CommandPalette([Command("Go live", "Action", lambda: None)], window)
+    palette.open()
+    assert palette.isVisible() and palette.windowModality() == Qt.WindowModality.NonModal
+    palette.close()
+    window.close()
