@@ -185,3 +185,31 @@ def test_noise_suppression_methods(monkeypatch):
         assert rnn._built_for[0][0] == "arnndn" and len(out) == len(noise)
     monkeypatch.setattr(filters, "rnnoise_model", lambda: "")  # an FFmpeg without RNNoise: Standard runs instead
     assert rnn.graph_spec()[0][0] == "afftdn"
+
+
+@pytest.mark.parametrize("bigger", [0, 2])
+def test_every_add_filter_name_shows_whole_inside_its_tile(app, bigger):
+    """No Add filter tile cuts its name short (Noise S...ression): a long name goes onto two lines, each with
+    room to spare on both sides, at the app's font and at a wider one (Windows draws names wider)."""
+    from PySide6.QtGui import QFontMetrics
+
+    from sprigcast.app.filters_dialog import AddPicker, filter_kinds
+
+    picker = AddPicker()
+    if bigger:
+        font = picker.font()
+        font.setPointSizeF(font.pointSizeF() + bigger)
+        picker.setFont(font)
+    metrics = QFontMetrics(picker.name_font())
+    room = picker.TILE.width() - 2 * picker.INSET
+    for media in ("video", "audio"):
+        picker.fill(filter_kinds(media), set(), media)
+        assert picker.tiles
+        for label, tile in picker.tiles.items():
+            lines = tile.text().split("\n")
+            assert " ".join(lines) == label and "…" not in tile.text() and len(lines) <= 2
+            assert all(metrics.horizontalAdvance(line) <= room for line in lines), (label, lines)
+            height = 8 + 22 + 4 + len(lines) * metrics.lineSpacing() + 8
+            assert height <= picker.TILE.height(), (label, height)
+    picker.fill(filter_kinds("audio"), set(), "audio")
+    assert "\n" in picker.tiles["Noise Suppression"].text()
