@@ -195,14 +195,15 @@ KIND_NAMES = {"display_capture": "screen", "window_capture": "window", "game_cap
               "camera": "camera", "color": "color",
               "image": "picture", "text": "text", "browser": "web page", "chat": "chat", "audio_input": "mic",
               "audio_output": "desktop sound", "app_audio": "app sound", "scene": "sprig", "media": "video",
-              "capture_card": "capture card"}
+              "capture_card": "capture card", "phone": "phone camera",
+              "android_screen": "Android screen"}
 
 
 KIND_TINTS = {  # each kind its own colour, so a list reads at a glance (pink stays for Live and Recording)
     "game_capture": "#b388ff", "display_capture": "#7fb8ff", "window_capture": "#9aa7ff", "camera": "#4cc9f0",
     "chat": "#ffd23f", "browser": "#5fe0d0", "image": "#a6e36b", "slideshow": "#c8e86b", "media": "#ff9f5a",
     "text": "#dfe7e2", "audio_input": "#ffb35c", "audio_output": "#f2c46b", "app_audio": "#ffc98a",
-    "capture_card": "#e08cff", "sound_file": "#ff9f5a", "scene": "#e6e0ff", "nested": "#9aa7ff", "empty": "#9fb3a9",
+    "capture_card": "#e08cff", "phone": "#6fd3ff", "android_screen": "#8fe07a", "sound_file": "#ff9f5a", "scene": "#e6e0ff", "nested": "#9aa7ff", "empty": "#9fb3a9",
 }
 
 
@@ -259,6 +260,18 @@ def paint_kind_icon(p: QPainter, r: QRectF, kind: str, colour: str | None = None
         path.lineTo(cx + 7, cy + 4)
         path.lineTo(cx + 3, cy + 1.5)
         p.drawPath(path)
+    elif kind == "phone":  # a phone standing up, its camera dot at the top
+        p.drawRoundedRect(QRectF(cx - 4.5, cy - 7, 9, 14), 2.5, 2.5)
+        p.drawLine(QPointF(cx - 1.5, cy + 4.5), QPointF(cx + 1.5, cy + 4.5))
+        p.drawPoint(QPointF(cx, cy - 4.5))
+    elif kind == "android_screen":  # a phone on its side, a play mark on its screen
+        p.drawRoundedRect(QRectF(cx - 7, cy - 4.5, 14, 9), 2.5, 2.5)
+        tri = QPainterPath()
+        tri.moveTo(cx - 1.5, cy - 2)
+        tri.lineTo(cx + 2, cy)
+        tri.lineTo(cx - 1.5, cy + 2)
+        tri.closeSubpath()
+        p.drawPath(tri)
     elif kind == "capture_card":  # a capture box: its body, a play mark, and the HDMI port on its side
         p.drawRoundedRect(QRectF(cx - 5, cy - 4.5, 12, 9), 2.5, 2.5)
         tri = QPainterPath()

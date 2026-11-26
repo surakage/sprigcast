@@ -297,9 +297,11 @@ class GearWatch(QObject):
 
 # + Add's entries (user, 2026-11-20: professional names; one click adds the leaf, double-click picks what it shows).
 BLANK_KINDS = {
-    "Application Audio": "app_audio", "Audio File": "media:sound", "Audio Input": "audio_input",
+    "Android Screen": "android_screen", "Application Audio": "app_audio", "Audio File": "media:sound",
+    "Audio Input": "audio_input",
     "Audio Output": "audio_output", "Browser": "browser", "Chat": "chat", "Color": "color",
-    "Display Capture": "display_capture", "Game Capture": "game_capture", "Image": "image", "Text": "text",
+    "Display Capture": "display_capture", "Game Capture": "game_capture", "Image": "image",
+    "Phone Camera": "browser:phone", "Text": "text",
     "Video Capture": "camera", "Video File": "media:video", "Window Capture": "window_capture",
 }
 def fit_window(rect: tuple[int, int, int, int], free: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
@@ -315,8 +317,9 @@ def fit_window(rect: tuple[int, int, int, int], free: tuple[int, int, int, int])
     return x, y, width, height
 
 
-ADD_ICON_KINDS = {"media:video": "media", "media:sound": "sound_file"}  # + Add's chips for the two file entries
+ADD_ICON_KINDS = {"media:video": "media", "media:sound": "sound_file", "browser:phone": "phone"}  # + Add's chips for the two file entries
 BLANK_TIPS = {
+    "Android Screen": "An Android phone's screen over its USB cable, for mobile games",
     "Application Audio": "The sound of the apps you pick: games, music, voice chat…",
     "Audio File": "Music or a sound clip from your PC: a leaf that plays while its bloom is on air, with its strip in Sound",
     "Audio Input": "A mic: plays in every bloom unless you pick some",
@@ -325,6 +328,7 @@ BLANK_TIPS = {
     "Display Capture": "A whole screen",
     "Game Capture": "A game: the full-screen one in front, or a game's window. Its sound comes with it",
     "Mirror": "Show a leaf from another bloom here too. It's the same leaf: change one, both change",
+    "Phone Camera": "Your phone's camera over Wi-Fi: scan a code, nothing to install",
     "Video Capture": "A webcam, capture card or virtual camera",
     "Video File": "A video, with its own sound",
     "Window Capture": "One app's window",
@@ -2285,6 +2289,7 @@ class MainWindow(QMainWindow):
         self._reach_poll.setInterval(100)
         self._reach_poll.timeout.connect(self._reach_done)
         self._apply_features()  # Settings → General → Features: hide what's switched off
+        QTimer.singleShot(4000, self, self._sync_phones)  # a garden with a Phone Camera: its page server starts
         self.live_side.garden.clicked.connect(lambda: self._open_garden_check())
         self.live_stage = LiveStage(self.live_side)
         self.live_tiles = QScrollArea()
@@ -3506,6 +3511,8 @@ class MainWindow(QMainWindow):
 
     def _changed(self, save: bool = True) -> None:
         """Hand a copy of the collection to the engine after every edit, and save it unless mid-drag."""
+        if save:
+            self._sync_phones()
         if not save:  # mid-drag: at most one copy per frame, the newest (copying on every mouse move lagged)
             timer = getattr(self, "_drag_send", None)
             if timer is None:
@@ -4026,11 +4033,25 @@ class MainWindow(QMainWindow):
         what = PART if config.kind == PART_KIND else KIND_NAMES.get(self._look_kind(config), config.kind)
         row.setToolTip(f"{config.name}  ({what}){detail}")
 
+    def _sync_phones(self) -> None:
+        """Phone Camera leaves: their page server runs while there is one (app/phone_camera.py). Loaded only once
+        the garden has one."""
+        if not any(c.kind == "browser" and c.settings.get("phone") for c in self.collection.sources) \
+                and "sprigcast.app.phone_camera" not in sys.modules:
+            return
+        from sprigcast.app import phone_camera
+
+        if phone_camera.sync(self.collection):
+            QTimer.singleShot(0, self, self._changed)  # a leaf's address moved to the port it got
+
     @staticmethod
     def _look_kind(config) -> str:
-        """The kind a row's icon shows: a camera that is a capture card (Elgato HD60 X...) shows as one."""
+        """The kind a row's icon shows: a camera that is a capture card (Elgato HD60 X...) shows as one, a Phone
+        Camera as a phone."""
         if config.kind == "camera" and is_capture_card(str(config.settings.get("name") or config.name)):
             return "capture_card"
+        if config.kind == "browser" and config.settings.get("phone"):
+            return "phone"
         return config.kind
 
     def _kind_and_swatch(self, config, canvas_id: str | None) -> tuple[str, str | None]:
@@ -5201,6 +5222,10 @@ class MainWindow(QMainWindow):
             found = [c for c in self.collection.sources if c.kind == "media" and c.id in placed and c.id not in here
                      and (c.settings.get("only") == "sound" if not c.settings.get("path")
                           else is_sound_file(str(c.settings["path"]))) == sound]
+        elif kind in ("browser", "browser:phone"):  # Phone Camera leaves are listed as their own kind
+            phone = kind == "browser:phone"
+            found = [c for c in self.collection.sources if c.kind == "browser" and c.id in placed
+                     and c.id not in here and bool(c.settings.get("phone")) == phone]
         else:
             found = [c for c in self.collection.sources if c.kind == kind and c.id in placed and c.id not in here]
         return sorted(found, key=lambda c: c.name.lower())
@@ -5279,6 +5304,12 @@ class MainWindow(QMainWindow):
         if kind in ("media:video", "media:sound"):  # a leaf like the rest: plays while its bloom is on air
             settings.update(path="", volume_db=0.0, muted=False, loop=False, only=kind.split(":")[1])
             kind = "media"
+        elif kind == "browser:phone":  # a page of SprigCast's own showing the phone (app/phone_camera.py)
+            from sprigcast.app import phone_camera
+
+            canvas = self.collection.canvas(scene.canvas)
+            settings.update(phone_camera.new_settings(vertical=canvas.height > canvas.width))
+            kind = "browser"
         elif kind == "display_capture":
             settings.update(monitor=1, cursor=True)
         elif kind == "game_capture":
@@ -5322,7 +5353,7 @@ class MainWindow(QMainWindow):
             config.name = short_name(str(settings["name"]), "Camera")
         elif kind in ("image", "media") and settings.get("path"):
             config.name = short_name(Path(str(settings["path"])).stem.replace("_", " "), label)
-        elif kind == "browser":
+        elif kind == "browser" and not settings.get("phone"):  # a Phone Camera keeps its name
             from sprigcast.sources.browser import page_name
 
             config.name = page_name(settings) or label
@@ -6345,7 +6376,16 @@ class MainWindow(QMainWindow):
             if not defaults:
                 msgbox.information(self, "SprigCast", f"{config.kind!r} sources have no settings to edit.")
                 return False
-            if config.kind == "browser":
+            if config.kind == "browser" and config.settings.get("phone"):
+                from sprigcast.app.phone_camera import PhoneDialog, sync
+
+                sync(self.collection)  # its page is ready before the code is shown
+                dialog = PhoneDialog(config.settings, self)
+            elif config.kind == "android_screen":
+                from sprigcast.app.android_screen_dialog import AndroidScreenDialog
+
+                dialog = AndroidScreenDialog(config.settings, self)
+            elif config.kind == "browser":
                 from sprigcast.app.web_page_dialog import WebPageDialog
 
                 host = self.browser_host
