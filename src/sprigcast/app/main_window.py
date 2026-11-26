@@ -5865,24 +5865,43 @@ class MainWindow(QMainWindow):
 
     def _twin_items(self, item: SceneItem) -> list[SceneItem]:
         """The same leaf in this bloom's or sprig's other shapes (its vertical twin, say): Hide and Show change
-        it there too, as the Control API's item.hide does (PC 2026-11-26: Hide on a bloom's Webcam hid it on the
-        horizontal canvas only)."""
+        it there too, found the way the Control API's item.hide finds it (PC 2026-11-26: Hide on a bloom's Webcam
+        hid it on the horizontal canvas only). A bloom's vertical twin may show a sprig of its own, so the leaf is
+        looked for in each linked bloom's sprig too, by id, by the sprig it places, or by name."""
         scene = self._scene()
         if scene is None:
             return []
-        layouts = (self.collection.linked_with(scene.id) if scene.kind == "show"
-                   else self.collection.shapes(self.collection.main_part(scene)))
+        layouts: list[Scene] = []
+        if scene.kind == "show":
+            layouts += self.collection.linked_with(scene.id)
+        else:
+            main = self.collection.main_part(scene)
+            layouts += self.collection.shapes(main)
+            bloom = next((b for b in self.collection.scenes if b.id == self.last_bloom_id and b.kind == "show"), None)
+            sprig = self.collection.bloom_sprig(bloom) if bloom is not None else None
+            if sprig is not None and self.collection.main_part(sprig).id == main.id:  # editing a bloom's own sprig
+                for twin in self.collection.linked_with(bloom.id):
+                    own = self.collection.bloom_sprig(twin)
+                    if own is not None:
+                        layouts.append(self.collection.shape_for(own, twin.canvas))
+        sources = {c.id: c for c in self.collection.sources}
 
-        def key(source_id: str):
-            config = next((c for c in self.collection.sources if c.id == source_id), None)
-            if config is not None and config.kind == PART_KIND:
-                part = self.collection.part_of(config)
-                return ("sprig", self.collection.main_part(part).id) if part is not None else source_id
-            return source_id
+        def keys(source_id: str) -> set:
+            config = sources.get(source_id)
+            if config is None:
+                return {source_id}
+            part = self.collection.part_of(config) if config.kind == PART_KIND else None
+            if part is not None:
+                return {source_id, ("sprig", self.collection.main_part(part).id), ("name", part.name)}
+            return {source_id, ("name", config.name)}
 
-        wanted = key(item.source)
-        return [other for layout in layouts if layout.id != scene.id
-                for other in layout.items if key(other.source) == wanted]
+        wanted, seen, out = keys(item.source), {id(scene)}, []
+        for layout in layouts:
+            if id(layout) in seen:
+                continue
+            seen.add(id(layout))
+            out += [other for other in layout.items if other is not item and keys(other.source) & wanted]
+        return out
 
     def _set_item_visible(self, item: SceneItem, visible: bool) -> None:
         for each in (item, *self._twin_items(item)):
