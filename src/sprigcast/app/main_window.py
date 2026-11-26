@@ -386,6 +386,7 @@ class MainWindow(QMainWindow):
         self.selected_scene_id: str | None = collection.active_scenes.get(collection.canvases[0].id)
         self.last_bloom_id: str | None = self.selected_scene_id  # where a sprig's ← Back goes
         self.selected_sound_id: str | None = None  # a sound picked in Build's library
+        self._leaf_clipboard: list = []  # (item, its source) pairs copied from the Leaves list (Ctrl+C)
         self._undo: list[str] = []  # earlier collections as JSON, oldest first (Edit → Undo, Ctrl+Z)
         self._redo: list[str] = []
         self._undo_current: str | None = collection.to_text()
@@ -1328,11 +1329,24 @@ class MainWindow(QMainWindow):
         if sound is not None:
             self.statusBar().showMessage(f"{sound.name!r} is in Sound now, with its own volume and tracks.", 6000)
 
+    def _add_copy_paste(self, menu: QMenu, on_item: bool) -> None:
+        acts = self.item_actions
+        if on_item:
+            menu.addAction(acts["copy"])
+        acts["paste"].setEnabled(bool(self._leaf_clipboard))
+        if self._leaf_clipboard:  # nothing copied yet: no Paste row making the menu longer
+            menu.addAction(acts["paste"])
+        if self._can_paste_own():
+            menu.addAction(acts["paste_own"])
+
     def _source_menu(self, on_item: bool) -> QMenu:
         menu = QMenu(self)
         if not on_item:
             self._fill_add_source_menu()
             menu.addMenu(self.add_source_menu).setText("Add")
+            if self._leaf_clipboard:
+                menu.addSeparator()
+                self._add_copy_paste(menu, False)
         else:
             item = self._item()
             if item is not None and self.collection.source(item.source).kind == PART_KIND:
@@ -1356,6 +1370,8 @@ class MainWindow(QMainWindow):
             acts = self.item_actions
             for key in ("settings", "filters", "rename"):
                 menu.addAction(acts[key])
+            menu.addSeparator()
+            self._add_copy_paste(menu, True)
             menu.addSeparator()
             transform = menu.addMenu("Transform")
             for key in ("fit", "fill", "stretch", "center"):
@@ -3212,6 +3228,7 @@ class MainWindow(QMainWindow):
         lines += [("Ctrl+1", "Live"), ("Ctrl+2", "Build"), ("Ctrl+K", "Search"), ("Ctrl+,", "Settings"),
                   ("Ctrl + wheel", "Zoom the canvas"), ("Space + drag, middle drag", "Pan the canvas"),
                   ("Ctrl+0", "Fit the canvas"), ("Alt + drag a side", "Crop"),
+                  ("Ctrl+C", "Copy leaves"), ("Ctrl+V", "Paste leaves"), ("Ctrl+Shift+V", "Paste as its own copy"),
                   ("Shift + drag a corner", "Free shape (or keep it, if Keep shape is off)")]
         seen, unique = set(), []
         for keys, text in lines:
@@ -5860,6 +5877,9 @@ class MainWindow(QMainWindow):
             ("settings", "Properties…", "Ctrl+Return", self._edit_source_settings),
             ("filters", "Filters…", "Ctrl+Shift+E", self._edit_filters),
             ("rename", "Rename…", "F2", self._rename_selected),
+            ("copy", "Copy", "Ctrl+C", self._copy_leaves),
+            ("paste", "Paste", "Ctrl+V", lambda: self._paste_leaves()),
+            ("paste_own", "Paste as its own copy", "Ctrl+Shift+V", lambda: self._paste_leaves(own=True)),
             ("remove", "Remove", "Delete", self._remove_item),
         )
         for key, text, shortcut, slot in table:
@@ -5873,6 +5893,77 @@ class MainWindow(QMainWindow):
                 action.triggered.connect(lambda _=False, f=slot: f())
             self.build_stage.addAction(action)
             self.item_actions[key] = action
+
+    # Copy and paste leaves (user 2026-11-26): from one sprig to another, with their place, size, crop and effects.
+    # Paste puts the same leaf in (it runs once, its settings and filters stay shared); Paste as its own copy makes
+    # a separate leaf to change on its own, for the kinds that don't open a device (a camera or capture opened
+    # twice breaks, so those are always shared).
+    OWN_COPY_KINDS = ("text", "image", "color", "browser", "media", "chat", "pngtuber")
+
+    def _copy_leaves(self) -> None:
+        scene = self._scene()
+        rows = sorted({self.source_list.row(r) for r in self.source_list.selectedItems()}, reverse=True)
+        if scene is None or not rows:
+            row = self.source_list.currentRow()
+            rows = [row] if scene is not None and row >= 0 else []
+        indices = [len(scene.items) - 1 - row for row in rows] if scene is not None else []
+        picked = [scene.items[i] for i in indices if 0 <= i < len(scene.items)]  # bottom first, as stacked
+        sources = {c.id: c for c in self.collection.sources}
+        self._leaf_clipboard = [(item.model_copy(deep=True), sources[item.source].model_copy(deep=True))
+                                for item in picked if item.source in sources]
+        if self._leaf_clipboard:
+            count = len(self._leaf_clipboard)
+            self.statusBar().showMessage(
+                "Copied " + (f"{count} leaves" if count > 1 else self._leaf_clipboard[0][1].name) + ".", 3000)
+
+    def _can_paste_own(self) -> bool:
+        return any(config.kind in self.OWN_COPY_KINDS for _, config in self._leaf_clipboard)
+
+    def _paste_leaves(self, own: bool = False) -> None:
+        """The copied leaves on top of the selected sprig (a bloom's own sprig, for a bloom), where they were."""
+        scene = self._scene()
+        if scene is None or not self._leaf_clipboard:
+            return
+        if scene.kind == "show" and any(config.kind != PART_KIND for _, config in self._leaf_clipboard):
+            scene = self._open_bloom_sprig(scene)  # blooms hold sprigs only
+        sources = {c.id: c for c in self.collection.sources}
+        names = {c.name.casefold() for c in self.collection.sources}
+        pasted, refused = 0, []
+        for item, copied in self._leaf_clipboard:
+            config = sources.get(copied.id)
+            if copied.kind == PART_KIND:  # a sprig: its own placement (its "just in this bloom" tweaks live there)
+                part = next((s for s in self.collection.scenes if s.id == copied.settings.get("scene")), None)
+                if part is None:
+                    continue
+                if self.collection.contains(part, scene.id):
+                    refused.append(part.name)
+                    continue
+                config = (config or copied).model_copy(deep=True, update={"id": self.collection.new_id("part-src")})
+                self.collection.sources.append(config)
+            elif own and copied.kind in self.OWN_COPY_KINDS:
+                base, n, name = copied.name, 2, copied.name
+                while name.casefold() in names:
+                    name, n = f"{base} {n}", n + 1
+                names.add(name.casefold())
+                prefix = copied.id.rsplit("-", 1)[0] if "-" in copied.id else copied.kind
+                config = (config or copied).model_copy(
+                    deep=True, update={"id": self.collection.new_id(prefix), "name": name})
+                self.collection.sources.append(config)
+            elif config is None:  # removed since it was copied: it comes back as it was
+                config = copied.model_copy(deep=True)
+                self.collection.sources.append(config)
+                sources[config.id] = config
+            scene.items.append(item.model_copy(deep=True, update={"source": config.id}))
+            pasted += 1
+        if refused:
+            msgbox.information(self, "SprigCast", f"{refused[0]!r} already contains this {PART}, so it can't go inside it.")
+        if not pasted:
+            return
+        self._changed()
+        self._refresh_scenes()
+        self._refresh_sources(keep_row=0)
+        self._refresh_previews()
+        self.statusBar().showMessage(f"Pasted {pasted} leaves." if pasted > 1 else "Pasted.", 3000)
 
     def _remove_item(self) -> None:
         scene, index = self._scene(), self._item_index()
