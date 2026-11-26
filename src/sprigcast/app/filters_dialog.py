@@ -384,7 +384,8 @@ class AddPicker(QFrame):
     Type to narrow it, Enter adds the first match. A filter the source already has is greyed out."""
 
     picked = Signal(str)  # kind
-    TILE = QSize(104, 78)
+    TILE = QSize(116, 92)
+    INSET = 12  # room each side of a tile's name, so no name brushes the tile's edge
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent, Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
@@ -402,7 +403,7 @@ class AddPicker(QFrame):
             f"#addPickerBox {{ background: {theme.PANEL}; border: 1px solid {edge.name(QColor.NameFormat.HexArgb)};"
             " border-radius: 18px; }"
             f"QToolButton {{ background: {theme.CARD}; color: {theme.TEXT}; border: 1px solid {theme.EDGE_STRONG};"
-            " border-radius: 14px; padding: 8px 4px 6px; font-weight: 550; }"
+            f" border-radius: 14px; padding: 8px {self.INSET}px 8px; font-weight: 550; }}"
             f"QToolButton:hover, QToolButton:focus {{ background: {theme.SELECT_BG}; border-color: {theme.ACCENT_DARK};"
             f" color: {theme.SELECT_TEXT}; }}"
             f"QToolButton:disabled {{ color: {theme.MUTED}; background: transparent; }}"
@@ -453,7 +454,7 @@ class AddPicker(QFrame):
             buttons = []
             for n, info in enumerate(sorted(grouped[group], key=lambda k: k.label.lower())):
                 tile = QToolButton()
-                tile.setText(info.label)
+                tile.setText(self.fit_name(info.label))
                 picture = QIcon(icons.icon(icon_name(info.kind), theme.ACCENT, 22))
                 for ratio in (1.0, 1.25, 1.5, 2.0, 3.0):  # greyed when already added, sharp at every scale
                     picture.addPixmap(icons.pixmap(icon_name(info.kind), theme.MUTED, 22, ratio), QIcon.Mode.Disabled)
@@ -479,6 +480,23 @@ class AddPicker(QFrame):
         self.search.clear()
         rows = sum((len(b) + 3) // 4 for _, b in self._groups)
         self.setFixedHeight(min(560, 16 * 2 + 40 + 10 + len(self._groups) * 30 + rows * (self.TILE.height() + 8) + 8))
+
+    def name_font(self) -> QFont:
+        font = QFont(self.font())
+        font.setWeight(QFont.Weight(550))
+        return font
+
+    def fit_name(self, label: str) -> str:
+        """A tile's name whole: on one line when it fits inside the tile's inset, else broken onto two lines
+        at the space that keeps the longer line shortest (Noise / Suppression), never cut short with ...."""
+        metrics = QFontMetrics(self.name_font())
+        room = self.TILE.width() - 2 * self.INSET - 4
+        if metrics.horizontalAdvance(label) <= room or " " not in label:
+            return label
+        words = label.split(" ")
+        splits = [(" ".join(words[:n]), " ".join(words[n:])) for n in range(1, len(words))]
+        top, bottom = min(splits, key=lambda s: max(metrics.horizontalAdvance(s[0]), metrics.horizontalAdvance(s[1])))
+        return f"{top}\n{bottom}"
 
     def _narrow(self, text: str) -> None:
         wanted = text.strip().lower()
