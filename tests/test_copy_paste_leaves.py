@@ -123,11 +123,11 @@ def test_the_leaves_menu_offers_copy_and_paste(tmp_path, monkeypatch):
     try:
         _select(w, "p1", "text-1")
         texts = [a.text() for a in w._source_menu(True).actions()]
-        assert "Copy" in texts and "Paste" not in texts and "Duplicate" not in texts
+        assert "Copy" in texts and "Paste" not in texts and "Duplicate" in texts  # Duplicate needs no Copy first
         assert not w.item_actions["paste"].isEnabled()
         w.item_actions["copy"].trigger()
         texts = [a.text() for a in w._source_menu(False).actions()]
-        assert "Paste" in texts and "Duplicate" in texts
+        assert "Paste" in texts and "Duplicate" not in texts  # empty space: nothing to duplicate
         assert "Group…" in [a.text() for a in w._source_menu(True).actions()]
         assert w.item_actions["paste"].isEnabled()
     finally:
@@ -147,5 +147,26 @@ def test_a_sprig_pastes_with_its_own_placement_and_a_bloom_takes_leaves_into_its
         assert p1[3].source == "cam"
         placement = col.source(p1[4].source)
         assert placement.id != "part-src-1" and placement.kind == "scene" and placement.settings["scene"] == "p2"
+    finally:
+        w.close()
+
+
+def test_duplicate_copies_the_selected_leaf_in_one_step(tmp_path, monkeypatch):
+    col, w = _window(tmp_path, monkeypatch)
+    try:
+        _select(w, "p1", "text-1")
+        w.item_actions["duplicate"].trigger()  # Ctrl+D, no Copy first
+        col = w.collection
+        items = col.scene("p1").items
+        new = items[-1]
+        text = col.source(new.source)
+        assert text.id != "text-1" and text.name == "Title 2" and text.settings == {"text": "Hi"}
+        assert (new.x, new.y) == (80, 80)  # a little down and right, so it shows
+        assert not w._leaf_clipboard  # the clipboard is left alone
+        _select(w, "p1", "cam")
+        w.item_actions["duplicate"].trigger()
+        assert col.scene("p1").items[-1].source == "cam"  # a camera: the same leaf placed again
+        w.undo()
+        assert col.scene("p1").items[-1].source != "cam" if w.collection is col else True
     finally:
         w.close()

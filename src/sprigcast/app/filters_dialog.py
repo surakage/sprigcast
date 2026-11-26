@@ -1327,6 +1327,9 @@ class FiltersDialog(CardWindow):
         self.empty = QLabel("No filters yet")
         self.empty.setStyleSheet(f"color: {theme.MUTED}; background: transparent;")
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)  # Paste into an empty list too
+        self.empty.customContextMenuRequested.connect(
+            lambda pos: self._list_menu(self.list.viewport().mapFromGlobal(self.empty.mapToGlobal(pos))))
         self.same = QCheckBox("Same on both canvases")
         self.same.setCursor(Qt.CursorShape.PointingHandCursor)
         self.same.setVisible(self.collection is not None or self.canvas_col is not None)

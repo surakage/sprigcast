@@ -106,3 +106,14 @@ def test_the_leaves_menu_copies_a_leafs_filters_onto_another(app, tmp_path, monk
         assert [f.kind for f in w.collection.source("cam").filters] == ["gain"]
     finally:
         w.close()
+
+
+def test_an_empty_filter_list_still_offers_paste(app):
+    from PySide6.QtCore import QPoint, Qt
+
+    from sprigcast.app.filters_dialog import FiltersDialog, copy_filters
+
+    copy_filters([Filter(id="a", kind="chroma_key", name="Greenscreen")])
+    window = FiltersDialog(SourceConfig(id="t", kind="text", name="Title"), lambda save=True: None)
+    assert window.empty.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu  # "No filters yet"
+    assert [a.text() for a in window.list_menu(QPoint(5, 5)).actions()] == ["Paste"]
