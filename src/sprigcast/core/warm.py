@@ -18,6 +18,23 @@ import time
 log = logging.getLogger(__name__)
 
 WARM_AFTER_MS = 12_000  # after startup's own work (main.py)
+# On a PC with little memory (core/pacing.py low_memory) the warm-up waits longer and goes slower: loading every
+# module at once from a hard drive with 1 GB free froze the window 125 s just after start (Mikedog151, E2-7110,
+# 4 GB, 2026-11-25), each module pushing the window's own pages out to the disk.
+LOW_MEMORY_WARM_AFTER_MS = 90_000
+LOW_MEMORY_PAUSE_S = 0.25
+
+
+def warm_after_ms() -> int:
+    from sprigcast.core import pacing
+
+    return LOW_MEMORY_WARM_AFTER_MS if pacing.low_memory() else WARM_AFTER_MS
+
+
+def pause_between() -> float:
+    from sprigcast.core import pacing
+
+    return LOW_MEMORY_PAUSE_S if pacing.low_memory() else 0.02
 MODULES = [
     "av.codec.hwaccel", "av.video.reformatter", "av.video.frame",
     "sprigcast.output.naming", "sprigcast.output.storage", "sprigcast.output.keys",
@@ -45,8 +62,11 @@ MODULES = [
 WINDOWS_ONLY = ["sprigcast.output.nvenc_d3d11"]
 
 
-def warm(modules: list[str] | None = None, pause_s: float = 0.02) -> list[str]:
-    """Import each module not loaded yet. Returns the ones it loaded. Never raises."""
+def warm(modules: list[str] | None = None, pause_s: float | None = None) -> list[str]:
+    """Import each module not loaded yet, pause_s apart (None: pause_between()). Returns the ones it loaded. Never
+    raises."""
+    if pause_s is None:
+        pause_s = pause_between()
     names = list(MODULES if modules is None else modules)
     if modules is None and sys.platform == "win32":
         names += WINDOWS_ONLY
@@ -72,10 +92,27 @@ def warm(modules: list[str] | None = None, pause_s: float = 0.02) -> list[str]:
                 log.info("warm-up: cameras are listed by %s", lister or "nothing (no lister loads)")
         except Exception as exc:  # noqa: BLE001
             log.debug("warm-up: the camera lister didn't load: %s", exc)
+    if modules is None:
+        warm_ffmpeg_files()
     if loaded:
         total = 1000 * (time.perf_counter() - began)
         log.info("warm-up: loaded %d modules in %.0f ms%s", len(loaded), total, slowest(took, total))
     return loaded
+
+
+def warm_ffmpeg_files() -> None:
+    """Find PyAV's FFmpeg files now (sprigcore keeps the answer): found for the first time at go-live, the folder
+    look held the engine 28 frames on a hard drive (Mikedog151, 2026-11-25). Never raises."""
+    try:
+        from sprigcast import sprigcore
+
+        sprigcore.ffmpeg_libraries()
+        for name in ("avfilter", "avdevice"):
+            import av
+
+            sprigcore._ffmpeg_file(av, name)
+    except Exception as exc:  # noqa: BLE001 (looked for again when needed)
+        log.debug("warm-up: FFmpeg files not found: %s", exc)
 
 
 SLOW_MS = 1500.0  # a warm-up over this says which modules took it

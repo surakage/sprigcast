@@ -936,6 +936,24 @@ def _ram_gb() -> float | None:
         return None
 
 
+LOW_MEMORY_GB = TRIM_MIN_RAM_GB  # a PC under this does its background start-up work later and slower
+_low_memory: bool | None = None
+
+
+def low_memory(ram_gb: float | None = None) -> bool:
+    """True on a PC with under LOW_MEMORY_GB of memory (worked out once; unknown counts as no). There, every module
+    loaded and every log read in the background pushes the window's own pages out to the disk: on a 4 GB PC with
+    a hard drive, start-up's warm-up froze the window 125 s and the report builder froze Settings 25 s (Mikedog151,
+    2026-11-25)."""
+    global _low_memory
+    if ram_gb is not None:
+        return ram_gb < LOW_MEMORY_GB
+    if _low_memory is None:
+        ram = _ram_gb()
+        _low_memory = ram is not None and ram < LOW_MEMORY_GB
+    return _low_memory
+
+
 def trim_working_set(keep_mb: float = TRIM_KEEP_MB, kernel32=None, ram_gb: float | None = None) -> bool:
     """Windows: hand back to the system the pages the app hasn't touched in a while (what Task Manager counts),
     keeping the last-used keep_mb.

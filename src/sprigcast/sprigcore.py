@@ -1608,7 +1608,10 @@ def ffmpeg_libraries() -> list[str] | None:
     return None if None in found else found
 
 
+@functools.cache  # the files don't move while running: looking again at each stream start held a frame (see below)
 def _ffmpeg_file(av, name: str) -> str | None:
+    """The engine asks at every encoder start; on a hard drive with little memory free the folder look held the
+    engine 28 frames at go-live (Mikedog151, 2026-11-25), so the answer is kept."""
     package = Path(av.__file__).resolve().parent
     for folder in (package.parent / "av.libs", package, package.parent):
         hits = sorted(str(p) for pattern in (f"{name}-*.dll", f"lib{name}-*.so*", f"lib{name}.*.dylib")

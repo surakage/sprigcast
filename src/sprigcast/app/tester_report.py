@@ -21,6 +21,7 @@ import os
 import platform
 import re
 import sys
+import time
 import zipfile
 from collections import Counter
 from datetime import datetime, timedelta
@@ -295,8 +296,8 @@ def plugin_lines(plugins_dir: Path | None) -> list[str]:
 # The report --------------------------------------------------------------------------------------------
 
 
-def _log_files(folder: Path, now: datetime, days: int) -> list[Path]:
-    """Day logs and stream reports from the last `days` days, newest first, within MAX_LOG_BYTES."""
+def _log_files(folder: Path, now: datetime, days: int, limit: int = MAX_LOG_BYTES) -> list[Path]:
+    """Day logs and stream reports from the last `days` days, newest first, within `limit` bytes."""
     cutoff = (now - timedelta(days=days)).timestamp()
     files = []
     for path in [*folder.glob("sprigcast *.log"), *folder.glob("stream *.txt")]:
@@ -309,7 +310,7 @@ def _log_files(folder: Path, now: datetime, days: int) -> list[Path]:
     files.sort(reverse=True)
     picked, total = [], 0
     for _, size, path in files:
-        if total + size > MAX_LOG_BYTES and picked:
+        if total + size > limit and picked:
             continue
         picked.append(path)
         total += size
@@ -324,6 +325,37 @@ def _read(path: Path, tail: int | None = None) -> str:
             f.seek(max(0, size - tail))
         data = f.read()
     return data.decode("utf-8", errors="replace")
+
+
+CHUNK_BYTES = 256 * 1024  # a log is read and cleaned this much at a time
+CHUNK_PAUSE_S = 0.005  # with a pause between, so the window gets Python back
+LOW_MEMORY_LOG_BYTES = 8 * 2**20  # the newest logs only, on a PC with little memory (core/pacing.py low_memory)
+
+
+def _copy_scrubbed(z: zipfile.ZipFile, name: str, path: Path, scrub, tail: int | None = None,
+                   pause_s: float = CHUNK_PAUSE_S) -> None:
+    """Write `path` into the zip as `name`, cleaned by `scrub` a whole number of lines at a time. Reading a 24 MB
+    log whole and cleaning it in one go held Python's lock for seconds: Settings froze 25 s on a 4 GB PC with a
+    hard drive while a report was made (Mikedog151, 2026-11-25). Every pattern scrub looks for is within a line."""
+    with path.open("rb") as f, z.open(name, "w", force_zip64=True) as out:
+        if tail is not None:
+            f.seek(0, io.SEEK_END)
+            f.seek(max(0, f.tell() - tail))
+        rest = b""
+        while True:
+            data = f.read(CHUNK_BYTES)
+            if not data:
+                break
+            data = rest + data
+            cut = data.rfind(b"\n") + 1
+            if cut == 0:  # no line end yet: keep reading
+                rest = data
+                continue
+            rest = data[cut:]
+            out.write(scrub(data[:cut].decode("utf-8", errors="replace")).encode("utf-8"))
+            time.sleep(pause_s)
+        if rest:
+            out.write(scrub(rest.decode("utf-8", errors="replace")).encode("utf-8"))
 
 
 def build(target: Path, *, log_folder: Path | None = None, collection=None, settings=None,
@@ -348,15 +380,18 @@ def build(target: Path, *, log_folder: Path | None = None, collection=None, sett
     with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         z.writestr("about.txt", scrub("\n".join(sections) + "\n"))
         if folder.is_dir():
-            for path in _log_files(folder, now, days):
+            from sprigcast.core import pacing
+
+            limit = LOW_MEMORY_LOG_BYTES if pacing.low_memory() else MAX_LOG_BYTES
+            for path in _log_files(folder, now, days, limit):
                 try:
-                    z.writestr(f"logs/{path.name}", scrub(_read(path)))
+                    _copy_scrubbed(z, f"logs/{path.name}", path, scrub)
                 except OSError as exc:
                     log.info("report: skipped %s (%s)", path.name, exc)
             crash = folder / "crash.log"
             if crash.is_file():
                 try:
-                    z.writestr("logs/crash.log", scrub(_read(crash, CRASH_TAIL)))
+                    _copy_scrubbed(z, "logs/crash.log", crash, scrub, CRASH_TAIL)
                 except OSError:
                     pass
     os.replace(tmp, target)
