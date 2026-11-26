@@ -3467,7 +3467,9 @@ class MainWindow(QMainWindow):
                     self._refresh_audio_soon()
                 if self._start_sizes:
                     self._place_new_sources(event.sizes)
+                turned = self._turn_phone_screens(event.sizes, event.statuses)
                 moved, touched = self.collection.keep_cards_put(event.sizes)  # a clock card's box grew or shrank
+                moved = moved or turned
                 if moved:
                     self._changed()  # its places moved so the card stays put
                 elif touched:
@@ -4185,6 +4187,23 @@ class MainWindow(QMainWindow):
     # Audio -------------------------------------------------------------------------
 
     AUDIO_KINDS = ("audio_input", "audio_output", "app_audio")
+
+    def _turn_phone_screens(self, sizes: dict, statuses: dict) -> bool:
+        """An Android Screen that turned: its places turn with it (Collection.turn_places). Only sizes it is
+        capturing at count (before its first picture it says a size of its own)."""
+        seen = self.__dict__.setdefault("_phone_shapes", {})
+        turned = False
+        for config in self.collection.sources:
+            if config.kind != "android_screen":
+                continue
+            size = sizes.get(config.id)
+            if not size or not str(statuses.get(config.id, "")).startswith("capturing"):
+                continue
+            before = seen.get(config.id)
+            seen[config.id] = tuple(size)
+            if before is not None and self.collection.turn_places(config.id, before, tuple(size)):
+                turned = True
+        return turned
 
     def _has_sound(self, config) -> bool:
         """Sounds the Sound card lists: mics, desktop audio, and browser pages whose sound comes here."""

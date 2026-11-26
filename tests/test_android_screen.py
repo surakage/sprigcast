@@ -337,3 +337,21 @@ def test_turning_the_phone_starts_a_recording_in_the_new_shape(fake_adb, monkeyp
         assert "--size 1280x576" in calls and "--size 576x1280" in calls  # landscape, then portrait
     finally:
         source.stop()
+
+
+def test_a_place_turns_with_the_phone():
+    """User 2026-11-26: turned landscape, the leaf stayed a tall box. Its place turns around its middle."""
+    from sprigcast.core.scene import Canvas, Scene, SceneCollection, SceneItem, SourceConfig
+
+    col = SceneCollection(canvases=[Canvas(id="main", width=1920, height=1080)],
+                          sources=[SourceConfig(id="android-1", kind="android_screen", name="Phone")],
+                          scenes=[Scene(id="a", name="A", canvas="main", items=[
+                              SceneItem(source="android-1", x=717, y=0, scale=1080 / 1280)])])
+    item = col.scenes[0].items[0]
+    assert col.turn_places("android-1", (576, 1280), (1280, 576))
+    w, h = 1280 * item.scale, 576 * item.sy
+    assert abs(w - 1080) < 0.5 and abs(h - 486) < 0.5  # the long side as long as before
+    assert abs(item.x + w / 2 - (717 + 486 / 2)) < 0.5 and abs(item.y + h / 2 - 540) < 0.5  # same middle
+    assert not col.turn_places("android-1", (1280, 576), (1280, 576))  # no turn, nothing moves
+    assert col.turn_places("android-1", (1280, 576), (576, 1280))
+    assert abs(576 * item.scale - 486) < 0.5 and abs(1280 * item.sy - 1080) < 0.5 and abs(item.y) < 0.5
