@@ -743,11 +743,27 @@ function gathered(peer) {
     setTimeout(done, 2500);
   });
 }
+// The phone's mic: Web Audio hears a WebRTC stream only from the stream itself (createMediaStreamSource), not
+// from the <video> playing it, so SprigCast's page sound script (app/browser_audio.py) heard silence and the
+// mic never reached the mixer (PC 2026-11-26). Connected to the output, the script takes it to the mixer.
+let ears = null, heard = null;
+function hear(track) {
+  try {
+    ears = ears || new AudioContext({sampleRate: 48000});
+    if (heard) heard.disconnect();
+    heard = ears.createMediaStreamSource(new MediaStream([track]));
+    heard.connect(ears.destination);
+    if (ears.state !== "running") ears.resume().catch(() => {});
+  } catch (x) {}
+}
 async function answer(offer) {
   if (pc) pc.close();
   pc = new RTCPeerConnection({iceServers: []});
   pc.ontrack = (e) => {
     const v = document.getElementById("v");
+    if (e.track.kind === "audio") hear(e.track);
+    v.__sprigcastPlain = true;  // its sound goes through hear(): a phone's stream played by the element is silent to Web Audio
+    v.muted = true;
     if (v.srcObject !== e.streams[0]) v.srcObject = e.streams[0];
     for (const r of pc.getReceivers()) { try { r.playoutDelayHint = 0; r.jitterBufferTarget = 0; } catch (x) {} }
     v.play().catch(() => {});
