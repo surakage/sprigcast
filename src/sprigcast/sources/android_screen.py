@@ -42,7 +42,8 @@ IDLE_S = 0.1  # adb quiet this long: the picture the parser holds is shown
 TURN_CHECK_S = 1.5  # how often the phone's turn is looked at while recording
 _TURN_WORDS = "'SurfaceOrientation|orientation=|mCurrentRotation|mRotation='"  # grep on the phone: a short answer
 SIZES = (("720p", 1280), ("1080p", 1920))
-DEFAULTS: dict[str, Any] = {"serial": "", "longest": 1280, "bitrate_kbps": 8000, "sound": True, "trim": True}
+DEFAULTS: dict[str, Any] = {"serial": "", "longest": 1280, "bitrate_kbps": 8000, "sound": True, "trim": True,
+                            "monitor": True}  # you hear the phone through the PC (Android plays it here, not there)
 TRIM_EVERY_S = 1.0
 TRIM_SURE = 3
 TRIM_MOST = 0.08  # of a side: more than that is the picture being dark, not a bar
