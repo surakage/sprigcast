@@ -582,7 +582,9 @@ class NoiseGate(AudioFilter):
 
     def process(self, block):
         s = self.settings
-        open_at, close_at = db_to_gain(float(s["open_db"])), db_to_gain(float(s["close_db"]))
+        # Close above Open would close the gate while you talk: Close is never above Open (PC 2026-11-26).
+        open_at = db_to_gain(float(s["open_db"]))
+        close_at = min(open_at, db_to_gain(float(s["close_db"])))
         step_s = self.STEP / SAMPLE_RATE
         attack = step_s / max(0.001, float(s["attack_ms"]) / 1000)
         release = step_s / max(0.001, float(s["release_ms"]) / 1000)
@@ -787,9 +789,9 @@ def _lin(db: float) -> float:
 
 
 @_audio("eq3", "Equalizer", [
-    Field("low_db", "Low", 0.0, -20.0, 20.0, 0.1, " dB"),
-    Field("mid_db", "Mid", 0.0, -20.0, 20.0, 0.1, " dB"),
-    Field("high_db", "High", 0.0, -20.0, 20.0, 0.1, " dB"),
+    Field("low_db", "Low (250 Hz)", 0.0, -20.0, 20.0, 0.1, " dB"),
+    Field("mid_db", "Mid (1.5 kHz)", 0.0, -20.0, 20.0, 0.1, " dB"),
+    Field("high_db", "High (5 kHz)", 0.0, -20.0, 20.0, 0.1, " dB"),
 ])
 class Equalizer3(FFmpegAudioFilter):
     """Bass below ~250 Hz, mids around 1.5 kHz, treble above ~5 kHz."""

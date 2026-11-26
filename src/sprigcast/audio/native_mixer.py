@@ -233,8 +233,9 @@ def engine_filters(chain, engine_ids: dict) -> tuple | None:
         if kind is f.GainFilter:
             out.append((sprigcore.FILTER_GAIN, 0, (_number(s, "db"),)))
         elif kind is f.NoiseGate:
-            out.append((sprigcore.FILTER_NOISE_GATE, 0, tuple(_number(s, k) for k in (
-                "close_db", "open_db", "attack_ms", "hold_ms", "release_ms"))))
+            gate = [_number(s, k) for k in ("close_db", "open_db", "attack_ms", "hold_ms", "release_ms")]
+            gate[0] = min(gate[0], gate[1])  # Close never above Open (core/filters.py NoiseGate)
+            out.append((sprigcore.FILTER_NOISE_GATE, 0, tuple(gate)))
         elif kind is f.Limiter:  # before Compressor: a Limiter is one
             out.append((sprigcore.FILTER_LIMITER, 0, (_number(s, "threshold_db"), _number(s, "release_ms"))))
         elif kind is f.Compressor:

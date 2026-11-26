@@ -103,6 +103,16 @@ def test_noise_gate_mutes_quiet_audio_and_opens_for_loud():
     assert np.max(np.abs(loud)) > 0.45
 
 
+def test_a_close_threshold_above_open_doesnt_close_the_gate_while_talking():
+    """PC 2026-11-26: Close -32 with Open -40 shut the gate on speech between the two."""
+    gate = NoiseGate(settings_for("noise_gate", {"open_db": -40.0, "close_db": -32.0, "attack_ms": 1,
+                                                 "release_ms": 1, "hold_ms": 0}))
+    gate.process(tone(0.5))  # opened
+    for _ in range(5):
+        out = gate.process(tone(0.0158))  # about -36 dB: under Close, over Open
+    assert np.max(np.abs(out)) > 0.014
+
+
 def test_compressor_turns_loud_audio_down():
     comp = Compressor(settings_for("compressor", {"ratio": 4.0, "threshold_db": -20.0}))
     for _ in range(10):
