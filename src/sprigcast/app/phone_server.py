@@ -525,7 +525,7 @@ input.pin { width: 100%; background: #0e1412; color: var(--text); border: 1px so
 .wrong { color: var(--live); }
 body.full { overflow: hidden; }
 body.full video#me { position: fixed; inset: 0; width: 100vw; height: 100vh; max-height: none; border-radius: 0;
-                     aspect-ratio: auto !important; z-index: 10; }
+                     aspect-ratio: auto !important; object-fit: cover; z-index: 10; }
 .over { display: none; position: fixed; z-index: 11; }
 body.full .over { display: flex; }
 #fullstate { top: max(14px, env(safe-area-inset-top)); left: 14px; align-items: center; gap: 8px;
