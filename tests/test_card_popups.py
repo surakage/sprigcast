@@ -113,3 +113,45 @@ def test_a_pop_up_past_the_screen_edge_is_moved_onto_it(app):
     keep_on_screen(w)
     assert room.contains(w.frameGeometry())
     w.close()
+
+
+def test_a_scroll_bar_only_when_the_screen_is_too_small(app, monkeypatch):
+    """The Android Screen pop-up showed a scroll bar with room to spare, Cancel and Save cut off under it (PC
+    2026-11-26): once there, the bar took width, the text wrapped longer, and the bar stayed. A pop-up that fits
+    shows everything with no bar; only one taller than its screen's free part scrolls."""
+    import time
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QLabel, QWidget
+
+    from sprigcast.app import card
+
+    def settle():
+        for _ in range(10):
+            app.processEvents()
+            time.sleep(0.01)
+
+    d = card.CardDialog("Fits")
+    box = d.section("Phone")
+    line = QLabel("Looking…")
+    line.setWordWrap(True)
+    box.addWidget(line)
+    d.add_buttons("Save")
+    d.show()
+    settle()
+    line.setText("No phone found. Plug it in with USB debugging on, then Look again. " * 3)  # grows once it's up
+    settle()
+    bar = d._scroll.verticalScrollBar()
+    assert d._scroll.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert bar.maximum() == 0 and d._scroll.widget().height() <= d._scroll.viewport().height()
+    d.close()
+
+    monkeypatch.setattr(card.FitScroll, "_room", lambda self: 500 - self.chrome)
+    tall = card.CardDialog("Too tall")
+    tall.body.addWidget(QWidget(minimumHeight=900))
+    tall.show()
+    settle()
+    assert QWidget.height(tall) <= 500
+    assert tall._scroll.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
+    assert tall._scroll.verticalScrollBar().maximum() > 0
+    tall.close()

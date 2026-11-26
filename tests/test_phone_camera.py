@@ -194,3 +194,32 @@ def test_the_page_port_is_its_own(server):
             other.listen()
     finally:
         other.close()
+
+
+def test_the_page_serves_with_truststore_standing_in(tmp_path, monkeypatch):
+    """On Windows main.py lets truststore stand in for ssl.SSLContext; its contexts check the other side's
+    certificate after the handshake and close the connection when there's none, as with every phone (PC
+    2026-11-26: the page closed with nothing sent). The phone's page keeps Python's own."""
+    original = ssl.SSLContext
+
+    class Truststore(original):  # what truststore.inject_into_ssl() puts in its place
+        def wrap_socket(self, sock, *args, **kwargs):
+            s = super().wrap_socket(sock, *args, **kwargs)
+            s.close()
+            raise ssl.SSLCertVerificationError("no certificate from the other side")
+
+    Truststore.__module__ = "truststore._api"
+
+    class Injected:  # the ssl module as phone_server sees it, with truststore in place
+        SSLContext = Truststore
+
+        def __getattr__(self, name):
+            return getattr(ssl, name)
+
+    monkeypatch.setattr(phone_server, "ssl", Injected())
+    srv = phone_server.PhoneServer(tmp_path)
+    srv.use(["code1"])
+    try:
+        assert _get(f"https://127.0.0.1:{srv.phone_port}/phone/code1")[0] == 200
+    finally:
+        srv.use([])

@@ -11,6 +11,7 @@ between portrait and landscape. The phone's sound isn't sent (screenrecord has n
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import re
@@ -270,10 +271,16 @@ class AndroidScreenSource(Source):
         with self._lock:
             self._procs[mine] = proc
         try:
-            container = av.open(proc.stdout, format="h264", mode="r",
+            container = av.open(_Pipe(proc.stdout), format="h264", mode="r",
                                 options={"probesize": "2048", "analyzeduration": "0", "fflags": "nobuffer"})
             stream = container.streams.video[0]
             stream.codec_context.thread_count = 1
+            try:  # each picture out as soon as it's in: a still screen sends few, and none waited behind
+                from av.codec.context import Flags
+
+                stream.codec_context.flags |= Flags.low_delay
+            except (ImportError, AttributeError, TypeError, ValueError):
+                pass
             for frame in container.decode(stream):
                 if self._stop.is_set():
                     break
@@ -306,6 +313,27 @@ class AndroidScreenSource(Source):
             procs = list(self._procs.values())
         for p in procs:
             _end(p)
+
+
+class _Pipe(io.RawIOBase):
+    """adb's output as a stream that says it can't seek. PyAV seeks a file object that doesn't say so, and
+    seeking a Windows pipe fails ("[Errno 22] Invalid argument" every second or two, PC 2026-11-26)."""
+
+    def __init__(self, raw) -> None:
+        super().__init__()
+        self._raw = raw
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+    def readinto(self, buffer) -> int:
+        return self._raw.readinto(buffer) or 0
+
+    def close(self) -> None:
+        super().close()
 
 
 def _end(proc: subprocess.Popen) -> None:

@@ -112,8 +112,9 @@ def download_adb(progress=None, cancelled=lambda: False) -> str:
         update.download(android_screen.ADB_URL, zip_path, progress, cancelled)
         if cancelled():
             raise OSError("canceled")
+        size = zip_path.stat().st_size
         adb = android_screen.install_adb(zip_path, home)
-    logging.getLogger(__name__).info("android screen: Google's adb downloaded")
+    logging.getLogger(__name__).info("android screen: Google's adb downloaded (%.1f MB from dl.google.com)", size / 1e6)
     return str(adb)
 
 
