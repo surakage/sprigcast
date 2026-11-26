@@ -228,6 +228,23 @@ def shared_profile():
     return _profile
 
 
+RETRY_FIRST_S = 3.0  # a page that didn't load tries again this soon (a Phone Camera's view before its server)
+RETRY_MOST_S = 30.0
+
+
+def retry_soon(page, reload) -> None:
+    """A page that didn't load (no network yet, a Phone Camera's view before SprigCast's phone server is up: PC
+    2026-11-26) loads again on its own, sooner at first, then every RETRY_MOST_S. It shows nothing meanwhile."""
+    n = getattr(page, "_retries", 0)
+    page._retries = n + 1
+    wait = min(RETRY_MOST_S, RETRY_FIRST_S * 2 ** n)
+
+    def again() -> None:
+        if not getattr(page, "_closed", False) and getattr(page, "_retries", 0) == n + 1:
+            reload()
+    QTimer.singleShot(int(wait * 1000), again)
+
+
 def _turn_on_features(settings) -> None:
     from PySide6.QtWebEngineCore import QWebEngineSettings
 
@@ -243,7 +260,7 @@ def _turn_on_features(settings) -> None:
         (A.ShowScrollBars, False),
         (A.ScrollAnimatorEnabled, False),
         (A.JavascriptCanOpenWindows, False),
-        (A.ErrorPageEnabled, True),
+        (A.ErrorPageEnabled, False),  # a page that can't load shows nothing, never Chromium's error page on stream
         (A.FocusOnNavigationEnabled, False),
     ):
         settings.setAttribute(attr, on)
@@ -488,8 +505,13 @@ class _Page:
     def _loaded(self, ok: bool) -> None:
         self.dirty = True
         self.push_state()
-        if not ok:
-            log.info("browser source %s: page didn't load", self.id)
+        if ok:
+            self._retries = 0
+            return
+        if not getattr(self, "_retries", 0):  # once, not on every try
+            log.info("browser source %s: page didn't load; trying again on its own", self.id)
+        url = browser.page_url(self.settings)  # (a reload of a failed page reloads nothing: its address again)
+        retry_soon(self, lambda: self.page.setUrl(QUrl(url)) if url else None)
 
     def _crashed(self, status, code) -> None:
         log.warning("browser source %s: page stopped (%s, %s), loading it again", self.id, status, code)
@@ -579,6 +601,7 @@ class _Page:
     def close(self) -> None:
         import shiboken6
 
+        self._closed = True  # a retry waiting for it does nothing (retry_soon)
         self.timer.stop()
         self.host.set_sound(self.id, None)
         if self.interacting is not None:
