@@ -48,7 +48,8 @@ def new_settings(vertical: bool = False) -> dict[str, Any]:
     code = new_code()
     w, h = SHAPES[1 if vertical else 0][1]
     return {**DEFAULTS, "phone": code, "url": f"http://127.0.0.1:{VIEW_PORT}/view/{code}", "width": w, "height": h,
-            FOLLOW: True, "keep_running": True, "audio_to_mixer": True, "css": "body { background: transparent; margin: 0; }"}
+            FOLLOW: True, "keep_running": True, "audio_to_mixer": True, "css": "body { background: transparent; margin: 0; }",
+            "duck_voice": True}  # the phone's mic is a mic: on the Voice recording track, and Mic first ducks for it
 
 
 def sync(collection) -> bool:

@@ -521,20 +521,23 @@ class SoundCard(QWidget):
         row.setToolTip("Tune this sound: volume, left/right, mono, delay, filters…")
         row.clicked.connect(lambda: self.open_tune(row.sid))
         col = QVBoxLayout(row)
-        col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(0)  # the volume bar has its own breathing room (it's 14 px tall for the knob)
+        col.setContentsMargins(0, 2, 0, 2)
+        col.setSpacing(4)  # the name never touches the volume bar's knob (PC 2026-11-26: squeezed together)
         line = QHBoxLayout()
         line.setSpacing(8)
-        row.name = QLabel()  # its colour, and the note's, come from _show_muted
-        row.name.setWordWrap(True)
+        # One line that ends in "…" when long: a wrapped name had no height of its own, so a short card squeezed
+        # the rows until the names ran into the bars.
+        row.name = Elided()  # its colour, and the note's, come from _show_muted
         row.note = QLabel()
         for label in (row.name, row.note):
             label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            label.setMinimumHeight(label.fontMetrics().height() + 4)
         line.addWidget(row.name, 1)
         line.addWidget(row.note)
         col.addLayout(line)
         row.meter = VolumeMeter(0.0, lambda db: self._drag_volume(row.sid, db))
         col.addWidget(row.meter)
+        row.setMinimumHeight(row.name.minimumHeight() + row.meter.height() + 8)
         return row
 
     def _show_row(self, row: QWidget, sound: Sound, colour: str) -> None:

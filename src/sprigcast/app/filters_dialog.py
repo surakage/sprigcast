@@ -1572,8 +1572,13 @@ class FiltersDialog(CardWindow):
         while name in names:
             name, n = f"{info.label} {n}", n + 1
         flt = Filter(id=new_filter_id(), kind=kind, name=name, settings=dict(info.defaults))
-        self._editing().append(flt)
-        self._refresh(len(self._shown()) - 1)
+        filters = self._editing()
+        at = len(filters)
+        if kind != "limiter":  # a Limiter stays last, the one that catches every peak (PC 2026-11-26)
+            while at and filters[at - 1].kind == "limiter":
+                at -= 1
+        filters.insert(at, flt)
+        self._refresh(self._shown().index(flt))
         self.on_change(save=False)
         return flt
 

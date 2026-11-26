@@ -169,6 +169,9 @@ def test_a_new_leaf_is_a_page_of_its_own(monkeypatch, tmp_path):
     a, b = phone_camera.new_settings(), phone_camera.new_settings(vertical=True)
     assert a["phone"] != b["phone"] and a["keep_running"] and a["audio_to_mixer"]
     assert (a["width"], a["height"]) == (1280, 720) and (b["width"], b["height"]) == (720, 1280)
+    from sprigcast.audio.mixer import is_voice
+
+    assert is_voice(SourceConfig(id="browser-1", kind="browser", name="Phone Camera", settings=a))  # Voice track
     monkeypatch.setattr(phone_camera, "_server", phone_server.PhoneServer(tmp_path))
 
     class Garden:

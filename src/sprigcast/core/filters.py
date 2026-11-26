@@ -582,7 +582,9 @@ class NoiseGate(AudioFilter):
 
     def process(self, block):
         s = self.settings
-        open_at, close_at = db_to_gain(float(s["open_db"])), db_to_gain(float(s["close_db"]))
+        # Close above Open would close the gate while you talk: Close is never above Open (PC 2026-11-26).
+        open_at = db_to_gain(float(s["open_db"]))
+        close_at = min(open_at, db_to_gain(float(s["close_db"])))
         step_s = self.STEP / SAMPLE_RATE
         attack = step_s / max(0.001, float(s["attack_ms"]) / 1000)
         release = step_s / max(0.001, float(s["release_ms"]) / 1000)
@@ -787,9 +789,9 @@ def _lin(db: float) -> float:
 
 
 @_audio("eq3", "Equalizer", [
-    Field("low_db", "Low", 0.0, -20.0, 20.0, 0.1, " dB"),
-    Field("mid_db", "Mid", 0.0, -20.0, 20.0, 0.1, " dB"),
-    Field("high_db", "High", 0.0, -20.0, 20.0, 0.1, " dB"),
+    Field("low_db", "Low (250 Hz)", 0.0, -20.0, 20.0, 0.1, " dB"),
+    Field("mid_db", "Mid (1.5 kHz)", 0.0, -20.0, 20.0, 0.1, " dB"),
+    Field("high_db", "High (5 kHz)", 0.0, -20.0, 20.0, 0.1, " dB"),
 ])
 class Equalizer3(FFmpegAudioFilter):
     """Bass below ~250 Hz, mids around 1.5 kHz, treble above ~5 kHz."""
@@ -888,6 +890,79 @@ class DeEsser(FFmpegAudioFilter):
     def graph_spec(self):
         s = self.settings
         return [("deesser", f"i={float(s['amount']):.2f}:m=0.5:f={int(s['hz']) / SAMPLE_RATE * 2:.4f}:s=o")]
+
+
+@_audio("echo_reducer", "Echo Reducer", [
+    Field("amount", "Amount", 70, 0, 100, 1, "%"),
+    Field("room_s", "Room echo", 0.5, 0.2, 2.0, 0.05, " s"),
+    Field("most_db", "Most reduction", 12.0, 3.0, 30.0, 0.5, " dB"),
+])
+class EchoReducer(AudioFilter):
+    """Takes the room's echo off a voice (user 2026-11-26: a phone mic across the room). The echo heard now is
+    what was said a moment ago, fading at the room's pace ("Room echo": how long a clap takes to die away). So
+    for each pitch, what the room still holds of the last 50 ms is worked out from what came in then, and that
+    much is taken out, never more than "Most reduction". Your own words, louder than their echo, pass. Light:
+    two small FFTs per 5 ms, the same gain for both ears; about 10 ms of delay."""
+
+    SIZE = 512  # frame: 10.7 ms at 48 kHz
+    HOP = SIZE // 2
+    LATE_S = 0.05  # sound older than this counts as the room's, not your voice's
+
+    def __init__(self, settings):
+        super().__init__(settings)
+        n = self.SIZE
+        self.window = np.sqrt(0.5 - 0.5 * np.cos(2 * np.pi * np.arange(n) / n)).astype(np.float32)  # sqrt-Hann: whole again at 50%
+        self.late = max(1, round(self.LATE_S * SAMPLE_RATE / self.HOP))
+        self.inbox = np.zeros((n, 2), np.float32)  # the last frame's worth of input
+        self.got = 0  # input since the last frame
+        self.tail = np.zeros((n, 2), np.float32)  # overlap-add still to finish
+        self.ready = np.zeros((self.HOP, 2), np.float32)  # finished output not given out yet (a hop of delay)
+        self.history = np.zeros((self.late, n // 2 + 1), np.float32)  # the last few frames' power, oldest first
+        self.at = 0
+        self.gain = np.ones(n // 2 + 1, np.float32)
+        self.smooth = np.zeros(n // 2 + 1, np.float32)
+
+    def _frame(self) -> np.ndarray:
+        s = self.settings
+        spec = np.fft.rfft(self.inbox * self.window[:, None], axis=0)
+        now = (np.abs(spec) ** 2).mean(axis=1).astype(np.float32)
+        self.smooth = 0.5 * self.smooth + 0.5 * now  # steadier than one frame's power: fewer wrong guesses
+        power = self.smooth
+        old = self.history[self.at].copy()  # self.late frames ago (a copy: the row is written next)
+        self.history[self.at] = power
+        self.at = (self.at + 1) % self.late
+        decay = 3 * math.log(10) / max(0.05, float(s["room_s"]))  # energy falls 60 dB in room_s
+        held = old * math.exp(-2 * decay * self.late * self.HOP / SAMPLE_RATE)
+        amount = 1.5 * max(0.0, min(1.0, float(s["amount"]) / 100))  # 100%: a little more than the guess
+        floor = db_to_gain(-abs(float(s["most_db"])))
+        wanted = np.clip(1.0 - amount * held / (power + 1e-10), floor * floor, 1.0)  # in power
+        wanted = np.sqrt(wanted)
+        wanted[1:-1] = (wanted[:-2] + 2 * wanted[1:-1] + wanted[2:]) / 4  # neighbors agree: no warbling tones
+        # Down fast (the echo goes as soon as it starts), back up a little slower (no pumping).
+        self.gain = np.where(wanted < self.gain, wanted, 0.3 * self.gain + 0.7 * wanted).astype(np.float32)
+        out = np.fft.irfft(spec * self.gain[:, None], n=self.SIZE, axis=0).astype(np.float32)
+        return out * self.window[:, None]
+
+    def process(self, block: np.ndarray) -> np.ndarray:
+        block = np.asarray(block, np.float32)
+        n = len(block)
+        done = [self.ready]
+        at = 0
+        while at < n:
+            take = min(self.HOP - self.got, n - at)
+            self.inbox[:-take] = self.inbox[take:]
+            self.inbox[-take:] = block[at:at + take]
+            at += take
+            self.got += take
+            if self.got == self.HOP:  # a frame: its first hop is finished
+                self.got = 0
+                self.tail += self._frame()
+                done.append(self.tail[:self.HOP].copy())
+                self.tail[:-self.HOP] = self.tail[self.HOP:]
+                self.tail[-self.HOP:] = 0
+        out = np.concatenate(done)
+        self.ready = out[n:]
+        return out[:n]
 
 
 class AudioChain:

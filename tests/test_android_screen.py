@@ -78,6 +78,12 @@ def fake_adb(tmp_path):
             print("FAKE01 device usb:1 model:Test_Phone")
         elif "wm" in args:
             print("Physical size: 1080x2400")
+        elif args[-1:] and args[-1].startswith("while true"):  # the turn watcher: answers until it's ended
+            turn = {str(tmp_path / "turn.txt")!r}
+            while True:
+                print(open(turn).read() if os.path.exists(turn) else "SurfaceOrientation: 1")
+                print("SPRIGCAST-LOOK", flush=True)
+                time.sleep(0.05)
         elif "dumpsys" in args:
             turn = {str(tmp_path / "turn.txt")!r}
             print(open(turn).read() if os.path.exists(turn) else "SurfaceOrientation: 1")
@@ -351,6 +357,8 @@ def test_turning_the_phone_starts_a_recording_in_the_new_shape(fake_adb, monkeyp
         assert source._current == 2
         calls = log.read_text()
         assert "--size 1280x576" in calls and "--size 576x1280" in calls  # landscape, then portrait
+        assert "while true; do dumpsys input" in calls  # watched by one adb shell on the phone
+        assert source._watched is not None and source._watched[0] is False
     finally:
         source.stop()
 

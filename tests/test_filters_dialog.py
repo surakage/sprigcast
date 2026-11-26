@@ -61,6 +61,11 @@ def test_audio_sources_get_audio_filters(app):
     assert d.source.filters[0].settings["close_db"] == -40.0 and source.filters == []  # until Apply
     d.apply()
     assert source.filters[0].settings["close_db"] == -40.0
+    d.add("limiter")
+    d.add("eq3")  # a new filter goes before the Limiter, which stays last (PC 2026-11-26)
+    assert [f.kind for f in d.source.filters] == ["noise_gate", "eq3", "limiter"]
+    d.add("limiter")
+    assert [f.kind for f in d.source.filters][-1] == "limiter"
 
 
 def test_look_and_shape_filters(app, tmp_path):
@@ -160,9 +165,10 @@ def test_sound_filters_drag_to_reorder(app):
     d = FiltersDialog(source, lambda save=True: calls.append(save))
     for kind in ("compressor", "limiter", "noise_suppression"):
         d.add(kind)
+    assert [f.kind for f in d.source.filters] == ["compressor", "noise_suppression", "limiter"]  # Limiter last
     assert d.list.dragDropMode() == d.list.DragDropMode.InternalMove
     d.apply_button.setEnabled(False)
-    d.list.model().moveRow(QModelIndex(), 2, QModelIndex(), 0)  # what a drop does: Noise Suppression to the top
+    d.list.model().moveRow(QModelIndex(), 1, QModelIndex(), 0)  # what a drop does: Noise Suppression to the top
     assert [f.kind for f in d.source.filters] == ["noise_suppression", "compressor", "limiter"]
     assert d.apply_button.isEnabled() and calls == []  # previewed until Apply
     assert d.title.text() == "Noise Suppression"  # the picked filter's name over its settings

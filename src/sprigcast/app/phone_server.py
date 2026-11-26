@@ -731,9 +731,36 @@ setInterval(() => { if (running && pc && pc.connectionState === "connected") pos
 VIEW_PAGE = """<!doctype html>
 <html><head><meta charset="utf-8"><title>Phone Camera</title>
 <style>html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
-video { width: 100%; height: 100%; object-fit: contain; display: block; }</style></head>
-<body><video id="v" autoplay playsinline></video>
+video, canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
+canvas { position: fixed; inset: 0; visibility: hidden; }</style></head>
+<body><video id="v" autoplay playsinline></video><canvas id="held"></canvas>
 <script>
+// Turning the phone: its pictures come in the new shape a moment before this page takes that shape, and in
+// between they showed small in the old one (PC 2026-11-26). The last picture of the page's own shape is kept
+// on top until the page has turned too.
+(() => {
+  const v = document.getElementById("v"), held = document.getElementById("held");
+  let n = 0;
+  const wide = (w, h) => w > h * 1.05 ? 1 : h > w * 1.05 ? -1 : 0;
+  const look = () => {
+    const pic = wide(v.videoWidth, v.videoHeight), page = wide(innerWidth, innerHeight);
+    const turning = pic !== 0 && page !== 0 && pic !== page;
+    if (turning) {
+      held.style.visibility = held.width ? "visible" : "hidden";
+    } else {
+      held.style.visibility = "hidden";
+      if (v.videoWidth && n++ % 3 === 0) {  // every third picture: light, and at most a tenth of a second old
+        if (held.width !== v.videoWidth || held.height !== v.videoHeight) {
+          held.width = v.videoWidth; held.height = v.videoHeight;
+        }
+        held.getContext("2d").drawImage(v, 0, 0);
+      }
+    }
+    if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(look); else setTimeout(look, 33);
+  };
+  if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(look); else setTimeout(look, 33);
+  addEventListener("resize", () => { if (wide(v.videoWidth, v.videoHeight) === wide(innerWidth, innerHeight)) held.style.visibility = "hidden"; });
+})();
 const base = location.pathname.replace(/\\/$/, "");
 let pc = null, have = 0;
 function gathered(peer) {
