@@ -9,8 +9,13 @@ Nothing leaves your network: no outside servers are used (not even to find a rou
 addresses on a private network, and each leaf has its own secret code in its address. The server runs only
 while the garden has a Phone Camera leaf.
 
+Pairing (user 2026-11-26): after the QR code, the phone enters the 6-digit code the leaf's pop-up shows. It gets
+a key for that leaf, kept by the phone's browser and (only as a hash) in phone.json's folder, so it pairs once.
+Every call but the page itself needs the key. Five wrong codes make a new one and pause pairing for a while.
+
 The two pages agree through this server (no trickle: each sends its whole description once its local routes are
 known, which on a home network is right away):
+  phone   POST /phone/<code>/pair           6 digits -> {"key": k} (403 wrong, 429 paused); then header X-Key: k
   phone   POST /phone/<code>/offer          -> {"id": n}
   page    GET  /view/<code>/offer?after=n   -> {"id": m, "sdp": ...} once a newer offer is in, else 204
   page    POST /view/<code>/answer?id=m
@@ -20,6 +25,7 @@ known, which on a home network is right away):
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import logging
@@ -42,6 +48,18 @@ MAX_SDP = 64 * 1024
 SEEN_FOR_S = 6.0  # a phone not heard from in this long counts as gone
 HANDSHAKE_S = 15.0
 REQUEST_S = 30.0
+TRIES = 5  # wrong pairing codes before a new code is made
+PAUSE_S = 30.0  # and pairing waits this long
+WRONG_S = 1.0  # each wrong code is answered this late
+KEYS_KEPT = 8  # phones paired with one leaf
+
+
+def new_pin() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def _hash(key: str) -> str:
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
 def new_code() -> str:
@@ -78,6 +96,7 @@ class Session:
         self.answer = ""
         self.state = ""
         self.seen = 0.0  # when the phone last asked anything
+        self.report = ""  # what the leaf's page last said it receives (logged when it changes)
 
 
 def _plain_ssl_context() -> type:
@@ -89,6 +108,31 @@ def _plain_ssl_context() -> type:
         if cls.__module__ == "ssl" and cls.__name__ == "SSLContext":
             return cls
     return ssl.SSLContext
+
+
+def _report_line(text: str) -> str:
+    """The leaf's page's report (connection, codec, pictures decoded, size) as one short line for the log: what
+    the PC receives, so a leaf that stays black says why (PC 2026-11-26). Nothing personal is in it."""
+    try:
+        r = json.loads(text)
+    except ValueError:
+        return ""
+    if not isinstance(r, dict):
+        return ""
+
+    def word(key: str) -> str:
+        return "".join(c for c in str(r.get(key) or "-") if c.isalnum() or c in "/-._")[:24]
+
+    def number(key: str) -> int:
+        try:
+            return max(0, int(r.get(key) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    pictures = number("frames")
+    return (f"connection {word('connection')}, video {word('codec')}, "
+            f"{'pictures arriving' if pictures else 'no pictures yet'} ({number('width')}x{number('height')}), "
+            f"sound {word('audio')}, player {word('player')}")
 
 
 class _Server(ThreadingHTTPServer):
@@ -142,6 +186,10 @@ class PhoneServer:
         self.view_port = 0
         self.address = None
         self._servers: list[_Server] = []
+        self.pins: dict[str, str] = {}  # leaf code -> the 6 digits its pop-up shows (new each run)
+        self._wrong: dict[str, int] = {}
+        self._paused: dict[str, float] = {}
+        self._keys: dict[str, list[str]] = self._read_keys()  # leaf code -> hashes of its phones' keys
 
     # The window's side -----------------------------------------------------------------------------
 
@@ -190,6 +238,69 @@ class PhoneServer:
 
     def view_url(self, code: str) -> str:
         return f"http://127.0.0.1:{self.view_port or VIEW_PORT}/view/{code}"
+
+    def pin(self, code: str) -> str:
+        """The leaf's pairing code, for its pop-up."""
+        with self.lock:
+            return self.pins.setdefault(code, new_pin())
+
+    def paired(self, code: str) -> bool:
+        with self.lock:
+            return bool(self._keys.get(code))
+
+    def pair(self, code: str, digits: str) -> tuple[int, str]:
+        """(200, key) for the right code; (403, "") wrong; (429, "") while pairing is paused. Lock held."""
+        now = time.monotonic()
+        if self._paused.get(code, 0.0) > now:
+            return 429, ""
+        pin = self.pins.setdefault(code, new_pin())
+        typed = "".join(c for c in digits if c.isascii() and c.isdigit())[:12]
+        if not secrets.compare_digest(typed.encode(), pin.encode()):
+            wrong = self._wrong.get(code, 0) + 1
+            self._wrong[code] = wrong
+            if wrong >= TRIES:
+                self.pins[code], self._wrong[code] = new_pin(), 0
+                self._paused[code] = now + PAUSE_S
+                log.info("phone camera: %d wrong pairing codes, so a new code was made", TRIES)
+            return 403, ""
+        self._wrong[code] = 0
+        key = secrets.token_urlsafe(24)
+        self._keys[code] = [*self._keys.get(code, []), _hash(key)][-KEYS_KEPT:]
+        self._write_keys()
+        log.info("phone camera: a phone paired")
+        return 200, key
+
+    def knows(self, code: str, key: str) -> bool:
+        """A paired phone's key. Lock held."""
+        if not key:
+            return False
+        mine = _hash(key)
+        return any(secrets.compare_digest(mine, h) for h in self._keys.get(code, []))
+
+    def forget(self, code: str) -> None:
+        """Unpair every phone of a leaf (its pop-up's Forget phones)."""
+        with self.lock:
+            self._keys.pop(code, None)
+            self._write_keys()
+            if code in self.sessions:
+                self.sessions[code] = Session()
+
+    def _read_keys(self) -> dict[str, list[str]]:
+        try:
+            got = json.loads((self.folder / "paired.json").read_text("utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(got, dict):
+            return {}
+        return {str(k): [str(h) for h in v][-KEYS_KEPT:] for k, v in got.items() if isinstance(v, list)}
+
+    def _write_keys(self) -> None:
+        try:
+            self.folder.mkdir(parents=True, exist_ok=True)
+            mine = {code: hashes for code, hashes in self._keys.items() if hashes}
+            (self.folder / "paired.json").write_text(json.dumps(mine), "utf-8")
+        except OSError as exc:
+            log.warning("phone camera: couldn't keep the paired phones: %s", exc)
 
     def connected(self, code: str) -> bool:
         with self.lock:
@@ -289,12 +400,17 @@ def _handler(server: PhoneServer, phone: bool):
             session, code, what, query = route
             after = int((query.get("after") or query.get("id") or ["0"])[0] or 0)
             if phone:
-                with server.lock:
-                    session.seen = time.monotonic()
-                    ready = what == "answer" and session.answer_id == after and session.answer
-                    answer = session.answer
                 if what == "":
                     self._send(200, PHONE_PAGE.encode("utf-8"), "text/html; charset=utf-8")
+                    return
+                with server.lock:
+                    known = server.knows(code, self.headers.get("X-Key", ""))
+                    if known:
+                        session.seen = time.monotonic()
+                    ready = known and what == "answer" and session.answer_id == after and session.answer
+                    answer = session.answer
+                if not known:
+                    self._send(401)
                 elif ready:
                     self._send(200, json.dumps({"sdp": answer}).encode(), "application/json")
                 else:
@@ -316,6 +432,18 @@ def _handler(server: PhoneServer, phone: bool):
             text = self._body()
             if text is None:
                 return
+            if phone and what == "pair":
+                with server.lock:
+                    status, key = server.pair(code, text)
+                if status == 403:
+                    time.sleep(WRONG_S)  # this request's own thread: guessing is slow
+                self._send(status, json.dumps({"key": key}).encode() if key else b"{}", "application/json")
+                return
+            with server.lock:
+                known = not phone or server.knows(code, self.headers.get("X-Key", ""))
+            if not known:
+                self._send(401)
+                return
             with server.lock:
                 if phone and what == "offer":
                     session.offer_id += 1
@@ -325,6 +453,13 @@ def _handler(server: PhoneServer, phone: bool):
                 elif phone and what == "state":
                     session.state, session.seen = text.strip()[:16], time.monotonic()
                     reply = b"{}"
+                elif not phone and what == "report":
+                    line = _report_line(text)
+                    changed = line != session.report
+                    session.report = line
+                    reply = b"{}"
+                    if line and changed:
+                        log.info("phone camera: on this PC: %s", line)
                 elif not phone and what == "answer":
                     session.answer_id = int((query.get("id") or ["0"])[0] or 0)
                     session.answer = text
@@ -356,7 +491,15 @@ body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.4 syst
        min-height: 100vh; padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); }
 h1 { font-size: 20px; margin: 4px 4px 14px; }
 .card { background: var(--card); border: 1px solid var(--edge); border-radius: 18px; padding: 16px; margin-bottom: 14px; }
-video { width: 100%; border-radius: 12px; background: #000; display: block; aspect-ratio: 16 / 9; object-fit: cover; }
+video { width: 100%; max-height: 62vh; border-radius: 12px; background: #000; display: block; object-fit: contain;
+        aspect-ratio: 16 / 9; }
+video.sized { aspect-ratio: auto; }
+.hidden { display: none; }
+input.pin { width: 100%; background: #0e1412; color: var(--text); border: 1px solid var(--edge); border-radius: 14px;
+            padding: 14px 16px; font: 600 28px/1.2 ui-monospace, monospace; letter-spacing: 10px; text-align: center;
+            margin: 4px 0 12px; }
+.pair h2 { font-size: 17px; margin: 2px 2px 10px; }
+.wrong { color: var(--live); }
 .state { display: flex; align-items: center; gap: 10px; padding: 4px 2px 12px; color: var(--soft); }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--soft); flex: none; }
 .live .dot { background: var(--live); box-shadow: 0 0 10px var(--live); }
@@ -373,6 +516,14 @@ p { color: var(--soft); margin: 8px 2px 0; }
 </style></head>
 <body>
 <h1>SprigCast Phone Camera</h1>
+<div class="card pair hidden" id="pair">
+  <h2>Enter the code shown in SprigCast</h2>
+  <input class="pin" id="pin" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="000000"
+         aria-label="6-digit code">
+  <div class="row"><button class="go" id="connect">Connect</button></div>
+  <p id="pairnote">Open the Phone Camera leaf's settings on your PC to see the code.</p>
+</div>
+<div id="main" class="hidden">
 <div class="card">
   <div class="state" id="state"><span class="dot"></span><span id="words">Not sending yet</span></div>
   <video id="me" autoplay playsinline muted></video>
@@ -387,12 +538,47 @@ p { color: var(--soft); margin: 8px 2px 0; }
     <option value="480">480p</option></select></label>
   <p>Keep this page open while you stream. Your phone talks to your PC directly over your Wi-Fi.</p>
 </div>
+</div>
 <script>
 const base = location.pathname.replace(/\\/$/, "");
 const $ = (id) => document.getElementById(id);
 let pc = null, stream = null, facing = "user", wake = null, offerId = 0, running = false;
 const say = (text, live) => { $("words").textContent = text; $("state").classList.toggle("live", !!live); };
-const post = (what, body) => fetch(`${base}/${what}`, {method: "POST", body, cache: "no-store"});
+const store = "sprigcast-key:" + base;
+let key = "";
+try { key = localStorage.getItem(store) || ""; } catch (e) {}
+const heads = () => ({"X-Key": key});
+function unpaired() {  // SprigCast doesn't know this phone (yet, or any more)
+  if (running) stop(true);
+  key = ""; try { localStorage.removeItem(store); } catch (e) {}
+  $("main").classList.add("hidden"); $("pair").classList.remove("hidden");
+}
+function paired() { $("pair").classList.add("hidden"); $("main").classList.remove("hidden"); }
+async function post(what, body) {
+  const r = await fetch(`${base}/${what}`, {method: "POST", body, cache: "no-store", headers: heads()});
+  if (r.status === 401) unpaired();
+  return r;
+}
+async function connect() {
+  const digits = $("pin").value.replace(/\D/g, "");
+  if (digits.length !== 6) { $("pairnote").textContent = "The code has 6 digits."; return; }
+  $("connect").disabled = true;
+  const r = await fetch(`${base}/pair`, {method: "POST", body: digits, cache: "no-store"}).catch(() => null);
+  $("connect").disabled = false;
+  $("pairnote").classList.toggle("wrong", !r || !r.ok);
+  if (r && r.ok) {
+    key = (await r.json()).key;
+    try { localStorage.setItem(store, key); } catch (e) {}
+    $("pin").value = ""; $("pairnote").textContent = "";
+    paired();
+  } else if (r && r.status === 429) {
+    $("pairnote").textContent = "Too many tries. Wait half a minute, then enter the new code shown in SprigCast.";
+  } else if (r && r.status === 403) {
+    $("pairnote").textContent = "That code isn't right. Check it in SprigCast and try again.";
+  } else {
+    $("pairnote").textContent = "SprigCast didn't answer. Is it open on your PC?";
+  }
+}
 async function media() {
   const h = +$("quality").value, w = Math.round(h * 16 / 9);
   return navigator.mediaDevices.getUserMedia({
@@ -421,6 +607,10 @@ async function start() {
     running = false; $("go").textContent = "Start"; return;
   }
   $("me").srcObject = stream;
+  $("me").onloadedmetadata = () => {  // the whole picture SprigCast gets, in its own shape
+    const v = $("me");
+    if (v.videoWidth && v.videoHeight) { v.style.aspectRatio = `${v.videoWidth} / ${v.videoHeight}`; v.classList.add("sized"); }
+  };
   if (pc) pc.close();
   pc = new RTCPeerConnection({iceServers: []});
   for (const track of stream.getTracks()) {
@@ -435,18 +625,20 @@ async function start() {
   }
   pc.onconnectionstatechange = () => {
     const s = pc.connectionState;
-    if (s === "connected") { say("Live in SprigCast", true); post("state", "live"); }
-    else if (s === "failed" || s === "disconnected") { say("Lost SprigCast. Trying again…"); post("state", "ended"); retry(); }
+    if (s === "connected") { say("Live in SprigCast", true); post("state", "live").catch(() => {}); }
+    else if (s === "failed" || s === "disconnected") { say("Lost SprigCast. Trying again…"); post("state", "ended").catch(() => {}); retry(); }
   };
   await pc.setLocalDescription(await pc.createOffer());
   await gathered(pc);
   say("Waiting for SprigCast…");
   const r = await post("offer", pc.localDescription.sdp).catch(() => null);
+  if (r && r.status === 401) return;
   if (!r || !r.ok) { say("SprigCast didn't answer. Is it open on your PC?"); retry(); return; }
   offerId = (await r.json()).id;
   const mine = offerId;
   for (let i = 0; i < 120 && running && mine === offerId; i++) {
-    const a = await fetch(`${base}/answer?id=${mine}`, {cache: "no-store"}).catch(() => null);
+    const a = await fetch(`${base}/answer?id=${mine}`, {cache: "no-store", headers: heads()}).catch(() => null);
+    if (a && a.status === 401) { unpaired(); return; }
     if (a && a.status === 200) {
       await pc.setRemoteDescription({type: "answer", sdp: (await a.json()).sdp});
       return;
@@ -457,22 +649,25 @@ async function start() {
 }
 let again = null;
 function retry() { clearTimeout(again); if (running) again = setTimeout(start, 3000); }
-function stop() {
+function stop(quiet) {
   running = false; clearTimeout(again);
   if (pc) pc.close(); pc = null;
   if (stream) stream.getTracks().forEach((t) => t.stop()); stream = null;
   $("me").srcObject = null;
-  post("state", "ended");
+  if (!quiet) post("state", "ended").catch(() => {});
   say("Not sending"); $("go").textContent = "Start";
 }
 async function keepAwake() {
   try { if ("wakeLock" in navigator) wake = await navigator.wakeLock.request("screen"); } catch (e) {}
 }
 $("go").onclick = () => { if (running) stop(); else { keepAwake(); start(); } };
+$("connect").onclick = connect;
+$("pin").addEventListener("keydown", (e) => { if (e.key === "Enter") connect(); });
+if (key) paired(); else unpaired();
 $("flip").onclick = () => { facing = facing === "user" ? "environment" : "user"; if (running) start(); };
 $("mic").onchange = $("quality").onchange = () => { if (running) start(); };
 document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && running) keepAwake(); });
-setInterval(() => { if (running && pc && pc.connectionState === "connected") post("state", "live"); }, 2000);
+setInterval(() => { if (running && pc && pc.connectionState === "connected") post("state", "live").catch(() => {}); }, 2000);
 </script>
 </body></html>
 """
@@ -502,6 +697,14 @@ async function answer(offer) {
     v.play().catch(() => {});
   };
   await pc.setRemoteDescription({type: "offer", sdp: offer.sdp});
+  try {  // VP8 first: decoded in software the same way everywhere (H.264's path varies with the page engine)
+    const codecs = RTCRtpReceiver.getCapabilities("video").codecs;
+    const rank = (c) => /vp8/i.test(c.mimeType) ? 0 : /vp9/i.test(c.mimeType) ? 1 : 2;
+    const ordered = codecs.slice().sort((a, b) => rank(a) - rank(b));
+    for (const t of pc.getTransceivers()) {
+      if (t.receiver.track && t.receiver.track.kind === "video") t.setCodecPreferences(ordered);
+    }
+  } catch (x) {}
   await pc.setLocalDescription(await pc.createAnswer());
   await gathered(pc);
   await fetch(`${base}/answer?id=${offer.id}`, {method: "POST", body: pc.localDescription.sdp});
@@ -514,5 +717,24 @@ async function look() {
   setTimeout(look, 500);
 }
 look();
+async function report() {  // what this PC receives, for SprigCast's log
+  if (!pc) return;
+  const v = document.getElementById("v");
+  const out = {connection: pc.connectionState, frames: 0, width: v.videoWidth, height: v.videoHeight,
+               codec: "-", audio: "-", player: v.paused ? "paused" : `playing-${v.readyState}`};
+  try {
+    const stats = await pc.getStats();
+    stats.forEach((s) => {
+      if (s.type === "inbound-rtp" && s.kind === "video") {
+        out.frames = s.framesDecoded || 0;
+        const c = s.codecId && stats.get(s.codecId);
+        if (c) out.codec = c.mimeType;
+      }
+      if (s.type === "inbound-rtp" && s.kind === "audio") out.audio = (s.packetsReceived || 0) > 0 ? "arriving" : "none";
+    });
+  } catch (x) {}
+  fetch(`${base}/report`, {method: "POST", body: JSON.stringify(out)}).catch(() => {});
+}
+setInterval(report, 2000);
 </script></body></html>
 """

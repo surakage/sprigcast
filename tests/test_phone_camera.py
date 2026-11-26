@@ -3,6 +3,7 @@ itself (app/phone_server.py), found by a QR code SprigCast draws itself (core/qr
 certificate SprigCast makes itself (core/selfsigned.py)."""
 
 import json
+import logging
 import socket
 import ssl
 import threading
@@ -65,10 +66,11 @@ def server(tmp_path):
     srv.use([])
 
 
-def _get(url, data=None):
+def _get(url, data=None, key=None):
     context = ssl.create_default_context()
     context.check_hostname, context.verify_mode = False, ssl.CERT_NONE
-    request = urllib.request.Request(url, data=data, method="POST" if data is not None else "GET")
+    request = urllib.request.Request(url, data=data, method="POST" if data is not None else "GET",
+                                     headers={"X-Key": key} if key else {})
     with urllib.request.urlopen(request, context=context if url.startswith("https") else None, timeout=5) as r:
         return r.status, r.read()
 
@@ -79,15 +81,67 @@ def test_the_phone_and_the_leaf_meet_through_the_server(server):
     assert _get(phone)[0] == 200 and b"getUserMedia" in _get(phone)[1]
     assert _get(view)[0] == 200 and b"RTCPeerConnection" in _get(view)[1]
     assert _get(view + "/offer?after=0")[0] == 204
-    assert json.loads(_get(phone + "/offer", b"offer sdp")[1]) == {"id": 1}
+    key = _pair(server)
+    assert json.loads(_get(phone + "/offer", b"offer sdp", key)[1]) == {"id": 1}
     assert json.loads(_get(view + "/offer?after=0")[1]) == {"id": 1, "sdp": "offer sdp"}
     assert _get(view + "/offer?after=1")[0] == 204  # nothing newer
-    assert _get(phone + "/answer?id=1")[0] == 204
+    assert _get(phone + "/answer?id=1", key=key)[0] == 204
     _get(view + "/answer?id=1", b"answer sdp")
-    assert json.loads(_get(phone + "/answer?id=1")[1]) == {"sdp": "answer sdp"}
+    assert json.loads(_get(phone + "/answer?id=1", key=key)[1]) == {"sdp": "answer sdp"}
     assert not server.connected("code1")
-    _get(phone + "/state", b"live")
+    _get(phone + "/state", b"live", key)
     assert server.connected("code1")
+
+
+def _pair(server, code="code1"):
+    url = f"https://127.0.0.1:{server.phone_port}/phone/{code}/pair"
+    return json.loads(_get(url, server.pin(code).encode())[1])["key"]
+
+
+def _status(url, data=None, key=None):
+    try:
+        return _get(url, data, key)[0]
+    except urllib.error.HTTPError as err:
+        return err.code
+
+
+def test_a_phone_needs_the_6_digit_code_before_it_sends(server, monkeypatch):
+    """User 2026-11-26: after the QR code, the phone enters the code SprigCast shows. Without it the page loads but
+    nothing else answers, and a wrong code is turned down."""
+    monkeypatch.setattr(phone_server, "WRONG_S", 0.0)
+    phone = f"https://127.0.0.1:{server.phone_port}/phone/code1"
+    pin = server.pin("code1")
+    assert len(pin) == 6 and pin.isdigit() and server.pin("code1") == pin
+    assert _status(phone) == 200
+    assert _status(phone + "/offer", b"sdp") == 401 and _status(phone + "/answer?id=1") == 401
+    assert _status(phone + "/state", b"live") == 401 and not server.connected("code1")
+    assert _status(phone + "/offer", b"sdp", "made-up") == 401
+    wrong = f"{(int(pin) + 1) % 1_000_000:06d}"
+    assert _status(phone + "/pair", wrong.encode()) == 403 and not server.paired("code1")
+    key = _pair(server)
+    assert server.paired("code1") and _status(phone + "/offer", b"sdp", key) == 200
+    assert key not in (server.folder / "paired.json").read_text()  # only its hash is kept
+    again = phone_server.PhoneServer(server.folder)  # the next start: the phone stays paired
+    with again.lock:
+        assert again.knows("code1", key) and not again.knows("code1", "other")
+    server.forget("code1")
+    assert _status(phone + "/offer", b"sdp", key) == 401
+
+
+def test_too_many_wrong_codes_make_a_new_one(server, monkeypatch, caplog):
+    monkeypatch.setattr(phone_server, "WRONG_S", 0.0)
+    phone = f"https://127.0.0.1:{server.phone_port}/phone/code1/pair"
+    pin = server.pin("code1")
+    wrong = f"{(int(pin) + 1) % 1_000_000:06d}".encode()
+    with caplog.at_level(logging.INFO, logger="sprigcast.app.phone_server"):
+        for _ in range(phone_server.TRIES):
+            assert _status(phone, wrong) == 403
+    assert server.pin("code1") != pin
+    assert _status(phone, server.pin("code1").encode()) == 429  # paused for a while, even with the new one
+    assert "wrong pairing codes" in caplog.text and pin not in caplog.text
+    server._paused.clear()
+    assert _status(phone, server.pin("code1").encode()) == 200
+    assert _status(phone, "١٢٣٤٥٦".encode()) == 403  # digits from other scripts are no code
 
 
 def test_a_wrong_code_finds_nothing(server):
@@ -218,5 +272,73 @@ def test_the_page_serves_with_truststore_standing_in(tmp_path, monkeypatch):
     monkeypatch.setattr(ssl, "SSLContext", original)  # the test's own client
     try:
         assert _get(f"https://127.0.0.1:{srv.phone_port}/phone/code1")[0] == 200
+    finally:
+        srv.use([])
+
+
+def test_the_leaf_page_says_what_it_receives(server, caplog):
+    """On the PC the leaf stayed black with no word why (2026-11-26): its page now reports what arrives (once
+    per change, nothing personal), and asks for VP8 first, decoded the same way in every page engine."""
+    import logging
+
+    view = server.view_url("code1")
+    assert b"setCodecPreferences" in _get(view)[1]
+    report = {"connection": "connected", "codec": "video/VP8", "frames": 12, "width": 1280, "height": 720,
+              "audio": "arriving", "player": "playing-4"}
+    with caplog.at_level(logging.INFO, logger="sprigcast.app.phone_server"):
+        _get(view + "/report", json.dumps(report).encode())
+        _get(view + "/report", json.dumps(report).encode())  # the same again: not logged twice
+        _get(view + "/report", b"not json")
+    lines = [r.getMessage() for r in caplog.records if "on this PC" in r.getMessage()]
+    assert lines == ["phone camera: on this PC: connection connected, video video/VP8, pictures arriving (1280x720), "
+                     "sound arriving, player playing-4"]
+    assert phone_server._report_line(json.dumps({"codec": "<script>x</script>", "frames": "lots"})).startswith(
+        "connection -, video scriptx/script, no pictures yet")
+
+
+def test_the_pop_up_shows_the_code_and_what_sprigcast_shows(tmp_path, monkeypatch):
+    """User 2026-11-26: the code to enter, big, and the leaf's picture live, so what's sent is what's shown."""
+    from PySide6.QtWidgets import QApplication
+
+    from sprigcast.app import phone_camera
+
+    app = QApplication.instance() or QApplication([])
+    srv = phone_server.PhoneServer(tmp_path)
+    monkeypatch.setattr(phone_camera, "_server", srv)
+    monkeypatch.setattr(phone_server, "lan_address", lambda: "192.168.1.20")
+    srv.use(["code1"])
+    asked, stopped = [], []
+
+    class Grab:
+        def __call__(self, source_id, back, raw, limit):
+            asked.append((source_id, raw))
+            picture = np.zeros((90, 160, 4), np.uint8)
+            picture[..., 1] = picture[..., 3] = 255
+            back(picture)
+
+        def stop(self):
+            stopped.append(True)
+
+    try:
+        dialog = phone_camera.PhoneDialog({"phone": "code1", "width": 1280, "height": 720}, None,
+                                          source_id="browser-1", grab=Grab())
+        dialog.show()
+        assert dialog.pin.text().replace(" ", "") == srv.pin("code1")
+        assert not dialog.forget.isVisible()
+        deadline = time.monotonic() + 3
+        while dialog.view.image is None and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.02)
+        assert asked and asked[0] == ("browser-1", False)
+        assert dialog.view.image is not None and dialog.view.image.pixelColor(80, 45).green() == 255
+        pin = srv.pin("code1")
+        with srv.lock:
+            srv.pair("code1", pin)
+        dialog._look()
+        assert dialog.forget.isVisible()
+        dialog.forget.click()
+        assert not srv.paired("code1") and not dialog.forget.isVisible()
+        dialog.accept()
+        assert stopped
     finally:
         srv.use([])

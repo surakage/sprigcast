@@ -3467,7 +3467,9 @@ class MainWindow(QMainWindow):
                     self._refresh_audio_soon()
                 if self._start_sizes:
                     self._place_new_sources(event.sizes)
+                turned = self._turn_phone_screens(event.sizes, event.statuses)
                 moved, touched = self.collection.keep_cards_put(event.sizes)  # a clock card's box grew or shrank
+                moved = moved or turned
                 if moved:
                     self._changed()  # its places moved so the card stays put
                 elif touched:
@@ -4186,6 +4188,23 @@ class MainWindow(QMainWindow):
 
     AUDIO_KINDS = ("audio_input", "audio_output", "app_audio")
 
+    def _turn_phone_screens(self, sizes: dict, statuses: dict) -> bool:
+        """An Android Screen that turned: its places turn with it (Collection.turn_places). Only sizes it is
+        capturing at count (before its first picture it says a size of its own)."""
+        seen = self.__dict__.setdefault("_phone_shapes", {})
+        turned = False
+        for config in self.collection.sources:
+            if config.kind != "android_screen":
+                continue
+            size = sizes.get(config.id)
+            if not size or not str(statuses.get(config.id, "")).startswith("capturing"):
+                continue
+            before = seen.get(config.id)
+            seen[config.id] = tuple(size)
+            if before is not None and self.collection.turn_places(config.id, before, tuple(size)):
+                turned = True
+        return turned
+
     def _has_sound(self, config) -> bool:
         """Sounds the Sound card lists: mics, desktop audio, and browser pages whose sound comes here."""
         if config.kind in self.AUDIO_KINDS:
@@ -4196,6 +4215,10 @@ class MainWindow(QMainWindow):
             from sprigcast.sources.browser import sound_to_mixer
 
             return sound_to_mixer(config.settings)
+        if config.kind == "android_screen":
+            from sprigcast.sources.android_screen import sound_on
+
+            return sound_on(config.settings)
         return False
 
     def _refresh_audio_soon(self) -> None:
@@ -6383,7 +6406,13 @@ class MainWindow(QMainWindow):
                 from sprigcast.app.phone_camera import PhoneDialog, sync
 
                 sync(self.collection)  # its page is ready before the code is shown
-                dialog = PhoneDialog(config.settings, self)
+                engine = getattr(self, "engine", None)
+                grab = None
+                if engine is not None:
+                    from sprigcast.app.filters_dialog import EngineGrab
+
+                    grab = EngineGrab(engine, self.collection)  # what SprigCast shows of it, live
+                dialog = PhoneDialog(config.settings, self, source_id=config.id, grab=grab)
             elif config.kind == "android_screen":
                 from sprigcast.app.android_screen_dialog import AndroidScreenDialog
 
@@ -6420,6 +6449,8 @@ class MainWindow(QMainWindow):
         if blank and config.settings != before:
             self._name_after_pick(config, blank)
         self._changed()
+        if config.kind == "android_screen" and config.settings.get("sound", True) != before.get("sound", True):
+            self._refresh_audio_soon()  # Phone sound switched: listed in Sound or not
         self._refresh_sources(keep_row=self.source_list.currentRow())
         return True
 

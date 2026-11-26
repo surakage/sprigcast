@@ -157,6 +157,14 @@ class AndroidScreenDialog(CardDialog):
         self.bitrate.setFixedWidth(150)
         picture.addLayout(_row("Quality", self.bitrate))
 
+        from sprigcast.app.live_stage import Switch
+
+        sound = self.section("Sound")
+        self.sound = Switch()
+        self.sound.setChecked(bool(self.settings_in.get("sound", True)))
+        self.sound.setAccessibleName("Phone sound")
+        sound.addLayout(_row("Phone sound", self.sound))
+
         self.note = QLabel(HOW_TO)
         self.note.setWordWrap(True)
         self.note.setStyleSheet(f"{theme.NOTE_STYLE} padding: 10px 14px;")
@@ -214,4 +222,5 @@ class AndroidScreenDialog(CardDialog):
 
     def values(self) -> dict[str, Any]:
         serial = self.phone.currentData() or str(self.settings_in.get("serial") or "")
-        return {"serial": serial, "longest": int(self.size.currentData()), "bitrate_kbps": int(self.bitrate.currentData())}
+        return {"serial": serial, "longest": int(self.size.currentData()), "bitrate_kbps": int(self.bitrate.currentData()),
+                "sound": self.sound.isChecked()}
