@@ -45,6 +45,7 @@ log = logging.getLogger(__name__)
 PHONE_PORT = 4466  # the phone's page (HTTPS, home network); the next free one when taken
 VIEW_PORT = 4467  # the leaf's own page (HTTP, this PC only)
 MAX_SDP = 64 * 1024
+STOP_AFTER_S = 30.0  # a Phone Camera leaf gone this long: its phone is forgotten (and the server stops if none is left)
 SEEN_FOR_S = 6.0  # a phone not heard from in this long counts as gone
 HANDSHAKE_S = 15.0
 REQUEST_S = 30.0
@@ -204,6 +205,7 @@ class PhoneServer:
         self._wrong: dict[str, int] = {}
         self._paused: dict[str, float] = {}
         self._keys: dict[str, list[str]] = self._read_keys()  # leaf code -> hashes of its phones' keys
+        self._stop_later: threading.Timer | None = None
 
     # The window's side -----------------------------------------------------------------------------
 
@@ -215,11 +217,24 @@ class PhoneServer:
         """The codes of the garden's Phone Camera leaves: the server runs while there is one."""
         with self.lock:
             self.codes = set(codes)
-            for gone in [c for c in self.sessions if c not in self.codes]:
-                del self.sessions[gone]
+            missing = any(c not in self.codes for c in self.sessions)
         if self.codes and not self.running:
             self.start()
-        elif not self.codes and self.running:
+        # A leaf gone, its phone forgotten and the server stopped when none is left: not at once, since a garden
+        # seen for a moment without its Phone Camera leaf (26t: the server stopped two seconds after a bloom
+        # switch and started again when the bloom came back) cut off a connected phone.
+        if (missing or (not self.codes and self.running)) and self._stop_later is None:
+            self._stop_later = threading.Timer(STOP_AFTER_S, self._tidy)
+            self._stop_later.daemon = True
+            self._stop_later.start()
+
+    def _tidy(self) -> None:
+        with self.lock:
+            self._stop_later = None
+            for gone in [c for c in self.sessions if c not in self.codes]:
+                del self.sessions[gone]
+            unused = not self.codes
+        if unused:
             self.stop()
 
     def start(self) -> None:
@@ -240,6 +255,9 @@ class PhoneServer:
                  "" if self.address else "; no home network found")
 
     def stop(self) -> None:
+        later, self._stop_later = self._stop_later, None
+        if later is not None:
+            later.cancel()
         servers, self._servers = self._servers, []
         for server in servers:
             threading.Thread(target=lambda s=server: (s.shutdown(), s.server_close()), daemon=True).start()
@@ -752,14 +770,14 @@ canvas { position: fixed; inset: 0; visibility: hidden; }</style></head>
   const STALE_MS = 2000;
   let last = performance.now(), when = -1;
   setInterval(() => {
-    if (!v.requestVideoFrameCallback && v.currentTime !== when) { when = v.currentTime; last = performance.now(); }
+    if (!v.requestVideoFrameCallback && v.currentTime !== when) { when = v.currentTime; last = performance.now(); seen = true; }
     const stale = performance.now() - last > STALE_MS;
     v.style.visibility = stale ? "hidden" : "visible";
     if (stale) held.style.visibility = "hidden";
     if (stale !== cleared) { cleared = stale; report(); }  // said in SprigCast's log as it happens
   }, 250);
   const look = () => {
-    if (v.requestVideoFrameCallback) { last = performance.now(); v.style.visibility = "visible"; }
+    if (v.requestVideoFrameCallback) { last = performance.now(); seen = true; v.style.visibility = "visible"; }
     const pic = wide(v.videoWidth, v.videoHeight), page = wide(innerWidth, innerHeight);
     const turning = pic !== 0 && page !== 0 && pic !== page;
     if (turning) {
@@ -779,7 +797,9 @@ canvas { position: fixed; inset: 0; visibility: hidden; }</style></head>
   addEventListener("resize", () => { if (wide(v.videoWidth, v.videoHeight) === wide(innerWidth, innerHeight)) held.style.visibility = "hidden"; });
 })();
 const base = location.pathname.replace(/\\/$/, "");
-let pc = null, have = 0, cleared = false;
+// seen: a picture came on this connection; only then can it clear (26t: "cleared" was logged as a phone connected,
+// before its first picture).
+let pc = null, have = 0, cleared = false, seen = false;
 function gathered(peer) {
   return new Promise((done) => {
     if (peer.iceGatheringState === "complete") return done();
@@ -801,6 +821,7 @@ function hear(track) {
   } catch (x) {}
 }
 async function answer(offer) {
+  seen = cleared = false;
   if (pc) pc.close();
   pc = new RTCPeerConnection({iceServers: []});
   pc.ontrack = (e) => {
@@ -837,7 +858,7 @@ async function report() {  // what this PC receives, for SprigCast's log
   if (!pc) return;
   const v = document.getElementById("v");
   const out = {connection: pc.connectionState, frames: 0, width: v.videoWidth, height: v.videoHeight,
-               codec: "-", audio: "-", player: v.paused ? "paused" : `playing-${v.readyState}`, cleared};
+               codec: "-", audio: "-", player: v.paused ? "paused" : `playing-${v.readyState}`, cleared: cleared && seen};
   try {
     const stats = await pc.getStats();
     stats.forEach((s) => {
