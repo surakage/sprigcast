@@ -42,7 +42,11 @@ IDLE_S = 0.1  # adb quiet this long: the picture the parser holds is shown
 TURN_CHECK_S = 1.5  # how often the phone's turn is looked at while recording
 _TURN_WORDS = "'SurfaceOrientation|orientation=|mCurrentRotation|mRotation='"  # grep on the phone: a short answer
 SIZES = (("720p", 1280), ("1080p", 1920))
-DEFAULTS: dict[str, Any] = {"serial": "", "longest": 1280, "bitrate_kbps": 8000, "sound": True}
+DEFAULTS: dict[str, Any] = {"serial": "", "longest": 1280, "bitrate_kbps": 8000, "sound": True, "trim": True}
+TRIM_EVERY_S = 1.0
+TRIM_SURE = 3
+TRIM_MOST = 0.08  # of a side: more than that is the picture being dark, not a bar
+DARK = 28  # luma (16 is video black)
 SOUND_JAR = "sprigcast-sound.jar"
 SOUND_ON_PHONE = "/data/local/tmp/sprigcast-sound.jar"
 SOUND_CLASS = "com.slothbloom.sprigcast.Sound"
@@ -159,6 +163,41 @@ def pcm_to_float(data: bytes) -> np.ndarray:
     return (np.frombuffer(data[:usable], dtype="<i2").astype(np.float32) / 32768.0).reshape(-1, 2)
 
 
+def black_edges(y: np.ndarray) -> tuple[int, int, int, int]:
+    """A picture's luma -> the black bars on its (left, top, right, bottom), even numbers, each at most TRIM_MOST
+    of its side (none where more is dark)."""
+    h, w = y.shape
+    cols = y[::8, :].max(axis=0) < DARK
+    rows = y[:, ::8].max(axis=1) < DARK
+
+    def run(flags: np.ndarray, most: int) -> int:
+        n = int(np.argmin(flags)) if not flags.all() else len(flags)
+        return n // 2 * 2 if n <= most else 0
+
+    return (run(cols, int(w * TRIM_MOST)), run(rows, int(h * TRIM_MOST)),
+            run(cols[::-1], int(w * TRIM_MOST)), run(rows[::-1], int(h * TRIM_MOST)))
+
+
+def crop_yuv(frame, left: int, top: int, right: int, bottom: int):
+    """A 4:2:0 frame with its edges cut off (the size stays even across, and a multiple of 4 down)."""
+    import av
+
+    w, h = frame.width, frame.height
+    a = frame.to_ndarray(format="yuv420p")
+    nw = (w - left - right) // 2 * 2
+    nh = (h - top - bottom) // 4 * 4
+    if nw < 16 or nh < 16 or h % 2 or w % 2:
+        raise ValueError("too small to trim")
+    y = a[:h]
+    u = a[h:h + h // 4].reshape(h // 2, w // 2)
+    v = a[h + h // 4:h + h // 2].reshape(h // 2, w // 2)
+    l2, t2 = left // 2, top // 2
+    out = np.concatenate([y[top:top + nh, left:left + nw],
+                          np.ascontiguousarray(u[t2:t2 + nh // 2, l2:l2 + nw // 2]).reshape(nh // 4, nw),
+                          np.ascontiguousarray(v[t2:t2 + nh // 2, l2:l2 + nw // 2]).reshape(nh // 4, nw)])
+    return av.VideoFrame.from_ndarray(out, format="yuv420p")
+
+
 def parse_size(text: str) -> tuple[int, int] | None:
     """`wm size` -> the size the screen draws at now (an override wins over the physical size)."""
     sizes = dict(re.findall(r"(Physical|Override) size:\s*(\d+x\d+)", text))
@@ -220,6 +259,10 @@ class AndroidScreenSource(Source):
         self._sound_proc: subprocess.Popen | None = None
         self._sound_given_up = False
         self._where: tuple[str, str] | None = None
+        self._trim = None  # ((width, height), (left, top, right, bottom)) taken off each picture
+        self._trim_seen = None
+        self._trim_count = 0
+        self._trim_at = 0.0
 
     # Source ---------------------------------------------------------------------------------------
 
@@ -246,7 +289,7 @@ class AndroidScreenSource(Source):
             self._thread.join(timeout=3)
         self._thread = None
 
-    VIDEO_KEYS = ("serial", "longest", "bitrate_kbps")
+    VIDEO_KEYS = ("serial", "longest", "bitrate_kbps")  # "trim" is read as each picture comes
 
     def update(self, settings: dict[str, Any]) -> None:
         """Only a change to the picture's settings starts the recording again: the Sound card's volume, mute and
@@ -508,12 +551,43 @@ class AndroidScreenSource(Source):
                 _end(p)
             if behind:
                 return True
+            if self.settings.get("trim", True):
+                frame = self._trimmed(frame)
             picture, order, size = camera_picture(frame, None)
             self._size = size
             note = self.sound_note if sound_on(self.settings) else ""
             self.status = f"capturing {size[0]}x{size[1]}" + (f"; no phone sound: {note}" if note else "")
             self._frames.put((picture, order))
         return False
+
+    def _trimmed(self, frame):
+        """The picture without the black bars the phone draws itself (in landscape, the strip beside the camera
+        cutout: PC 2026-11-26). Looked at once a second; a change is used once seen TRIM_SURE times running,
+        so a dark moment in a game doesn't trim it."""
+        dims = (frame.width, frame.height)
+        now = time.monotonic()
+        if now - self._trim_at >= TRIM_EVERY_S:
+            self._trim_at = now
+            try:
+                plane = frame.planes[0]
+                y = np.frombuffer(plane, np.uint8).reshape(frame.height, plane.line_size)[:, :frame.width]
+                edges = black_edges(y)
+            except (ValueError, TypeError):
+                edges = (0, 0, 0, 0)
+            seen = (dims, edges)
+            self._trim_count = self._trim_count + 1 if seen == self._trim_seen else 1
+            self._trim_seen = seen
+            if self._trim_count >= TRIM_SURE and seen != self._trim:
+                self._trim = seen
+                log.info("%s: black edges trimmed: %s", self.id, edges)
+        if self._trim is None or self._trim[0] != dims or not any(self._trim[1]):
+            return frame
+        try:
+            return crop_yuv(frame, *self._trim[1])
+        except (ValueError, TypeError) as exc:
+            log.info("%s: couldn't trim the picture: %s", self.id, exc)
+            self._trim = (dims, (0, 0, 0, 0))
+            return frame
 
     def _end_all(self) -> None:
         with self._lock:

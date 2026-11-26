@@ -174,7 +174,8 @@ def test_the_pop_up_lists_ready_phones_and_keeps_choices():
             break
         time.sleep(0.02)
     assert [dialog.phone.itemText(i) for i in range(dialog.phone.count())] == ["Pixel 8"]
-    assert dialog.values() == {"serial": "A1", "longest": 1920, "bitrate_kbps": 12000, "sound": True}
+    assert dialog.values() == {"serial": "A1", "longest": 1920, "bitrate_kbps": 12000, "sound": True,
+                                     "trim": True}
     dialog.deleteLater()
 
 
@@ -352,22 +353,22 @@ def test_turning_the_phone_starts_a_recording_in_the_new_shape(fake_adb, monkeyp
         source.stop()
 
 
-def test_a_place_turns_with_the_phone():
-    """User 2026-11-26: turned landscape, the leaf stayed a tall box. Its place turns around its middle."""
+def test_a_place_fits_its_canvas_again_when_the_phone_turns():
+    """User 2026-11-26: fit automatically on every turn, centered, instead of resizing it each time."""
     from sprigcast.core.scene import Canvas, Scene, SceneCollection, SceneItem, SourceConfig
 
     col = SceneCollection(canvases=[Canvas(id="main", width=1920, height=1080)],
                           sources=[SourceConfig(id="android-1", kind="android_screen", name="Phone")],
                           scenes=[Scene(id="a", name="A", canvas="main", items=[
-                              SceneItem(source="android-1", x=717, y=0, scale=1080 / 1280)])])
+                              SceneItem(source="android-1", x=100, y=50, scale=0.5, crop=(4, 0, 0, 0))])])
     item = col.scenes[0].items[0]
-    assert col.turn_places("android-1", (576, 1280), (1280, 576))
-    w, h = 1280 * item.scale, 576 * item.sy
-    assert abs(w - 1080) < 0.5 and abs(h - 486) < 0.5  # the long side as long as before
-    assert abs(item.x + w / 2 - (717 + 486 / 2)) < 0.5 and abs(item.y + h / 2 - 540) < 0.5  # same middle
-    assert not col.turn_places("android-1", (1280, 576), (1280, 576))  # no turn, nothing moves
-    assert col.turn_places("android-1", (1280, 576), (576, 1280))
-    assert abs(576 * item.scale - 486) < 0.5 and abs(1280 * item.sy - 1080) < 0.5 and abs(item.y) < 0.5
+    assert col.fit_places("android-1", (1280, 576))  # landscape: as wide as the canvas, centered up and down
+    assert abs(1280 * item.scale - 1920) < 0.5 and abs(item.x) < 0.5 and abs(item.y - (1080 - 576 * 1.5) / 2) < 0.5
+    assert item.crop == (0, 0, 0, 0)
+    assert col.fit_places("android-1", (576, 1280))  # portrait: as tall as the canvas, centered across
+    assert abs(1280 * item.scale - 1080) < 0.5 and abs(item.y) < 0.5
+    assert abs(item.x + 576 * item.scale / 2 - 960) < 0.5
+    assert not col.fit_places("android-2", (576, 1280))
 
 
 
@@ -434,3 +435,42 @@ def test_phone_sound_is_listed_and_can_be_switched_off():
     on = SourceConfig(id="android-1", kind="android_screen", name="Phone", settings=dict(screen.DEFAULTS))
     off = SourceConfig(id="android-2", kind="android_screen", name="Phone", settings={**screen.DEFAULTS, "sound": False})
     assert has_sound(on) and not has_sound(off)
+
+
+
+def _landscape_frame(bar: int, w: int = 320, h: int = 176):
+    import av
+
+    picture = np.full((h, w, 3), 200, np.uint8)
+    picture[:, :bar] = 0  # the strip beside the camera cutout
+    return av.VideoFrame.from_ndarray(picture, format="rgb24").reformat(format="yuv420p")
+
+
+def test_the_phones_black_edges_are_found_and_cut_off():
+    """PC 2026-11-26: in landscape a black strip ran down the left of the phone's picture."""
+    frame = _landscape_frame(14)
+    plane = frame.planes[0]
+    y = np.frombuffer(plane, np.uint8).reshape(frame.height, plane.line_size)[:, :frame.width]
+    assert screen.black_edges(y) == (14, 0, 0, 0)
+    dark = np.full((176, 320), 16, np.uint8)
+    assert screen.black_edges(dark) == (0, 0, 0, 0)  # a dark scene isn't a bar
+    wide = _landscape_frame(100)
+    plane = wide.planes[0]
+    assert screen.black_edges(np.frombuffer(plane, np.uint8).reshape(176, plane.line_size)[:, :320]) == (0, 0, 0, 0)
+    cut = screen.crop_yuv(frame, 14, 0, 0, 0)
+    assert (cut.width, cut.height) == (306, 176)
+    rgb = cut.to_ndarray(format="rgb24")
+    assert rgb[:, :2].mean() > 150 and abs(int(rgb[88, 150, 0]) - 200) < 8
+
+
+def test_a_bar_is_trimmed_only_once_its_steady(monkeypatch):
+    source = screen.AndroidScreenSource("android-1", dict(screen.DEFAULTS))
+    clock = [100.0]
+    monkeypatch.setattr(screen.time, "monotonic", lambda: clock[0])
+    frame = _landscape_frame(14)
+    for i in range(screen.TRIM_SURE - 1):
+        assert source._trimmed(frame) is frame
+        clock[0] += screen.TRIM_EVERY_S
+    assert source._trimmed(frame).width == 306
+    clock[0] += 0.2
+    assert source._trimmed(frame).width == 306  # between looks the trim stays

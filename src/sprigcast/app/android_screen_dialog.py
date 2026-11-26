@@ -159,6 +159,11 @@ class AndroidScreenDialog(CardDialog):
 
         from sprigcast.app.live_stage import Switch
 
+        self.trim = Switch()
+        self.trim.setChecked(bool(self.settings_in.get("trim", True)))
+        self.trim.setAccessibleName("Trim black edges")
+        picture.addLayout(_row("Trim black edges", self.trim))
+
         sound = self.section("Sound")
         self.sound = Switch()
         self.sound.setChecked(bool(self.settings_in.get("sound", True)))
@@ -223,4 +228,4 @@ class AndroidScreenDialog(CardDialog):
     def values(self) -> dict[str, Any]:
         serial = self.phone.currentData() or str(self.settings_in.get("serial") or "")
         return {"serial": serial, "longest": int(self.size.currentData()), "bitrate_kbps": int(self.bitrate.currentData()),
-                "sound": self.sound.isChecked()}
+                "sound": self.sound.isChecked(), "trim": self.trim.isChecked()}

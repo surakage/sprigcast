@@ -75,7 +75,7 @@ def sync(collection) -> bool:
 def turned(collection) -> list[tuple[Any, tuple[int, int], tuple[int, int]]]:
     """Phone Camera leaves that follow the phone and whose picture now comes the other way up (the phone was
     turned): each one's shape is set to match, and (leaf, old size, new size) is returned so the window turns
-    its places (Collection.turn_places) and saves. The page only resizes: the phone stays connected."""
+    its places fit their canvas again (Collection.fit_places) and saves. The page only resizes: the phone stays connected."""
     if _server is None or not _server.running:
         return []
     out = []
