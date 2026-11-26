@@ -297,7 +297,8 @@ class GearWatch(QObject):
 
 # + Add's entries (user, 2026-11-20: professional names; one click adds the leaf, double-click picks what it shows).
 BLANK_KINDS = {
-    "Application Audio": "app_audio", "Audio File": "media:sound", "Audio Input": "audio_input",
+    "Android Screen": "android_screen", "Application Audio": "app_audio", "Audio File": "media:sound",
+    "Audio Input": "audio_input",
     "Audio Output": "audio_output", "Browser": "browser", "Chat": "chat", "Color": "color",
     "Display Capture": "display_capture", "Game Capture": "game_capture", "Image": "image",
     "Phone Camera": "browser:phone", "Text": "text",
@@ -318,6 +319,7 @@ def fit_window(rect: tuple[int, int, int, int], free: tuple[int, int, int, int])
 
 ADD_ICON_KINDS = {"media:video": "media", "media:sound": "sound_file", "browser:phone": "phone"}  # + Add's chips for the two file entries
 BLANK_TIPS = {
+    "Android Screen": "An Android phone's screen over its USB cable, for mobile games",
     "Application Audio": "The sound of the apps you pick: games, music, voice chat…",
     "Audio File": "Music or a sound clip from your PC: a leaf that plays while its bloom is on air, with its strip in Sound",
     "Audio Input": "A mic: plays in every bloom unless you pick some",
@@ -2287,7 +2289,7 @@ class MainWindow(QMainWindow):
         self._reach_poll.setInterval(100)
         self._reach_poll.timeout.connect(self._reach_done)
         self._apply_features()  # Settings → General → Features: hide what's switched off
-        QTimer.singleShot(4000, self._sync_phones)  # a garden with a Phone Camera: its page server starts
+        QTimer.singleShot(4000, self, self._sync_phones)  # a garden with a Phone Camera: its page server starts
         self.live_side.garden.clicked.connect(lambda: self._open_garden_check())
         self.live_stage = LiveStage(self.live_side)
         self.live_tiles = QScrollArea()
@@ -4040,7 +4042,7 @@ class MainWindow(QMainWindow):
         from sprigcast.app import phone_camera
 
         if phone_camera.sync(self.collection):
-            QTimer.singleShot(0, self._changed)  # a leaf's address moved to the port it got
+            QTimer.singleShot(0, self, self._changed)  # a leaf's address moved to the port it got
 
     @staticmethod
     def _look_kind(config) -> str:
@@ -5220,6 +5222,10 @@ class MainWindow(QMainWindow):
             found = [c for c in self.collection.sources if c.kind == "media" and c.id in placed and c.id not in here
                      and (c.settings.get("only") == "sound" if not c.settings.get("path")
                           else is_sound_file(str(c.settings["path"]))) == sound]
+        elif kind in ("browser", "browser:phone"):  # Phone Camera leaves are listed as their own kind
+            phone = kind == "browser:phone"
+            found = [c for c in self.collection.sources if c.kind == "browser" and c.id in placed
+                     and c.id not in here and bool(c.settings.get("phone")) == phone]
         else:
             found = [c for c in self.collection.sources if c.kind == kind and c.id in placed and c.id not in here]
         return sorted(found, key=lambda c: c.name.lower())
@@ -6375,6 +6381,10 @@ class MainWindow(QMainWindow):
 
                 sync(self.collection)  # its page is ready before the code is shown
                 dialog = PhoneDialog(config.settings, self)
+            elif config.kind == "android_screen":
+                from sprigcast.app.android_screen_dialog import AndroidScreenDialog
+
+                dialog = AndroidScreenDialog(config.settings, self)
             elif config.kind == "browser":
                 from sprigcast.app.web_page_dialog import WebPageDialog
 
