@@ -58,6 +58,9 @@ SOUND_ON_PHONE = "/data/local/tmp/sprigcast-sound.jar"
 SOUND_CLASS = "com.slothbloom.sprigcast.Sound"
 SOUND_START = b"SPRIGCAST-SOUND-START\n"  # the helper's line just before its sound
 SOUND_RATE = 48000
+SHOW_AFTER_S = 0.25  # each picture (and the sound with it) shows this late, so the pictures the phone sends
+# while it turns, before SprigCast knows (sideways, the phone's own spinning screenshot, the old shape: PC
+# 2026-11-26), are taken back before they ever show
 SOUND_KEEP_S = 0.25  # more than this waiting (the mixer fell behind): the oldest goes, so it never lags
 SOUND_RETRY_S = 3.0
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
@@ -294,6 +297,7 @@ class AndroidScreenSource(Source):
         self._hold_at = 0.0
         self._not_turned: int | None = None  # this recording looked boxed but the phone hadn't turned
         self._look_now = threading.Event()  # a boxed picture: look at the phone's turn at once
+        self._waiting: list[tuple] = []  # (when, recording, picture, order, size): shown SHOW_AFTER_S later
         self._watched: tuple[bool, float] | None = None  # (turned, when): the watcher's latest answer
         self._watch_proc: subprocess.Popen | None = None
 
@@ -363,9 +367,11 @@ class AndroidScreenSource(Source):
         out = np.zeros((n, 2), dtype=np.float32)
         filled = 0
         with self._sound_lock:
-            while filled < n and self._sound:
+            # As late as the pictures (SHOW_AFTER_S): what's newer than that waits, so the two stay together.
+            n_now = max(0, min(n, self._sound_frames - int(SHOW_AFTER_S * SOUND_RATE)))
+            while filled < n_now and self._sound:
                 chunk = self._sound[0]
-                take = min(n - filled, len(chunk))
+                take = min(n_now - filled, len(chunk))
                 out[filled:filled + take] = chunk[:take]
                 filled += take
                 if take == len(chunk):
@@ -379,7 +385,7 @@ class AndroidScreenSource(Source):
         with self._sound_lock:
             self._sound.append(samples)
             self._sound_frames += len(samples)
-            while self._sound_frames > SOUND_KEEP_S * SOUND_RATE and len(self._sound) > 1:
+            while self._sound_frames > (SOUND_KEEP_S + SHOW_AFTER_S) * SOUND_RATE and len(self._sound) > 1:
                 self._sound_frames -= len(self._sound.pop(0))
 
     def _start_sound(self, adb: str, serial: str) -> None:
@@ -461,6 +467,7 @@ class AndroidScreenSource(Source):
             self._stop.wait(SOUND_RETRY_S)
 
     def video_frame(self) -> np.ndarray | None:
+        self._release()
         item = self._frames.take()
         if item is None:
             return None
@@ -643,10 +650,27 @@ class AndroidScreenSource(Source):
                 self._procs.pop(mine, None)
 
     def _hold_from(self, mine: int) -> None:
-        """The phone turned under recording `mine`: its pictures (squeezed or boxed in the old shape) don't show;
+        """The phone turned under recording `mine`: its pictures (squeezed or boxed in the old shape) don't show,
+        and those still waiting their SHOW_AFTER_S are taken back (they were sent while the phone was turning);
         the last good one stays until the next recording's first picture, so the turn is one clean cut."""
+        with self._lock:
+            self._waiting = [w for w in self._waiting if w[1] > mine]
         if self._hold != mine:
             self._hold, self._hold_at = mine, time.monotonic()
+
+    def _release(self) -> None:
+        """Pictures whose SHOW_AFTER_S has passed: the newest of them shows."""
+        due = time.monotonic() - SHOW_AFTER_S
+        with self._lock:
+            n = 0
+            while n < len(self._waiting) and self._waiting[n][0] <= due:
+                n += 1
+            if not n:
+                return
+            _at, _mine, picture, order, size = self._waiting[n - 1]
+            del self._waiting[:n]
+        self._size = size
+        self._frames.put((picture, order))
 
     def _held(self, mine: int, frame) -> bool:
         if self._hold == mine and time.monotonic() - self._hold_at < HOLD_MOST_S:
@@ -685,10 +709,13 @@ class AndroidScreenSource(Source):
             if self.settings.get("trim", True):
                 frame = self._trimmed(frame)
             picture, order, size = camera_picture(frame, None)
-            self._size = size
             note = self.sound_note if sound_on(self.settings) else ""
             self.status = f"capturing {size[0]}x{size[1]}" + (f"; no phone sound: {note}" if note else "")
-            self._frames.put((picture, order))
+            with self._lock:
+                now = time.monotonic()
+                self._waiting.append((now, mine, picture, order, size))
+                while self._waiting[0][0] < now - 1.0:  # nobody taking them: never more than a second's worth
+                    del self._waiting[0]
         return False
 
     def _trimmed(self, frame):
