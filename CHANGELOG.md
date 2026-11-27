@@ -24,7 +24,9 @@ builds from 2026-11-25 on.
   and Facebook logos. The logos also show in the + Add menu, Show all, Settings → Stream and the mixed chat list
   (#975, #977).
 - Chat mod tools: Delete, Timeout and Ban buttons when you hover a chat line, a chatter's card when you click their
-  name, and moderation for YouTube chat (#978).
+  name, and moderation for YouTube chat. A Mod bar for your Twitch chat (slow, followers-only, subs-only,
+  emote-only, Shield, clear), a First tag for first-time chatters, a word and link filter, and a mod log (#978,
+  #979).
 - Echo Reducer filter, and a Listen card with meters in Filters (#962, #963, #966).
 - Video delay for cameras (#951).
 - Copy and paste filters, and leaves between sprigs; Duplicate (Ctrl+D); F2 renames blooms, sprigs and filters
@@ -40,7 +42,8 @@ builds from 2026-11-25 on.
 ### Changed
 
 - Links in the app, the installer and the notices send people to sprigcast.slothbloom.com, not GitHub (#930).
-- Twitch asks for two more permissions for the new plugins, so reconnect Twitch once in Settings → Stream (#969).
+- Twitch asks for more permissions for the new plugins and mod tools, so reconnect Twitch once in Settings → Stream
+  (#969, #979).
 - YouTube streams over RTMPS and reconnects a stalled connection after 5 s (#937).
 - PNGtuber upgrade, and every flat pop-up now has titled section cards; Filters has sections and label colors
   (#939, #940).
