@@ -66,7 +66,7 @@ def showing(settings: dict[str, Any], now: float) -> dict[str, Any] | None:
 
 def paint_fitted(big: str, small: str, settings: dict[str, Any], detail: float = 1.0):
     look = cards.look_of(settings)
-    shown = cards.Words(big, small, small_on_top=True, badge="pin", shrink=0.5)
+    shown = cards.Words(big, small, small_on_top=True, badge="pin")
     return cards.paint(cards.card_width([shown], look), shown, detail=detail, look=look)
 
 
