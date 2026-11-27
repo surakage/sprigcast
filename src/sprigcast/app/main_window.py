@@ -1111,13 +1111,13 @@ class MainWindow(QMainWindow):
         settings.triggered.connect(lambda: self._open_settings("Video"))
 
     def _preview_live_menu(self, menu: QMenu) -> QMenu:
-        """Right-click a canvas on Live → Preview while live: Smooth, Light or Off, the same switch as Settings →
+        """Right-click a canvas on Live → Preview (while live): Smooth, Light or Off, the same switch as Settings →
         General → This PC (a tester on a slow PC asked to turn the preview off, 2026-11-27). Both canvases."""
         from sprigcast.app.settings_window import PREVIEW_CHOICES, preview_choice
 
-        sub = menu.addMenu(icons.icon("monitor", theme.MUTED), "Preview while live")
+        sub = menu.addMenu(icons.icon("monitor", theme.MUTED), "Preview")
         sub.setToolTipsVisible(True)
-        sub.setToolTip("Light or Off leaves more of the graphics card for the stream; projectors keep drawing")
+        sub.setToolTip("While live: Light or Off leaves more of the graphics card for the stream; projectors keep drawing")
         now = preview_choice()
         for key, label in PREVIEW_CHOICES.items():
             act = sub.addAction(label)

@@ -221,13 +221,13 @@ def test_preview_while_live_is_one_right_click_away_on_live(window):
 
     window._set_mode("live")
     menu = window._preview_menu("horizontal", -1)
-    sub = next(a.menu() for a in menu.actions() if a.text() == "Preview while live")
+    sub = next(a.menu() for a in menu.actions() if a.text() == "Preview")
     assert [a.text() for a in sub.actions()] == ["Smooth", "Light (15 fps)", "Off"]
     next(a for a in sub.actions() if a.text() == "Off").trigger()
     assert preview_choice() == "off" and window._preview_live is None  # both canvases follow on the next poll
     menu.deleteLater()
     menu = window._preview_menu("horizontal", -1)
-    sub = next(a.menu() for a in menu.actions() if a.text() == "Preview while live")
+    sub = next(a.menu() for a in menu.actions() if a.text() == "Preview")
     assert next(a for a in sub.actions() if a.text() == "Off").isChecked()
     QSettings().remove(PREVIEW_LIVE)
     menu.deleteLater()
