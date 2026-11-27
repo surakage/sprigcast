@@ -137,6 +137,10 @@ def handle(api: NativeApi, request: Request, *, enabled: bool, password: str, ke
     origin = request.headers.get("origin")
     if origin is not None and not local_origin(origin):
         return _error("off", "Requests from web pages on other sites are refused.")
+    if request.path.rstrip("/") == "/api/protocol.json":  # the API's own description: nothing of yours in it
+        from sprigcast.control.spec import protocol
+
+        return 200, protocol(include_plugins=False)
     if request.path.rstrip("/") == "/api/pair":  # works with web links off too: the key also opens the WebSocket
         return _pair(request, pairing)
     if not enabled:

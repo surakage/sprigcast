@@ -1,0 +1,2703 @@
+{
+  "app": "SprigCast",
+  "api": 0,
+  "preview": true,
+  "connect": {
+    "path": "/sprigcast",
+    "defaultPort": 4455,
+    "webLinks": "/api/<action>"
+  },
+  "eventGroups": [
+    {
+      "group": "bloom",
+      "highVolume": false
+    },
+    {
+      "group": "item",
+      "highVolume": false
+    },
+    {
+      "group": "sprig",
+      "highVolume": false
+    },
+    {
+      "group": "sound",
+      "highVolume": false
+    },
+    {
+      "group": "filter",
+      "highVolume": false
+    },
+    {
+      "group": "source",
+      "highVolume": false
+    },
+    {
+      "group": "output",
+      "highVolume": false
+    },
+    {
+      "group": "transition",
+      "highVolume": false
+    },
+    {
+      "group": "media",
+      "highVolume": false
+    },
+    {
+      "group": "custom",
+      "highVolume": false
+    },
+    {
+      "group": "plugin",
+      "highVolume": false
+    },
+    {
+      "group": "garden",
+      "highVolume": false
+    },
+    {
+      "group": "path",
+      "highVolume": false
+    },
+    {
+      "group": "meters",
+      "highVolume": true
+    }
+  ],
+  "events": [
+    {
+      "name": "app.closing",
+      "group": null,
+      "about": "SprigCast is closing or turning its API off; every app gets it. The connection closes next: look again in a second or two, it's often a restart.",
+      "fields": []
+    },
+    {
+      "name": "bloom.shown",
+      "group": "bloom",
+      "about": "A bloom went on air.",
+      "fields": [
+        "bloom",
+        "bloomId",
+        "shape"
+      ]
+    },
+    {
+      "name": "blooms.changed",
+      "group": "bloom",
+      "about": "Blooms were added, removed or renamed.",
+      "fields": [
+        "blooms"
+      ]
+    },
+    {
+      "name": "break.ended",
+      "group": "plugin",
+      "plugin": "Break & End Guard",
+      "about": "A break ended.",
+      "fields": [
+        "onBreak",
+        "breakLeft",
+        "nextBreakIn",
+        "endIn"
+      ]
+    },
+    {
+      "name": "break.started",
+      "group": "plugin",
+      "plugin": "Break & End Guard",
+      "about": "A break started.",
+      "fields": [
+        "onBreak",
+        "breakLeft",
+        "nextBreakIn",
+        "endIn"
+      ]
+    },
+    {
+      "name": "camera.changed",
+      "group": "output",
+      "about": "SprigCast Camera was turned on or off.",
+      "fields": [
+        "on"
+      ]
+    },
+    {
+      "name": "clip.saved",
+      "group": "output",
+      "about": "A clip's files are written.",
+      "fields": [
+        "files"
+      ]
+    },
+    {
+      "name": "clips.changed",
+      "group": "output",
+      "about": "Clips were made ready or stopped.",
+      "fields": [
+        "on"
+      ]
+    },
+    {
+      "name": "countdown.changed",
+      "group": "plugin",
+      "plugin": "Countdown",
+      "about": "A countdown changed.",
+      "fields": [
+        "source",
+        "seconds",
+        "running",
+        "done",
+        "text"
+      ]
+    },
+    {
+      "name": "countdown.done",
+      "group": "plugin",
+      "plugin": "Countdown",
+      "about": "A countdown reached 0 on screen.",
+      "fields": [
+        "source"
+      ]
+    },
+    {
+      "name": "custom",
+      "group": "custom",
+      "about": "Sent by another app with app.broadcast.",
+      "fields": [
+        "data"
+      ]
+    },
+    {
+      "name": "deaths.changed",
+      "group": "plugin",
+      "plugin": "Death count",
+      "about": "The death count changed.",
+      "fields": [
+        "count"
+      ]
+    },
+    {
+      "name": "effect.ended",
+      "group": "filter",
+      "about": "A timed effect (Hide it, Barrel Roll, Freeze) ended.",
+      "fields": [
+        "source",
+        "sourceId",
+        "effect",
+        "reason"
+      ]
+    },
+    {
+      "name": "filter.changed",
+      "group": "filter",
+      "about": "A filter was added, switched or changed.",
+      "fields": [
+        "source",
+        "id",
+        "name",
+        "kind",
+        "on",
+        "settings",
+        "added"
+      ]
+    },
+    {
+      "name": "filter.removed",
+      "group": "filter",
+      "about": "A filter was removed.",
+      "fields": [
+        "source",
+        "id",
+        "name"
+      ]
+    },
+    {
+      "name": "garden.changed",
+      "group": "garden",
+      "about": "Another garden is in use.",
+      "fields": [
+        "garden"
+      ]
+    },
+    {
+      "name": "gardens.changed",
+      "group": "garden",
+      "about": "Gardens were added, removed or renamed.",
+      "fields": [
+        "gardens"
+      ]
+    },
+    {
+      "name": "item.changed",
+      "group": "item",
+      "about": "Something in a bloom or sprig was shown or hidden.",
+      "fields": [
+        "bloom",
+        "sprig",
+        "shape",
+        "item",
+        "itemId",
+        "visible",
+        "blooms"
+      ]
+    },
+    {
+      "name": "item.moved",
+      "group": "item",
+      "about": "Something was moved, sized, cropped or turned, by hand or by an app.",
+      "fields": [
+        "bloom",
+        "sprig",
+        "shape",
+        "item",
+        "itemId",
+        "x",
+        "y",
+        "scale_x",
+        "scale_y",
+        "rotation",
+        "align",
+        "crop",
+        "bounds"
+      ]
+    },
+    {
+      "name": "items.changed",
+      "group": "item",
+      "about": "Something was added to or taken out of a bloom or sprig.",
+      "fields": [
+        "bloom",
+        "sprig",
+        "shape",
+        "items"
+      ]
+    },
+    {
+      "name": "media.changed",
+      "group": "media",
+      "about": "A video or sound file played, paused, stopped or ended.",
+      "fields": [
+        "media",
+        "id",
+        "file",
+        "loop",
+        "state",
+        "position",
+        "duration"
+      ]
+    },
+    {
+      "name": "meters",
+      "group": "meters",
+      "about": "Sound levels, about 15 a second; only when asked for by name.",
+      "fields": [
+        "levels"
+      ]
+    },
+    {
+      "name": "nowplaying.changed",
+      "group": "plugin",
+      "plugin": "Now playing",
+      "about": "The song changed, paused or jumped while the card is on screen.",
+      "fields": [
+        "playing",
+        "title",
+        "artist",
+        "album",
+        "app",
+        "length",
+        "position"
+      ]
+    },
+    {
+      "name": "path.changed",
+      "group": "path",
+      "about": "Another path is in use.",
+      "fields": [
+        "path"
+      ]
+    },
+    {
+      "name": "paths.changed",
+      "group": "path",
+      "about": "Paths were added, removed or renamed.",
+      "fields": [
+        "paths"
+      ]
+    },
+    {
+      "name": "place.changed",
+      "group": "output",
+      "about": "One place started, dropped, is trying again, came back or stopped.",
+      "fields": [
+        "place",
+        "name",
+        "service",
+        "shape",
+        "state",
+        "was",
+        "reconnects",
+        "dropped"
+      ]
+    },
+    {
+      "name": "plugins.changed",
+      "group": "plugin",
+      "about": "A plugin was added or removed.",
+      "fields": [
+        "plugins",
+        "added",
+        "removed"
+      ]
+    },
+    {
+      "name": "pngtuber.expression",
+      "group": "plugin",
+      "plugin": "PNGtuber",
+      "about": "The expression changed.",
+      "fields": [
+        "expression"
+      ]
+    },
+    {
+      "name": "record.changed",
+      "group": "output",
+      "about": "Recording started or stopped.",
+      "fields": [
+        "on"
+      ]
+    },
+    {
+      "name": "record.paused",
+      "group": "output",
+      "about": "The recording was paused or carried on.",
+      "fields": [
+        "paused"
+      ]
+    },
+    {
+      "name": "replay.ended",
+      "group": "plugin",
+      "plugin": "Instant replay",
+      "about": "A replay ended.",
+      "fields": [
+        "source",
+        "sourceId",
+        "reason"
+      ]
+    },
+    {
+      "name": "replay.started",
+      "group": "plugin",
+      "plugin": "Instant replay",
+      "about": "A replay started playing.",
+      "fields": [
+        "source",
+        "sourceId",
+        "seconds",
+        "speed"
+      ]
+    },
+    {
+      "name": "snap.taken",
+      "group": "plugin",
+      "plugin": "Snap",
+      "about": "A screenshot became a polaroid on stream.",
+      "fields": []
+    },
+    {
+      "name": "sound.changed",
+      "group": "sound",
+      "about": "A sound's mute, volume or balance changed.",
+      "fields": [
+        "id",
+        "name",
+        "muted",
+        "volumeDb",
+        "balance"
+      ]
+    },
+    {
+      "name": "source.changed",
+      "group": "source",
+      "about": "A source's settings changed.",
+      "fields": [
+        "source",
+        "sourceId",
+        "settings"
+      ]
+    },
+    {
+      "name": "sources.changed",
+      "group": "source",
+      "about": "Sources were added, removed or renamed.",
+      "fields": [
+        "sources",
+        "added",
+        "removed",
+        "renamed"
+      ]
+    },
+    {
+      "name": "sprig.state",
+      "group": "sprig",
+      "about": "A sprig switched Live state.",
+      "fields": [
+        "sprig",
+        "sprigId",
+        "state"
+      ]
+    },
+    {
+      "name": "stream.changed",
+      "group": "output",
+      "about": "The stream started or ended.",
+      "fields": [
+        "on"
+      ]
+    },
+    {
+      "name": "stream.limit",
+      "group": "plugin",
+      "plugin": "Break & End Guard",
+      "about": "The stream limit is close.",
+      "fields": []
+    },
+    {
+      "name": "timer.changed",
+      "group": "plugin",
+      "plugin": "Stream timer",
+      "about": "A stream timer changed.",
+      "fields": [
+        "source",
+        "mode",
+        "seconds",
+        "running",
+        "done",
+        "text"
+      ]
+    },
+    {
+      "name": "timer.done",
+      "group": "plugin",
+      "plugin": "Stream timer",
+      "about": "A countdown reached 0 on screen.",
+      "fields": [
+        "source"
+      ]
+    },
+    {
+      "name": "transition.changed",
+      "group": "transition",
+      "about": "The usual transition changed.",
+      "fields": [
+        "kind",
+        "ms"
+      ]
+    }
+  ],
+  "errorCodes": [
+    {
+      "code": "bad_request",
+      "about": "A field is missing or has the wrong type or value; field and reason say which and why."
+    },
+    {
+      "code": "not_found",
+      "about": "No such bloom, sprig, item, sound, source, filter or place; what and name say what was asked for."
+    },
+    {
+      "code": "not_allowed",
+      "about": "It can't be done here, e.g. putting a sprig on air."
+    },
+    {
+      "code": "busy",
+      "about": "Already doing it (already live), or the name is taken (reason already_exists)."
+    },
+    {
+      "code": "unknown_action",
+      "about": "No such action."
+    },
+    {
+      "code": "doctor_warnings",
+      "about": "Going live or recording would have asked first: nothing started; warnings lists why, force: true goes ahead."
+    },
+    {
+      "code": "places_differ",
+      "about": "stream.start was given places and the places switched on aren't exactly those: nothing started; places lists the ones switched on."
+    },
+    {
+      "code": "plugin_missing",
+      "about": "The action comes with a store plugin that isn't added; the message names it."
+    },
+    {
+      "code": "failed",
+      "about": "Something went wrong inside SprigCast."
+    }
+  ],
+  "errorReasons": [
+    {
+      "reason": "missing",
+      "about": "A field that's needed wasn't sent."
+    },
+    {
+      "reason": "empty",
+      "about": "A field was sent empty."
+    },
+    {
+      "reason": "wrong_type",
+      "about": "A field has the wrong type (text where a number goes...)."
+    },
+    {
+      "reason": "out_of_range",
+      "about": "A number is outside what the field takes."
+    },
+    {
+      "reason": "not_one_of",
+      "about": "A word the field doesn't take."
+    },
+    {
+      "reason": "already_exists",
+      "about": "Something already has that name."
+    },
+    {
+      "reason": "already_running",
+      "about": "It's already going (live, recording)."
+    }
+  ],
+  "closeCodes": [
+    {
+      "code": 1001,
+      "about": "SprigCast closed, or its API was turned off (app.closing came first)."
+    },
+    {
+      "code": 4002,
+      "about": "A message wasn't a JSON object."
+    },
+    {
+      "code": 4009,
+      "about": "Wrong password or key."
+    },
+    {
+      "code": 4011,
+      "about": "Wrong or expired pairing code, or too many wrong codes (pairing locks for a minute)."
+    }
+  ],
+  "features": [
+    "bloom.new",
+    "places.status",
+    "youtube.viewers",
+    "viewers.counts",
+    "screenshot.source",
+    "plugins.enabled",
+    "plugin.missing",
+    "effects.autoend",
+    "source.rotate",
+    "start.warnings",
+    "canvas.size",
+    "item.scale_xy",
+    "events.effect",
+    "events.plugins",
+    "events.lists",
+    "notfound.what",
+    "page.api",
+    "effects.freeze",
+    "record.pause",
+    "place.bandwidth_test",
+    "place.bitrate",
+    "screenshot.bloom_off_air",
+    "item.place_full",
+    "item.edit",
+    "edit.undo",
+    "steps.dry_run",
+    "events.item_moved",
+    "filters.share",
+    "layout.get",
+    "source.state",
+    "places.size",
+    "events.place_changed",
+    "places.names",
+    "source.id_aliases",
+    "clip.save_note",
+    "screenshot.bloom_id",
+    "screenshot.skipped",
+    "places.ready",
+    "app_audio.pids",
+    "sprig.remove",
+    "app.protocol",
+    "events.by_name",
+    "errors.field",
+    "steps.ids"
+  ],
+  "limits": {
+    "steps": 100,
+    "waitMs": 600000
+  },
+  "actions": [
+    {
+      "name": "app.actions",
+      "group": "app",
+      "about": "Every action with what it does and its fields (fields starting with ? are optional).",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "app.broadcast",
+      "group": "app",
+      "about": "Send your own event to every connected app.",
+      "fields": [
+        {
+          "name": "data",
+          "required": true,
+          "about": "any object",
+          "type": "object"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "app.info",
+      "group": "app",
+      "about": "Version, API version, the shapes that are on, each canvas's size, event groups and features.",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "app.protocol",
+      "group": "app",
+      "about": "The whole API described for programs: every action with typed fields (type, needed, default, range, words it takes), every event, error code, error reason and close code.",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "app.stats",
+      "group": "app",
+      "about": "Frames per second, render time and memory.",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "bloom.current",
+      "group": "bloom",
+      "about": "The bloom on air in each shape.",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "bloom.new",
+      "group": "bloom",
+      "about": "Make an empty bloom (with its own sprig, where what you add goes).",
+      "fields": [
+        {
+          "name": "name",
+          "required": true,
+          "about": "name",
+          "type": "string"
+        },
+        {
+          "name": "shape",
+          "required": false,
+          "about": "both (default: every canvas), horizontal or vertical",
+          "type": "string",
+          "values": [
+            "both",
+            "horizontal",
+            "vertical"
+          ],
+          "default": "both"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "bloom.remove",
+      "group": "bloom",
+      "about": "Remove a bloom (in every shape). Its sources stay while other blooms use them.",
+      "fields": [
+        {
+          "name": "bloom",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "bloom.show",
+      "group": "bloom",
+      "about": "Put a bloom on air.",
+      "fields": [
+        {
+          "name": "bloom",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "shape",
+          "required": false,
+          "about": "both (default), horizontal or vertical",
+          "type": "string",
+          "values": [
+            "both",
+            "horizontal",
+            "vertical"
+          ],
+          "default": "both"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "blooms.list",
+      "group": "bloom",
+      "about": "Every bloom, its shapes and which shapes it's on air in.",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "camera.set",
+      "group": "camera",
+      "about": "Turn SprigCast Camera on or off (no on: toggle).",
+      "fields": [
+        {
+          "name": "on",
+          "required": false,
+          "about": "true or false",
+          "type": "boolean"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "camera.status",
+      "group": "camera",
+      "about": "Whether SprigCast Camera (the virtual camera) is on.",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "clip.save",
+      "group": "clip",
+      "about": "Save the last seconds as a clip (gets clips ready first if they're off). Answers with the file names at once; the clip.saved event says when they are written. clip is true when a clip is being saved; when it is false, note says why and when one can be.",
+      "fields": [],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "clips.set",
+      "group": "clip",
+      "about": "Keep clips ready (on) or stop (off).",
+      "fields": [
+        {
+          "name": "on",
+          "required": true,
+          "about": "true or false",
+          "type": "boolean"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "clips.status",
+      "group": "clip",
+      "about": "Whether clips are ready and how long a clip is.",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "edit.redo",
+      "group": "edit",
+      "about": "Put back the change that was just undone (as Ctrl+Y in SprigCast).",
+      "fields": [],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "edit.undo",
+      "group": "edit",
+      "about": "Undo the last change to the garden (as Ctrl+Z in SprigCast).",
+      "fields": [],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "filter.add",
+      "group": "filter",
+      "about": "Add a filter to a source or a placed sprig.",
+      "fields": [
+        {
+          "name": "kind",
+          "required": true,
+          "about": "kind from filters.kinds",
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "required": false,
+          "about": "its name",
+          "type": "string"
+        },
+        {
+          "name": "settings",
+          "required": false,
+          "about": "{key: value}",
+          "type": "object"
+        },
+        {
+          "name": "on",
+          "required": false,
+          "about": "true (default) or false",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "name": "source",
+          "required": false,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "sprig",
+          "required": false,
+          "about": "a sprig instead: its filters where it's placed",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "in",
+          "required": false,
+          "about": "with sprig: only where it's placed in this bloom or sprig (both canvases)",
+          "type": "string",
+          "accepts": "name or id"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "filter.move",
+      "group": "filter",
+      "about": "Move a filter to a new place in the list (0 = top).",
+      "fields": [
+        {
+          "name": "filter",
+          "required": true,
+          "about": "name, id or kind",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "index",
+          "required": true,
+          "about": "new position",
+          "type": "integer"
+        },
+        {
+          "name": "source",
+          "required": false,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "sprig",
+          "required": false,
+          "about": "a sprig instead: its filters where it's placed",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "in",
+          "required": false,
+          "about": "with sprig: only where it's placed in this bloom or sprig (both canvases)",
+          "type": "string",
+          "accepts": "name or id"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "filter.remove",
+      "group": "filter",
+      "about": "Remove a filter from a source or a placed sprig.",
+      "fields": [
+        {
+          "name": "filter",
+          "required": true,
+          "about": "name, id or kind",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "source",
+          "required": false,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "sprig",
+          "required": false,
+          "about": "a sprig instead: its filters where it's placed",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "in",
+          "required": false,
+          "about": "with sprig: only where it's placed in this bloom or sprig (both canvases)",
+          "type": "string",
+          "accepts": "name or id"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "filter.set",
+      "group": "filter",
+      "about": "Turn a filter on or off and/or change some of its settings (others stay).",
+      "fields": [
+        {
+          "name": "filter",
+          "required": true,
+          "about": "filter name, id or kind",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "on",
+          "required": false,
+          "about": "true or false",
+          "type": "boolean"
+        },
+        {
+          "name": "settings",
+          "required": false,
+          "about": "{key: value}",
+          "type": "object"
+        },
+        {
+          "name": "source",
+          "required": false,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "sprig",
+          "required": false,
+          "about": "a sprig instead: its filters where it's placed",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "in",
+          "required": false,
+          "about": "with sprig: only where it's placed in this bloom or sprig (both canvases)",
+          "type": "string",
+          "accepts": "name or id"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "filter.toggle",
+      "group": "filter",
+      "about": "Turn a filter on if off, off if on.",
+      "fields": [
+        {
+          "name": "filter",
+          "required": true,
+          "about": "name, id or kind",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "source",
+          "required": false,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "sprig",
+          "required": false,
+          "about": "a sprig instead: its filters where it's placed",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "in",
+          "required": false,
+          "about": "with sprig: only where it's placed in this bloom or sprig (both canvases)",
+          "type": "string",
+          "accepts": "name or id"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "filters.kinds",
+      "group": "filter",
+      "about": "Filter kinds you can add, with their settings and limits.",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "filters.list",
+      "group": "filter",
+      "about": "A source's or a placed sprig's filters, top to bottom.",
+      "fields": [
+        {
+          "name": "source",
+          "required": false,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "sprig",
+          "required": false,
+          "about": "a sprig instead: its filters where it's placed",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "in",
+          "required": false,
+          "about": "with sprig: only where it's placed in this bloom or sprig (both canvases)",
+          "type": "string",
+          "accepts": "name or id"
+        }
+      ],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "filters.share",
+      "group": "filter",
+      "about": "A placed sprig: the same filters on both canvases (the usual), or its own on each.",
+      "fields": [
+        {
+          "name": "on",
+          "required": true,
+          "about": "true or false",
+          "type": "boolean"
+        },
+        {
+          "name": "source",
+          "required": false,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "sprig",
+          "required": false,
+          "about": "a sprig instead: its filters where it's placed",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "in",
+          "required": false,
+          "about": "with sprig: only where it's placed in this bloom or sprig (both canvases)",
+          "type": "string",
+          "accepts": "name or id"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "garden.new",
+      "group": "garden",
+      "about": "Make a garden and switch to it: empty, or a copy of one.",
+      "fields": [
+        {
+          "name": "name",
+          "required": true,
+          "about": "name for it",
+          "type": "string"
+        },
+        {
+          "name": "copy",
+          "required": false,
+          "about": "garden to copy",
+          "type": "string",
+          "accepts": "name"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "garden.switch",
+      "group": "garden",
+      "about": "Switch to another garden.",
+      "fields": [
+        {
+          "name": "garden",
+          "required": true,
+          "about": "name",
+          "type": "string",
+          "accepts": "name"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "gardens.list",
+      "group": "garden",
+      "about": "Every garden (a whole set of blooms) A-Z, and the one in use.",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "hotkey.list",
+      "group": "hotkey",
+      "about": "Hotkey actions and what they do.",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "hotkey.run",
+      "group": "hotkey",
+      "about": "Do what a hotkey does (hotkey.list shows them). note says why when it couldn't.",
+      "fields": [
+        {
+          "name": "hotkey",
+          "required": true,
+          "about": "hotkey action id",
+          "type": "string",
+          "accepts": "hotkey action id"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "item.add",
+      "group": "item",
+      "about": "Put a source in a bloom (in its sprig) or a sprig, on top (a plugin starts readable, in a free corner). Answers the item's id.",
+      "fields": [
+        {
+          "name": "source",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "bloom",
+          "required": false,
+          "about": "bloom to add to",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "sprig",
+          "required": false,
+          "about": "sprig to add to",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "shape",
+          "required": false,
+          "about": "both (default), horizontal or vertical",
+          "type": "string",
+          "values": [
+            "both",
+            "horizontal",
+            "vertical"
+          ],
+          "default": "both"
+        },
+        {
+          "name": "visible",
+          "required": false,
+          "about": "true (default) or false",
+          "type": "boolean",
+          "default": true
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "item.duplicate",
+      "group": "item",
+      "about": "Copy something in a bloom or sprig: a new source with the same settings and filters, placed the same way, on top. Sprigs can't be copied this way.",
+      "fields": [
+        {
+          "name": "item",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "bloom",
+          "required": false,
+          "about": "bloom it's in",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "sprig",
+          "required": false,
+          "about": "sprig it's in",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "shape",
+          "required": false,
+          "about": "both (default), horizontal or vertical",
+          "type": "string",
+          "values": [
+            "both",
+            "horizontal",
+            "vertical"
+          ],
+          "default": "both"
+        },
+        {
+          "name": "name",
+          "required": false,
+          "about": "the copy's name (default: its name and a number)",
+          "type": "string"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "item.hide",
+      "group": "item",
+      "about": "Hide something inside a bloom or sprig.",
+      "fields": [
+        {
+          "name": "item",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "bloom",
+          "required": false,
+          "about": "bloom it's in",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "sprig",
+          "required": false,
+          "about": "sprig it's in",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "shape",
+          "required": false,
+          "about": "both (default), horizontal or vertical",
+          "type": "string",
+          "values": [
+            "both",
+            "horizontal",
+            "vertical"
+          ],
+          "default": "both"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "item.lock",
+      "group": "item",
+      "about": "Lock something in place in Build, or unlock it (no locked: toggle).",
+      "fields": [
+        {
+          "name": "item",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "bloom",
+          "required": false,
+          "about": "bloom it's in",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "sprig",
+          "required": false,
+          "about": "sprig it's in",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "shape",
+          "required": false,
+          "about": "both (default), horizontal or vertical",
+          "type": "string",
+          "values": [
+            "both",
+            "horizontal",
+            "vertical"
+          ],
+          "default": "both"
+        },
+        {
+          "name": "locked",
+          "required": false,
+          "about": "true or false",
+          "type": "boolean"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "item.order",
+      "group": "item",
+      "about": "Bring something forward or send it back.",
+      "fields": [
+        {
+          "name": "item",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "bloom",
+          "required": false,
+          "about": "bloom it's in",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "sprig",
+          "required": false,
+          "about": "sprig it's in",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "shape",
+          "required": false,
+          "about": "both (default), horizontal or vertical",
+          "type": "string",
+          "values": [
+            "both",
+            "horizontal",
+            "vertical"
+          ],
+          "default": "both"
+        },
+        {
+          "name": "to",
+          "required": true,
+          "about": "top, bottom, up (one step) or down (one step)",
+          "type": "string",
+          "values": [
+            "top",
+            "bottom",
+            "up",
+            "down"
+          ]
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "item.place",
+      "group": "item",
+      "about": "Move, size or turn something inside a bloom or sprig (only the fields you give change).",
+      "fields": [
+        {
+          "name": "item",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "bloom",
+          "required": false,
+          "about": "bloom it's in",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "sprig",
+          "required": false,
+          "about": "sprig it's in",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "shape",
+          "required": false,
+          "about": "both (default), horizontal or vertical",
+          "type": "string",
+          "values": [
+            "both",
+            "horizontal",
+            "vertical"
+          ],
+          "default": "both"
+        },
+        {
+          "name": "x",
+          "required": false,
+          "about": "left edge, canvas pixels",
+          "type": "number"
+        },
+        {
+          "name": "y",
+          "required": false,
+          "about": "top edge",
+          "type": "number"
+        },
+        {
+          "name": "scale",
+          "required": false,
+          "about": "size, 1 = as big as the source",
+          "type": "number"
+        },
+        {
+          "name": "scale_x",
+          "required": false,
+          "about": "width only, 1 = as wide as the source",
+          "type": "number"
+        },
+        {
+          "name": "scale_y",
+          "required": false,
+          "about": "height only, 1 = as tall as the source",
+          "type": "number"
+        },
+        {
+          "name": "rotation",
+          "required": false,
+          "about": "degrees clockwise",
+          "type": "number"
+        },
+        {
+          "name": "dx",
+          "required": false,
+          "about": "pixels to move right (negative: left)",
+          "type": "number"
+        },
+        {
+          "name": "dy",
+          "required": false,
+          "about": "pixels to move down (negative: up)",
+          "type": "number"
+        },
+        {
+          "name": "crop",
+          "required": false,
+          "about": "{left, top, right, bottom} in source pixels (the sides you give change)",
+          "type": "object",
+          "keys": [
+            "left",
+            "top",
+            "right",
+            "bottom"
+          ]
+        },
+        {
+          "name": "bounds",
+          "required": false,
+          "about": "off, fit, fill or stretch: squeeze it into a box",
+          "type": "string",
+          "values": [
+            "off",
+            "fit",
+            "fill",
+            "stretch"
+          ]
+        },
+        {
+          "name": "bounds_width",
+          "required": false,
+          "about": "the box's width, canvas pixels",
+          "type": "number"
+        },
+        {
+          "name": "bounds_height",
+          "required": false,
+          "about": "the box's height",
+          "type": "number"
+        },
+        {
+          "name": "bounds_align",
+          "required": false,
+          "about": "where the picture sits in its box (top_left ... center ... bottom_right)",
+          "type": "string",
+          "values": [
+            "top_left",
+            "top",
+            "top_right",
+            "left",
+            "center",
+            "right",
+            "bottom_left",
+            "bottom",
+            "bottom_right"
+          ]
+        },
+        {
+          "name": "align",
+          "required": false,
+          "about": "the point it turns around (top_left ... center ... bottom_right); the picture stays where it is",
+          "type": "string",
+          "values": [
+            "top_left",
+            "top",
+            "top_right",
+            "left",
+            "center",
+            "right",
+            "bottom_left",
+            "bottom",
+            "bottom_right"
+          ]
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "item.remove",
+      "group": "item",
+      "about": "Take something out of a bloom or sprig. Its source stays (source.remove removes that).",
+      "fields": [
+        {
+          "name": "item",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "bloom",
+          "required": false,
+          "about": "bloom it's in",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "sprig",
+          "required": false,
+          "about": "sprig it's in",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "shape",
+          "required": false,
+          "about": "both (default), horizontal or vertical",
+          "type": "string",
+          "values": [
+            "both",
+            "horizontal",
+            "vertical"
+          ],
+          "default": "both"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "item.show",
+      "group": "item",
+      "about": "Show something inside a bloom or sprig.",
+      "fields": [
+        {
+          "name": "item",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "bloom",
+          "required": false,
+          "about": "bloom it's in",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "sprig",
+          "required": false,
+          "about": "sprig it's in",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "shape",
+          "required": false,
+          "about": "both (default), horizontal or vertical",
+          "type": "string",
+          "values": [
+            "both",
+            "horizontal",
+            "vertical"
+          ],
+          "default": "both"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "item.status",
+      "group": "item",
+      "about": "Whether something inside a bloom or sprig is shown.",
+      "fields": [
+        {
+          "name": "item",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "bloom",
+          "required": false,
+          "about": "bloom it's in",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "sprig",
+          "required": false,
+          "about": "sprig it's in",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "shape",
+          "required": false,
+          "about": "both (default), horizontal or vertical",
+          "type": "string",
+          "values": [
+            "both",
+            "horizontal",
+            "vertical"
+          ],
+          "default": "both"
+        }
+      ],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "item.toggle",
+      "group": "item",
+      "about": "Show it if hidden, hide it if shown.",
+      "fields": [
+        {
+          "name": "item",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "bloom",
+          "required": false,
+          "about": "bloom it's in",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "sprig",
+          "required": false,
+          "about": "sprig it's in",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "shape",
+          "required": false,
+          "about": "both (default), horizontal or vertical",
+          "type": "string",
+          "values": [
+            "both",
+            "horizontal",
+            "vertical"
+          ],
+          "default": "both"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "items.list",
+      "group": "item",
+      "about": "What's inside a bloom or sprig, per shape.",
+      "fields": [
+        {
+          "name": "bloom",
+          "required": false,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "sprig",
+          "required": false,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        }
+      ],
+      "looksOnly": true,
+      "oneStep": true
+    },
+    {
+      "name": "layout.get",
+      "group": "layout",
+      "about": "Where everything in a bloom or sprig sits, per shape, top of the stack first: each item's place, crop, bounds, its source's own size and its box on the canvas. Sprigs carry what's inside them.",
+      "fields": [
+        {
+          "name": "bloom",
+          "required": false,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "sprig",
+          "required": false,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "shape",
+          "required": false,
+          "about": "both (default), horizontal or vertical",
+          "type": "string",
+          "values": [
+            "both",
+            "horizontal",
+            "vertical"
+          ],
+          "default": "both"
+        },
+        {
+          "name": "flat",
+          "required": false,
+          "about": "true: only the things themselves (no sprigs), as they end up on the canvas",
+          "type": "boolean"
+        },
+        {
+          "name": "overlaps",
+          "required": false,
+          "about": "true: also the pairs of shown things whose boxes overlap",
+          "type": "boolean"
+        }
+      ],
+      "looksOnly": true,
+      "oneStep": true
+    },
+    {
+      "name": "media.list",
+      "group": "media",
+      "about": "Every video and sound file, with what it's doing (playing, paused, stopped, ended).",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "media.loop",
+      "group": "media",
+      "about": "Loop it or not (no on: toggle).",
+      "fields": [
+        {
+          "name": "media",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "on",
+          "required": false,
+          "about": "true or false",
+          "type": "boolean"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "media.pause",
+      "group": "media",
+      "about": "Pause where it is.",
+      "fields": [
+        {
+          "name": "media",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "media.play",
+      "group": "media",
+      "about": "Play (from the start if it ended or was stopped).",
+      "fields": [
+        {
+          "name": "media",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "media.restart",
+      "group": "media",
+      "about": "Play from the start.",
+      "fields": [
+        {
+          "name": "media",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "media.seek",
+      "group": "media",
+      "about": "Jump to a time.",
+      "fields": [
+        {
+          "name": "media",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "seconds",
+          "required": false,
+          "about": "time from the start",
+          "type": "number"
+        },
+        {
+          "name": "change",
+          "required": false,
+          "about": "seconds to move (negative: back)",
+          "type": "number"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "media.status",
+      "group": "media",
+      "about": "What a video or sound file is doing, where it is and how long it is.",
+      "fields": [
+        {
+          "name": "media",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        }
+      ],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "media.stop",
+      "group": "media",
+      "about": "Stop and show nothing (play starts from the beginning).",
+      "fields": [
+        {
+          "name": "media",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "media.toggle",
+      "group": "media",
+      "about": "Pause if playing, else play.",
+      "fields": [
+        {
+          "name": "media",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "path.new",
+      "group": "path",
+      "about": "Make a path and switch to it: empty, or a copy of one.",
+      "fields": [
+        {
+          "name": "name",
+          "required": true,
+          "about": "name for it",
+          "type": "string"
+        },
+        {
+          "name": "copy",
+          "required": false,
+          "about": "path to copy",
+          "type": "string",
+          "accepts": "name"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "path.switch",
+      "group": "path",
+      "about": "Switch to another path (not while live or recording).",
+      "fields": [
+        {
+          "name": "path",
+          "required": true,
+          "about": "name",
+          "type": "string",
+          "accepts": "name"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "paths.list",
+      "group": "path",
+      "about": "Every path (where and how you go out: places, encoder, recording) A-Z, and the one in use.",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "place.set",
+      "group": "place",
+      "about": "Switch a place on or off for the next Go live, and/or its test mode (Twitch: the stream reaches Twitch but viewers never see it).",
+      "fields": [
+        {
+          "name": "place",
+          "required": true,
+          "about": "id from places.list",
+          "type": "string",
+          "accepts": "id, name or service"
+        },
+        {
+          "name": "on",
+          "required": false,
+          "about": "true or false",
+          "type": "boolean"
+        },
+        {
+          "name": "bandwidth_test",
+          "required": false,
+          "about": "true or false (only places whose service has a test mode)",
+          "type": "boolean"
+        },
+        {
+          "name": "bitrateKbps",
+          "required": false,
+          "about": "500 to 50000: its bitrate for the next Go live",
+          "type": "integer",
+          "min": 500,
+          "max": 50000
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "place.start",
+      "group": "place",
+      "about": "While live: start sending to one more place (switched on for next time too).",
+      "fields": [
+        {
+          "name": "place",
+          "required": true,
+          "about": "id from places.list",
+          "type": "string",
+          "accepts": "id, name or service"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "place.stop",
+      "group": "place",
+      "about": "While live: stop sending to one place (the others keep going; the last one ends the stream).",
+      "fields": [
+        {
+          "name": "place",
+          "required": true,
+          "about": "id from places.list",
+          "type": "string",
+          "accepts": "id, name or service"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "places.list",
+      "group": "place",
+      "about": "Where the stream goes (Twitch, YouTube...), each one's shape and if it's on.",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "plugins.list",
+      "group": "app",
+      "about": "The plugins that are added (enabled) and the store's others (not enabled), each with the actions it brings.",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "record.chapter",
+      "group": "record",
+      "about": "Add a chapter mark to the recording at this moment (editors and players list them).",
+      "fields": [
+        {
+          "name": "name",
+          "required": false,
+          "about": "the chapter's name (default: Chapter 1, 2...)",
+          "type": "string"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "record.pause",
+      "group": "record",
+      "about": "Pause the recording. The file stays open; record.resume carries on in it.",
+      "fields": [],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "record.resume",
+      "group": "record",
+      "about": "Carry on recording in the same file after record.pause.",
+      "fields": [],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "record.start",
+      "group": "record",
+      "about": "Start recording. If the drive is nearly full, nothing starts: doctor_warnings says so.",
+      "fields": [
+        {
+          "name": "force",
+          "required": false,
+          "about": "true: record anyway",
+          "type": "boolean"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "record.status",
+      "group": "record",
+      "about": "Recording or not, for how long, the file, and whether it's paused.",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "record.stop",
+      "group": "record",
+      "about": "Stop recording.",
+      "fields": [],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "record.toggle",
+      "group": "record",
+      "about": "Start or stop recording (starting answers like record.start).",
+      "fields": [
+        {
+          "name": "force",
+          "required": false,
+          "about": "true: record anyway",
+          "type": "boolean"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "record.toggle_pause",
+      "group": "record",
+      "about": "Pause, or carry on after a pause.",
+      "fields": [],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "screenshot.take",
+      "group": "screenshot",
+      "about": "A picture of what's on air in each shape, or of one source or bloom.",
+      "fields": [
+        {
+          "name": "shape",
+          "required": false,
+          "about": "both (default), horizontal or vertical",
+          "type": "string",
+          "values": [
+            "both",
+            "horizontal",
+            "vertical"
+          ],
+          "default": "both"
+        },
+        {
+          "name": "source",
+          "required": false,
+          "about": "just this source (a camera...), name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "bloom",
+          "required": false,
+          "about": "just this bloom, name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "width",
+          "required": false,
+          "about": "shrink to this width in pixels (keeps the shape)",
+          "type": "integer"
+        },
+        {
+          "name": "save",
+          "required": false,
+          "about": "true (default): save PNGs in the recordings folder, under Screenshots",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "name": "data",
+          "required": false,
+          "about": "true: send the picture back as base64 PNG (for bots and pages; large)",
+          "type": "boolean"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "sound.balance",
+      "group": "sound",
+      "about": "Left/right: -1 left, 0 middle, 1 right.",
+      "fields": [
+        {
+          "name": "sound",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "balance",
+          "required": true,
+          "about": "-1 to 1",
+          "type": "number",
+          "min": -1.0,
+          "max": 1.0
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "sound.micFirst",
+      "group": "sound",
+      "about": "Lower everything else while your mic talks (ducking).",
+      "fields": [
+        {
+          "name": "on",
+          "required": true,
+          "about": "true or false",
+          "type": "boolean"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "sound.mute",
+      "group": "sound",
+      "about": "Mute or unmute a sound (no muted: toggle).",
+      "fields": [
+        {
+          "name": "sound",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "muted",
+          "required": false,
+          "about": "true or false",
+          "type": "boolean"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "sound.volume",
+      "group": "sound",
+      "about": "Set a sound's volume in dB, or change it by some dB.",
+      "fields": [
+        {
+          "name": "sound",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "db",
+          "required": false,
+          "about": "new volume, -100 to 26",
+          "type": "number",
+          "min": -100.0,
+          "max": 26.0
+        },
+        {
+          "name": "change",
+          "required": false,
+          "about": "dB to add (negative to lower)",
+          "type": "number"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "sounds.list",
+      "group": "sound",
+      "about": "Every sound in the mixer with its volume and mute.",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "source.get",
+      "group": "source",
+      "about": "A source's settings.",
+      "fields": [
+        {
+          "name": "source",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        }
+      ],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "source.new",
+      "group": "source",
+      "about": "Make a source (a browser page, text, image...). Put it in a bloom with item.add.",
+      "fields": [
+        {
+          "name": "name",
+          "required": true,
+          "about": "name",
+          "type": "string"
+        },
+        {
+          "name": "kind",
+          "required": true,
+          "about": "browser, text, image, color, media...",
+          "type": "string"
+        },
+        {
+          "name": "settings",
+          "required": false,
+          "about": "{key: value}, e.g. url, width, height",
+          "type": "object"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "source.refresh",
+      "group": "source",
+      "about": "Load a web page source again, now.",
+      "fields": [
+        {
+          "name": "source",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "source.remove",
+      "group": "source",
+      "about": "Remove a source, taking it out of every bloom and sprig it's in.",
+      "fields": [
+        {
+          "name": "source",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "source.rename",
+      "group": "source",
+      "about": "Give a source a new name.",
+      "fields": [
+        {
+          "name": "source",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "name",
+          "required": true,
+          "about": "new name",
+          "type": "string"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "source.rotate",
+      "group": "source",
+      "about": "Turn a source to an angle wherever it's shown (0: upright again).",
+      "fields": [
+        {
+          "name": "source",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "degrees",
+          "required": true,
+          "about": "clockwise, -3600 to 3600",
+          "type": "number",
+          "min": -3600.0,
+          "max": 3600.0
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "source.set",
+      "group": "source",
+      "about": "Change some of a source's settings: text, a browser page's url, an image file, a color...",
+      "fields": [
+        {
+          "name": "source",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "settings",
+          "required": true,
+          "about": "{key: value}",
+          "type": "object"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "sources.list",
+      "group": "source",
+      "about": "Every source (cameras, text, browser pages, images, sounds...).",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "sprig.remove",
+      "group": "sprig",
+      "about": "Remove a sprig in every shape, and take it out of every bloom. Sources only it used go too, except sounds (mics, desktop and app sounds), which always stay.",
+      "fields": [
+        {
+          "name": "sprig",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "sprig.state",
+      "group": "sprig",
+      "about": "Switch a sprig to one of its Live states (null: as built).",
+      "fields": [
+        {
+          "name": "sprig",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "state",
+          "required": true,
+          "about": "state name or null",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "sprigs.list",
+      "group": "sprig",
+      "about": "Every sprig, its Live states and the state showing.",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "stream.start",
+      "group": "stream",
+      "about": "Go live to every place that's switched on; the answer lists them (places). If the Stream doctor would warn first, nothing starts: doctor_warnings lists them. places: the ids you expect to go live; if the places switched on differ, nothing starts (places_differ lists them).",
+      "fields": [
+        {
+          "name": "force",
+          "required": false,
+          "about": "true: go live past the doctor's warnings",
+          "type": "boolean"
+        },
+        {
+          "name": "places",
+          "required": false,
+          "about": "list of place ids from places.list: go live only if exactly these are switched on",
+          "type": "array",
+          "items": "string"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "stream.status",
+      "group": "stream",
+      "about": "Live or not, for how long, dropped frames, and each place on its own.",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "stream.stop",
+      "group": "stream",
+      "about": "End the stream.",
+      "fields": [],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "stream.toggle",
+      "group": "stream",
+      "about": "Go live, or end the stream (going live answers like stream.start).",
+      "fields": [
+        {
+          "name": "force",
+          "required": false,
+          "about": "true: go live past the doctor's warnings",
+          "type": "boolean"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "transition.get",
+      "group": "transition",
+      "about": "The usual transition, its length and (Move) how it moves.",
+      "fields": [],
+      "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "transition.set",
+      "group": "transition",
+      "about": "Change the usual transition, its length and (Move) how it moves.",
+      "fields": [
+        {
+          "name": "kind",
+          "required": false,
+          "about": "cut, fade, move, slide, swipe, wipe, leaf, bloom, stinger",
+          "type": "string",
+          "values": [
+            "cut",
+            "fade",
+            "move",
+            "slide",
+            "swipe",
+            "wipe",
+            "leaf",
+            "bloom",
+            "stinger"
+          ]
+        },
+        {
+          "name": "ms",
+          "required": false,
+          "about": "length in milliseconds, 50 to 20000",
+          "type": "integer",
+          "min": 50,
+          "max": 20000
+        },
+        {
+          "name": "easing",
+          "required": false,
+          "about": "Move only: smooth, ease_out, ease_in, linear, spring",
+          "type": "string",
+          "values": [
+            "smooth",
+            "ease_out",
+            "ease_in",
+            "linear",
+            "spring"
+          ]
+        },
+        {
+          "name": "unmatched",
+          "required": false,
+          "about": "Move only, what only one bloom shows: fade, scale, slide",
+          "type": "string",
+          "values": [
+            "fade",
+            "scale",
+            "slide"
+          ]
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "viewers.counts",
+      "group": "viewers",
+      "about": "While live: how many watch on each platform (YouTube, Twitch, Kick), read at most once a minute; never waits. A platform not live: live false; viewers null: no number yet.",
+      "fields": [],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
+      "name": "youtube.viewers",
+      "group": "youtube",
+      "about": "While live on YouTube: how many watch, in all and on each YouTube stream (read from YouTube at most once a minute; never waits). Not live there or not signed in: live false.",
+      "fields": [],
+      "looksOnly": false,
+      "oneStep": false
+    }
+  ]
+}

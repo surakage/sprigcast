@@ -5,7 +5,9 @@ from pathlib import Path
 
 from sprigcast.control.native import FEATURES, NativeApi
 
-DOC = (Path(__file__).parent.parent / "docs" / "control-api.md").read_text(encoding="utf-8")
+DOCS = Path(__file__).parent.parent / "docs"
+# The control API page, and the conventions page for what the API says about itself (app.protocol, errors...).
+DOC = "\n".join((DOCS / page).read_text(encoding="utf-8") for page in ("control-api.md", "api/conventions.md"))
 
 
 def _actions():
