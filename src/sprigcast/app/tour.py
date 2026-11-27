@@ -136,6 +136,9 @@ def stops() -> list[Stop]:
              "you run it. Switch any time, or press Ctrl+1 and Ctrl+2.", _named("modePills"), mode="live", pip="pip-hello"),
         Stop("Live", "What viewers see", "Your canvases, as they go out: horizontal, and vertical if you use it.",
              _attr("live_stage", "card"), mode="live"),
+        Stop("Live", "Preview", "On a slower PC, right-click a canvas and pick Preview while live, then Light or Off. "
+             "Your stream looks the same, and your graphics card has more room for it.",
+             _attr("live_stage", "card"), mode="live"),
         Stop("Live", "Go live", "Starts your stream on every place that's switched on.",
              _attr("live_side", "live"), mode="live", pip="pip-live"),
         Stop("Live", "Record", "Saves a copy on this PC. It can run with or without a stream.",
@@ -156,6 +159,8 @@ def stops() -> list[Stop]:
              _attr("library"), mode="build", done=_grew(_bloom_count, "blooms")),
         Stop("Build", "The canvas", "Drag, resize and crop what's in your bloom right here.",
              _attr("center"), mode="build"),
+        Stop("Build", "Snapping", "As you drag, things snap to the canvas edges and to each other. Hold Ctrl to place "
+             "freely, or right-click the canvas and pick Snapping to change it.", _attr("center"), mode="build"),
         Stop("Build", "Add your camera", "Try it: press + Add, then pick Video Capture Device. Next lights up once "
              "your camera is in.", _attr("add_button"), mode="build", done=_grew(_leaf_count, "camera")),
         Stop("Build", "Add your screen", "Try it: press + Add again and pick Display Capture for your screen, or Game "
@@ -169,7 +174,8 @@ def stops() -> list[Stop]:
              "remover, color fixes or mic noise removal.", _attr("prop_filters"), mode="build"),
         Stop("Build", "Search", "Find any command, bloom or setting here, or press Ctrl+K.",
              _attr("palette_button"), mode="build"),
-        Stop("Settings", "This PC", "Optimize for this PC picks the settings that fit your PC and your upload.",
+        Stop("Settings", "This PC", "Optimize for this PC picks the settings that fit your PC and your upload. Preview "
+             "while live is here too.",
              _settings_tab("General"), settings="General/This PC"),
         Stop("Settings", "Stream", "Add each place you stream to, with its key or sign-in.",
              _settings_tab("Stream"), settings="Stream"),

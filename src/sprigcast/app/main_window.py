@@ -1104,10 +1104,35 @@ class MainWindow(QMainWindow):
                 act.setChecked(choice == current)
                 act.triggered.connect(lambda _=False, c=choice: self._set_live_safe_zones(c))
         menu.addSeparator()
+        self._preview_live_menu(menu)
         size = f"{canvas.width}×{canvas.height}, {canvas.fps} fps" if canvas is not None else ""
         settings = menu.addAction(icons.icon("gear", theme.MUTED), f"Canvas settings…  {size}".rstrip())
         settings.setToolTip("Size and frame rate (Settings → Video)")
         settings.triggered.connect(lambda: self._open_settings("Video"))
+
+    def _preview_live_menu(self, menu: QMenu) -> QMenu:
+        """Right-click a canvas on Live → Preview while live: Smooth, Light or Off, the same switch as Settings →
+        General → This PC (a tester on a slow PC asked to turn the preview off, 2026-11-27). Both canvases."""
+        from sprigcast.app.settings_window import PREVIEW_CHOICES, preview_choice
+
+        sub = menu.addMenu(icons.icon("monitor", theme.MUTED), "Preview while live")
+        sub.setToolTipsVisible(True)
+        sub.setToolTip("Light or Off leaves more of the graphics card for the stream; projectors keep drawing")
+        now = preview_choice()
+        for key, label in PREVIEW_CHOICES.items():
+            act = sub.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(key == now)
+            act.triggered.connect(lambda _=False, k=key: self._set_preview_live(k))
+        return sub
+
+    def _set_preview_live(self, choice: str) -> None:
+        from sprigcast.app.settings_window import PREVIEW_LIVE
+
+        QSettings().setValue(PREVIEW_LIVE, choice)
+        self._preview_live = None  # read again on the next poll: both canvases follow
+        for preview in self.previews.values():
+            preview.update()
 
     # Projectors ------------------------------------------------------------------------
 

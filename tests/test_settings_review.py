@@ -214,3 +214,20 @@ def test_the_camera_tab_lists_speakers_off_the_window_thread(app, monkeypatch):
         app.processEvents()
         time.sleep(0.01)
     assert tab.sound.findData("CABLE Input") > 0 and asked_on and asked_on[0] is not threading.main_thread()
+
+
+def test_preview_while_live_is_one_right_click_away_on_live(window):
+    from sprigcast.app.settings_window import PREVIEW_LIVE, preview_choice
+
+    window._set_mode("live")
+    menu = window._preview_menu("horizontal", -1)
+    sub = next(a.menu() for a in menu.actions() if a.text() == "Preview while live")
+    assert [a.text() for a in sub.actions()] == ["Smooth", "Light (15 fps)", "Off"]
+    next(a for a in sub.actions() if a.text() == "Off").trigger()
+    assert preview_choice() == "off" and window._preview_live is None  # both canvases follow on the next poll
+    menu.deleteLater()
+    menu = window._preview_menu("horizontal", -1)
+    sub = next(a.menu() for a in menu.actions() if a.text() == "Preview while live")
+    assert next(a for a in sub.actions() if a.text() == "Off").isChecked()
+    QSettings().remove(PREVIEW_LIVE)
+    menu.deleteLater()
