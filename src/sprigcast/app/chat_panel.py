@@ -1357,10 +1357,6 @@ class ChatPanel(QWidget):
         self.hide_links_box = QCheckBox("Hide lines with links")
         self.hide_links_box.setStyleSheet(f"color: {theme.TEXT}")
         layout.addWidget(self.hide_links_box)
-        hint = QLabel("Lines with these never show here or on your stream. Your mods and VIPs always show.")
-        hint.setWordWrap(True)
-        hint.setStyleSheet(f"color: {theme.MUTED}")
-        layout.addWidget(hint)
         layout.addLayout(self._buttons(("Cancel", CHIP_STYLE, self.refresh), ("Save", GO_STYLE, self._use_words)))
         return page
 
