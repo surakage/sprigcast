@@ -329,6 +329,15 @@ def _source(obs: dict[str, Any], audio_devices: list[str] | None, notes: list[st
         settings["muted"] = bool(obs.get("muted", False))
     if sk in SOUND_SHAPED:
         _sound_details(obs, settings)
+    if sk == "camera":  # OBS's Video Delay filter on a camera: the camera's own Video delay (at most 1 s)
+        delay = next((f for f in obs.get("filters") or [] if str(f.get("id") or "") in _VIDEO_DELAYS
+                      and f.get("enabled", True)), None)
+        if delay is not None:
+            ms = int(_num((delay.get("settings") or {}).get("delay_ms"), 0))
+            if ms > 0:
+                settings["delay_ms"] = min(1000, ms)
+                if ms > 1000:
+                    notes.append(f"{name}: its video delay was {ms} ms; SprigCast's camera delay goes up to 1000 ms.")
     monitoring = int(_num(obs.get("monitoring_type"), 0))  # OBS: 1 = monitor only, 2 = monitor and output
     if sk in ("audio_input", "audio_output", "app_audio", "media", "browser", "camera") and monitoring in (1, 2):
         settings["monitor"] = "only" if monitoring == 1 else True
@@ -414,8 +423,10 @@ def _stroke_glow_shadow(kind: str, s: dict[str, Any]) -> tuple[str, dict[str, An
     return mine, out
 
 
+_VIDEO_DELAYS = ("async_delay_filter", "gpu_delay")  # Video Delay (async) and Render Delay
+_IMAGE_MASKS = ("mask_filter", "mask_filter_v2")  # Image Mask/Blend: an alpha mask becomes the Frame's picture shape
 _BY_NAME = "name:"  # a filter naming another sound, until the sound has its SprigCast id
-_PICTURE_FILTERS = {"blur", "chroma_key", "color_correction", "sharpen", "scroll", "color_key", "luma_key", "lut",
+_PICTURE_FILTERS = {"blur", "chroma_key", "color_correction", "sharpen", "scroll", "color_key", "luma_key", "lut", "shape",
                     "stroke", "glow", "shadow"}
 
 
@@ -503,6 +514,10 @@ def _filters(obs: dict[str, Any], notes: list[str]) -> list[Filter]:
                                            "release_ms": max(1, int(_num(s.get("release_time"), 50)))}
         elif kind in _STROKE_GLOW_SHADOW:
             mapped = _stroke_glow_shadow(kind, s)
+        elif kind in _VIDEO_DELAYS and str(obs.get("id") or "") == "dshow_input":
+            continue  # carried over as the camera's own Video delay (_source)
+        elif kind in _IMAGE_MASKS and "alpha" in str(s.get("type", "")).lower() and s.get("image_path"):
+            mapped = "shape", {"shape": "image", "mask_file": str(s.get("image_path"))}
         if mapped is None:
             notes.append(f"{obs.get('name')}: the {f.get('name') or kind} filter has no match yet.")
             _missed("filter", kind)

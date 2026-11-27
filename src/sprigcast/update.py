@@ -207,7 +207,23 @@ def fetch_newest(channel: str = STABLE, opener: Opener = urllib.request.urlopen,
         raise
     found = [r for item in (data if isinstance(data, list) else []) if isinstance(item, dict)
              for r in [release_from_json(item, tests=True)] if r is not None]
-    return pick(found, channel)
+    return with_notes_since(found, pick(found, channel))
+
+
+def with_notes_since(releases: list[Release], newest: Release | None, current: Key | None = None) -> Release | None:
+    """`newest` with the notes of every test build between this copy and it, newest first, so a tester who skipped
+    a few builds sees everything that changed. A published version keeps its own notes (its CHANGELOG section)."""
+    current = current_key() if current is None else current
+    if newest is None or not newest.test or current is None:
+        return newest
+    between = sorted((r for r in releases if r.test and current < r.key <= newest.key and r.notes),
+                     key=lambda r: r.key, reverse=True)
+    if len(between) < 2:
+        return newest
+    import dataclasses
+
+    notes = "\n\n".join(f"## {r.label}\n\n{r.notes}" for r in between)
+    return dataclasses.replace(newest, notes=notes)
 
 
 def hash_for(hashes_text: str, name: str) -> str | None:
