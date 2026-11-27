@@ -16,6 +16,7 @@ import logging
 from typing import Any
 
 from PySide6.QtCore import QSettings, QStringListModel, Qt, QTimer, Signal
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -995,11 +996,21 @@ class SettingsWindow(QDialog):
             lform.addRow("Keep logs for", self.keep_logs)
             from sprigcast.app import share_reports
 
-            self.share_streams = QCheckBox("Send stream summaries to the developer")
+            self.share_streams = QCheckBox(share_reports.LABEL)
             self.share_streams.setChecked(share_reports.enabled())
-            self.share_streams.setToolTip("How each place did, your PC's details and the log. Stream keys, passwords,"
-                                          " names and addresses are removed first")
+            self.share_streams.setToolTip("After each stream, a crash, or an import that missed something: the log "
+                                          "and your PC's details. Keys, passwords, names, addresses and chat are "
+                                          "removed first. Kept 30 days")
             lform.addRow(self.share_streams)
+            install = QLabel(share_reports.install_id())
+            install.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            copy = QPushButton("Copy")
+            copy.setStyleSheet(theme.button_style(14, "6px 16px"))
+            copy.clicked.connect(lambda: QGuiApplication.clipboard().setText(share_reports.install_id()))
+            install_row = QHBoxLayout()
+            install_row.addWidget(install, 1)
+            install_row.addWidget(copy)
+            lform.addRow("Install ID", install_row)
 
             from sprigcast.app import features
 

@@ -103,6 +103,15 @@ def make(target: Path, note: str, include: bool, crash=None, window=None, scrub=
     return target
 
 
+def _install() -> str:
+    try:
+        from sprigcast.app.share_reports import install_id
+
+        return install_id()
+    except Exception:  # noqa: BLE001 - no settings (a test, the crash helper): send without it
+        return ""
+
+
 def send(path: Path, kind: str, cause: str = "", url: str | None = None, opener=urllib.request.urlopen) -> str:
     """Upload the zip; returns the report number. Raises OSError when it can't be sent."""
     from sprigcast.app.logbook import _version
@@ -113,6 +122,7 @@ def send(path: Path, kind: str, cause: str = "", url: str | None = None, opener=
         "User-Agent": f"SprigCast/{_version()}",
         "X-SprigCast-Version": _version(),
         "X-SprigCast-Kind": kind,
+        "X-SprigCast-Install": _install(),
         "X-SprigCast-Cause": tester_report.Scrubber.for_this_pc()(cause)
         .encode("ascii", "ignore").decode()[:160],
     })
