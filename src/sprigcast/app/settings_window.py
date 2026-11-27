@@ -74,8 +74,9 @@ ABOUT = {  # one line under each page's title
     "Connections": "Let other apps on your PC control SprigCast.",
 }
 EXPERT = "settings/expert"  # QSettings: show the expert rows
-PREVIEW_LIVE = "general/preview_live"  # QSettings: the previews on the Live screen (Smooth, Light, Off)
-PREVIEW_CHOICES = {"smooth": "Smooth (30 fps)", "light": "Light (15 fps)", "off": "Off"}
+PREVIEW_LIVE = "general/preview_live"  # QSettings: how the previews draw while live or recording
+PREVIEW_SHOWN = "live/preview"  # QSettings: the Live screen's previews on or off, any time (right-click → Preview)
+PREVIEW_CHOICES = {"smooth": "Smooth: 30 fps", "light": "Light: 15 fps, half the work", "off": "Off: nothing drawn"}
 PREVIEW_FPS = {"smooth": 30, "light": 15, "off": 0}
 
 # Settings search: what you might type, and where it lives ("Tab/Sub"). expert: shown only with Expert on.
@@ -236,6 +237,11 @@ def sleep_policy() -> str:
     """What to do with sources no scene on screen shows (Engine.sleep_policy)."""
     value = QSettings().value(SLEEP_SETTING, "not_cameras")
     return value if value in SLEEP_CHOICES else "not_cameras"
+
+
+def preview_on() -> bool:
+    """The Live screen's previews on (any time), from right-click → Preview or Settings → Preview."""
+    return QSettings().value(PREVIEW_SHOWN, True, type=bool)
 
 
 def preview_choice() -> str:
@@ -1181,13 +1187,21 @@ class SettingsWindow(QDialog):
         self.sleep_sources.setToolTip("Paused sources use no memory or CPU and start again when their bloom is "
                                       "shown.\nA paused camera takes about a second to come back.")
         form.addRow("Sources not on screen", self.sleep_sources)
+        from sprigcast.app.live_stage import Switch
+
+        self.preview_shown = Switch()  # the same as right-click → Preview on Live
+        self.preview_shown.setChecked(preview_on())
+        self.preview_shown.setToolTip("Off: the Live screen's previews stop drawing, live or not.\n"
+                                      "Build and projectors keep drawing.")
+        form.addRow("Preview", self.preview_shown)
         self.preview_live = QComboBox()
         for key, label in PREVIEW_CHOICES.items():
             self.preview_live.addItem(label, key)
         self.preview_live.setCurrentIndex(max(0, self.preview_live.findData(preview_choice())))
-        self.preview_live.setToolTip("On the Live screen. Light or Off leaves more of the graphics card for the stream on a "
-                                     "slower PC.\nProjectors keep drawing.")
-        form.addRow("Preview", self.preview_live)
+        self.preview_live.setToolTip("While you're live or recording. Light draws half as often; Off draws nothing.\n"
+                                     "Either leaves more of the graphics card for the stream on a slower PC.\n"
+                                     "Your stream is the same with any of them. Projectors keep drawing.")
+        form.addRow("Preview while live", self.preview_live)
         return card
 
     def _optimize(self) -> None:
@@ -1556,6 +1570,7 @@ class SettingsWindow(QDialog):
                 msgbox.warning(self, "Start with Windows", f"Windows didn't allow it: {exc}")
         settings.setValue(SLEEP_SETTING, self.sleep_sources.currentData())
         settings.setValue(PREVIEW_LIVE, self.preview_live.currentData())
+        settings.setValue(PREVIEW_SHOWN, self.preview_shown.isChecked())
         from sprigcast.app import features
 
         features.set_off({name for name, tick in self.feature_ticks.items() if not tick.isChecked()}, settings)

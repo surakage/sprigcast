@@ -136,8 +136,8 @@ def stops() -> list[Stop]:
              "you run it. Switch any time, or press Ctrl+1 and Ctrl+2.", _named("modePills"), mode="live", pip="pip-hello"),
         Stop("Live", "What viewers see", "Your canvases, as they go out: horizontal, and vertical if you use it.",
              _attr("live_stage", "card"), mode="live"),
-        Stop("Live", "Preview", "On a slower PC, right-click a canvas and pick Preview, then Light or Off. "
-             "Your stream looks the same, and your graphics card has more room for it.",
+        Stop("Live", "Preview", "On a slower PC, right-click a canvas and switch Preview off, or pick Preview while live in "
+             "Settings. Your stream looks the same, and your graphics card has more room for it.",
              _attr("live_stage", "card"), mode="live"),
         Stop("Live", "Go live", "Starts your stream on every place that's switched on.",
              _attr("live_side", "live"), mode="live", pip="pip-live"),
@@ -175,7 +175,7 @@ def stops() -> list[Stop]:
         Stop("Build", "Search", "Find any command, bloom or setting here, or press Ctrl+K.",
              _attr("palette_button"), mode="build"),
         Stop("Settings", "This PC", "Optimize for this PC picks the settings that fit your PC and your upload. Preview "
-             "is here too.",
+             "and Preview while live are here too.",
              _settings_tab("General"), settings="General/This PC"),
         Stop("Settings", "Stream", "Add each place you stream to, with its key or sign-in.",
              _settings_tab("Stream"), settings="Stream"),
