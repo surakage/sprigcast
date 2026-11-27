@@ -25,7 +25,7 @@ e.g. "Starting now"), Hide when stopped, Text colour and Card colour (a colour e
 For a countdown on its own (a "Starting soon" bloom), the Countdown plugin is made for it. Countdown stays here
 so timers set up before it keep working.
 
-It's SprigCast's clock card (core/cards.py): a leaf-cut card with a sprig that's green while the time moves.
+It's SprigCast's clock card: a leaf-cut card with a sprig that's green while the time moves.
 Its box is the card, so a selection hugs it.
 
 It's light: off screen it does nothing at all, and on screen the card is drawn again only when the time

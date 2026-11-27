@@ -212,6 +212,14 @@ class ChatView(QTextBrowser):
             self._moderation(menu, message)
         menu.addAction("Copy message").triggered.connect(
             lambda: QApplication.clipboard().setText(f"{message.user}: {message.text}" if message.user else message.text))
+        from sprigcast import plugin_hooks
+
+        extra = []
+        plugin_hooks.fill_chat_menu(message, lambda label, fn: extra.append((label, fn)))
+        if extra:
+            menu.addSeparator()
+            for label, fn in extra:
+                menu.addAction(label).triggered.connect(lambda _checked=False, fn=fn: fn())
         return menu
 
     def _moderation(self, menu: QMenu, message: ChatMessage) -> None:
