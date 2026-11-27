@@ -175,7 +175,7 @@ def stops() -> list[Stop]:
         Stop("Build", "Search", "Find any command, bloom or setting here, or press Ctrl+K.",
              _attr("palette_button"), mode="build"),
         Stop("Settings", "This PC", "Optimize for this PC picks the settings that fit your PC and your upload. Preview "
-             "and Preview while live are here too.",
+             "while live is here too.",
              _settings_tab("General"), settings="General/This PC"),
         Stop("Settings", "Stream", "Add each place you stream to, with its key or sign-in.",
              _settings_tab("Stream"), settings="Stream"),
