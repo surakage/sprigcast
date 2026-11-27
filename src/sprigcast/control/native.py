@@ -92,6 +92,10 @@ FEATURES = (
     "events.by_name",      # events takes single events by name ("place.changed"); welcome lists unknown ones
     "errors.field",        # bad_request (and a taken name's busy) errors carry field and reason
     "steps.ids",           # a step's own id comes back with its answer
+    "fields.camelCase",    # every snake_case field also answers to its camelCase spelling (scaleX, dryRun)
+    "fields.ids",          # bloomId, sprigId, sourceId, itemId, soundId, mediaId, filterId, placeId: only an id
+    "actions.toggles",     # sound.toggle, media.toggleLoop, item.toggleLock, camera.toggle
+    "actions.aliases",     # record.togglePause, filter.share: newer names for record.toggle_pause, filters.share
 )
 
 
@@ -108,7 +112,7 @@ def features() -> list[str]:
 # can be taken back together.
 BATCH_ACTIONS = frozenset({
     "item.add", "item.place", "item.order", "item.show", "item.hide", "item.toggle", "item.lock", "item.remove",
-    "item.duplicate", "source.new", "source.set", "source.rename", "source.rotate", "source.remove", "sprig.remove",
+    "item.duplicate", "item.toggleLock", "sound.toggle", "source.new", "source.set", "source.rename", "source.rotate", "source.remove", "sprig.remove",
     "filter.add", "filter.set", "filter.remove", "filter.move", "items.list", "layout.get",
     "sound.mute", "sound.volume", "sound.balance"})  # a sound's own settings: saved in the garden like the rest
 PREVIEW = API_VERSION == 0
@@ -204,6 +208,51 @@ def action(name: str, about: str, /, **fields: str):
         return fn
 
     return wrap
+
+
+# New spellings of older action names, following the naming rule (docs/api/conventions.md). Both always work.
+ACTION_ALIASES = {"record.togglePause": "record.toggle_pause", "filter.share": "filters.share"}
+
+# {"bloomId": ...} names exactly one thing by its id (never by a name); {"bloom": ...} takes a name or an id.
+ID_FIELDS = {"bloomId": "bloom", "sprigId": "sprig", "sourceId": "source", "itemId": "item", "soundId": "sound",
+             "mediaId": "media", "filterId": "filter", "placeId": "place"}
+EXACT = "_exact"  # in an action's data: the fields that came as an *Id, so their lookups take only ids
+
+
+def _exact(data: dict[str, Any], key: str) -> bool:
+    return key in data.get(EXACT, ())
+
+
+def _snake(name: str) -> str:
+    """scaleX -> scale_x, dryRun -> dry_run, boundsAlign -> bounds_align."""
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
+def aliased(fields: dict[str, str] | None, data: dict[str, Any], exact: bool = True) -> dict[str, Any]:
+    """An action's data with its camelCase spellings (scaleX) turned into the snake_case fields it declares
+    (scale_x), and *Id fields (bloomId) turned into their field (bloom), marked exact. A spelling the action
+    declares itself is never changed, and a field given both ways keeps the declared one. exact=False (a plugin's
+    action, which looks things up itself): *Id fields are only renamed."""
+    declared = fields or {}
+    out = dict(data)
+    for key in list(out):
+        if key in declared or not isinstance(key, str):
+            continue
+        base = ID_FIELDS.get(key)
+        if base is not None:
+            if base not in declared:
+                continue  # not a field of this action: left alone
+            if out.get(base) is not None and out[base] != out[key]:
+                raise _bad(f"{key} and {base} name different things: give one.", field=key, reason="conflict")
+            out[base] = out.pop(key)
+            if exact:
+                out[EXACT] = {*out.get(EXACT, ()), base}
+            continue
+        snake = _snake(key)
+        if snake != key and snake in declared:
+            value = out.pop(key)
+            out.setdefault(snake, value)
+    return out
 
 
 def _get(data: dict[str, Any], key: str, kind: type | tuple[type, ...], optional: bool = False, default: Any = None):
@@ -334,6 +383,7 @@ class NativeApi:
         return out
 
     def run(self, name: str, data: dict[str, Any]) -> Any:
+        name = ACTION_ALIASES.get(name, name)
         found = self.actions.get(name)
         if found is None and name in _PLUGIN_ACTIONS:
             return _PLUGIN_ACTIONS[name].run(self, data)
@@ -384,7 +434,8 @@ class NativeApi:
         """A bloom by id or name (any shape's name); returns the main one (the first canvas's when linked)."""
         wanted = _get(data, key, str)
         shows = [s for s in self.col.scenes if s.kind == "show"]
-        scene = next((s for s in shows if s.id == wanted), None) or next((s for s in shows if s.name == wanted), None)
+        scene = next((s for s in shows if s.id == wanted), None) or (
+            None if _exact(data, key) else next((s for s in shows if s.name == wanted), None))
         if scene is None:
             if any(s.kind == "part" and (s.id == wanted or s.name == wanted) for s in self.col.scenes):
                 raise ApiError("not_allowed", f"{wanted!r} is a sprig: sprigs show inside blooms.")
@@ -436,7 +487,8 @@ class NativeApi:
     def _sprig(self, data: dict[str, Any], key: str = "sprig") -> Scene:
         wanted = _get(data, key, str)
         parts = self.col.parts()
-        part = next((p for p in parts if p.id == wanted), None) or next((p for p in parts if p.name == wanted), None)
+        part = next((p for p in parts if p.id == wanted), None) or (
+            None if _exact(data, key) else next((p for p in parts if p.name == wanted), None))
         if part is None:
             raise _missing(f"No sprig called {wanted!r}.", "sprig", wanted)
         return part
@@ -456,7 +508,8 @@ class NativeApi:
     def _source(self, data: dict[str, Any], key: str) -> SourceConfig:
         wanted = _get(data, key, str)
         sources = [s for s in self.col.sources if s.kind != PART_KIND]
-        source = next((s for s in sources if s.id == wanted), None) or next((s for s in sources if s.name == wanted), None)
+        source = next((s for s in sources if s.id == wanted), None) or (
+            None if _exact(data, key) else next((s for s in sources if s.name == wanted), None))
         if source is None:
             source = self.col.source_by_id(wanted)  # its id as it was spelled before, or is now
             if source is not None and source.kind == PART_KIND:
@@ -498,16 +551,19 @@ class NativeApi:
         part = self.col.part_of(source) if source is not None else None
         return part.id if part is not None else source_id
 
-    def _matching_items(self, layouts: list[Scene], wanted: str) -> list[SceneItem]:
+    def _matching_items(self, layouts: list[Scene], wanted: str, exact: bool = False) -> list[SceneItem]:
+        """Items whose id, source id or name is wanted (exact: only an id, as itemId asks)."""
         out = []
         for layout in layouts:
             for item in layout.items:
-                if wanted in (self._item_key(item.source), item.source, self._item_name(item.source)):
+                names = (self._item_key(item.source), item.source) if exact else \
+                    (self._item_key(item.source), item.source, self._item_name(item.source))
+                if wanted in names:
                     out.append(item)
         if not out:
             alias = self.col.source_by_id(wanted)  # its id as it was spelled before, or is now
             if alias is not None and alias.id != wanted:
-                return self._matching_items(layouts, alias.id)
+                return self._matching_items(layouts, alias.id, exact)
         return out
 
     def _items(self, data: dict[str, Any]) -> tuple[Scene, list[SceneItem]]:
@@ -519,11 +575,12 @@ class NativeApi:
         wanted = _get(data, "item", str)
         items: list[SceneItem] = []
         for layout in layouts:
-            found = self._matching_items([layout], wanted)
+            exact = _exact(data, "item")
+            found = self._matching_items([layout], wanted, exact)
             if not found and data.get("sprig") is None:
                 sprig = self.col.bloom_sprig(layout)
                 if sprig is not None:
-                    found = self._matching_items([self.col.shape_for(sprig, layout.canvas)], wanted)
+                    found = self._matching_items([self.col.shape_for(sprig, layout.canvas)], wanted, exact)
             items += [item for item in found if all(item is not seen for seen in items)]
         if not items:
             raise _missing(f"{holder.name!r} has no item {wanted!r}.", "item", wanted)
@@ -531,8 +588,10 @@ class NativeApi:
 
     def _filter(self, source: SourceConfig, data: dict[str, Any]) -> Filter:
         wanted = _get(data, "filter", str)
-        found = next((f for f in source.filters if f.id == wanted), None) \
-            or next((f for f in source.filters if f.name == wanted), None) \
+        found = next((f for f in source.filters if f.id == wanted), None)
+        if found is None and _exact(data, "filter"):
+            raise _missing(f"{source.name!r} has no filter with the id {wanted!r}.", "filter", wanted)
+        found = found or next((f for f in source.filters if f.name == wanted), None) \
             or next((f for f in source.filters if f.kind == wanted), None)
         if found is None:  # a filter's name today or before the one-word names ("Greenscreen" or "Chroma Key")
             from sprigcast.core.filters import kind_for_label
@@ -929,6 +988,11 @@ class NativeApi:
         self.host.commit("items")
         return {"locked": locked}
 
+    @action("item.toggleLock", "Lock it if unlocked, unlock it if locked.", item="name or id",
+            bloom="?bloom it's in", sprig="?sprig it's in", shape="?both (default), horizontal or vertical")
+    def item_toggle_lock(self, data):
+        return self.item_lock({k: v for k, v in data.items() if k != "locked"})
+
     @action("item.remove", "Take something out of a bloom or sprig. Its source stays (source.remove removes that).",
             item="name or id", bloom="?bloom it's in", sprig="?sprig it's in",
             shape="?both (default), horizontal or vertical")
@@ -1031,6 +1095,10 @@ class NativeApi:
         source = self._sound(data)
         muted = _get(data, "muted", bool, optional=True)
         return self._set_sound(source, {"muted": not source.settings.get("muted", False) if muted is None else muted})
+
+    @action("sound.toggle", "Mute it if it's on, unmute it if it's muted.", sound="name or id")
+    def sound_toggle(self, data):
+        return self.sound_mute({k: v for k, v in data.items() if k != "muted"})
 
     @action("sound.volume", "Set a sound's volume in dB, or change it by some dB.", sound="name or id",
             db="?new volume, -100 to 26", change="?dB to add (negative to lower)")
@@ -1464,6 +1532,9 @@ class NativeApi:
     def _place(self, data) -> Any:
         wanted = _get(data, "place", str)
         output = find_place(self.col, wanted)
+        if output is not None and _exact(data, "place") and output.id != wanted \
+                and f"sprigcast:{output.id}" != wanted:
+            output = None
         if output is None:
             raise _missing(f"No place {wanted!r}.", "place", wanted)
         return output
@@ -1578,10 +1649,7 @@ class NativeApi:
     def place_set(self, data):
         from sprigcast.output.stream import SERVICES
 
-        wanted = _get(data, "place", str)
-        output = find_place(self.col, wanted)
-        if output is None:
-            raise _missing(f"No place {wanted!r}.", "place", wanted)
+        output = self._place(data)
         on = _get(data, "on", bool, optional=True)
         test = _get(data, "bandwidth_test", bool, optional=True)
         kbps = _get(data, "bitrateKbps", int, optional=True)
@@ -1687,6 +1755,10 @@ class NativeApi:
                 raise ApiError("not_allowed", problem)
         return {"on": on}
 
+    @action("camera.toggle", "Turn SprigCast Camera on if it's off, off if it's on.")
+    def camera_toggle(self, data):
+        return self.camera_set({})
+
     @action("clip.save", "Save the last seconds as a clip (gets clips ready first if they're off). Answers with "
                          "the file names at once; the clip.saved event says when they are written. clip is true "
                          "when a clip is being saved; when it is false, note says why and when one can be.")
@@ -1779,6 +1851,10 @@ class NativeApi:
         source.settings = {**source.settings, "loop": (not source.settings.get("loop")) if on is None else on}
         self.host.commit("sources")
         return self._media_info(source)
+
+    @action("media.toggleLoop", "Loop it if it doesn't, stop looping if it does.", media="name or id")
+    def media_toggle_loop(self, data):
+        return self.media_loop({k: v for k, v in data.items() if k != "on"})
 
     # Screenshots ---------------------------------------------------------------------------------
 
@@ -2382,7 +2458,8 @@ class NativeSession:
         first failure. Other messages keep working while a list waits."""
         steps = message.get("steps")
         problem = None
-        dry_run, one_step = message.get("dry_run") is True, message.get("one_step") is True
+        dry_run = message.get("dry_run", message.get("dryRun")) is True
+        one_step = message.get("one_step", message.get("oneStep")) is True
         if (dry_run or one_step) and isinstance(steps, list) and steps and len(steps) <= MAX_STEPS:
             if any(not isinstance(step, dict) or "wait" in step for step in steps):
                 problem = "Steps taken as one can't wait: only actions."
@@ -2436,7 +2513,10 @@ def answer(api: NativeApi, message: dict[str, Any]) -> dict[str, Any]:
     try:
         if not isinstance(name, str):
             raise _bad("do is missing: say which action, like {\"do\": \"bloom.show\", \"bloom\": \"BRB\"}.")
-        data = {k: v for k, v in message.items() if k not in ("do", "id")}
+        data = {k: v for k, v in message.items() if k not in ("do", "id", EXACT)}
+        own = api.actions.get(ACTION_ALIASES.get(name, name))
+        found = own or _PLUGIN_ACTIONS.get(name)
+        data = aliased(found.fields if found else None, data, exact=own is not None)
         result = api.run(name, data)
         if isinstance(result, Later):
             return _answer_later(out, result)

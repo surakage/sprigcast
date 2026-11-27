@@ -18,6 +18,10 @@ code. A program can build its menus, check its calls or make a client from it.
 | Action | What it does | Fields |
 | --- | --- | --- |
 | `app.protocol` | The whole API described for programs: every action with typed fields, every event, error code, error reason and close code. | none |
+| `sound.toggle` | Mute it if it's on, unmute it if it's muted. | `sound`: name or id |
+| `media.toggleLoop` | Loop it if it doesn't, stop looping if it does. | `media`: name or id |
+| `item.toggleLock` | Lock it if unlocked, unlock it if locked. | `item`: name or id, `bloom` (optional), `sprig` (optional), `shape` (optional) |
+| `camera.toggle` | Turn SprigCast Camera on if it's off, off if it's on. | none |
 
 ## Names
 
@@ -25,15 +29,25 @@ The API is settling on one style (chosen 2026-11-27). New actions, fields and ev
 names are kept working; later versions add the new spellings next to them.
 
 - **Fields are camelCase**: `bloomId`, `volumeDb`, `bitrateKbps`. Units go in the name when a number has one
-  (`Db`, `Kbps`, `Ms`). Older snake_case fields (`scale_x`, `dry_run`) keep working, and will also answer to
-  their camelCase spelling.
+  (`Db`, `Kbps`, `Ms`). Every older snake_case field also answers to its camelCase spelling: `scaleX` is
+  `scale_x`, `boundsWidth` is `bounds_width`, `bandwidthTest` is `bandwidth_test`, and a step list takes
+  `oneStep` and `dryRun`. The snake_case spellings keep working too. Answers still use today's spellings.
 - **Actions are `noun.verb`**: `bloom.show`, `sound.mute`. One thing takes the singular noun; only lists take
   the plural (`blooms.list`). The verbs are a small set: get, set, list, new, remove, show, hide, toggle, start,
   stop, play, pause, save, take, run.
 - **Events are `noun.pastTense`**: `bloom.shown`, `item.moved`, `clip.saved`.
 - **Ids and names**: everything has an `id` that never changes and a `name` that can. Fields like `bloom` take
-  either. Save the id; show the name.
-- **Toggling**: new actions always need the value they set; toggling is its own `.toggle` action.
+  either. `bloomId`, `sprigId`, `sourceId`, `itemId`, `soundId`, `mediaId`, `filterId` and `placeId` take only
+  an id, so a thing whose name happens to look like another's id is never picked by mistake:
+  `{"do": "item.hide", "bloomId": "chat-h", "itemId": "capture-3"}`. Giving `bloom` and `bloomId` naming
+  different things is a `bad_request` with reason `conflict`. Save the id; show the name. (Store plugins'
+  actions take the `*Id` spellings too, and look them up as they do a name or id.)
+- **Toggling**: new actions always need the value they set; toggling is its own `.toggle` action
+  (`sound.toggle`, `media.toggleLoop`, `item.toggleLock`, `camera.toggle`, `item.toggle`, `filter.toggle`...).
+  Leaving the value out of `sound.mute`, `media.loop`, `item.lock` or `camera.set` still toggles, as before, but a
+  retried message then flips it back, so prefer the `.toggle` action or send the value.
+- **Older action names** that don't follow the rule have a newer one next to them: `record.togglePause` is
+  `record.toggle_pause`, `filter.share` is `filters.share`. Both always work.
 
 ## Versions
 
@@ -68,8 +82,8 @@ that's taken:
  "field": "name", "reason": "already_exists"}}
 ```
 
-`reason` is one of `missing`, `empty`, `wrong_type`, `out_of_range`, `not_one_of`, `already_exists` and
-`already_running`. More may be added; act on the `code` when the reason is one you don't know.
+`reason` is one of `missing`, `empty`, `wrong_type`, `out_of_range`, `not_one_of`, `already_exists`,
+`already_running` and `conflict`. More may be added; act on the `code` when the reason is one you don't know.
 
 ## Step ids
 
@@ -100,3 +114,7 @@ server → {"id": "9", "ok": true, "result": {"steps": [{"id": "hide", "ok": tru
 | `events.by_name` | `events` takes single events by name; `welcome` lists `unknown` ones |
 | `errors.field` | `bad_request` errors (and `busy` for a taken name) carry `field` and `reason` |
 | `steps.ids` | A step's own `id` comes back with its answer |
+| `fields.camelCase` | Every snake_case field also answers to its camelCase spelling (`scaleX`, `dryRun`) |
+| `fields.ids` | `bloomId`, `sprigId`, `sourceId`, `itemId`, `soundId`, `mediaId`, `filterId`, `placeId` take only an id |
+| `actions.toggles` | `sound.toggle`, `media.toggleLoop`, `item.toggleLock`, `camera.toggle` |
+| `actions.aliases` | `record.togglePause` and `filter.share`, newer names for `record.toggle_pause` and `filters.share` |
