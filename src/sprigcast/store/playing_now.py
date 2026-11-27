@@ -6,7 +6,7 @@ once a minute and only while a Playing now card is in your garden, so a change i
 platform's own site) shows by itself. Text: your own words instead ("Just chatting with you all"). With nothing to
 show (no category, not signed in) the card hides.
 
-The card is SprigCast's clock card (core/cards.py) with a controller, drawn only when the category changes.
+The card is SprigCast's clock card with a controller, drawn only when the category changes.
 
 A SprigCast store plugin: add it from Tools → Plugin store.
 """

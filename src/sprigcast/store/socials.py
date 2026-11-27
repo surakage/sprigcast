@@ -12,9 +12,9 @@ are the platform's name, or Label words of your own after a second colon ("Disco
 
 Every: seconds each one shows (8). Brand colors: the card's rim takes the platform's color.
 
-The icons are vectors (sprigcast/store/assets/socials), sharp at any size. Brand shapes from Simple Icons (CC0);
-each logo is its owner's trademark, shown here to point at your own accounts. The card is SprigCast's clock card
-(core/cards.py), drawn only when it changes to the next handle. Off screen it does nothing.
+The icons are vectors, sharp at any size. Brand shapes from Simple Icons (CC0);
+each logo is its owner's trademark, shown here to point at your own accounts. The card is SprigCast's clock card,
+drawn only when it changes to the next handle. Off screen it does nothing.
 
 A SprigCast store plugin: add it from Tools → Plugin store.
 """

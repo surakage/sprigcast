@@ -25,7 +25,7 @@ From a hotkey (Tools → Hotkeys → Plugins), a right-click on it, the Stream D
     {"do": "break.get"}                       {"onBreak", "breakLeft", "nextBreakIn", "endIn"} (seconds or null)
 Apps hear "break.started", "break.ended" and "stream.limit".
 
-The notes are only in SprigCast, never on stream. The card is SprigCast's clock card (core/cards.py) with a cup.
+The notes are only in SprigCast, never on stream. The card is SprigCast's clock card with a cup.
 
 A SprigCast store plugin: add it from Tools → Plugin store.
 """

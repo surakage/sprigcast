@@ -11,7 +11,7 @@ From a hotkey (Tools → Hotkeys → Plugins), a right-click on it, the Stream D
     {"do": "wordcount.reset"}               back to 0
 
 It reads the chat SprigCast already has (no new sign-in) once a second, only while a counter is in your garden.
-The card is SprigCast's clock card (core/cards.py), drawn only when the number changes.
+The card is SprigCast's clock card, drawn only when the number changes.
 
 A SprigCast store plugin: add it from Tools → Plugin store.
 """

@@ -6,7 +6,7 @@ shows it ("Friday 7 PM") under Label ("Next stream"), with how soon it is (Show 
 "in 3 days", "in 2 hours"). Once that time has passed it moves on to the same day next week, so a weekly stream
 needs setting once.
 
-It's SprigCast's clock card (core/cards.py) with a calendar, drawn only when the words on it change.
+It's SprigCast's clock card with a calendar, drawn only when the words on it change.
 
 A SprigCast store plugin: add it from Tools → Plugin store.
 """

@@ -10,7 +10,7 @@ Apps and the Stream Deck:
     {"do": "pin.clear"}                                              take it down
     {"do": "pin.get"}                                                {"text", "user"} or nulls
 
-The card is SprigCast's clock card (core/cards.py) with a pin. A long message gets smaller to fit, then is cut.
+The card is SprigCast's clock card with a pin. A long message gets smaller to fit, then is cut.
 
 A SprigCast store plugin: add it from Tools → Plugin store.
 """

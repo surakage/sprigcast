@@ -15,7 +15,7 @@ action) or from an app:
 Settings: Every, Show for, Text ("Time for a sip"), Count sips (the small words count them, or show Label
 instead), Label, and the Style tab's colors, font, text size and corners.
 
-It's SprigCast's clock card (core/cards.py) with a water drop. No internet, nothing to sign in to, and the card
+It's SprigCast's clock card with a water drop. No internet, nothing to sign in to, and the card
 is drawn only when it comes on or goes. Off screen it does nothing at all.
 
 A SprigCast store plugin: add it from Tools → Plugin store.

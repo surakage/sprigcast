@@ -7,7 +7,7 @@ slides in from the left, stays Show for seconds (8), and slides out; Show for 0 
 Show it again with a hotkey (Tools → Hotkeys → Plugins), a right-click on it, the Stream Deck or an app:
 {"do": "nametag.show"}.
 
-The card is SprigCast's clock card (core/cards.py) with a tag. It's drawn once; the slide moves that picture
+The card is SprigCast's clock card with a tag. It's drawn once; the slide moves that picture
 (a few frames, on the pictures lane), so it costs next to nothing. Off screen it does nothing.
 
 A SprigCast store plugin: add it from Tools → Plugin store.

@@ -14,7 +14,7 @@ connect Twitch once more in Settings → Stream (the card says so in its status)
 Settings: Lead, Before and During words, Last seconds color, and the Style tab's colors, font, text size and
 corners. Apps can read it with {"do": "adbreak.get"}: {"nextAdIn", "adLeft", "duration"} (seconds or null).
 
-It's SprigCast's clock card (core/cards.py) with an hourglass, drawn once a second only while it shows.
+It's SprigCast's clock card with an hourglass, drawn once a second only while it shows.
 
 A SprigCast store plugin: add it from Tools → Plugin store.
 """

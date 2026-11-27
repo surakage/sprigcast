@@ -14,7 +14,7 @@ time (a time bar with how far in the song is and how long it is, when the app te
 (and the Sound they move with), Slide speed (a title too long for the card slides by, 1 slow to 5 fast),
 Only from (app names, e.g. "Spotify, Chrome": leave it empty for any app).
 
-Style tab (core/style.py, the same on every styled plugin): Accent, Text and Card colour (a colour ending in
+Style tab (the same on every styled plugin): Accent, Text and Card colour (a colour ending in
 00 is see-through: no card), Font, Corners (Round, Leaf, Square), Show dot, and Custom look.
 
 It's light: it listens for Windows saying the song changed instead of asking over and over, and only while
