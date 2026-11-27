@@ -342,6 +342,7 @@ def test_camera_version_is_bumped_when_the_camera_changes():
             digest.update(path.read_bytes().replace(b"\r\n", b"\n"))
     known = {  # camera code fingerprint: the version it shipped as
         "9ae31ae43d18ec9a": 2,
+        "bd318aea0bbc56d8": 2,  # same camera code; the .rc also names its version as text (Properties > Details)
     }
     assert known.get(digest.hexdigest()[:16]) == version, (
         f"native/camera changed (fingerprint {digest.hexdigest()[:16]}): bump SPRIGCAST_CAMERA_VERSION in "

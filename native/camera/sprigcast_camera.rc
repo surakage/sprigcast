@@ -2,6 +2,9 @@
 // SprigCast and Setup read FILEVERSION's first number to know whether the installed camera is older.
 #include <winver.h>
 #include "version.h"
+#define SC_STR2(x) #x
+#define SC_STR(x) SC_STR2(x)
+#define SC_VERSION_TEXT SC_STR(SPRIGCAST_CAMERA_VERSION) ".0.0.0"
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION SPRIGCAST_CAMERA_VERSION,0,0,0
@@ -18,6 +21,8 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Slothbloom"
             VALUE "FileDescription", "SprigCast Camera"
+            VALUE "FileVersion", SC_VERSION_TEXT
+            VALUE "ProductVersion", SC_VERSION_TEXT
             VALUE "ProductName", "SprigCast"
         END
     END
