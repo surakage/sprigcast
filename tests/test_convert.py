@@ -489,3 +489,147 @@ def test_obs_scene_transitions_on_sprigs_and_vertical_blooms():
     main = next(s for s in col.scenes if s.name == "Just Chatting" and s.canvas == "horizontal")
     assert [(r.to_scene, r.transition.kind) for r in col.transition_rules] == [(main.id, "stinger")]
     assert "Overlay: its own transition (Sting) isn't carried over: it's a sprig here." in notes
+
+
+def test_more_obs_filters_come_over():
+    data = obs_file()
+    cam = next(s for s in data["sources"] if s["name"] == "Cam")
+    cam["filters"] = [
+        {"id": "color_key_filter_v2", "name": "Black out", "settings": {"key_color_type": "custom",
+                                                                         "key_color": 0xFF000000, "similarity": 120}},
+        {"id": "luma_key_filter_v2", "name": "Lights", "settings": {"luma_min": 0.2, "luma_max_smooth": 0.1}},
+        {"id": "clut_filter", "name": "Warm", "settings": {"image_path": "C:/luts/warm.cube", "clut_amount": 0.5}},
+        {"id": "clut_filter", "name": "Old LUT", "settings": {"image_path": "C:/luts/old.png"}},
+        {"id": "obs_stroke_filter", "name": "Edge", "settings": {"stroke_size": 6, "stroke_color": 0xFFFFFFFF}},
+        {"id": "obs_glow_filter", "name": "Shine", "settings": {"glow_size": 20}},
+        {"id": "obs_shadow_filter", "name": "Drop", "settings": {"shadow_offset_x": 4, "shadow_offset_y": 6}},
+    ]
+    mic = next(s for s in data["sources"] if s["name"] == "[AIC] Mic")
+    mic["filters"] = [{"id": "basic_eq_filter", "name": "EQ", "settings": {"low": -3, "mid": 1, "high": 3}},
+                      {"id": "invert_polarity_filter", "name": "Flip", "settings": {}},
+                      {"id": "upward_compressor_filter", "name": "Lift", "settings": {"ratio": 2, "threshold": -30}},
+                      {"id": "luma_key_filter", "name": "Picture on a sound", "settings": {}}]
+    garden, notes = from_obs(data, _like(), audio_devices=["Mic (Elgato Wave:3)"])
+    cam = next(s for s in garden.sources if s.name == "Cam")
+    got = {f.name: (f.kind, f.settings) for f in cam.filters}
+    assert got["Black out"] == ("color_key", {"key_color": "#000000", "similarity": 120, "smoothness": 50})
+    assert got["Lights"] == ("luma_key", {"luma_min": 0.2, "luma_max": 1.0, "smoothness": 0.1})
+    assert got["Warm"] == ("lut", {"look": "file", "file": "C:/luts/warm.cube", "amount": 50})
+    assert "Old LUT" not in got and any("picture LUT" in n for n in notes)
+    assert got["Edge"] == ("stroke", {"color": "#ffffff", "width": 6.0})
+    assert got["Shine"][0] == "glow" and got["Shine"][1]["size"] == 20.0
+    assert got["Drop"][1]["offset_x"] == 4.0 and got["Drop"][1]["offset_y"] == 6.0
+    mic = next(s for s in garden.sources if s.name == "[AIC] Mic")
+    assert [(f.kind, f.settings) for f in mic.filters] == [
+        ("eq3", {"low_db": -3.0, "mid_db": 1.0, "high_db": 3.0}), ("invert_polarity", {}),
+        ("upward_compressor", {"ratio": 2.0, "threshold_db": -30.0, "attack_ms": 10, "release_ms": 50})]
+
+
+def test_import_lists_what_did_not_carry_over_by_type_only():
+    from sprigcast.core import convert
+    data = {"name": "Mine", "current_scene": "Main", "sources": [
+        {"id": "scene", "name": "Main", "uuid": "s1", "settings": {"items": [
+            {"name": "Odd", "source_uuid": "o1", "id": 1, "visible": True}]},
+         "filters": [{"id": "move_value_filter", "name": "Grow", "settings": {}}]},
+        {"id": "some_plugin_source", "name": "Odd", "uuid": "o1", "settings": {},
+         "filters": [{"id": "fancy_filter", "name": "Sparkle", "settings": {}}]},
+    ]}
+    _garden, notes = convert.convert(data, _like())
+    summary = convert.missed_summary()
+    assert notes and "source:some_plugin_source x1" in summary
+    assert "Odd" not in summary and "Sparkle" not in summary and "Mine" not in summary
+    convert.convert({"name": "Empty", "current_scene": "", "sources": []}, _like())
+    assert convert.missed_summary() == ""
+
+
+def test_obs_sound_details_come_over():
+    from sprigcast.core.convert import _source
+
+    music = {"id": "wasapi_process_output_capture", "name": "Music", "settings": {"window": "Spotify:Chrome:Spotify.exe"},
+             "flags": 2, "balance": 0.25, "sync": 150_000_000, "mixers": 0b011000}
+    settings = _source(music, [], []).settings
+    assert settings["mono"] is True and settings["balance"] == -0.5 and settings["delay_ms"] == 150
+    assert settings["tracks"] == [] and settings["track4"] and settings["track5"]
+    early = {"id": "wasapi_process_output_capture", "name": "Game", "settings": {}, "sync": -80_000_000,
+             "mixers": 0b111111, "balance": 0.5}
+    settings = _source(early, [], []).settings
+    assert not {"mono", "balance", "delay_ms", "tracks", "track4", "track5"} & settings.keys()
+
+
+def test_obs_flips_mirror_a_camera_and_note_the_rest():
+    from sprigcast.core import convert
+
+    data = {"name": "Mine", "current_scene": "Main", "sources": [
+        {"id": "scene", "name": "Main", "uuid": "s1", "settings": {"items": [
+            {"name": "Cam", "source_uuid": "c1", "id": 1, "visible": True, "pos": {"x": 1920, "y": 0},
+             "scale": {"x": -1.0, "y": 1.0}},
+            {"name": "Logo", "source_uuid": "l1", "id": 2, "visible": True, "scale": {"x": 1.0, "y": -1.0}}]}},
+        {"id": "dshow_input", "name": "Cam", "uuid": "c1", "settings": {"video_device_id": "Cam:\\\\?\\usb"}},
+        {"id": "color_source_v3", "name": "Logo", "uuid": "l1", "settings": {"width": 100, "height": 100}},
+    ]}
+    garden, notes = convert.convert(data, _like())
+    cam = next(s for s in garden.sources if s.name == "Cam")
+    assert cam.settings.get("mirror") is True
+    item = next(i for sc in garden.scenes for i in sc.items if i.source == cam.id)
+    assert item.x == 0  # flipped from x 1920 leftwards: the box still starts at the left edge
+    assert any("Logo: flipped in OBS" in n for n in notes) and "item:flip x1" in convert.missed_summary()
+
+
+def test_obs_blend_modes_and_show_transitions_are_noted():
+    from sprigcast.core import convert
+
+    data = {"name": "Mine", "current_scene": "Main", "sources": [
+        {"id": "scene", "name": "Main", "uuid": "s1", "settings": {"items": [
+            {"name": "Glow", "source_uuid": "g1", "id": 1, "visible": True, "blend_type": "additive",
+             "show_transition": {"id": "fade_transition", "duration": 300}}]}},
+        {"id": "color_source_v3", "name": "Glow", "uuid": "g1", "settings": {"width": 100, "height": 100}},
+    ]}
+    _garden, notes = convert.convert(data, _like())
+    assert any("additive blending" in n for n in notes) and any("own show transition" in n for n in notes)
+    summary = convert.missed_summary()
+    assert "item:blend:additive x1" in summary and "item:show_transition:fade_transition x1" in summary
+
+
+def test_streamlabs_sound_details_come_over():
+    from sprigcast.core.convert import streamlabs_to_obs
+
+    data = {"nodeType": "RootNode", "sources": {"nodeType": "SourcesNode", "items": [
+        {"id": "m1", "name": "Music", "type": "wasapi_process_output_capture", "settings": {}, "volume": 1,
+         "forceMono": True, "syncOffset": {"sec": 0, "nsec": 200_000_000}, "audioMixers": 0b001000,
+         "monitoringType": 1}]}, "scenes": {"items": []}}
+    obs, _notes = streamlabs_to_obs(data)
+    music = obs["sources"][0]
+    assert music["flags"] == 2 and music["sync"] == 200_000_000 and music["mixers"] == 8
+    assert music["monitoring_type"] == 1
+
+
+def test_obs_profile_settings_come_over_without_keys(tmp_path):
+    from sprigcast.core import convert
+
+    root = tmp_path / "obs-studio"
+    scenes, profile = root / "basic" / "scenes", root / "basic" / "profiles" / "Streaming"
+    scenes.mkdir(parents=True)
+    profile.mkdir(parents=True)
+    (root / "basic" / "profiles" / "Other").mkdir()
+    (root / "basic" / "profiles" / "Other" / "basic.ini").write_text("[Video]\nFPSCommon=30\n")
+    (root / "user.ini").write_text("[Basic]\nProfileDir=Streaming\n")
+    (scenes / "Main.json").write_text("{}")
+    (profile / "basic.ini").write_text(
+        "[Video]\nBaseCX=1920\nBaseCY=1080\nOutputCX=1280\nOutputCY=720\nFPSType=0\nFPSCommon=60\n"
+        "[Output]\nMode=Advanced\n[AdvOut]\nEncoder=jim_nvenc\nRecFilePath=D:/Videos\nRecFormat2=hybrid_mp4\n"
+        "RecRBTime=40\n")
+    (profile / "streamEncoder.json").write_text(json.dumps(
+        {"bitrate": 4500, "rate_control": "CBR", "keyint_sec": 2, "preset2": "p6", "tune": "ll", "profile": "main"}))
+    (profile / "service.json").write_text(json.dumps({"settings": {"key": "live_secret"}}))
+    found = convert.find_profile(scenes / "Main.json")
+    assert found == profile
+    col, notes = _like(), []
+    convert.apply_profile(col, found, notes)
+    wide = next(c for c in col.canvases if c.width >= c.height)
+    assert wide.fps == 60 and wide.output_short_side == 720
+    assert col.recording.folder == "D:/Videos" and col.recording.container == "mp4"
+    assert col.recording.replay_seconds == 45
+    enc = col.stream_encoder
+    assert (enc.encoder, enc.rate_control, enc.preset, enc.tuning, enc.profile) == ("h264_nvenc", "cbr", "p6", "ll", "main")
+    assert any("4500 kbps" in n for n in notes) and not any("live_secret" in n for n in notes)
+    assert convert.find_profile(tmp_path / "elsewhere.json") is None
