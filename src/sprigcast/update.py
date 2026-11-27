@@ -26,6 +26,7 @@ import sys
 import urllib.error
 import urllib.request
 from collections.abc import Callable
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -306,6 +307,7 @@ def _ps_quote(text: str) -> str:
 
 
 HELPER_LOG = "update-helper.log"  # what the waiting helper did, next to the installer; read at the next start
+SETUP_LOG = "update-setup.log"  # Setup's own step-by-step log (/LOG), so a slow update shows which step took long
 
 
 def installer_command(installer: Path, pid: int, restart: bool) -> list[str]:
@@ -315,10 +317,10 @@ def installer_command(installer: Path, pid: int, restart: bool) -> list[str]:
     /restartapp=1 makes Setup start SprigCast again when it's done (sprigcast.iss, RestartAfterUpdate). Each
     step is written to update-helper.log beside the installer, so a quiet failure is seen at the next start.
     """
-    args = ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOCANCEL"]
+    args = ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOCANCEL", f'/LOG="{installer.parent / SETUP_LOG}"']
     if restart:
         args.append("/restartapp=1")
-    arg_list = ",".join(f"'{a}'" for a in args)
+    arg_list = ",".join(f"'{_ps_quote(a)}'" for a in args)
     note = _ps_quote(str(installer.parent / HELPER_LOG))
     script = (
         f"$log = '{note}'; "
@@ -327,8 +329,10 @@ def installer_command(installer: Path, pid: int, restart: bool) -> list[str]:
         f"$p = Get-Process -Id {int(pid)} -ErrorAction SilentlyContinue; "
         "if ($p) { [void]$p.WaitForExit(180000) }; "
         "Say 'starting Setup'; "
-        f"try {{ Start-Process -FilePath '{_ps_quote(str(installer))}' -ArgumentList {arg_list} -ErrorAction Stop; "
-        "Say 'Setup started' } catch { Say ('Setup did not start: ' + $_.Exception.Message) }"
+        f"try {{ $s = Start-Process -FilePath '{_ps_quote(str(installer))}' -ArgumentList {arg_list} -PassThru "
+        "-ErrorAction Stop; Say 'Setup started'; [void]$s.WaitForExit(1800000); "
+        "Say ('Setup finished (exit ' + $s.ExitCode + ')') } "
+        "catch { Say ('Setup did not start: ' + $_.Exception.Message) }"
     )
     return ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
             "-Command", script]
@@ -365,7 +369,37 @@ def helper_report(folder: Path) -> str | None:
         path.unlink()
     except OSError:
         return None
+    slow = setup_slow_steps(folder)
+    if slow:
+        text += "\nSetup's slow steps:\n" + slow
     return text or None
+
+
+def setup_slow_steps(folder: Path, gap_s: float = 3.0) -> str | None:
+    """From Setup's own log (then forgotten): its total time and every step that waited `gap_s` or longer
+    before the next line, with that next line, so a slow update shows where the time went."""
+    path = folder / SETUP_LOG
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        path.unlink()
+    except OSError:
+        return None
+    stamped = []
+    for line in lines:
+        try:
+            when = datetime.strptime(line[:23], "%Y-%m-%d %H:%M:%S.%f")
+        except ValueError:
+            continue
+        stamped.append((when, line[23:].strip()))
+    if len(stamped) < 2:
+        return None
+    total = (stamped[-1][0] - stamped[0][0]).total_seconds()
+    out = [f"total {total:.1f} s"]
+    for (a, before), (b, after) in zip(stamped, stamped[1:]):
+        gap = (b - a).total_seconds()
+        if gap >= gap_s:
+            out.append(f"{gap:.1f} s after: {before[:120]} -> {after[:120]}")
+    return "\n".join(out[:30])
 
 
 def clear_old(folder: Path, keep: str | None = None) -> None:
@@ -373,7 +407,7 @@ def clear_old(folder: Path, keep: str | None = None) -> None:
     if not folder.is_dir():
         return
     for item in folder.iterdir():
-        if item.is_file() and item.name not in (keep, HELPER_LOG):
+        if item.is_file() and item.name not in (keep, HELPER_LOG, SETUP_LOG):
             try:
                 item.unlink()
             except OSError:
