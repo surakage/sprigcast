@@ -310,6 +310,9 @@ def _draw(p: QPainter, name: str) -> None:
         p.drawEllipse(P(12, 12), 8, 8)
         p.drawLine(P(12, 12), P(12, 7.5))
         p.drawLine(P(12, 12), P(15.2, 13.8))
+    elif name == "ban":  # a circle with a slash: banned
+        p.drawEllipse(P(12, 12), 8, 8)
+        p.drawLine(P(6.4, 17.6), P(17.6, 6.4))
     elif name == "moon":  # asleep
         path = QPainterPath()
         path.addEllipse(P(12, 12), 8, 8)

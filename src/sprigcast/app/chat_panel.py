@@ -27,9 +27,10 @@ import re
 from collections import OrderedDict, deque
 
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QTextDocument
+from PySide6.QtGui import QColor, QIcon, QTextDocument
 from PySide6.QtWidgets import (
     QApplication,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -60,6 +61,7 @@ EMOTE_KEEP = 400  # pictures kept in memory across a start-over, newest used fir
 EMOTE_FETCHES = 4  # pictures downloading at once; the rest wait their turn (one request each is UI-thread work)
 EMOTE_URL = "https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/1.0"
 EMOTE_SIZE = 22
+USER_LINK = "chatuser:"  # a name's link: opens the chatter's card, never a page
 MARK_SIZE = 16  # the platform logo that starts each line when several chats are mixed
 
 URL_RE = re.compile(r"(https?://[^\s<]+)")
@@ -96,7 +98,8 @@ def message_html(message: ChatMessage, mark: bool = False, names: frozenset[str]
     if message.notice:
         return (f"<p style='margin:6px 0'>{start}<span style='color:{theme.SELECT_TEXT}; background:{theme.SELECT_BG};'>"
                 f"&nbsp;✿ {_body(message)}&nbsp;</span></p>")
-    name = f"<span style='color:{colour}; font-weight:600'>{html.escape(message.user)}</span>"
+    name = (f"<a href='{USER_LINK}' style='text-decoration:none'><span style='color:{colour}; font-weight:600'>"
+            f"{html.escape(message.user)}</span></a>")  # a click opens their card (ChatView.user_asked)
     marks = ""
     if "broadcaster" in message.badges:
         marks = f"<span style='color:{theme.LIVE_TEXT}'>● </span>"
@@ -135,10 +138,110 @@ def _words(text: str) -> str:
     )
 
 
+QUICK_TIMEOUT = 600  # the hover bar's timeout: 10 minutes
+QUICK_SURE_MS = 3000  # Ban asks "Sure?" once; a second press within this bans
+QUICK_STYLE = (
+    f"QFrame#chatQuick {{ background: {theme.RAISED}; border: 1px solid {theme.SECTION_EDGE}; border-radius: 10px; }}"
+    "QFrame#chatQuick QPushButton { background: transparent; border: none; border-radius: 7px;"
+    " min-width: 28px; max-width: 28px; min-height: 24px; max-height: 24px; padding: 0px; }"
+    f"QFrame#chatQuick QPushButton:hover {{ background: {theme.RAISED_HOVER}; }}"
+    f"QFrame#chatQuick QPushButton#chatQuickSure {{ background: {theme.BAD}; color: #ffffff; font-weight: 700;"
+    " font-size: 11px; min-width: 44px; max-width: 44px; }"
+)
+
+
+class QuickBar(QFrame):
+    """Delete, Timeout 10 minutes and Ban, at the right of the chat line under the mouse. Only what the
+    platform and your sign-in allow shows; Ban asks "Sure?" once (a second press bans)."""
+
+    acted = Signal(object, str, int)  # a ChatMessage, "delete" / "timeout" / "ban", seconds
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setObjectName("chatQuick")
+        self.setStyleSheet(QUICK_STYLE)
+        self.message: ChatMessage | None = None
+        row = QHBoxLayout(self)
+        row.setContentsMargins(4, 3, 4, 3)
+        row.setSpacing(2)
+        from sprigcast.app import icons
+
+        self.buttons: dict[str, QPushButton] = {}
+        for action, icon, colour, tip in (("delete", "trash", theme.TEXT, "Delete message"),
+                                          ("timeout", "clock", theme.TEXT, "Timeout 10 minutes"),
+                                          ("ban", "ban", theme.BAD, "Ban")):
+            button = QPushButton(self)
+            button.setIcon(icons.icon(icon, colour, 16))
+            button.setToolTip(tip)
+            button.setAccessibleName(tip)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(lambda _=False, a=action: self._press(a))
+            row.addWidget(button)
+            self.buttons[action] = button
+        self._sure = QTimer(self)
+        self._sure.setSingleShot(True)
+        self._sure.setInterval(QUICK_SURE_MS)
+        self._sure.timeout.connect(self._unsure)
+        self.hide()
+
+    def show_for(self, message: ChatMessage, powers) -> bool:
+        """Fit the buttons to this line's sender; False (and hidden) when there's nothing to offer."""
+        if message is not self.message:
+            self._unsure()
+        self.message = message
+        shown = {"delete": "delete" in powers and bool(message.id), "timeout": "timeout" in powers,
+                 "ban": "ban" in powers}
+        for action, button in self.buttons.items():
+            button.setVisible(shown[action])
+        if not any(shown.values()):
+            self.hide()
+            return False
+        self.adjustSize()
+        return True
+
+    def _press(self, action: str) -> None:
+        message = self.message
+        if message is None:
+            return
+        if action == "ban" and not self._sure.isActive():
+            ban = self.buttons["ban"]
+            ban.setIcon(QIcon())
+            ban.setText("Sure?")
+            ban.setObjectName("chatQuickSure")
+            ban.setStyle(ban.style())  # take the new name's look
+            self._resize_keeping_right()
+            self._sure.start()
+            return
+        self._unsure()
+        self.hide()
+        self.acted.emit(message, action, QUICK_TIMEOUT if action == "timeout" else 0)
+
+    def _unsure(self) -> None:
+        self._sure.stop()
+        ban = self.buttons.get("ban")
+        if ban is None or ban.objectName() != "chatQuickSure":
+            return
+        from sprigcast.app import icons
+
+        ban.setText("")
+        ban.setIcon(icons.icon("ban", theme.BAD, 16))
+        ban.setObjectName("")
+        ban.setStyle(ban.style())
+        self._resize_keeping_right()
+
+    def _resize_keeping_right(self) -> None:
+        """Grow or shrink to the buttons, its right edge where it was (by the line's end, not off the view)."""
+        right = self.x() + self.width()
+        self.adjustSize()
+        if self.isVisible():
+            self.move(right - self.width(), self.y())
+
+
 class ChatView(QTextBrowser):
     reply_asked = Signal(object)  # a ChatMessage: start a reply to its sender
     hide_asked = Signal(str)  # a chatter's name: never show them again
     moderate_asked = Signal(object, str, int)  # a ChatMessage, "timeout" / "ban" / "delete" / "block", seconds
+    user_asked = Signal(object)  # a ChatMessage whose sender's name was clicked: show their card
 
     """The native chat list. Keeps the last KEEP lines; emote pictures load once each.
 
@@ -187,6 +290,68 @@ class ChatView(QTextBrowser):
         self.notice.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.notice.hide()
         self.verticalScrollBar().valueChanged.connect(self._scrolled)
+        # Hover a line: Delete, Timeout and Ban at its right (where your sign-in may), no right-click needed.
+        self.quick = QuickBar(self.viewport())
+        self.quick.acted.connect(self.moderate_asked)
+        self.viewport().setMouseTracking(True)
+        self._hover_pos = None
+
+    # Hover a line ---------------------------------------------------------------------------
+
+    def _hover_line(self, pos) -> None:
+        """Show the quick bar on the line at `pos` (viewport coordinates), or hide it. Never draws waiting lines
+        (a busy chat keeps its batches): while lines wait, the bar stays as it is."""
+        self._hover_pos = pos
+        if pos is None:
+            self.quick.hide()
+            return
+        if self._pending or self.document().blockCount() != len(self.messages):
+            return
+        block = self.cursorForPosition(pos).block()
+        rect = self.document().documentLayout().blockBoundingRect(block)
+        top = rect.top() - self.verticalScrollBar().value()
+        message = self.messages[block.blockNumber()] if 0 <= block.blockNumber() < len(self.messages) else None
+        if (message is None or not (top <= pos.y() <= top + rect.height()) or message.notice or not message.user
+                or "broadcaster" in message.badges or not self.quick.show_for(message, self.powers(message))):
+            self.quick.hide()
+            return
+        x = self.viewport().width() - self.quick.width() - 6
+        y = round(top + (rect.height() - self.quick.height()) / 2)
+        self.quick.move(x, max(0, min(y, self.viewport().height() - self.quick.height())))
+        self.quick.show()
+        self.quick.raise_()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        pos = event.position().toPoint()
+        if event.button() == Qt.MouseButton.LeftButton and self.anchorAt(pos).startswith(USER_LINK):
+            message = self.message_at(pos)
+            if message is not None and message.user and not message.notice:
+                self.user_asked.emit(message)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        if self.anchorAt(event.position().toPoint()).startswith(USER_LINK):
+            event.accept()  # never followed as a link: that would empty the chat
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        super().mouseMoveEvent(event)
+        if not event.buttons():  # not while selecting text
+            self._hover_line(event.position().toPoint())
+
+    def leaveEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        super().leaveEvent(event)
+        QTimer.singleShot(0, self, self._left)
+
+    def _left(self) -> None:
+        from PySide6.QtGui import QCursor
+
+        inside = self.viewport().rect().contains(self.viewport().mapFromGlobal(QCursor.pos()))
+        if not inside:
+            self._hover_line(None)
 
     # Right-click a line -------------------------------------------------------------------
 
@@ -323,6 +488,7 @@ class ChatView(QTextBrowser):
         self.jump.hide()
 
     def _scrolled(self) -> None:
+        self.quick.hide()  # the line moved out from under it; the next mouse move finds the new one
         if self.jump.isVisible() and self.at_bottom():
             self.jump.hide()
 
@@ -363,6 +529,7 @@ class ChatView(QTextBrowser):
         gone = [i for i, m in enumerate(self.messages) if goes(m)]
         if not gone:
             return
+        self.quick.hide()  # its line may be the one leaving
         document = self.document()
         if document.blockCount() != len(self.messages) or len(gone) == len(self.messages):
             self.messages = deque((m for m in self.messages if not goes(m)), maxlen=KEEP)
@@ -386,6 +553,7 @@ class ChatView(QTextBrowser):
             self.to_bottom()
 
     def redraw(self) -> None:
+        self.quick.hide()
         self._pending.clear()  # every kept line is drawn below
         self._flush.stop()
         self.setHtml("".join(message_html(m, self.mixed, self.names) for m in self.messages))
@@ -415,6 +583,7 @@ class ChatView(QTextBrowser):
         cursor.setBlockFormat(fmt)
 
     def clear_chat(self) -> None:
+        self.quick.hide()
         self._pending.clear()
         self._flush.stop()
         self.messages.clear()
@@ -565,6 +734,7 @@ class ChatPanel(QWidget):
         self.hub.hid.connect(lambda name: self.view.remove(user=name))
         self.view.hide_asked.connect(self.hub.hide)
         self.view.reply_asked.connect(self.reply_to)
+        self.view.user_asked.connect(self.show_user)
         self.view.can_reply = lambda message: self.say_row.isVisibleTo(self) and bool(self._mine(message.platform)) \
             and any(platform == message.platform for platform, _ in self._say_targets())
         self.view.powers = self.powers
@@ -640,10 +810,10 @@ class ChatPanel(QWidget):
         """Your signed-in name on a platform ("" = not signed in). Settings only: no credential store."""
         if platform == "twitch":
             return self._account() or ""
-        if platform == "kick":
+        if platform in ("kick", "youtube"):
             from sprigcast.output import stream_details
 
-            return stream_details.account("kick").lower()
+            return stream_details.account(platform).lower()
         return ""
 
     def _say_targets(self) -> list[tuple[str, str]]:
@@ -742,9 +912,29 @@ class ChatPanel(QWidget):
         from sprigcast.chat import moderation
 
         mine = self._mine(message.platform)
-        if not mine or message.notice or not message.user_id or message.user.lower() == mine:
+        if (not mine or message.notice or not message.user_id or message.user.lower().lstrip("@") == mine.lstrip("@")
+                or "broadcaster" in message.badges):  # never on the channel's owner (you, or whoever's chat it is)
             return ()
         return moderation.POWERS.get(message.platform, ())
+
+    def show_user(self, message: ChatMessage) -> None:
+        """The chatter's card, next to the panel: who they are, their lines this stream, and what you can do."""
+        from sprigcast.app.chat_user_card import UserCard
+
+        lines = [m for m in self.view.messages if m.platform == message.platform and not m.notice
+                 and ((message.user_id and m.user_id == message.user_id) or m.user == message.user)]
+        old = getattr(self, "_user_card", None)
+        if old is not None:
+            try:
+                old.close()
+            except RuntimeError:  # already closed and gone
+                pass
+        user_card = UserCard(message, lines, self.powers(message), self.view.can_reply(message), self.window())
+        user_card.replied.connect(self.reply_to)
+        user_card.hidden.connect(self.hub.hide)
+        user_card.moderated.connect(self.moderate)
+        user_card.show()
+        self._user_card = user_card  # one at a time is plenty; the newest stays referenced
 
     def moderate(self, message: ChatMessage, action: str, seconds: int = 0) -> None:
         """Timeout, ban, delete or block from a chat line, on a worker; the top line says how it went."""
@@ -752,13 +942,15 @@ class ChatPanel(QWidget):
         from sprigcast.core import workers
 
         channel = self.hub.names().get(message.platform)
+        if message.platform == "youtube":  # YouTube works on the live video's chat, not the channel name
+            channel = getattr(self.hub.readers.get("youtube"), "video", "") or ""
         if not channel or action not in self.powers(message):
             return
 
         def work():
             try:
                 moderation.act(message.platform, channel, action, user_id=message.user_id, message_id=message.id,
-                               seconds=seconds)
+                               seconds=seconds, text=message.text)
                 self.acted.emit(message, action, seconds, "")
             except moderation.NeedsAllow as exc:
                 self.acted.emit(message, action, seconds, str(exc))
