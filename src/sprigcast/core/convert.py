@@ -671,6 +671,12 @@ def from_obs(data: dict[str, Any], like: SceneCollection, size_of: SizeOf | None
             else:
                 continue
             scene.items.append(_item(item, config.id, size, k, notes, config.name))
+            flip_x, flip_y = flips(item)
+            if flip_x and not flip_y and getattr(config, "kind", "") == "camera":
+                config.settings["mirror"] = True  # a camera flipped left to right: SprigCast's Mirror
+            elif flip_x or flip_y:
+                notes.append(f"{config.name}: flipped in OBS; SprigCast can't flip it yet, so it shows unflipped.")
+                _missed("item", "flip")
 
     # Blooms: "X (Vertical)" switches with "X"; the twin keeps the plain name (its canvas says which).
     shows = [s for s in col.scenes if s.kind == "show"]
@@ -983,6 +989,7 @@ def _item(item: dict[str, Any], source_id: str, size: tuple[float, float] | None
     """One OBS scene item. OBS's pos is the anchor point; SprigCast keeps the box's top-left corner."""
     px, py = _xy(item.get("pos"))
     sx, sy = _xy(item.get("scale"), (1.0, 1.0))
+    flip_x, flip_y = sx < 0, sy < 0  # OBS flips with a negative scale: the picture then runs the other way from pos
     sx, sy = abs(sx) or 1.0, abs(sy) or 1.0
     crop = tuple(max(0, int(_num(item.get(f"crop_{side}")))) for side in ("left", "top", "right", "bottom"))
     align = _ALIGN.get(int(_num(item.get("align"), 5)), "top_left")
@@ -1004,8 +1011,15 @@ def _item(item: dict[str, Any], source_id: str, size: tuple[float, float] | None
         if align != "top_left":
             notes.append(f"{name}: check where it sits (its size wasn't known).")
     ax, ay = (_ALIGN_SHARE[align])
+    ax, ay = (1 - ax) if flip_x else ax, (1 - ay) if flip_y else ay
     out.x, out.y = (px - w * ax) * k, (py - h * ay) * k
     return out
+
+
+def flips(item: dict[str, Any]) -> tuple[bool, bool]:
+    """(left-right, upside down): OBS's Transform → Flip, kept as a negative scale."""
+    sx, sy = _xy(item.get("scale"), (1.0, 1.0))
+    return sx < 0, sy < 0
 
 
 _ALIGN_SHARE = {a: ((i % 3) / 2, (i // 3) / 2) for i, a in enumerate(

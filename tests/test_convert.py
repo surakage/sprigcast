@@ -540,3 +540,36 @@ def test_import_lists_what_did_not_carry_over_by_type_only():
     assert "Odd" not in summary and "Sparkle" not in summary and "Mine" not in summary
     convert.convert({"name": "Empty", "current_scene": "", "sources": []}, _like())
     assert convert.missed_summary() == ""
+
+
+def test_obs_sound_details_come_over():
+    from sprigcast.core.convert import _source
+
+    music = {"id": "wasapi_process_output_capture", "name": "Music", "settings": {"window": "Spotify:Chrome:Spotify.exe"},
+             "flags": 2, "balance": 0.25, "sync": 150_000_000, "mixers": 0b011000}
+    settings = _source(music, [], []).settings
+    assert settings["mono"] is True and settings["balance"] == -0.5 and settings["delay_ms"] == 150
+    assert settings["tracks"] == [] and settings["track4"] and settings["track5"]
+    early = {"id": "wasapi_process_output_capture", "name": "Game", "settings": {}, "sync": -80_000_000,
+             "mixers": 0b111111, "balance": 0.5}
+    settings = _source(early, [], []).settings
+    assert not {"mono", "balance", "delay_ms", "tracks", "track4", "track5"} & settings.keys()
+
+
+def test_obs_flips_mirror_a_camera_and_note_the_rest():
+    from sprigcast.core import convert
+
+    data = {"name": "Mine", "current_scene": "Main", "sources": [
+        {"id": "scene", "name": "Main", "uuid": "s1", "settings": {"items": [
+            {"name": "Cam", "source_uuid": "c1", "id": 1, "visible": True, "pos": {"x": 1920, "y": 0},
+             "scale": {"x": -1.0, "y": 1.0}},
+            {"name": "Logo", "source_uuid": "l1", "id": 2, "visible": True, "scale": {"x": 1.0, "y": -1.0}}]}},
+        {"id": "dshow_input", "name": "Cam", "uuid": "c1", "settings": {"video_device_id": "Cam:\\\\?\\usb"}},
+        {"id": "color_source_v3", "name": "Logo", "uuid": "l1", "settings": {"width": 100, "height": 100}},
+    ]}
+    garden, notes = convert.convert(data, _like())
+    cam = next(s for s in garden.sources if s.name == "Cam")
+    assert cam.settings.get("mirror") is True
+    item = next(i for sc in garden.scenes for i in sc.items if i.source == cam.id)
+    assert item.x == 0  # flipped from x 1920 leftwards: the box still starts at the left edge
+    assert any("Logo: flipped in OBS" in n for n in notes) and "item:flip x1" in convert.missed_summary()
