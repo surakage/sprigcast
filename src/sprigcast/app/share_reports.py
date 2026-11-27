@@ -197,11 +197,19 @@ def maybe_ask(window, seconds: float, settings=None, ask=None) -> bool | None:
     return answer
 
 
+def wants_import_report(missed: str, settings=None) -> bool:
+    """Whether an import that missed `missed` would send a report (cheap: check before copying the garden)."""
+    try:
+        return bool(missed) and covers("import", settings)
+    except Exception:  # noqa: BLE001 - a report is never worth an error
+        return False
+
+
 def send_after_import(app: str, missed: str, notes: int, *, collection=None, settings=None, sender=None, run=None):
     """After an import that missed something (convert.missed_summary(): types only, no names): when sharing covers
     imports, send the log and what didn't carry over, on a worker. Returns the Future, or None. Never raises."""
     try:
-        if not missed or not covers("import", settings):
+        if not wants_import_report(missed, settings):
             return None
         from sprigcast.app import problem_report, tester_report
         from sprigcast.core import workers

@@ -150,3 +150,20 @@ def test_an_import_that_missed_something_is_sent_only_when_covered(tmp_path, mon
     done = share_reports.send_after_import("OBS", missed, 3, settings=settings, run=_now_run, sender=sender)
     assert done.result() == "SC-ABCDEF"
     assert sent[0][0] == "import" and sent[0][1] == f"OBS: {missed}" and missed in sent[0][2]
+
+
+def test_an_import_report_is_wanted_only_when_covered_and_something_was_missed():
+    settings = FakeSettings()
+    assert not share_reports.wants_import_report("source:vlc_source x1", settings)
+    share_reports.set_enabled(True, settings)
+    assert share_reports.wants_import_report("source:vlc_source x1", settings)
+    assert not share_reports.wants_import_report("", settings)
+
+
+def test_the_import_hook_skips_while_live_and_copies_only_when_sending():
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / "src/sprigcast/app/gardens_menu.py").read_text(encoding="utf-8")
+    start = text.index("wants_import_report")
+    hook = text[start:text.index("entry = self.shelf.add_garden", start)]
+    assert "not self.busy()" in hook and hook.index("model_copy") > hook.index("not self.busy()")

@@ -486,9 +486,13 @@ class GardenControl:
                          len(notes), convert.missed_summary() or "nothing")
                 from sprigcast.app import share_reports
 
-                # Share logs automatically: what didn't carry over (types only) goes to the developer
-                share_reports.send_after_import(convert.APP_NAMES.get(app, app), convert.missed_summary(), len(notes),
-                                                collection=garden.model_copy(deep=True))
+                # Share logs automatically: what didn't carry over (types only) goes to the developer. Never while
+                # live or recording (the privacy page: nothing is sent while you're live), and the garden is only
+                # copied when a report really goes (a whole-collection deepcopy on this thread starves the render).
+                missed = convert.missed_summary()
+                if share_reports.wants_import_report(missed) and not self.busy():
+                    share_reports.send_after_import(convert.APP_NAMES.get(app, app), missed, len(notes),
+                                                    collection=garden.model_copy(deep=True))
                 entry = self.shelf.add_garden(convert.guess_name(path, data), garden)
             else:
                 return f"{path.name} isn't a scene collection from SprigCast, OBS, Streamlabs or Meld."

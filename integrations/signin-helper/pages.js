@@ -402,7 +402,8 @@ name, with no sign-in. Kick chat comes through Kick's official API by way of Spr
   <li><strong>Update check:</strong> SprigCast asks GitHub for the newest version number.</li>
   <li><strong>Problem reports:</strong> only when you press Send report. A report holds your note and, if you
   leave it ticked, SprigCast's logs and PC details with stream keys, tokens, passwords, email addresses, your
-  user name and your PC's name hidden. Reports are kept for 30 days to fix bugs and then deleted.</li>
+  user name and your PC's name hidden, and a random install ID (it isn't tied to you or your PC; Settings shows
+  it, so you can ask us to delete your reports). Reports are kept for 30 days to fix bugs and then deleted.</li>
   <li><strong>Automatic logs:</strong> only if you turn on "Share logs automatically" (it's off unless you do).
   SprigCast then sends its log after a crash, after an import where something didn't carry over, and after each
   stream of a minute or more, along with your PC's details (processor, graphics card, memory, screens) and your
