@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { AUTO_PORTS, EVENTS, SprigCast, addSeconds, authAnswer, clockText, infoFile, placeState, placeTitle, timerText } from "../src/sprigcast.js";
+import { AUTO_PORTS, EVENTS, SprigCast, TOGGLES, addSeconds, authAnswer, clockText, infoFile, placeState, placeTitle, timerText } from "../src/sprigcast.js";
 
 test("password answer matches SprigCast's (obs-websocket 5 scheme)", () => {
 	assert.equal(authAnswer("leafy", "salt1", "chal2"), "0CjBF+kyqOBOjAwldo0zscggufE/eEKk/jy6hl6VImM=" /* sprigcast.control.protocol.auth_string */);
@@ -385,4 +385,42 @@ test("Show or hide: a leaf inside a sprig is picked as Sprig › Leaf", async ()
 	assert.deepEqual(itemTarget({ bloom: "Show", item: "Website" }), { bloom: "Show", item: "Website" });
 	assert.deepEqual(itemTarget({ bloom: "Show", item: "Frame › Cam" }), { sprig: "Frame", item: "Cam" });
 	assert.deepEqual(itemTarget({ bloom: "Show", item: "Frame › Corner › Logo" }), { sprig: "Corner", item: "Logo" });
+});
+
+test("speaks API 1 when SprigCast offers it, and API 0 to an older SprigCast", async () => {
+	FakeSocket.all = [];
+	const sc = new SprigCast({ port: 4456, WebSocketClass: FakeSocket });
+	sc.want(true);
+	const socket = FakeSocket.last;
+	socket.say({ hello: { auth: null, apis: [0, 1] } });
+	assert.deepEqual(socket.sent[0], { api: 1, auth: null, name: "Stream Deck", events: EVENTS });
+	socket.say({ welcome: { api: 1 } });
+	for (const request of socket.sent.filter((m) => m.do)) {
+		assert.ok(request.data && typeof request.data === "object", `${request.do} sends its fields under data`);
+		const result = ANSWERS[request.do];
+		socket.say(result ? { id: request.id, ok: true, result } : { id: request.id, ok: false, error: { code: "unknown_action", message: "no" } });
+	}
+	await tick();
+	assert.equal(sc.isOnAir("BRB"), true);
+	socket.say({ event: "bloom.shown", group: "bloom", data: { bloom: "Gaming", shape: "horizontal" }, at: "2026-11-27T03:00:00.000Z" });
+	assert.equal(sc.isOnAir("Gaming"), true);
+	sc.run("sound.mute", { sound: "Mic" }).catch(() => {});
+	sc.run("sound.mute", { sound: "Mic", muted: true }).catch(() => {});
+	sc.run("camera.set").catch(() => {});
+	const [toggle, set, camera] = socket.sent.slice(-3);
+	assert.deepEqual([toggle.do, toggle.data], ["sound.toggle", { sound: "Mic" }]);
+	assert.deepEqual([set.do, set.data], ["sound.mute", { sound: "Mic", muted: true }]);
+	assert.equal(camera.do, "camera.toggle");
+	assert.deepEqual(Object.keys(TOGGLES).sort(), ["camera.set", "item.lock", "media.loop", "sound.mute"]);
+	sc.want(false);
+
+	FakeSocket.all = [];
+	const old = new SprigCast({ port: 4456, WebSocketClass: FakeSocket });
+	old.want(true);
+	await welcome(FakeSocket.last);
+	assert.deepEqual(FakeSocket.last.sent[0], { auth: null, name: "Stream Deck", events: EVENTS });
+	old.run("sound.mute", { sound: "Mic" }).catch(() => {});
+	assert.deepEqual(FakeSocket.last.sent.at(-1).do, "sound.mute");
+	assert.equal(FakeSocket.last.sent.at(-1).sound, "Mic");
+	old.want(false);
 });

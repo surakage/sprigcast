@@ -26,7 +26,7 @@ builds from 2026-11-25 on.
   (#939, #942, #946, #947, #948).
 - Twelve store plugins: Live count, breaks, hydration, ads, clips, socials and more (#968, #969).
 - Stream Deck: ready for the Elgato Marketplace, with a Teleprompter key, Show or hide on both canvases, and leaves
-  inside sprigs (#933, #941).
+  inside sprigs. It speaks Control API 1 when SprigCast offers it (#933, #941, #974).
 - Tools → Check for updates… (#931).
 - Control API: viewer counts for apps like StreamBridge, a published protocol.json, events by name, errors that
   name their field, step ids, camelCase spellings and toggle actions. Apps that ask for API 1 get camelCase

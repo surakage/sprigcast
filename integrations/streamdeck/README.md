@@ -42,6 +42,8 @@ The plugin runs inside the Stream Deck app. It opens one connection to SprigCast
 on screen, and closes it when none is. SprigCast sends changes as they happen, so nothing polls. When SprigCast
 isn't running, the plugin only checks every 2 seconds whether SprigCast's api.json is there (no connection tries),
 and its keys go dark until SprigCast is back. A quiet connection is checked every 15 seconds, so a PC waking from sleep finds SprigCast again.
+It speaks SprigCast's API 1 when SprigCast offers it (its greeting lists `apis` with 1), and API 0 with an older
+SprigCast, so it works with either.
 
 ## Set up
 
