@@ -86,6 +86,8 @@ def message_from_line(line: str) -> ChatMessage | None:
     login = prefix.split("!", 1)[0]
     user = tags.get("display-name") or tags.get("login") or login
     badges = tuple(b.split("/", 1)[0] for b in tags.get("badges", "").split(",") if b)
+    if tags.get("first-msg") == "1":  # their first message ever in this chat
+        badges += ("first",)
     action = text.startswith("\x01ACTION ") and text.endswith("\x01")
     if action:
         text = text[len("\x01ACTION "):-1]
