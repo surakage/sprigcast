@@ -227,6 +227,17 @@ def _source(obs: dict[str, Any], audio_devices: list[str] | None, notes: list[st
     out: tuple[str, dict[str, Any]] | None = None
     if kind == "image_source":
         out = "image", {"path": str(s.get("file", ""))}
+    elif kind in ("slideshow", "slideshow_v2"):  # the Slide show plugin (Plugin store) plays a folder
+        files = [str(f.get("value", "")) for f in s.get("files") or [] if isinstance(f, dict) and f.get("value")]
+        folders = {f if not Path(f).suffix else str(Path(f).parent) for f in files}
+        out = "slideshow", {"folder": sorted(folders)[0] if folders else "",
+                            "seconds": max(1, round(_num(s.get("slide_time"), 8000) / 1000)),
+                            "shuffle": bool(s.get("randomize", False)), "loop": bool(s.get("loop", True)),
+                            **_slide_box(s.get("use_custom_size"))}
+        if len(folders) > 1:
+            notes.append(f"{name}: OBS played pictures from {len(folders)} folders; the Slide show plays one, "
+                         "so put them in one folder.")
+            _missed("source", "slideshow:several_folders")
     elif kind == "ffmpeg_source":
         if s.get("is_local_file", True) is False:
             notes.append(f"{name}: a network stream (not a file) isn't supported yet.")
@@ -327,6 +338,12 @@ def _source(obs: dict[str, Any], audio_devices: list[str] | None, notes: list[st
 SOUND_SHAPED = ("audio_input", "audio_output", "app_audio", "media", "browser")
 OBS_FORCE_MONO = 1 << 1  # OBS's source flag
 OBS_ALL_TRACKS = 0b111111
+
+
+def _slide_box(custom: Any) -> dict[str, int]:
+    """OBS's slide show size: "1280x720", or "Automatic" (the biggest picture; here the usual 1920x1080)."""
+    match = re.fullmatch(r"\s*(\d+)\s*x\s*(\d+)\s*", str(custom or ""))
+    return {"width": int(match[1]), "height": int(match[2])} if match else {"width": 1920, "height": 1080}
 
 
 def _sound_details(obs: dict[str, Any], settings: dict[str, Any]) -> None:
@@ -981,7 +998,7 @@ _LEFT_OUT = re.compile(r"has no match|isn't supported")
 
 def _size(config: SourceConfig, size_of: SizeOf, canvas: tuple[float, float]) -> tuple[float, float] | None:
     s = config.settings
-    if config.kind in ("browser", "color"):
+    if config.kind in ("browser", "color", "slideshow"):
         return _num(s.get("width"), 800), _num(s.get("height"), 600)
     if config.kind == "camera":
         return _num(s.get("width"), 1920), _num(s.get("height"), 1080)
@@ -1075,8 +1092,8 @@ def _scene_filters(scenes: list[dict[str, Any]], by_name: dict[str, dict], sourc
                     id=f"f-{len(item.effects)}", kind="barrel_roll", name=str(label), enabled=False,
                     settings={"seconds": max(0.5, min(120.0, ms / 1000)), "turns": max(1, round(abs(turn) / 360)),
                               "direction": "anticlockwise" if s.get("rot_sign") == "-" else "clockwise"}))
-                notes.append(f"{label}: now a Barrel roll on {target.name} in {here.name} (add Barrel Roll from "
-                             f"the Plugin store to use it).")
+                notes.append(f"{label}: now a Barrel roll on {target.name} in {here.name} (it needs the Barrel Roll "
+                             f"plugin).")
                 continue
             notes.append(f"{scene.get('name')}: the {label} filter has no match yet.")
             _missed("scene filter", kind)

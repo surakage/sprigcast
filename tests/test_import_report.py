@@ -42,3 +42,33 @@ def test_report_opens_the_leaf_a_line_is_about(app, monkeypatch):
     assert len(buttons) == 1  # only Mic is a leaf or sound in the new garden
     buttons[0].click()
     assert opened == ["mic-1"] and report.opened == ["mic-1"] and buttons[0].text() == "✓ Opened"
+
+
+def test_report_offers_the_plugins_the_import_needs(app, monkeypatch):
+    from sprigcast import plugin_store
+    from sprigcast.app import gardens_menu
+
+    window = QWidget()
+    window.collection = type("C", (), {"sources": []})()
+    slide = next(p for p in plugin_store.catalog() if p.id == "slide_show")
+    added = []
+    monkeypatch.setattr(gardens_menu, "add_store_plugin", lambda w, p: added.append(p.id))
+    report = gardens_menu.ImportNotes(window, "Mine", [], [(slide, ["Photos"])])
+    button = next(b for b in report.findChildren(QPushButton) if b.text() == "Add")
+    button.click()
+    assert added == ["slide_show"] and report.added == ["slide_show"] and button.text() == "✓ Added"
+
+
+def test_adding_a_plugin_installs_it_and_wakes_what_waits(app, tmp_path, monkeypatch):
+    from sprigcast import plugin_store
+    from sprigcast.app import gardens_menu
+
+    calls = []
+    monkeypatch.setattr(plugin_store, "install", lambda folder, plugin, report=None: calls.append(plugin.id))
+    window = QWidget()
+    window.plugins_dir = tmp_path
+    window._fill_more_menu = lambda: calls.append("menu")
+    window._send_whole = lambda: calls.append("canvas")
+    slide = next(p for p in plugin_store.catalog() if p.id == "slide_show")
+    assert gardens_menu.add_store_plugin(window, slide) is None
+    assert calls == ["slide_show", "menu", "canvas"]

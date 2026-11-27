@@ -633,3 +633,29 @@ def test_obs_profile_settings_come_over_without_keys(tmp_path):
     assert (enc.encoder, enc.rate_control, enc.preset, enc.tuning, enc.profile) == ("h264_nvenc", "cbr", "p6", "ll", "main")
     assert any("4500 kbps" in n for n in notes) and not any("live_secret" in n for n in notes)
     assert convert.find_profile(tmp_path / "elsewhere.json") is None
+
+
+def test_obs_slideshow_becomes_the_slide_show_plugin_and_asks_for_it(tmp_path, monkeypatch):
+    from sprigcast import plugin_store
+    from sprigcast.core import convert, source
+
+    real = source.source_class
+    monkeypatch.setattr(source, "source_class", lambda kind: None if kind == "slideshow" else real(kind))
+
+    data = {"name": "Mine", "current_scene": "Main", "sources": [
+        {"id": "scene", "name": "Main", "uuid": "s1", "settings": {"items": [
+            {"name": "Photos", "source_uuid": "p1", "id": 1, "visible": True}]}},
+        {"id": "slideshow_v2", "name": "Photos", "uuid": "p1", "settings": {
+            "files": [{"value": "D:/Pics/a.png"}, {"value": "D:/Pics/b.jpg"}], "slide_time": 5000,
+            "randomize": True, "loop": False, "use_custom_size": "1280x720"}},
+    ]}
+    garden, _notes = convert.convert(data, _like())
+    photos = next(s for s in garden.sources if s.name == "Photos")
+    assert photos.kind == "slideshow"
+    assert photos.settings == {"folder": "D:/Pics", "seconds": 5, "shuffle": True, "loop": False,
+                               "width": 1280, "height": 720}
+    wanted = plugin_store.needed(garden, tmp_path / "plugins")
+    assert [(p.id, names) for p, names in wanted] == [("slide_show", ["Photos"])]
+    (tmp_path / "plugins").mkdir()
+    (tmp_path / "plugins" / "slide_show.py").write_text('PLUGIN = {"id": "slide_show", "version": 4}\n')
+    assert plugin_store.needed(garden, tmp_path / "plugins") == []

@@ -502,8 +502,12 @@ class GardenControl:
             problem = self.switch("garden", entry.id)
             if problem:
                 return problem
-        if notes and show_notes:
-            modal(ImportNotes(self.w, entry.name, notes))
+        if show_notes:
+            from sprigcast import plugin_store
+
+            plugins = plugin_store.needed(self.w.collection, getattr(self.w, "plugins_dir", None))
+            if notes or plugins:  # what to check, and the store plugins the import needs (user 2026-11-27)
+                modal(ImportNotes(self.w, entry.name, notes, plugins))
         return None
 
     def _export(self, kind: str) -> None:
@@ -731,7 +735,7 @@ class _Progress:
 
 # The import report's three groups (user 2026-11-27: an import report checklist with fix buttons).
 _LEFT_OUT = ("has no match", "isn't supported", "isn't carried over", "can't flip", "blends normally", "left out")
-_TO_CHECK = ("check where it sits", "muted until", "pick the apps", "pick its", "set each place", "Plugin store")
+_TO_CHECK = ("check where it sits", "muted until", "pick the apps", "pick its", "set each place", "needs the")
 REPORT_SHOWN = 12  # lines shown per group before "…and n more"
 
 
@@ -742,6 +746,25 @@ def report_groups(notes: list[str]) -> list[tuple[str, list[str]]]:
     rest = [n for n in notes if n not in left and n not in check]
     return [(t, lines) for t, lines in (("Didn't come over", left), ("Check these", check),
                                         ("Brought over differently", rest)) if lines]
+
+
+def add_store_plugin(window: MainWindow, plugin) -> str | None:
+    """Add a store plugin now (as Tools → Plugin store does); what waits on it starts working at once."""
+    from sprigcast import plugin_store
+
+    plugins_dir = getattr(window, "plugins_dir", None)
+    if plugins_dir is None:
+        return "No plugins folder"
+    try:
+        error = plugin_store.install(plugins_dir, plugin, getattr(window, "plugin_report", None))
+    except OSError as exc:
+        error = str(exc)
+    if error is None:
+        log.info("import: added the %s plugin it needed", plugin.id)
+        for refresh in ("_fill_more_menu", "_send_whole"):  # + → Plugins lists it; the canvas makes its leaves
+            if hasattr(window, refresh):
+                getattr(window, refresh)()
+    return error
 
 
 def open_source(window: MainWindow, source_id: str) -> bool:
@@ -765,11 +788,16 @@ def open_source(window: MainWindow, source_id: str) -> bool:
 class ImportNotes(popups.CardDialog):
     """The import report: each group in its own card, one line each, with Open on lines about one leaf or sound."""
 
-    def __init__(self, window: MainWindow, name: str, notes: list[str]):
+    def __init__(self, window: MainWindow, name: str, notes: list[str], plugins=()):
         super().__init__(f"{name}: import report", window, width=640)
         self.window_ = window
         by_name = {c.name: c.id for c in window.collection.sources}
         self.opened: list[str] = []
+        self.added: list[str] = []
+        if plugins:  # first: adding these makes what waits on them work, with no second import
+            box = self.section("Add these plugins", spacing=8)
+            for plugin, names in plugins:
+                box.addLayout(self._plugin_row(plugin, names))
         for title, lines in report_groups(notes):
             box = self.section(title, spacing=8)
             for line in lines[:REPORT_SHOWN]:
@@ -786,6 +814,31 @@ class ImportNotes(popups.CardDialog):
         end.addStretch(1)
         end.addWidget(done)
         self.body.addLayout(end)
+
+    def _plugin_row(self, plugin, names: list[str]) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        shown = ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
+        text = QLabel(f"<b>{plugin.name}</b> for {shown}")
+        text.setStyleSheet(f"color: {theme.TEXT}")
+        text.setWordWrap(True)
+        row.addWidget(text, 1)
+        button = QPushButton("Add")
+        button.setStyleSheet(popups.PRIMARY_PILL.replace("border-radius: 17px; padding: 9px 22px", "border-radius: 14px; padding: 6px 18px"))
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        def go(_=False, b=button) -> None:
+            error = add_store_plugin(self.window_, plugin)
+            if error is None:
+                self.added.append(plugin.id)
+                b.setText("✓ Added")
+                b.setEnabled(False)
+            else:
+                b.setText("Try again")
+                b.setToolTip(error)
+        button.clicked.connect(go)
+        row.addWidget(button, 0, Qt.AlignmentFlag.AlignTop)
+        return row
 
     def _row(self, line: str, source_id: str | None) -> QHBoxLayout:
         row = QHBoxLayout()
