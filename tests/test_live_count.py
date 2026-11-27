@@ -99,3 +99,18 @@ def test_the_eye_blinks_now_and_then_while_live(lc, monkeypatch):
     clock[0] = source._blink_at + 0.07
     source.video_frame()
     assert source.video_frame() is None  # Blink off: the eye stays open
+
+
+def test_the_eye_stays_shut_with_nobody_watching(lc, monkeypatch):
+    seen = []
+    real = lc.paint_fitted
+    monkeypatch.setattr(lc, "paint_fitted", lambda *a: seen.append(a[-1]) or real(*a))
+    lc._read = {"twitch": {"live": True, "viewers": 0}}
+    source = create_source("live_count", "z", {"hide_when_offline": False})
+    for _ in range(3):
+        source.video_frame()
+    lc._read = {"twitch": {"live": True, "viewers": 3}}
+    source.video_frame()
+    lc._read = {}
+    source.video_frame()  # not live, still shown: no one watching
+    assert seen[0] == 0.0 and seen[1] == 1.0 and seen[-1] == 0.0

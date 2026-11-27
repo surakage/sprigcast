@@ -19,7 +19,7 @@ the Style tab's colors, font, text size and corners.
 Apps can read it too: {"do": "livecount.get"} answers {"total", "platforms": {name: viewers}, "live"}.
 
 It's SprigCast's clock card (core/cards.py), with an eye badge that's green while you're live and blinks now and
-then (Blink switches that off). It's light: the
+then (Blink switches that off). With nobody watching (0) the eye stays shut. It's light: the
 numbers come from a cache the window fills every few seconds (never a web call on the render thread), and the
 card is drawn again only when the words on it change. Off screen it does nothing at all.
 
@@ -246,7 +246,9 @@ class LiveCountSource(Source):
         self._hidden_key = None
         big, small = words(settings, count)
         open_ = 1.0
-        if count["live"] and settings.get("blink", True):
+        if not count["waiting"] and count["total"] == 0:
+            open_ = 0.0  # nobody watching: the eye stays shut
+        elif count["live"] and settings.get("blink", True):
             now = time.monotonic()
             since = now - self._blink_at
             if since >= BLINK_LONG:  # done: the next one some seconds from now (or a quick second one)
