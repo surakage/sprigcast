@@ -1287,4 +1287,5 @@ Fields that name exactly one thing by its id, never by a name:
 | `1001` | SprigCast closed, or its API was turned off (app.closing came first). |
 | `4002` | A message wasn't a JSON object. |
 | `4009` | Wrong password or key. |
+| `4010` | The app asked for an API version SprigCast doesn't speak (hello's apis lists them). |
 | `4011` | Wrong or expired pairing code, or too many wrong codes (pairing locks for a minute). |

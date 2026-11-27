@@ -96,6 +96,7 @@ FEATURES = (
     "fields.ids",          # bloomId, sprigId, sourceId, itemId, soundId, mediaId, filterId, placeId: only an id
     "actions.toggles",     # sound.toggle, media.toggleLoop, item.toggleLock, camera.toggle
     "actions.aliases",     # record.togglePause, filter.share: newer names for record.toggle_pause, filters.share
+    "api.v1",              # "api": 1 in the first message: data envelope, camelCase answers and events, set needs value
 )
 
 
@@ -116,6 +117,41 @@ BATCH_ACTIONS = frozenset({
     "filter.add", "filter.set", "filter.remove", "filter.move", "items.list", "layout.get",
     "sound.mute", "sound.volume", "sound.balance"})  # a sound's own settings: saved in the garden like the rest
 PREVIEW = API_VERSION == 0
+# The API versions an app can ask for with "api" in its first message. 0 (the default) is today's flat messages;
+# 1 puts fields under "data", answers and events in camelCase, events as {event, group, data, at}, and needs the
+# value for set actions (docs/api/conventions.md). 1 is a preview too until it's declared stable.
+APIS = (0, 1)
+# Older snake_case names in answers and events, spelled camelCase for API 1 apps (only these: a source's own
+# settings keep their names, since source.set takes them as they are).
+CAMEL_OUT = {"scale_x": "scaleX", "scale_y": "scaleY", "on_air": "onAir", "dry_run": "dryRun", "one_step": "oneStep",
+             "same_on_both_canvases": "sameOnBothCanvases", "source_size": "sourceSize", "a_name": "aName",
+             "a_in": "aIn", "b_name": "bName", "b_in": "bIn", "sources_removed": "sourcesRemoved",
+             "unmatched_choices": "unmatchedChoices", "bandwidth_test": "bandwidthTest"}
+KEEP_INSIDE = frozenset({"settings", "data", "defaults"})  # keys whose contents are never renamed
+# For API 1: a set action needs the value it sets (toggling is its own action, so a retried message can't flip it).
+NEEDS_VALUE = {"sound.mute": ("muted", "sound.toggle"), "media.loop": ("on", "media.toggleLoop"),
+               "item.lock": ("locked", "item.toggleLock"), "camera.set": ("on", "camera.toggle")}
+
+
+def camel_out(value: Any) -> Any:
+    """An answer or event for an API 1 app: CAMEL_OUT names renamed at every depth, except inside KEEP_INSIDE."""
+    if isinstance(value, dict):
+        return {CAMEL_OUT.get(k, k): (v if k in KEEP_INSIDE else camel_out(v)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [camel_out(v) for v in value]
+    return value
+
+
+def flat(message: Any) -> Any:
+    """An API 1 message ({"id", "do", "data": {...}}, steps alike) as the flat message the actions read."""
+    if not isinstance(message, dict):
+        return message
+    out = {k: v for k, v in message.items() if k != "data" or not isinstance(v, dict)}
+    if isinstance(message.get("data"), dict) and ("do" in message or "steps" not in message):
+        out.update({k: v for k, v in message["data"].items() if k not in ("do", "id", "steps")})
+    if isinstance(out.get("steps"), list):
+        out["steps"] = [flat(step) for step in out["steps"]]
+    return out
 EVENT_GROUPS = ("bloom", "item", "sprig", "sound", "filter", "source", "output", "transition", "media", "custom",
                 "plugin", "garden", "path")
 HIGH_VOLUME = ("meters",)  # only when asked for by name: about 15 a second
@@ -2351,9 +2387,11 @@ class NativeSession:
     salt: str = field(default_factory=lambda: secrets.token_urlsafe(24))
     challenge: str = field(default_factory=lambda: secrets.token_urlsafe(24))
     may_change: bool = True  # whether the last message received could have changed something (may_change)
+    api_version: int = 0  # what the app asked for in its first message ("api"); 0 when it didn't say
 
     def hello(self) -> str:
-        hello: dict[str, Any] = {"app": "SprigCast", "version": __version__, "api": API_VERSION, "preview": PREVIEW,
+        hello: dict[str, Any] = {"app": "SprigCast", "version": __version__, "api": API_VERSION, "apis": list(APIS),
+                                 "preview": PREVIEW,
                                  "auth": {"salt": self.salt, "challenge": self.challenge} if self.password else None}
         return json.dumps({"hello": hello})
 
@@ -2365,6 +2403,12 @@ class NativeSession:
             pass  # every app hears that SprigCast is closing, whatever groups it asked for
         elif not (self.wants(event_group(name)) or (self.welcomed and name in self.event_names)):
             return None
+        if self.api_version >= 1:
+            from datetime import datetime, timezone
+
+            at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+            group = None if name == ALWAYS_SENT else event_group(name)
+            return json.dumps({"event": name, "group": group, "data": camel_out(data), "at": at}, default=str)
         return json.dumps({"event": name, **data}, default=str)
 
     def _set_events(self, wanted: Any) -> None:
@@ -2389,7 +2433,7 @@ class NativeSession:
                     self.unknown_events.append(entry)
 
     def _welcome(self) -> str:
-        welcome: dict[str, Any] = {"api": API_VERSION, "events": sorted(self.events | self.event_names)}
+        welcome: dict[str, Any] = {"api": self.api_version, "events": sorted(self.events | self.event_names)}
         if self.unknown_events:
             welcome["unknown"] = self.unknown_events
         return json.dumps({"welcome": welcome})
@@ -2403,6 +2447,14 @@ class NativeSession:
         if not isinstance(message, dict):
             yield Close(4002, "Messages must be JSON objects.")
             return
+        if not self.welcomed:
+            asked = message.get("api", 0)
+            if isinstance(asked, bool) or asked not in APIS:
+                yield Close(4010, f"SprigCast speaks API {' or '.join(str(a) for a in APIS)}, not {asked!r}.")
+                return
+            self.api_version = int(asked)
+        if self.api_version >= 1:
+            message = flat(message)
         self.may_change = may_change(message)
         if not self.welcomed:
             if "pair" in message:
@@ -2439,7 +2491,12 @@ class NativeSession:
             yield self._welcome()
             return
         if "steps" in message:
-            yield from self._steps(message)
+            for out in self._steps(message):
+                yield self._shaped(out) if isinstance(out, str) else out
+            return
+        problem = self._needs_value(message)
+        if problem is not None:
+            yield self._shaped(json.dumps(problem))
             return
         self.api.later_ok = True  # this app's own message: a screenshot is made off the window's thread
         try:
@@ -2447,9 +2504,23 @@ class NativeSession:
         finally:
             self.api.later_ok = False
         if isinstance(out, Later):
-            yield out.map(lambda done: json.dumps(done, default=str))
+            yield out.map(lambda done: self._shaped(json.dumps(done, default=str)))
             return
-        yield json.dumps(out, default=str)
+        yield self._shaped(json.dumps(out, default=str))
+
+    def _shaped(self, text: str) -> str:
+        """An answer as this app's API version spells it (API 1: camelCase names)."""
+        return json.dumps(camel_out(json.loads(text)), default=str) if self.api_version >= 1 else text
+
+    def _needs_value(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        """API 1: a set action given no value is refused (NEEDS_VALUE), never taken as a toggle."""
+        needed = NEEDS_VALUE.get(message.get("do")) if self.api_version >= 1 else None
+        if needed is None or message.get(needed[0]) is not None:
+            return None
+        key, toggle = needed
+        return {"id": message.get("id"), "ok": False, "error": {
+            "code": "bad_request", "message": f"{key} is missing (to toggle, use {toggle}).", "field": key,
+            "reason": "missing"}}
 
     def _steps(self, message: dict[str, Any]) -> Iterator[str | Close | Sleep]:
         """{"steps": [{"do": ...}, {"wait": 5000}, ...]}: run them in order, waiting where asked.
@@ -2461,8 +2532,13 @@ class NativeSession:
         dry_run = message.get("dry_run", message.get("dryRun")) is True
         one_step = message.get("one_step", message.get("oneStep")) is True
         if (dry_run or one_step) and isinstance(steps, list) and steps and len(steps) <= MAX_STEPS:
+            refused = next((self._needs_value(step) for step in steps if isinstance(step, dict)
+                            and self._needs_value(step) is not None), None)
             if any(not isinstance(step, dict) or "wait" in step for step in steps):
                 problem = "Steps taken as one can't wait: only actions."
+            elif refused is not None:
+                yield json.dumps({"id": message.get("id"), "ok": False, "error": refused["error"]})
+                return
             else:
                 result = self.api.run_batch(steps, dry_run)
                 ok = all(r["ok"] for r in result["steps"]) and len(result["steps"]) == len(steps)
@@ -2493,7 +2569,8 @@ class NativeSession:
                 yield Sleep(wait / 1000)
                 results.append({**({"id": step["id"]} if "id" in step else {}), "ok": True, "waited": wait})
                 continue
-            result = answer(self.api, step if isinstance(step, dict) else {})
+            result = self._needs_value(step) if isinstance(step, dict) else None
+            result = result or answer(self.api, step if isinstance(step, dict) else {})
             if not (isinstance(step, dict) and "id" in step):  # a step's own id comes back with its answer
                 result.pop("id", None)
             results.append(result)
