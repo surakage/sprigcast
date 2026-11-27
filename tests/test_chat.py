@@ -155,7 +155,8 @@ def test_mixed_lines_carry_a_platform_mark_and_mods_clear_per_platform(app):
     view.mixed = True
     view.add(ChatMessage("twitch", "a", "hi", user_id="1", id="t1"))
     view.add(ChatMessage("youtube", "b", "yo", user_id="1", id="y1"))
-    assert "▍" in chat_panel.message_html(view.messages[0], True)
+    assert "src='platform:twitch'" in chat_panel.message_html(view.messages[0], True)
+    assert "platform:" not in chat_panel.message_html(view.messages[0], False)
     view.remove(user_id="1", platform="youtube")
     assert [m.platform for m in view.messages] == ["twitch"]
 

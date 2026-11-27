@@ -713,7 +713,8 @@ class LiveSide(QWidget):
         for key, label in SERVICE_CHOICES:
             # A turn later, once the menu has closed: Settings opened from inside the menu's click came up with
             # nothing for screen readers to read (no controls listed at all; PC, 2026-11-20). Sound's menus: #784.
-            self.add_menu.addAction(label).triggered.connect(
+            self.add_menu.addAction(platform_logos.icon(key, 20, "RT" if key == "custom" else label[:2]),
+                                    label).triggered.connect(
                 lambda _=False, k=key: QTimer.singleShot(0, self, lambda: on_destination(f"new:{k}")))
         self.add_menu.addSeparator()
 

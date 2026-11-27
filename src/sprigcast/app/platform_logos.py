@@ -1,4 +1,5 @@
-"""Each platform's official logo on a tile of its own colour, for places (Destinations, Get started).
+"""Each platform's official logo on a tile of its own colour, wherever a place shows (Destinations, Get started,
++ Add, Show all, Settings → Stream, the Chat panel).
 
 The logo shapes are from Simple Icons (CC0 1.0); each logo is its owner's trademark, shown here only to say where
 a place streams to. Platforms without a logo here keep two letters on their colour. Tiles are drawn once per
@@ -8,7 +9,7 @@ platform, size and screen scale.
 from __future__ import annotations
 
 from PySide6.QtCore import QByteArray, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 
 # Simple Icons paths, on a 24 x 24 box.
 LOGOS = {
@@ -84,3 +85,14 @@ def tile(service: str | None, size: int = 32, letters: str = "", fill: str = "",
     p.end()
     _made[key] = pix
     return pix
+
+
+def icon(service: str | None, size: int = 20, letters: str = "") -> QIcon:
+    """The tile as an icon for menus, lists and drop-downs, sharp at 1x to 3x. A place without its own tile
+    shows `letters` on the same neutral tile Destinations uses."""
+    from sprigcast.app import theme
+
+    out = QIcon()
+    for ratio in (1.0, 2.0, 3.0):
+        out.addPixmap(tile(service, size, letters, theme.RAISED_HOVER, theme.TEXT, ratio))
+    return out
