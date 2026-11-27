@@ -60,6 +60,7 @@ EMOTE_KEEP = 400  # pictures kept in memory across a start-over, newest used fir
 EMOTE_FETCHES = 4  # pictures downloading at once; the rest wait their turn (one request each is UI-thread work)
 EMOTE_URL = "https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/1.0"
 EMOTE_SIZE = 22
+MARK_SIZE = 16  # the platform logo that starts each line when several chats are mixed
 
 URL_RE = re.compile(r"(https?://[^\s<]+)")
 
@@ -85,12 +86,13 @@ def mentions(text: str, names: frozenset[str]) -> bool:
 
 def message_html(message: ChatMessage, mark: bool = False, names: frozenset[str] = frozenset()) -> str:
     """One chat line as rich text: coloured name, then the words with emotes and links.
-    `mark`: start with the platform's colour, for when several chats are mixed.
+    `mark`: start with the platform's logo, for when several chats are mixed.
     `names`: your own names, so lines that mention you stand out."""
     colour = readable_colour(message.color, message.user)
     start = ""
     if mark and message.platform in PLATFORMS:
-        start = f"<span style='color:{PLATFORMS[message.platform][1]}; font-weight:700'>▍</span>"
+        start = (f"<img src='platform:{message.platform}' width={MARK_SIZE} height={MARK_SIZE} align=middle"
+                 f" alt='{PLATFORMS[message.platform][0]}'>&nbsp;")
     if message.notice:
         return (f"<p style='margin:6px 0'>{start}<span style='color:{theme.SELECT_TEXT}; background:{theme.SELECT_BG};'>"
                 f"&nbsp;✿ {_body(message)}&nbsp;</span></p>")
@@ -420,6 +422,10 @@ class ChatView(QTextBrowser):
         self.jump.hide()
 
     def loadResource(self, kind, url: QUrl):  # noqa: N802 (Qt override)
+        if url.scheme() == "platform" and kind == QTextDocument.ResourceType.ImageResource:
+            from sprigcast.app import platform_logos
+
+            return platform_logos.tile(url.path(), MARK_SIZE, ratio=max(2.0, self.devicePixelRatioF()))
         if url.scheme() == "emote" and kind == QTextDocument.ResourceType.ImageResource:
             picture = self._pictures.get(url.path())
             if picture is not None:

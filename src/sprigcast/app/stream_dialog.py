@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app import message as msgbox
 from sprigcast.app.modal import modal
-from sprigcast.app import theme
+from sprigcast.app import platform_logos, theme
 from sprigcast.app.live_stage import Switch
 from sprigcast.core.scene import Output, SceneCollection
 from sprigcast.output import service_signin, twitch_auth
@@ -53,6 +53,7 @@ def _output_label(output: Output) -> str:
     return label
 
 
+CARD_TILE = 28  # a place card's logo tile
 PLACE_CARDS_STYLE = (
     f"#placeCards {{ background: transparent; border: none; outline: none; padding: 0px; }}"
     f"#placeCards::item {{ background: {theme.SECTION}; color: {theme.TEXT}; border: 1px solid {theme.SECTION_EDGE};"
@@ -212,6 +213,7 @@ class StreamPage(QWidget):
         self.list.setObjectName("placeCards")
         self.list.setFixedWidth(220)
         self.list.setFrameShape(QListWidget.Shape.NoFrame)
+        self.list.setIconSize(QSize(CARD_TILE, CARD_TILE))
         self.list.setSizeAdjustPolicy(QListWidget.SizeAdjustPolicy.AdjustToContents)
         self.list.currentRowChanged.connect(self._load)
         self.list.model().rowsInserted.connect(lambda *_: self._fit_list())
@@ -249,7 +251,7 @@ class StreamPage(QWidget):
         if later:
             self._loading = True  # the cards now, so the list is there at once; the first is picked at the end
             for output in self.outputs:
-                item = QListWidgetItem(self._card_text(output))
+                item = QListWidgetItem(self._card_icon(output), self._card_text(output))
                 item.setData(Qt.ItemDataRole.UserRole, output.id)
                 self.list.addItem(item)
             self._loading = False
@@ -326,9 +328,11 @@ class StreamPage(QWidget):
         destination, form = _section("Account")
         self.service = QComboBox()
         self.service.addItem(PICK_SERVICE, "")  # a new place starts here: you choose, nothing is assumed
+        self.service.setIconSize(QSize(18, 18))
         # The five everyday places and Custom RTMP; the rest are behind "Show all…" (a searchable A to Z list).
         for key in (*TOP_SERVICES, "custom"):
-            self.service.addItem(SERVICES[key].label, key)
+            label = SERVICES[key].label
+            self.service.addItem(platform_logos.icon(key, 18, "RT" if key == "custom" else label[:2]), label, key)
         self.service.addItem(SHOW_ALL, ALL_PLACES)
         self._service_was = 0
         self.service.currentIndexChanged.connect(self._service_picked)
@@ -556,7 +560,7 @@ class StreamPage(QWidget):
         self._loading = True
         self.list.clear()
         for output in self.outputs:
-            item = QListWidgetItem(self._card_text(output))
+            item = QListWidgetItem(self._card_icon(output), self._card_text(output))
             item.setData(Qt.ItemDataRole.UserRole, output.id)
             self.list.addItem(item)
         self._loading = False
@@ -785,6 +789,14 @@ class StreamPage(QWidget):
         rows = sum(self.list.sizeHintForRow(i) for i in range(self.list.count()))
         self.list.setMaximumHeight(max(4, rows + 4))
 
+    def _card_icon(self, output: Output):
+        """The place's logo tile (a new place without a service yet: a blank tile)."""
+        if output.id in self._unpicked:
+            return platform_logos.icon(None, CARD_TILE, "")
+        service = output.service or "custom"
+        label = SERVICES.get(service, SERVICES["custom"]).label
+        return platform_logos.icon(service, CARD_TILE, "RT" if service == "custom" else label[:2])
+
     def _card_text(self, output: Output) -> str:
         if output.id in self._unpicked:
             return f"{NEW_PLACE}\n{PICK_SERVICE}"
@@ -811,7 +823,8 @@ class StreamPage(QWidget):
         row = self.service.findData(key)
         if row < 0 and key in SERVICES:
             row = self.service.findData("custom")
-            self.service.insertItem(row, SERVICES[key].label, key)
+            label = SERVICES[key].label
+            self.service.insertItem(row, platform_logos.icon(key, 18, label[:2]), label, key)
         return row if row >= 0 else self.service.findData("custom")
 
     def _service_picked(self) -> None:
@@ -906,6 +919,7 @@ class StreamPage(QWidget):
         self.keys[output.key_ref] = self.key.text().strip()
         self._show_service(output)
         self.list.item(self.list.currentRow()).setText(self._card_text(output))
+        self.list.item(self.list.currentRow()).setIcon(self._card_icon(output))
         self.hero.setText(SERVICES.get(output.service or "custom", SERVICES["custom"]).label)
 
     def _twitch_clicked(self) -> None:
