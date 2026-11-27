@@ -1323,6 +1323,8 @@ class Compositor:
             fx = self.effects.get(fx_key, NO_EFFECTS)
             if fx.spin[0]:
                 quad = self._spun(fx_key, quad, fx.spin)
+            if fx.move[4]:
+                quad = self._moving(fx_key, quad, fx.move)
             self.vbo.write(np.array(quad, dtype="f4").tobytes())
             planar = None if part is not None else self.planar.get(source_id)
             if planar is not None:
@@ -1396,6 +1398,16 @@ class Compositor:
             p["sil"].value = halo.mode
             self.vao.render(moderngl.TRIANGLE_STRIP, vertices=4)
         p["sil"].value = 0
+
+    def _moving(self, source_id: str, quad: list, move) -> list:
+        """The quad on its way from where it was to where it is (Move plugin), timed from the first frame it's seen."""
+        from sprigcast.core.filters import moved_quad
+
+        moves = self.__dict__.setdefault("_moves", {})
+        if len(moves) > 64:
+            moves.clear()
+        start = moves.setdefault((source_id, move[5]), self.time)
+        return moved_quad(quad, move, self.time - start)
 
     def _spun(self, source_id: str, quad: list, spin: tuple[float, float, int]) -> list:
         """The quad turned around its middle: a barrel roll that eases in and out and lands where it began."""

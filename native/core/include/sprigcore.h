@@ -36,7 +36,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever this interface changes in a way Python must know about. */
-#define SC_INTERFACE_VERSION 45
+#define SC_INTERFACE_VERSION 46
 
 enum {
     SC_OK = 0,
@@ -176,6 +176,10 @@ typedef struct sc_effects {
     float bg_gamma;        /* the person's gamma, as Tone's slider: -3..3, 0 = untouched */
     float bg_light;        /* the person's brightness: -1..1 */
     float bg_room_light;   /* what shows behind them (blur or picture): brightness -1..1 */
+    float move_from[4];    /* a move (v46): where the item starts, from where it ends: dx, dy (canvas px), size, turn (rad) */
+    float move_seconds;    /* 0 = no move */
+    int move_run;          /* each play has its own: the move is timed from the first frame that run is drawn */
+    int move_easing;       /* core/filters.py MOVE_EASINGS */
 } sc_effects;
 
 /* The Background filter (segmenter.h): the room behind a person found by a small model on the graphics card. */

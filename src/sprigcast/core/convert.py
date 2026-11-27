@@ -674,6 +674,7 @@ def from_obs(data: dict[str, Any], like: SceneCollection, size_of: SizeOf | None
             placements[part.id] = config
         return placements[part.id]
 
+    scales: dict[int, float] = {}  # OBS scene -> its size on our canvas (the Move filter's pixels)
     for obs in scenes:
         scene = made.get(id(obs))
         if scene is None:
@@ -681,6 +682,7 @@ def from_obs(data: dict[str, Any], like: SceneCollection, size_of: SizeOf | None
         obs_w, obs_h = obs_sizes[canvas_of[id(obs)]]
         target = col.canvas(scene.canvas)
         k = min(target.width / obs_w, target.height / obs_h) if obs_w and obs_h else 1.0
+        scales[id(obs)] = k
         for item in (obs.get("settings") or {}).get("items", []):
             if item.get("group_item_backup"):
                 continue  # a group's insides, copied here for old OBS versions
@@ -756,7 +758,7 @@ def from_obs(data: dict[str, Any], like: SceneCollection, size_of: SizeOf | None
         col.active_scenes[canvas_id] = on.id
 
     _transitions(data, col, by_name, made, notes)
-    _scene_filters(scenes, by_name, sources, made, notes)
+    _scene_filters(scenes, by_name, sources, made, notes, scales)
     _hotkeys(raw, made, sources, col)
     col.wrap_blooms()
     set_aside_unused(col, notes)
@@ -1084,8 +1086,38 @@ def vertical_twin(path: str) -> str:
     return ""
 
 
+_OBS_EASING = {8: "elastic", 9: "bounce", 10: "back"}  # the Move plugin's easing functions SprigCast has as such
+
+
+def _move_easing(s: dict[str, Any]) -> str:
+    match = int(_num(s.get("easing_match"), 0))
+    special = _OBS_EASING.get(int(_num(s.get("easing_function_match"), 0)))
+    if match and special:
+        return special
+    return {0: "linear", 1: "ease_in", 2: "ease_out"}.get(match, "smooth")
+
+
+def _move_settings(s: dict[str, Any], obs_item: dict[str, Any] | None, k: float) -> dict[str, Any]:
+    """An OBS Move Source filter as a SprigCast Move: always by how much from where the item is (OBS's pixels are
+    its canvas', and its pos is where the item's anchor sits), so it lands in the same spot on our canvas."""
+    tx, ty = _xy(s.get("pos"))
+    sx, _sy = _xy(s.get("scale"), (1.0, 1.0))
+    if s.get("transform_relative") or obs_item is None:
+        dx, dy, size = tx, ty, (abs(sx) or 1.0) * 100 if not s.get("transform_relative") else 100.0
+        turn = _num(s.get("rot"))
+    else:
+        px, py = _xy(obs_item.get("pos"))
+        ix, _iy = _xy(obs_item.get("scale"), (1.0, 1.0))
+        dx, dy = tx - px, ty - py
+        size = (abs(sx) or 1.0) / (abs(ix) or 1.0) * 100
+        turn = _num(s.get("rot")) - _num(obs_item.get("rot"))
+    ms = _num(s.get("duration"), 300) if s.get("custom_duration", True) else 300
+    return {"relative": True, "x": round(dx * k, 1), "y": round(dy * k, 1), "size": max(1, min(1000, round(size))),
+            "turn": turn, "seconds": max(0.05, min(60.0, ms / 1000)), "easing": _move_easing(s), "then": "stay"}
+
+
 def _scene_filters(scenes: list[dict[str, Any]], by_name: dict[str, dict], sources: dict[int, SourceConfig],
-                   made: dict[int, Scene], notes: list[str]) -> None:
+                   made: dict[int, Scene], notes: list[str], scales: dict[int, float] | None = None) -> None:
     """Filters on OBS scenes. A Move filter that only turns one thing in the scene (a barrel roll) becomes a
     Barrel roll on that item there (its own effect: the same source elsewhere doesn't spin, like in OBS), off
     until triggered; anything else is noted, not dropped quietly (PC, 2026-11-19: "THSV Barrel Roll" on the
@@ -1109,6 +1141,16 @@ def _scene_filters(scenes: list[dict[str, Any]], by_name: dict[str, dict], sourc
                               "direction": "anticlockwise" if s.get("rot_sign") == "-" else "clockwise"}))
                 notes.append(f"{label}: now a Barrel roll on {target.name} in {here.name} (it needs the Barrel Roll "
                              f"plugin).")
+                continue
+            if kind == "move_source_filter" and item is not None:
+                name = str(s.get("source", ""))
+                uuid = (by_name.get(name) or {}).get("uuid")
+                obs_item = next((i for i in (scene.get("settings") or {}).get("items", []) if isinstance(i, dict)
+                                 and (i.get("name") == name or (uuid and i.get("source_uuid") == uuid))), None)
+                item.effects.append(Filter(id=f"f-{len(item.effects)}", kind="move", name=str(label), enabled=False,
+                                           settings=_move_settings(s, obs_item, (scales or {}).get(id(scene), 1.0))))
+                notes.append(f"{label}: now a Move on {target.name} in {here.name}; give it a hotkey in Tools → "
+                             f"Hotkeys (it needs the Move plugin).")
                 continue
             notes.append(f"{scene.get('name')}: the {label} filter has no match yet.")
             _missed("scene filter", kind)

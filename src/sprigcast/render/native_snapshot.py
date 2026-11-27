@@ -80,6 +80,8 @@ def effects_struct(fx: VideoEffects) -> sprigcore.Effects:
     e.bg_picture = sprigcore.key(backdrop_name(fx.bg_picture)) if fx.bg_mode and fx.bg_picture else 0
     e.bg_edge_size, e.bg_steady = fx.bg_edge_size, fx.bg_steady
     e.bg_gamma, e.bg_light, e.bg_room_light = fx.bg_gamma, fx.bg_light, fx.bg_room_light
+    _floats(e.move_from, fx.move[:4])
+    e.move_seconds, e.move_run, e.move_easing = float(fx.move[4]), int(fx.move[5]), int(fx.move[6])
     halos = fx.halos[: sprigcore.MAX_HALOS]
     e.halo_count = len(halos)
     for i, h in enumerate(halos):
