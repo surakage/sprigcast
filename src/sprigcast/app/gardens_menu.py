@@ -478,6 +478,9 @@ class GardenControl:
                 entry = self.shelf.import_file("garden", path)
             elif app:
                 garden, notes = convert.convert(data, self.w.collection, audio_devices=self._audio_names())
+                profile = convert.find_profile(path) if app == "obs" else None
+                if profile is not None:  # frame rate, recording and encoder settings from OBS's profile (never keys)
+                    convert.apply_profile(garden, profile, notes)
                 # Types only, no names: which matches to build next (user 2026-11-27: "track what failed to carry over")
                 log.info("import from %s: %d notes; didn't carry over: %s", convert.APP_NAMES.get(app, app),
                          len(notes), convert.missed_summary() or "nothing")

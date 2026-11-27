@@ -601,3 +601,35 @@ def test_streamlabs_sound_details_come_over():
     music = obs["sources"][0]
     assert music["flags"] == 2 and music["sync"] == 200_000_000 and music["mixers"] == 8
     assert music["monitoring_type"] == 1
+
+
+def test_obs_profile_settings_come_over_without_keys(tmp_path):
+    from sprigcast.core import convert
+
+    root = tmp_path / "obs-studio"
+    scenes, profile = root / "basic" / "scenes", root / "basic" / "profiles" / "Streaming"
+    scenes.mkdir(parents=True)
+    profile.mkdir(parents=True)
+    (root / "basic" / "profiles" / "Other").mkdir()
+    (root / "basic" / "profiles" / "Other" / "basic.ini").write_text("[Video]\nFPSCommon=30\n")
+    (root / "user.ini").write_text("[Basic]\nProfileDir=Streaming\n")
+    (scenes / "Main.json").write_text("{}")
+    (profile / "basic.ini").write_text(
+        "[Video]\nBaseCX=1920\nBaseCY=1080\nOutputCX=1280\nOutputCY=720\nFPSType=0\nFPSCommon=60\n"
+        "[Output]\nMode=Advanced\n[AdvOut]\nEncoder=jim_nvenc\nRecFilePath=D:/Videos\nRecFormat2=hybrid_mp4\n"
+        "RecRBTime=40\n")
+    (profile / "streamEncoder.json").write_text(json.dumps(
+        {"bitrate": 4500, "rate_control": "CBR", "keyint_sec": 2, "preset2": "p6", "tune": "ll", "profile": "main"}))
+    (profile / "service.json").write_text(json.dumps({"settings": {"key": "live_secret"}}))
+    found = convert.find_profile(scenes / "Main.json")
+    assert found == profile
+    col, notes = _like(), []
+    convert.apply_profile(col, found, notes)
+    wide = next(c for c in col.canvases if c.width >= c.height)
+    assert wide.fps == 60 and wide.output_short_side == 720
+    assert col.recording.folder == "D:/Videos" and col.recording.container == "mp4"
+    assert col.recording.replay_seconds == 45
+    enc = col.stream_encoder
+    assert (enc.encoder, enc.rate_control, enc.preset, enc.tuning, enc.profile) == ("h264_nvenc", "cbr", "p6", "ll", "main")
+    assert any("4500 kbps" in n for n in notes) and not any("live_secret" in n for n in notes)
+    assert convert.find_profile(tmp_path / "elsewhere.json") is None

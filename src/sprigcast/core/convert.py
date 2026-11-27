@@ -1688,3 +1688,137 @@ def guess_name(path: Path, data: Any) -> str:
     if detect(data) == "meld" and path.stem.casefold() == "session":
         return "Meld"
     return path.stem.replace("_", " ")
+
+
+# OBS's profile (Settings → Output and Video), the SprigCast way. A scene collection doesn't hold these: they sit
+# in the profile folder next to it (obs-studio/basic/profiles/<name>/basic.ini + streamEncoder.json). Stream keys
+# (service.json) are never read.
+
+_OBS_ENCODERS = {"obs_x264": "libx264", "x264": "libx264", "jim_nvenc": "h264_nvenc", "ffmpeg_nvenc": "h264_nvenc",
+                 "obs_nvenc_h264_tex": "h264_nvenc", "nvenc": "h264_nvenc", "jim_hevc_nvenc": "hevc_nvenc",
+                 "obs_nvenc_hevc_tex": "hevc_nvenc", "nvenc_hevc": "hevc_nvenc", "jim_av1_nvenc": "av1_nvenc",
+                 "obs_nvenc_av1_tex": "av1_nvenc", "nvenc_av1": "av1_nvenc", "h264_texture_amf": "h264_amf",
+                 "amd_amf_h264": "h264_amf", "amd": "h264_amf", "h265_texture_amf": "hevc_amf",
+                 "amd_amf_h265": "hevc_amf", "amd_hevc": "hevc_amf", "av1_texture_amf": "av1_amf",
+                 "obs_qsv11": "h264_qsv", "obs_qsv11_v2": "h264_qsv", "qsv": "h264_qsv",
+                 "obs_qsv11_hevc": "hevc_qsv", "obs_qsv11_av1": "av1_qsv"}
+CLIP_LENGTHS = (15, 30, 45, 60)
+
+
+def find_profile(collection_path: Path) -> Path | None:
+    """The OBS profile folder that goes with a scene collection in obs-studio/basic/scenes: the one OBS last used
+    (global.ini or user.ini → [Basic] ProfileDir), or the only one there is."""
+    basic = collection_path.parent.parent
+    profiles = basic / "profiles"
+    if collection_path.parent.name.lower() != "scenes" or not profiles.is_dir():
+        return None
+    for ini in (basic.parent / "user.ini", basic.parent / "global.ini"):
+        folder = _ini(ini).get("Basic", {}).get("ProfileDir")
+        if folder and (profiles / folder / "basic.ini").is_file():
+            return profiles / folder
+    found = [p for p in profiles.iterdir() if (p / "basic.ini").is_file()]
+    return found[0] if len(found) == 1 else None
+
+
+def _ini(path: Path) -> dict[str, dict[str, str]]:
+    """An OBS .ini as {section: {key: value}} ({} when it isn't there or can't be read)."""
+    import configparser
+
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    parser.optionxform = str  # OBS's keys are case-sensitive
+    try:
+        parser.read_string(path.read_text(encoding="utf-8-sig", errors="replace"))
+    except (OSError, configparser.Error):
+        return {}
+    return {name: dict(parser[name]) for name in parser.sections()}
+
+
+def apply_profile(col: SceneCollection, folder: Path, notes: list[str]) -> None:
+    """Frame rate, output size, recording folder and format, clip length and the stream's encoder settings."""
+    ini = _ini(folder / "basic.ini")
+    video, output = ini.get("Video", {}), ini.get("Output", {})
+    advanced = output.get("Mode", "Simple").lower() == "advanced"
+    out = ini.get("AdvOut" if advanced else "SimpleOutput", {})
+    changed: list[str] = []
+    fps = _obs_fps(video)
+    base = (int(_num(video.get("BaseCX"))), int(_num(video.get("BaseCY"))))
+    scaled = (int(_num(video.get("OutputCX"))), int(_num(video.get("OutputCY"))))
+    wide = next((c for c in col.canvases if c.width >= c.height), None)
+    if wide is not None and fps:
+        wide.fps = fps
+        changed.append(f"{fps} fps")
+    if wide is not None and all(base) and all(scaled) and scaled != base and min(scaled) < min(wide.width, wide.height):
+        wide.output_short_side = min(scaled)
+        changed.append(f"sent out at {scaled[0]}x{scaled[1]}")
+    folder_key, format_key = ("RecFilePath", "RecFormat2") if advanced else ("FilePath", "RecFormat2")
+    rec_folder = out.get(folder_key) or out.get("FilePath")
+    if rec_folder:
+        col.recording.folder = rec_folder
+        changed.append("recordings folder")
+    container = (out.get(format_key) or out.get("RecFormat") or "").lower()
+    if container in ("mkv", "mp4", "fragmented_mp4", "hybrid_mp4"):
+        col.recording.container = "mkv" if container == "mkv" else "mp4"
+        changed.append(f"records as {col.recording.container.upper()}")
+    seconds = int(_num(out.get("RecRBTime")))
+    if seconds:
+        col.recording.replay_seconds = min(CLIP_LENGTHS, key=lambda n: abs(n - seconds))
+        changed.append(f"{col.recording.replay_seconds}-second clips")
+    _stream_encoder(col, folder, out, advanced, changed, notes)
+    if changed:
+        notes.append(f"From your OBS profile ({folder.name}): {', '.join(changed)}.")
+
+
+def _obs_fps(video: dict[str, str]) -> int:
+    kind = int(_num(video.get("FPSType"), 0))  # 0 common, 1 whole number, 2 fraction
+    if kind == 1:
+        return int(_num(video.get("FPSInt")))
+    if kind == 2:
+        den = _num(video.get("FPSDen"), 1) or 1
+        return int(round(_num(video.get("FPSNum")) / den))
+    common = str(video.get("FPSCommon") or "")
+    return int(round(_num(common.split()[0]))) if common else 0
+
+
+def _stream_encoder(col: SceneCollection, folder: Path, out: dict[str, str], advanced: bool, changed: list[str],
+                    notes: list[str]) -> None:
+    encoder = col.stream_encoder
+    name = out.get("Encoder" if advanced else "StreamEncoder") or ""
+    if name in _OBS_ENCODERS:
+        encoder.encoder = _OBS_ENCODERS[name]
+        changed.append(f"{encoder.encoder} encoder")
+    elif name:
+        _missed("encoder", name)
+    bitrate = int(_num(out.get("VBitrate")))
+    if advanced:
+        try:
+            settings = json.loads((folder / "streamEncoder.json").read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            settings = {}
+        if not isinstance(settings, dict):
+            settings = {}
+        bitrate = int(_num(settings.get("bitrate"), bitrate))
+        rate = str(settings.get("rate_control", "")).lower()
+        if rate in ("cbr", "vbr", "cqp"):
+            encoder.rate_control = rate  # type: ignore[assignment]
+            if rate == "cqp" and "cqp" in settings:
+                encoder.cq_level = int(_num(settings["cqp"], encoder.cq_level))
+        if "keyint_sec" in settings:
+            encoder.keyint_sec = max(0, int(_num(settings["keyint_sec"])))
+        preset = str(settings.get("preset2") or "")
+        if preset in ("p1", "p2", "p3", "p4", "p5", "p6", "p7"):
+            encoder.preset = preset  # type: ignore[assignment]
+        if settings.get("tune") in ("hq", "ll", "ull"):
+            encoder.tuning = settings["tune"]
+        if settings.get("multipass") in ("disabled", "qres", "fullres"):
+            encoder.multipass = settings["multipass"]
+        if settings.get("profile") in ("high", "main", "baseline"):
+            encoder.profile = settings["profile"]
+        if encoder.encoder == "libx264" and settings.get("preset"):
+            encoder.x264_preset = str(settings["preset"])
+        if rate:
+            changed.append(f"{rate.upper()}")
+    if bitrate:
+        for place in col.outputs:
+            if place.type == "stream":
+                place.bitrate_kbps = bitrate
+        notes.append(f"OBS streamed at {bitrate} kbps; set each place's bitrate in Settings → Stream if it differs.")
