@@ -73,6 +73,9 @@ def field_spec(action: str, name: str, words: str) -> dict[str, Any]:
     required = not words.startswith("?")
     about = words.lstrip("?").strip()
     spec: dict[str, Any] = {"name": name, "required": required, "about": about}
+    if "_" in name:  # also answers to its camelCase spelling (scale_x: scaleX)
+        head, *rest = name.split("_")
+        spec["camelCase"] = head + "".join(word.title() for word in rest)
     known = ACTION_FIELD_TYPES.get((action, name)) or FIELD_TYPES.get(name)
     spec.update(known or {"type": "any"})
     if spec["type"] in ("number", "integer"):
@@ -208,6 +211,7 @@ ERROR_REASONS: dict[str, str] = {
     "not_one_of": "A word the field doesn't take.",
     "already_exists": "Something already has that name.",
     "already_running": "It's already going (live, recording).",
+    "conflict": "Two spellings of one field (bloom and bloomId) name different things.",
 }
 
 CLOSE_CODES: dict[int, str] = {
@@ -251,6 +255,8 @@ def protocol(include_plugins: bool = True, app_version: bool = True) -> dict[str
         "closeCodes": [{"code": c, "about": a} for c, a in sorted(CLOSE_CODES.items())],
         "features": list(native.FEATURES),
         "limits": {"steps": native.MAX_STEPS, "waitMs": native.MAX_WAIT_MS},
+        "actionAliases": [{"name": new, "sameAs": old} for new, old in sorted(native.ACTION_ALIASES.items())],
+        "idFields": [{"field": f, "for": base} for f, base in native.ID_FIELDS.items()],
         "actions": [],
     })
     for name, about, fields, plugin in _actions(include_plugins):
@@ -312,13 +318,18 @@ def reference_markdown(spec: dict[str, Any]) -> str:
                 for f in entry["fields"]:
                     about = f["about"] + (f" ({f['accepts']})" if "accepts" in f and f["accepts"] not in f["about"]
                                           else "")
-                    lines.append(f"| `{f['name']}` | {'yes' if f['required'] else 'no'} | {_field_cell(f)} | "
+                    named = f"`{f['name']}`" + (f" or `{f['camelCase']}`" if "camelCase" in f else "")
+                    lines.append(f"| {named} | {'yes' if f['required'] else 'no'} | {_field_cell(f)} | "
                                  f"{_cell(about)} |")
                 lines.append("")
             example = {"id": "1", "do": entry["name"]}
             example.update({f["name"]: _example(f) for f in entry["fields"] if f["required"]})
             lines += ["```json", json.dumps(example), "```", ""]
-    lines += ["## Events", "", "| Event | Group | Fields | About |", "| --- | --- | --- | --- |"]
+    lines += ["## Other names", "", "Newer names for older actions (both work):", ""]
+    lines += [f"- `{a['name']}` is `{a['sameAs']}`" for a in spec["actionAliases"]]
+    lines += ["", "Fields that name exactly one thing by its id, never by a name:", ""]
+    lines += [f"- `{f['field']}` in place of `{f['for']}`" for f in spec["idFields"]]
+    lines += ["", "## Events", "", "| Event | Group | Fields | About |", "| --- | --- | --- | --- |"]
     for event in spec["events"]:
         group = event["group"] or "every app"
         fields = ", ".join(f"`{f}`" for f in event["fields"]) or "none"

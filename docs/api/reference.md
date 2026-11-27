@@ -141,6 +141,14 @@ Whether SprigCast Camera (the virtual camera) is on. *(looks only)*
 {"id": "1", "do": "camera.status"}
 ```
 
+#### `camera.toggle`
+
+Turn SprigCast Camera on if it's off, off if it's on.
+
+```json
+{"id": "1", "do": "camera.toggle"}
+```
+
 ### clip
 
 #### `clip.save`
@@ -460,16 +468,16 @@ Move, size or turn something inside a bloom or sprig (only the fields you give c
 | `x` | no | number | left edge, canvas pixels |
 | `y` | no | number | top edge |
 | `scale` | no | number | size, 1 = as big as the source |
-| `scale_x` | no | number | width only, 1 = as wide as the source |
-| `scale_y` | no | number | height only, 1 = as tall as the source |
+| `scale_x` or `scaleX` | no | number | width only, 1 = as wide as the source |
+| `scale_y` or `scaleY` | no | number | height only, 1 = as tall as the source |
 | `rotation` | no | number | degrees clockwise |
 | `dx` | no | number | pixels to move right (negative: left) |
 | `dy` | no | number | pixels to move down (negative: up) |
 | `crop` | no | object | {left, top, right, bottom} in source pixels (the sides you give change) |
 | `bounds` | no | `off` \| `fit` \| `fill` \| `stretch` | off, fit, fill or stretch: squeeze it into a box |
-| `bounds_width` | no | number | the box's width, canvas pixels |
-| `bounds_height` | no | number | the box's height |
-| `bounds_align` | no | `top_left` \| `top` \| `top_right` \| `left` \| `center` \| `right` \| `bottom_left` \| `bottom` \| `bottom_right` | where the picture sits in its box (top_left ... center ... bottom_right) |
+| `bounds_width` or `boundsWidth` | no | number | the box's width, canvas pixels |
+| `bounds_height` or `boundsHeight` | no | number | the box's height |
+| `bounds_align` or `boundsAlign` | no | `top_left` \| `top` \| `top_right` \| `left` \| `center` \| `right` \| `bottom_left` \| `bottom` \| `bottom_right` | where the picture sits in its box (top_left ... center ... bottom_right) |
 | `align` | no | `top_left` \| `top` \| `top_right` \| `left` \| `center` \| `right` \| `bottom_left` \| `bottom` \| `bottom_right` | the point it turns around (top_left ... center ... bottom_right); the picture stays where it is |
 
 ```json
@@ -534,6 +542,21 @@ Show it if hidden, hide it if shown. *(can be in one_step)*
 
 ```json
 {"id": "1", "do": "item.toggle", "item": "Name"}
+```
+
+#### `item.toggleLock`
+
+Lock it if unlocked, unlock it if locked. *(can be in one_step)*
+
+| Field | Needed | Type | About |
+| --- | --- | --- | --- |
+| `item` | yes | string | name or id |
+| `bloom` | no | string | bloom it's in (name or id) |
+| `sprig` | no | string | sprig it's in (name or id) |
+| `shape` | no | `both` \| `horizontal` \| `vertical`, default `"both"` | both (default), horizontal or vertical |
+
+```json
+{"id": "1", "do": "item.toggleLock", "item": "Name"}
 ```
 
 #### `items.list`
@@ -676,6 +699,18 @@ Pause if playing, else play.
 {"id": "1", "do": "media.toggle", "media": "Name"}
 ```
 
+#### `media.toggleLoop`
+
+Loop it if it doesn't, stop looping if it does.
+
+| Field | Needed | Type | About |
+| --- | --- | --- | --- |
+| `media` | yes | string | name or id |
+
+```json
+{"id": "1", "do": "media.toggleLoop", "media": "Name"}
+```
+
 ### path
 
 #### `path.new`
@@ -721,7 +756,7 @@ Switch a place on or off for the next Go live, and/or its test mode (Twitch: the
 | --- | --- | --- | --- |
 | `place` | yes | string | id from places.list (id, name or service) |
 | `on` | no | boolean | true or false |
-| `bandwidth_test` | no | boolean | true or false (only places whose service has a test mode) |
+| `bandwidth_test` or `bandwidthTest` | no | boolean | true or false (only places whose service has a test mode) |
 | `bitrateKbps` | no | integer, 500 to 50000 | 500 to 50000: its bitrate for the next Go live |
 
 ```json
@@ -895,6 +930,18 @@ Mute or unmute a sound (no muted: toggle). *(can be in one_step)*
 
 ```json
 {"id": "1", "do": "sound.mute", "sound": "Name"}
+```
+
+#### `sound.toggle`
+
+Mute it if it's on, unmute it if it's muted. *(can be in one_step)*
+
+| Field | Needed | Type | About |
+| --- | --- | --- | --- |
+| `sound` | yes | string | name or id |
+
+```json
+{"id": "1", "do": "sound.toggle", "sound": "Name"}
 ```
 
 #### `sound.volume`
@@ -1141,6 +1188,24 @@ While live on YouTube: how many watch, in all and on each YouTube stream (read f
 {"id": "1", "do": "youtube.viewers"}
 ```
 
+## Other names
+
+Newer names for older actions (both work):
+
+- `filter.share` is `filters.share`
+- `record.togglePause` is `record.toggle_pause`
+
+Fields that name exactly one thing by its id, never by a name:
+
+- `bloomId` in place of `bloom`
+- `sprigId` in place of `sprig`
+- `sourceId` in place of `source`
+- `itemId` in place of `item`
+- `soundId` in place of `sound`
+- `mediaId` in place of `media`
+- `filterId` in place of `filter`
+- `placeId` in place of `place`
+
 ## Events
 
 | Event | Group | Fields | About |
@@ -1213,6 +1278,7 @@ While live on YouTube: how many watch, in all and on each YouTube stream (read f
 | `not_one_of` | A word the field doesn't take. |
 | `already_exists` | Something already has that name. |
 | `already_running` | It's already going (live, recording). |
+| `conflict` | Two spellings of one field (bloom and bloomId) name different things. |
 
 ## Close codes
 

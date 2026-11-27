@@ -563,6 +563,10 @@
     {
       "reason": "already_running",
       "about": "It's already going (live, recording)."
+    },
+    {
+      "reason": "conflict",
+      "about": "Two spellings of one field (bloom and bloomId) name different things."
     }
   ],
   "closeCodes": [
@@ -627,12 +631,60 @@
     "app.protocol",
     "events.by_name",
     "errors.field",
-    "steps.ids"
+    "steps.ids",
+    "fields.camelCase",
+    "fields.ids",
+    "actions.toggles",
+    "actions.aliases"
   ],
   "limits": {
     "steps": 100,
     "waitMs": 600000
   },
+  "actionAliases": [
+    {
+      "name": "filter.share",
+      "sameAs": "filters.share"
+    },
+    {
+      "name": "record.togglePause",
+      "sameAs": "record.toggle_pause"
+    }
+  ],
+  "idFields": [
+    {
+      "field": "bloomId",
+      "for": "bloom"
+    },
+    {
+      "field": "sprigId",
+      "for": "sprig"
+    },
+    {
+      "field": "sourceId",
+      "for": "source"
+    },
+    {
+      "field": "itemId",
+      "for": "item"
+    },
+    {
+      "field": "soundId",
+      "for": "sound"
+    },
+    {
+      "field": "mediaId",
+      "for": "media"
+    },
+    {
+      "field": "filterId",
+      "for": "filter"
+    },
+    {
+      "field": "placeId",
+      "for": "place"
+    }
+  ],
   "actions": [
     {
       "name": "app.actions",
@@ -789,6 +841,14 @@
       "about": "Whether SprigCast Camera (the virtual camera) is on.",
       "fields": [],
       "looksOnly": true,
+      "oneStep": false
+    },
+    {
+      "name": "camera.toggle",
+      "group": "camera",
+      "about": "Turn SprigCast Camera on if it's off, off if it's on.",
+      "fields": [],
+      "looksOnly": false,
       "oneStep": false
     },
     {
@@ -1504,12 +1564,14 @@
           "name": "scale_x",
           "required": false,
           "about": "width only, 1 = as wide as the source",
+          "camelCase": "scaleX",
           "type": "number"
         },
         {
           "name": "scale_y",
           "required": false,
           "about": "height only, 1 = as tall as the source",
+          "camelCase": "scaleY",
           "type": "number"
         },
         {
@@ -1558,18 +1620,21 @@
           "name": "bounds_width",
           "required": false,
           "about": "the box's width, canvas pixels",
+          "camelCase": "boundsWidth",
           "type": "number"
         },
         {
           "name": "bounds_height",
           "required": false,
           "about": "the box's height",
+          "camelCase": "boundsHeight",
           "type": "number"
         },
         {
           "name": "bounds_align",
           "required": false,
           "about": "where the picture sits in its box (top_left ... center ... bottom_right)",
+          "camelCase": "boundsAlign",
           "type": "string",
           "values": [
             "top_left",
@@ -1734,6 +1799,48 @@
       "name": "item.toggle",
       "group": "item",
       "about": "Show it if hidden, hide it if shown.",
+      "fields": [
+        {
+          "name": "item",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "bloom",
+          "required": false,
+          "about": "bloom it's in",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "sprig",
+          "required": false,
+          "about": "sprig it's in",
+          "type": "string",
+          "accepts": "name or id"
+        },
+        {
+          "name": "shape",
+          "required": false,
+          "about": "both (default), horizontal or vertical",
+          "type": "string",
+          "values": [
+            "both",
+            "horizontal",
+            "vertical"
+          ],
+          "default": "both"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "item.toggleLock",
+      "group": "item",
+      "about": "Lock it if unlocked, unlock it if locked.",
       "fields": [
         {
           "name": "item",
@@ -1997,6 +2104,22 @@
       "oneStep": false
     },
     {
+      "name": "media.toggleLoop",
+      "group": "media",
+      "about": "Loop it if it doesn't, stop looping if it does.",
+      "fields": [
+        {
+          "name": "media",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": false
+    },
+    {
       "name": "path.new",
       "group": "path",
       "about": "Make a path and switch to it: empty, or a copy of one.",
@@ -2064,6 +2187,7 @@
           "name": "bandwidth_test",
           "required": false,
           "about": "true or false (only places whose service has a test mode)",
+          "camelCase": "bandwidthTest",
           "type": "boolean"
         },
         {
@@ -2321,6 +2445,22 @@
           "required": false,
           "about": "true or false",
           "type": "boolean"
+        }
+      ],
+      "looksOnly": false,
+      "oneStep": true
+    },
+    {
+      "name": "sound.toggle",
+      "group": "sound",
+      "about": "Mute it if it's on, unmute it if it's muted.",
+      "fields": [
+        {
+          "name": "sound",
+          "required": true,
+          "about": "name or id",
+          "type": "string",
+          "accepts": "name or id"
         }
       ],
       "looksOnly": false,

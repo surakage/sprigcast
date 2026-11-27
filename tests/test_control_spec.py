@@ -122,3 +122,54 @@ def test_a_plugin_event_named_like_ours_keeps_ours_in_its_group(monkeypatch):
     assert native.event_group("stream.changed") == "output"
     native.send_event(api, "snap.taken", {})
     assert native.event_group("snap.taken") == "plugin" and native.event_group("snap.other") == "plugin"
+
+
+def _answer(api, **message):
+    return native.answer(api, message)
+
+
+def test_camel_case_spellings_reach_the_snake_case_fields():
+    api, host = _api()
+    out = _answer(api, do="item.place", bloom="Chatting", item="Alert", shape="horizontal", scaleX=2, boundsWidth=20,
+                  boundsHeight=10, bounds="fit")
+    assert out["ok"], out
+    item = host.collection.scene("chat-h").items[2]
+    assert item.scale == 2
+    both = _answer(api, do="item.place", bloom="Chatting", item="Alert", shape="horizontal", scale_y=3, scaleY=9)
+    assert both["ok"] and host.collection.scene("chat-h").items[2].scale_y == 3  # the declared spelling wins
+    assert native.aliased({"bitrateKbps": "?"}, {"bitrateKbps": 600}) == {"bitrateKbps": 600}
+    session = NativeSession(api=api)
+    list(session.receive(json.dumps({"events": "none"})))
+    [dry] = [json.loads(m) for m in session.receive(json.dumps({"dryRun": True, "steps": [
+        {"do": "item.hide", "bloom": "Chatting", "item": "Alert"}]}))]
+    assert dry["result"]["dry_run"] is True and host.collection.scene("chat-h").items[2].visible
+
+
+def test_id_fields_take_only_an_id():
+    api, host = _api()
+    assert _answer(api, do="bloom.show", bloomId="brb-h")["ok"]
+    assert host.collection.active_scenes["horizontal"] == "brb-h"
+    by_name = _answer(api, do="bloom.show", bloomId="BRB")
+    assert by_name["error"]["code"] == "not_found"  # a name, given as an id
+    assert _answer(api, do="item.hide", bloomId="chat-h", itemId="alert")["ok"]
+    assert _answer(api, do="item.hide", bloomId="chat-h", itemId="Alert")["error"]["code"] == "not_found"
+    assert _answer(api, do="sound.mute", soundId="mic", muted=True)["ok"]
+    assert _answer(api, do="sound.mute", soundId="Mic", muted=True)["error"]["code"] == "not_found"
+    clash = _answer(api, do="bloom.show", bloom="Chatting", bloomId="brb-h")["error"]
+    assert clash["field"] == "bloomId" and clash["reason"] == "conflict"
+    assert _answer(api, do="bloom.show", bloom="BRB", bloomId="BRB")["error"]["code"] == "not_found"
+
+
+def test_toggle_actions_and_newer_names():
+    api, host = _api()
+    mic = host.collection.source("mic")
+    was = bool(mic.settings.get("muted", False))
+    assert _answer(api, do="sound.toggle", sound="Mic", muted=was)["ok"]  # a value given anyway is ignored
+    assert mic.settings.get("muted") is (not was)
+    assert _answer(api, do="sound.toggle", sound="Mic")["ok"] and mic.settings.get("muted") is was
+    locked = _answer(api, do="item.toggleLock", bloom="Chatting", item="Alert")
+    assert locked["ok"] and locked["result"] == {"locked": True}
+    assert _answer(api, do="item.toggleLock", bloom="Chatting", item="Alert")["result"] == {"locked": False}
+    assert "item.toggleLock" in native.BATCH_ACTIONS and "sound.toggle" in native.BATCH_ACTIONS
+    assert _answer(api, do="record.togglePause")["error"]["code"] != "unknown_action"
+    assert _answer(api, do="filter.share", source="Cam", on=True)["error"]["code"] != "unknown_action"
