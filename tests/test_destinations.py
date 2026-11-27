@@ -419,7 +419,8 @@ def test_where_it_goes_switches_and_edit_adds_nothing(app, tmp_path, monkeypatch
         side.place_rows["tw"][3].click()
         note = side.place_rows["tw"][2].text()  # the shape, then how it's doing
         assert not col.outputs[0].enabled and note.startswith("Horizontal") and note.endswith(">Off</span>")
-        assert side.place_rows["tw"][0].text() == "Tw"  # the platform's little tile
+        tile = side.place_rows["tw"][0]  # the platform's little tile: its logo, named for screen readers
+        assert tile.pixmap() is not None and not tile.pixmap().isNull() and tile.accessibleName() == "Twitch"
         # Edit opens the list on the first one; only + Add makes a new one.
         w._edit_destination(None)
         assert opened == ["tw"] and len(col.outputs) == 2  # opening settings adds nothing

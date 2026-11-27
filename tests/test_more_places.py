@@ -95,11 +95,11 @@ def test_service_box_shows_the_top_five_then_show_all(fake_keyring, monkeypatch)
 
 
 def test_every_place_has_a_tile_and_get_started_offers_the_top_five():
-    from sprigcast.app import getting_started, live_stage
+    from sprigcast.app import getting_started, live_stage, platform_logos
 
-    assert set(stream.SERVICES) - {"custom"} <= set(live_stage.PLATFORM_TILES)
+    assert set(stream.SERVICES) - {"custom"} <= set(platform_logos.TILES)
     assert getting_started.PLACES == stream.TOP_SERVICES
-    assert set(getting_started.PLACES) <= set(getting_started.PLACE_COLORS)
+    assert set(getting_started.PLACES) <= set(platform_logos.LOGOS)  # every everyday place has its logo
     assert [k for k, _ in live_stage.SERVICE_CHOICES] == [*stream.TOP_SERVICES, "custom"]
 
 
