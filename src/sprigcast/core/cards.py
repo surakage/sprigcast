@@ -18,7 +18,7 @@ Only painted when the words on it change (Aside, on the pictures lane), so it co
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -105,6 +105,7 @@ class Words:
     vine: float | None = None  # a countdown's share of time left, 0..1 (None: no vine)
     shrink: float = 1.0  # card_width: the big words may be drawn this much smaller to fit (a Done text)
     openness: float = 1.0  # the "viewers" eye: 1 open, 0 shut (Live count blinks it now and then)
+    art: str = ""  # an SVG file drawn where the badge goes, instead of it (Socials: the platform's icon)
 
 
 def _fonts(look: style.Style = PLAIN):
@@ -419,11 +420,18 @@ def paint(width: int, words: Words, text_colour: str | None = None, card_colour:
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPath(shape)
     if card.alpha() and _badge_shown(look):
-        _badge(p, x + BADGE_LEFT + BADGE / 2, y + h / 2, words.badge, accent, words.openness)
+        if words.art:
+            from pathlib import Path
+
+            side = BADGE * 1.05
+            cx, cy = x + BADGE_LEFT + BADGE / 2, y + h / 2
+            painted.draw(p, Path(words.art), QRectF(cx - side / 2, cy - side / 2, side, side), detail)
+        else:
+            _badge(p, x + BADGE_LEFT + BADGE / 2, y + h / 2, words.badge, accent, words.openness)
     if not _small_shown(look):
-        words = Words(words.big, "", words.small_on_top, words.badge, words.vine, words.shrink, words.openness)
+        words = replace(words, small="")
     if not look.shows("vine"):
-        words = Words(words.big, words.small, words.small_on_top, words.badge, None, words.shrink, words.openness)
+        words = replace(words, vine=None)
 
     big, small = _fonts(look)
     big.setPixelSize(_big_size(words, look))
