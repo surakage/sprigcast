@@ -305,32 +305,67 @@ def _ps_quote(text: str) -> str:
     return text.replace("'", "''")
 
 
+HELPER_LOG = "update-helper.log"  # what the waiting helper did, next to the installer; read at the next start
+
+
 def installer_command(installer: Path, pid: int, restart: bool) -> list[str]:
     """A hidden PowerShell that waits for SprigCast (`pid`) to close, then runs Setup silently.
 
-    Setup's own progress window shows while it works. /restartapp=1 makes Setup start SprigCast again
-    when it's done (sprigcast.iss, RestartAfterUpdate).
+    Setup's own progress window shows while it works (/SILENT, not /VERYSILENT: people see it's updating).
+    /restartapp=1 makes Setup start SprigCast again when it's done (sprigcast.iss, RestartAfterUpdate). Each
+    step is written to update-helper.log beside the installer, so a quiet failure is seen at the next start.
     """
     args = ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOCANCEL"]
     if restart:
         args.append("/restartapp=1")
     arg_list = ",".join(f"'{a}'" for a in args)
+    note = _ps_quote(str(installer.parent / HELPER_LOG))
     script = (
+        f"$log = '{note}'; "
+        "function Say($t) { try { Add-Content -LiteralPath $log -Value ((Get-Date -Format o) + ' ' + $t) } catch {} }; "
+        f"Say 'waiting for SprigCast ({int(pid)}) to close'; "
         f"$p = Get-Process -Id {int(pid)} -ErrorAction SilentlyContinue; "
         "if ($p) { [void]$p.WaitForExit(180000) }; "
-        f"Start-Process -FilePath '{_ps_quote(str(installer))}' -ArgumentList {arg_list}"
+        "Say 'starting Setup'; "
+        f"try {{ Start-Process -FilePath '{_ps_quote(str(installer))}' -ArgumentList {arg_list} -ErrorAction Stop; "
+        "Say 'Setup started' } catch { Say ('Setup did not start: ' + $_.Exception.Message) }"
     )
-    return ["powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script]
+    return ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+            "-Command", script]
 
 
 def launch_installer(installer: Path, pid: int, restart: bool) -> None:
-    """Start installer_command detached, so it outlives SprigCast."""
-    flags = 0
-    for name in ("DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP", "CREATE_NO_WINDOW"):
-        flags |= getattr(subprocess, name, 0)
-    subprocess.Popen(installer_command(installer, pid, restart), creationflags=flags, close_fds=True,
-                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    """Start installer_command so it outlives SprigCast.
+
+    Out of SprigCast's job (when it runs in one: started from some launchers, terminals or a crash watcher, every
+    process in the job ends with it), as clear_data's helper does. Tester PC 2026-11-27: the helper was started,
+    SprigCast closed, and Setup never ran. A hidden console (CREATE_NO_WINDOW) rather than none at all
+    (DETACHED_PROCESS): PowerShell is a console program, and without a console it can end before it starts work.
+    """
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
+    command = installer_command(installer, pid, restart)
+    for extra in ((breakaway, 0) if breakaway else (0,)):
+        try:
+            subprocess.Popen(command, creationflags=flags | extra, close_fds=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            break
+        except OSError as exc:  # the job doesn't let processes leave it: start inside it, the best there is
+            if not extra:
+                raise
+            log.info("update: couldn't start the helper outside SprigCast's job (%s); starting it inside", exc)
     log.info("update: %s runs once SprigCast closes (restart=%s)", installer.name, restart)
+
+
+def helper_report(folder: Path) -> str | None:
+    """What the last update's helper wrote (then forgotten), or None when there's nothing."""
+    path = folder / HELPER_LOG
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace").strip()
+        path.unlink()
+    except OSError:
+        return None
+    return text or None
 
 
 def clear_old(folder: Path, keep: str | None = None) -> None:
@@ -338,7 +373,7 @@ def clear_old(folder: Path, keep: str | None = None) -> None:
     if not folder.is_dir():
         return
     for item in folder.iterdir():
-        if item.is_file() and item.name != keep:
+        if item.is_file() and item.name not in (keep, HELPER_LOG):
             try:
                 item.unlink()
             except OSError:
