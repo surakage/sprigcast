@@ -6,8 +6,10 @@ a bloom on both canvases and set its size per shape (tall and narrow for vertica
 redraws when chat changes, and sleeps with the rest when nothing on screen shows it.
 
 Settings: width, height, size, hide_after (seconds, 0 = never), platform_marks. Style tab (core/style.py):
-font, text_color, bubble_color, background_color, corners (the bubbles') and custom_look (text, card = the
-bubbles, font, size, corners, border; hide: marks).
+chat_look (LOOKS: Garden card = bubbles, Clean outline = outlined text and no bubbles, Minimal = no bubbles or
+marks and tight lines, Big text = cards at one and a half times the size), font, text_color, bubble_color,
+background_color, corners (the bubbles') and custom_look (text, card = the bubbles, font, size, corners, border;
+hide: marks).
 """
 
 from __future__ import annotations
@@ -40,7 +42,15 @@ DEFAULTS = {
     "hide_after": 0,  # seconds before a message fades away; 0 keeps them
     "platform_marks": True,  # a small bar in the platform's colour (Twitch purple, YouTube red)
     "corners": "round",  # the bubbles'
+    "chat_look": "card",
     "custom_look": "",
+}
+# On-stream looks (user 2026-11-27): the same chat, four ways. key -> (name, bubbles, marks, size x, outline)
+LOOKS = {
+    "big": ("Big text", True, True, 1.5, False),
+    "card": ("Garden card", True, True, 1.0, False),
+    "minimal": ("Minimal", False, False, 1.0, False),
+    "outline": ("Clean outline", False, True, 1.0, True),
 }
 TWITCH_EMOTE = "https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/2.0"
 CHECK_EVERY = 0.2  # seconds between looks at the feed
@@ -141,12 +151,16 @@ class ChatBox:
         from sprigcast.sources.text import load_font
 
         get = lambda key: settings.get(key, DEFAULTS[key])  # noqa: E731
+        self.look_key = str(get("chat_look")) if str(get("chat_look")) in LOOKS else "card"
+        _name, bubbles, marks, grow, outline = LOOKS[self.look_key]
+        if not bubbles:  # no card: the lines sit closer, still clear of the box's edges
+            self.GAP, self.PX, self.PY = 4, 4, 2
         self.width = max(120, int(get("width")))
         self.height = max(80, int(get("height")))
         look = style.resolve({"text_color": get("text_color"), "card_color": get("bubble_color"),
                               "corners": get("corners"), "custom_look": get("custom_look")},
                              {"text_color": DEFAULTS["text_color"], "card_color": DEFAULTS["bubble_color"]})
-        self.size = max(10, round(int(get("size")) * look.scale))
+        self.size = max(10, round(int(get("size")) * look.scale * grow))
         font_file = str(get("font"))
         if look.font:  # a custom look's font: its Windows file, when it's one SprigCast knows
             font_file = style.FONT_FILES.get(look.font.lower(), font_file) or font_file
@@ -154,14 +168,18 @@ class ChatBox:
         bold_name = font_file.replace(".ttf", "b.ttf") if font_file.endswith(".ttf") else ""
         self.bold = load_font(bold_name, self.size) if bold_name else self.font
         self.colour = parse_color(look.text)
-        self.bubble = parse_color(look.card)
+        self.bubble = parse_color(look.card) if bubbles else (0, 0, 0, 0)
         self.background = self._colour(get("background_color"), (0, 0, 0, 0))
-        self.marks = bool(get("platform_marks")) and look.shows("marks")
+        self.marks = bool(get("platform_marks")) and look.shows("marks") and marks
+        # Without a card the text needs its own edge to read over a game: a full outline, or a soft one
+        self.stroke = (max(2, round(self.size / 11)), (0, 0, 0, 235)) if outline else \
+            ((max(1, round(self.size / 20)), (0, 0, 0, 150)) if not bubbles else (0, None))
         self.radius = 14.0 if look.corners != "square" else 3.0
         if look.radius is not None:
             self.radius = look.radius
         self.leaf = look.corners == "leaf"
-        self.border = (round(look.border_width), parse_color(look.border_color)) if look.border_width else None
+        self.border = (round(look.border_width), parse_color(look.border_color)) if look.border_width and bubbles \
+            else None
         self.line_h = round(self.size * 1.32)
         self.space = self.font.getlength(" ")
 
@@ -251,7 +269,7 @@ class ChatBox:
             x0 = self.PAD + (6 if self.marks else 0)
             widest = max(sum(r[3] for r in ln) + self.space * max(0, len(ln) - 1) * 1.1 for ln in wrapped)
             right = min(self.width - self.PAD, x0 + widest + 2 * self.PX)
-            bubble = NOTICE_BUBBLE if message.notice else self.bubble
+            bubble = NOTICE_BUBBLE if message.notice and self.bubble[3] else self.bubble
             if bubble[3] or self.border:
                 self._bubble(image, draw, (x0, top, right, y), h, bubble)
             if self.marks and message.platform in PLATFORMS:
@@ -274,7 +292,9 @@ class ChatBox:
                             width = self.line_h
                     else:
                         font = self.bold if kind == "name" else self.font
-                        draw.text((tx, ty + (self.line_h - self.size) * 0.35), value, font=font, fill=colour)
+                        width_px, edge = self.stroke
+                        draw.text((tx, ty + (self.line_h - self.size) * 0.35), value, font=font, fill=colour,
+                                  stroke_width=width_px, stroke_fill=edge)
                     tx += width
                 ty += self.line_h
             y = top - self.GAP
@@ -295,6 +315,7 @@ def _layer(colour, mask):
 class ChatSource(Source):
     label = "Chat"
     defaults = DEFAULTS
+    choices = {"chat_look": tuple((key, LOOKS[key][0]) for key in sorted(LOOKS, key=lambda k: LOOKS[k][0]))}
     sleeps = True  # off screen: no drawing at all
 
     def __init__(self, source_id: str, settings: dict[str, Any]):

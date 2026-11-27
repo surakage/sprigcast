@@ -42,7 +42,7 @@ OWN_FONT = ["Nunito", "Segoe UI Variable Display", "Segoe UI", "Inter", "Arial"]
 
 # The keys that go on the Style tab of a plugin's settings (show_* ones too).
 STYLE_KEYS = ("text_color", "card_color", "accent_color", "bubble_color", "background_color", "outline_color",
-              "font", "text_scale", "corners", "custom_look")
+              "font", "text_scale", "corners", "custom_look", "chat_look")
 
 MOST_LOOK = 4000  # characters read from a custom look; the rest is ignored
 MOST_RULES = 64
