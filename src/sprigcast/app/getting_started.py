@@ -6,8 +6,10 @@
     Where to                 Twitch · YouTube · Kick · TikTok · X            (only with Go live)
 
 The answers name a garden after what you make and a path after where it goes ("Twitch + TikTok",
-"Recording"), put a place on that path for each pick and switch on the canvases for the shape. Step 2
-("Your gear") takes the camera, capture card and mic and makes the blooms that fit with the
+"Recording"), put a place on that path for each pick and switch on the canvases for the shape. Going live
+adds "Connect your places": one Connect for each picked platform whose sign-in is set up (Twitch, YouTube,
+Kick), a tick once connected, and Skip. Places without one (a stream key to paste) aren't listed. Nothing opens
+until you press Connect. The last step ("Your gear") takes the camera, capture card and mic and makes the blooms that fit with the
 Starter kit's builder. Devices are listed only when step 2 opens.
 
 `plan_*` functions are plain data in, data out, so they're tested without a screen. Offered once on a
@@ -19,7 +21,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from PySide6.QtCore import QRectF, QSize, Qt
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -35,7 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sprigcast.app import icons, theme
+from sprigcast.app import icons, platform_logos, theme
 from sprigcast.core.scene import Output, SceneCollection
 from sprigcast.output.stream import SERVICES, preset_size
 
@@ -55,8 +57,6 @@ CONTENT = (
 )
 SHAPES = (("horizontal", "Landscape", "landscape"), ("vertical", "Portrait", "portrait"), ("both", "Both", "dual"))
 PLACES = ("twitch", "youtube", "kick", "tiktok", "facebook")  # output/stream.py TOP_SERVICES
-PLACE_COLORS = {"twitch": "#9b6cff", "youtube": "#ff4e45", "kick": "#53fc18", "tiktok": "#25f4ee",
-                "facebook": "#4d9bff", "x": "#e6ede8"}
 
 # Which starter blooms each kind of show gets, and the name a bloom takes for it.
 NO_SCREEN = ("Starting soon", "Just Chatting", "Be right back", "Ending")
@@ -205,7 +205,7 @@ class Choice(QPushButton):
 
 
 class PlaceCard(QPushButton):
-    """A destination: a coloured dot, the service name and one short state line. Tap to pick it."""
+    """A destination: the platform's logo, the service name and one short state line. Tap to pick it."""
 
     HEIGHT = 58
 
@@ -234,14 +234,13 @@ class PlaceCard(QPushButton):
         p.setPen(QPen(QColor(theme.ACCENT if on else theme.ACCENT if self.underMouse() else theme.EDGE_STRONG), 1.2))
         p.setBrush(QColor(theme.SELECT_BG if on else theme.RAISED_HOVER if self.underMouse() else theme.CARD))
         p.drawRoundedRect(r, 18, 18)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(PLACE_COLORS.get(self.key, theme.MUTED)))
-        p.drawEllipse(QRectF(r.left() + 18, r.center().y() - 6, 12, 12))
+        p.drawPixmap(QRectF(r.left() + 14, r.center().y() - 12, 24, 24).toRect(),
+                     platform_logos.tile(self.key, 24, ratio=max(2.0, self.devicePixelRatioF())))
         font = p.font()
         font.setWeight(font.Weight.DemiBold)
         p.setFont(font)
         p.setPen(QColor(theme.SELECT_TEXT if on else theme.TEXT))
-        text_left = r.left() + 42
+        text_left = r.left() + 50
         if self.note:
             p.drawText(QRectF(text_left, r.top() + 9, r.width() - 80, 20), Qt.AlignmentFlag.AlignVCenter,
                        SERVICES[self.key].label)
@@ -263,6 +262,68 @@ class PlaceCard(QPushButton):
         p.end()
 
 
+def _tick(size: int, ratio: float = 2.0):
+    """A green tick, like the one on a picked place."""
+    from PySide6.QtGui import QPixmap
+
+    pix = QPixmap(int(size * ratio), int(size * ratio))
+    pix.setDevicePixelRatio(ratio)
+    pix.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pix)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(theme.ACCENT), 2.2)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    u = size / 20
+    p.drawPolyline([QPointF(4 * u, 10.5 * u), QPointF(8.5 * u, 15 * u), QPointF(16 * u, 5.5 * u)])
+    p.end()
+    return pix
+
+
+class ConnectRow(QFrame):
+    """One place on the Connect step: its logo, its name, who is signed in, and Connect (or a tick)."""
+
+    def __init__(self, key: str):
+        super().__init__()
+        self.key = key
+        self.setObjectName("connectRow")
+        self.setStyleSheet(f"#connectRow {{ background: {theme.CARD}; border: 1px solid {theme.EDGE_STRONG};"
+                           " border-radius: 18px; }")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(18, 12, 14, 12)
+        row.setSpacing(14)
+        logo = QLabel()
+        logo.setFixedSize(28, 28)
+        logo.setPixmap(platform_logos.tile(key, 28, ratio=max(2.0, self.devicePixelRatioF())))
+        logo.setStyleSheet("background: transparent;")
+        row.addWidget(logo)
+        words = QVBoxLayout()
+        words.setSpacing(2)
+        name = QLabel(SERVICES[key].label)
+        name.setStyleSheet(f"color: {theme.TEXT}; font-weight: 600; background: transparent;")
+        words.addWidget(name)
+        self.state = QLabel()
+        self.state.setStyleSheet(theme.MUTED_STYLE + "; background: transparent;")
+        words.addWidget(self.state)
+        row.addLayout(words, 1)
+        self.tick = QLabel()
+        self.tick.setPixmap(_tick(20))
+        self.tick.setStyleSheet("background: transparent;")
+        row.addWidget(self.tick)
+        self.connect_button = QPushButton("Connect")
+        self.connect_button.setStyleSheet(theme.SMALL_PILL_STYLE)
+        self.connect_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        row.addWidget(self.connect_button)
+        self.show_account("")
+
+    def show_account(self, account: str) -> None:
+        self.account = account
+        self.tick.setVisible(bool(account))
+        self.connect_button.setVisible(not account)
+        self.state.setText(account or "Not connected")
+
+
 def _heading(text: str) -> QLabel:
     label = QLabel(text)
     label.setStyleSheet(f"color: {theme.MUTED}; font-weight: 600; background: transparent;")
@@ -270,7 +331,7 @@ def _heading(text: str) -> QLabel:
 
 
 class GettingStartedDialog(QDialog):
-    """Two steps: the questions, then your gear. `answers()` and `gear()` after exec();
+    """The questions, Connect your places (going live only), then your gear. `answers()` and `gear()` after exec();
     `twitch` holds (account, stream key) if Twitch was signed in."""
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -339,7 +400,15 @@ class GettingStartedDialog(QDialog):
 
         self.pages = QStackedWidget()
         self.pages.setStyleSheet("QStackedWidget { background: transparent; }")
-        self.pages.addWidget(self._questions_page())
+        self.questions_page = self._questions_page()
+        self.pages.addWidget(self.questions_page)
+        self.connect_page = QWidget()
+        self.connect_page.setStyleSheet("background: transparent;")
+        self._connect_list = QVBoxLayout(self.connect_page)
+        self._connect_list.setContentsMargins(0, 0, 0, 0)
+        self._connect_list.setSpacing(10)
+        self.connect_rows: dict[str, ConnectRow] = {}
+        self.pages.addWidget(self.connect_page)
         self.gear_page = QWidget()
         self.gear_page.setStyleSheet("background: transparent;")
         self.pages.addWidget(self.gear_page)
@@ -505,24 +574,87 @@ class GettingStartedDialog(QDialog):
 
     # Moving between steps -------------------------------------------------------------------------------
 
-    def _next(self) -> None:
-        if self.pages.currentIndex() == 1:
-            self.accept()
-            return
-        if self.found is None:
+    TITLES = {"questions": ("Let's get you growing",
+                            "A few taps and SprigCast sets itself up for you. Change anything later."),
+              "connect": ("Connect your places", "Sign in once and SprigCast fills in your stream keys."),
+              "gear": ("Your gear", "Pick what to use. SprigCast makes your blooms with it.")}
+
+    def _steps(self) -> list[QWidget]:
+        steps = [self.questions_page]
+        if self.live.isChecked() and any(card.isChecked() and self._connectable(k) for k, card in self.places.items()):
+            steps.append(self.connect_page)
+        return steps + [self.gear_page]
+
+    def _go_to(self, page: QWidget) -> None:
+        if page is self.gear_page and self.found is None:
             self._fill_gear_page()
-        self.pages.setCurrentIndex(1)
-        self.title.setText("Your gear")
-        self.intro.setText("Pick what to use. SprigCast makes your blooms with it.")
+        if page is self.connect_page:
+            self._fill_connect_page()
+        self.pages.setCurrentWidget(page)
+        key = "gear" if page is self.gear_page else "connect" if page is self.connect_page else "questions"
+        title, intro = self.TITLES[key]
+        self.title.setText(title)
+        self.intro.setText(intro)
         self._changed()
 
+    def _next(self) -> None:
+        steps = self._steps()
+        here = self.pages.currentWidget()
+        if here is self.gear_page:
+            self.accept()
+            return
+        self._go_to(steps[steps.index(here) + 1])
+
     def _back_or_close(self) -> None:
-        if self.pages.currentIndex() == 0:
+        steps = self._steps()
+        here = self.pages.currentWidget()
+        if here is self.questions_page:
             self.reject()
             return
-        self.pages.setCurrentIndex(0)
-        self.title.setText("Let's get you growing")
-        self.intro.setText("A few taps and SprigCast sets itself up for you. Change anything later.")
+        self._go_to(steps[steps.index(here) - 1])
+
+    # Step 2: connect your places -------------------------------------------------------------------------
+
+    def _connectable(self, key: str) -> bool:
+        if key == "twitch":
+            return self._connect_twitch is not None
+        return self._sign_in is not None and self._can_sign_in(key)
+
+    def _account(self, key: str) -> str:
+        if key == "twitch":
+            return (self.twitch[0] if self.twitch else self._twitch_account()) or ""
+        return getattr(self.fetched.get(key), "account", "") or ""
+
+    def _fill_connect_page(self) -> None:
+        """A row per place picked, in the order they're listed. Made again when the picks change."""
+        picked = [k for k in PLACES if self.places[k].isChecked() and self._connectable(k)]
+        if list(self.connect_rows) == picked:
+            return
+        while self._connect_list.count():
+            item = self._connect_list.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        self.connect_rows = {}
+        for key in picked:
+            row = self.connect_rows[key] = ConnectRow(key)
+            row.show_account(self._account(key))
+            row.connect_button.clicked.connect(lambda _=False, k=key: self._connect(k))
+            self._connect_list.addWidget(row)
+        self._connect_list.addStretch(1)
+
+    def _connect(self, key: str) -> None:
+        """Only ever from a Connect press: the sign-in opens then, never by itself."""
+        if key == "twitch":
+            result = self._connect_twitch(self) if self._connect_twitch is not None else None
+            if result:
+                self.twitch = result
+        elif self._sign_in is not None:
+            fetched = self._sign_in(key, self)
+            if fetched is not None:
+                self.fetched[key] = fetched
+        account = self._account(key)
+        self.connect_rows[key].show_account(account)
+        self.places[key].set_note(account or "Key next")
         self._changed()
 
     # Picks -----------------------------------------------------------------------------------------------
@@ -533,41 +665,35 @@ class GettingStartedDialog(QDialog):
     def _changed(self) -> None:
         if not hasattr(self, "go"):
             return
-        gear = self.pages.currentIndex() == 1
+        here = self.pages.currentWidget()
+        steps = self._steps()
         self.places_box.setVisible(self.live.isChecked())
         ready = (self._picked(self.content) is not None and self._picked(self.shapes) is not None
                  and (self.live.isChecked() or self.record.isChecked()))
-        self.go.setEnabled(ready or gear)
-        self.go.setText("Get started  →" if gear else "Next  →")
-        self.skip.setText("Back" if gear else "Not now")
-        self.step.setText("2 of 2" if gear else "1 of 2")
-        self.pages.currentWidget().adjustSize()
-        self.pages.setFixedHeight(self.pages.currentWidget().sizeHint().height())
+        if here is self.gear_page:
+            self.go.setText("Get started  →")
+        elif here is self.connect_page:
+            self.go.setText("Next  →" if any(r.account for r in self.connect_rows.values()) else "Skip  →")
+        else:
+            self.go.setText("Next  →")
+        self.go.setEnabled(ready or here is not self.questions_page)
+        self.skip.setText("Not now" if here is self.questions_page else "Back")
+        number = steps.index(here) + 1 if here in steps else 1
+        self.step.setText(f"{number} of {len(steps)}")
+        here.adjustSize()
+        self.pages.setFixedHeight(here.sizeHint().height())
         # Taller or shorter as rows come and go, never narrower: adjustSize() shrank the card (and every chip
         # with it) to its smallest width on the first pick (PC, 2026-11-19).
+        self._card.layout().activate()  # the new step's rows count before the card is sized to them
+        self.layout().activate()
         hint = self.sizeHint()
         self.resize(max(self.width(), hint.width(), self.minimumWidth()), max(hint.height(), self.minimumHeight()))
 
     def _place_toggled(self, key: str, on: bool) -> None:
-        place = self.places[key]
-        if key != "twitch":
-            if on and key not in self.fetched and self._sign_in is not None and self._can_sign_in(key):
-                fetched = self._sign_in(key, self)
-                if fetched is not None:
-                    self.fetched[key] = fetched
-            got = self.fetched.get(key) if on else None
-            place.set_note(getattr(got, "account", "") if got is not None else "Key next" if on else "")
-            return
-        if not on:
-            place.set_note("")
-            return
-        account = self.twitch[0] if self.twitch else self._twitch_account()
-        if not account and self._connect_twitch is not None:
-            result = self._connect_twitch(self)
-            if result:
-                self.twitch = result
-                account = result[0]
-        place.set_note(account or "Key next")
+        """Picking a place only picks it: signing in waits for its Connect on the next step."""
+        account = self._account(key) if on else ""
+        self.places[key].set_note(account or ("Key next" if on else ""))
+        self._changed()
 
     def answers(self) -> Answers:
         return Answers(content=self._picked(self.content) or "other", live=self.live.isChecked(),

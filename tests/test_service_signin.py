@@ -98,7 +98,7 @@ def test_sign_in_is_only_offered_once_registered(monkeypatch):
         service_signin.youtube(open_url=lambda u: None)
 
 
-def test_get_started_signs_in_when_a_place_is_picked():
+def test_get_started_signs_in_on_connect_only():
     pytest.importorskip("PySide6.QtWidgets")
     from PySide6.QtWidgets import QApplication
 
@@ -112,11 +112,18 @@ def test_get_started_signs_in_when_a_place_is_picked():
         return service_signin.Fetched(account="Sloth Bloom", key="k")
 
     d = gs.GettingStartedDialog(can_sign_in=lambda s: s == "youtube", sign_in=sign_in)
+    d.content["gaming"].click()
+    d.shapes["horizontal"].click()
     d.live.click()
     d.places["youtube"].click()
     d.places["kick"].click()
+    assert asked == []  # picking never opens a sign-in
+    d.go.click()
+    d.connect_rows["youtube"].connect_button.click()
+    assert asked == ["youtube"] and list(d.connect_rows) == ["youtube"]  # Kick without its sign-in: not listed
+    d.skip.click()
     d.places["youtube"].click()
-    d.places["youtube"].click()  # off and on again: no second sign-in
+    d.places["youtube"].click()  # off and on again: still signed in, no second sign-in
     assert asked == ["youtube"]
     assert d.places["youtube"].note == "Sloth Bloom" and d.places["kick"].note == "Key next"
 
