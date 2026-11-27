@@ -149,7 +149,7 @@ def test_gear_step_lists_devices_once_and_finds_the_capture_card():
     d.shapes["horizontal"].click()
     d.record.click()
     d.go.click()
-    assert d.pages.currentIndex() == 1 and d.go.text().startswith("Get started") and d.skip.text() == "Back"
+    assert d.pages.currentWidget() is d.gear_page and d.go.text().startswith("Get started") and d.skip.text() == "Back"
     picks = d.gear()
     assert picks.camera is face and picks.capture is card and picks.mic == "default"
     assert not hasattr(d, "sound_pick")  # PC sound isn't asked: it's split by type for everyone
@@ -159,6 +159,56 @@ def test_gear_step_lists_devices_once_and_finds_the_capture_card():
     assert calls == [1]
     assert gs.capture_audio(card.name, ["Mic (Wave XLR)", "Game Capture HD60 X"]) == "Game Capture HD60 X"
     assert set(gs.plan_sound()) >= {"games", "music", "voice"}
+
+
+def test_connect_step_signs_in_only_when_asked():
+    pytest.importorskip("PySide6.QtWidgets")
+    from types import SimpleNamespace
+
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    opened = []
+
+    def connect_twitch(parent):
+        opened.append("twitch")
+        return ("Suraruisuh", "live_key")
+
+    def sign_in(key, parent):
+        opened.append(key)
+        return SimpleNamespace(account="Suraruisuh", key="k", server="")
+
+    d = gs.GettingStartedDialog(twitch_account=lambda: None, connect_twitch=connect_twitch, list_gear=gs.Gear,
+                                can_sign_in=lambda k: k == "youtube", sign_in=sign_in)
+    d.content["gaming"].click()
+    d.shapes["both"].click()
+    d.live.click()
+    for key in ("twitch", "youtube", "tiktok"):
+        d.places[key].click()
+    assert opened == []  # picking a place never opens a sign-in
+    d.go.click()
+    assert d.pages.currentWidget() is d.connect_page and d.step.text() == "2 of 3" and d.go.text().startswith("Skip")
+    assert list(d.connect_rows) == ["twitch", "youtube"]  # TikTok has no sign-in yet: not listed
+    d.connect_rows["youtube"].connect_button.click()
+    d.connect_rows["twitch"].connect_button.click()
+    assert opened == ["youtube", "twitch"] and d.go.text().startswith("Next")
+    assert d.twitch == ("Suraruisuh", "live_key") and d.fetched["youtube"].account == "Suraruisuh"
+    assert d.connect_rows["twitch"].connect_button.isHidden() and not d.connect_rows["twitch"].tick.isHidden()
+    d.go.click()
+    assert d.pages.currentWidget() is d.gear_page and d.step.text() == "3 of 3"
+    d.skip.click()
+    assert d.pages.currentWidget() is d.connect_page
+    d.skip.click()
+    d.skip.click()
+    for key in ("twitch", "youtube"):
+        d.places[key].click()
+    d.go.click()  # only TikTok picked: nothing to connect, so no connect step
+    assert d.pages.currentWidget() is d.gear_page and d.step.text() == "2 of 2"
+    d.skip.click()
+    d.live.click()  # record only now: no connect step
+    d.record.click()
+    d.go.click()
+    assert d.pages.currentWidget() is d.gear_page and d.step.text() == "2 of 2"
 
 
 def test_a_capture_card_fills_the_gaming_bloom():

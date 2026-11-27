@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sprigcast.app import icons, theme
+from sprigcast.app import icons, platform_logos, theme
 
 SIDE_WIDTH = 360  # Chat beside the canvases, Destinations under it
 BOTTOM_HEIGHT = 300  # the Blooms | Sound | Transitions row under the canvas
@@ -375,18 +375,6 @@ class Destination:
 
 PLACE_MIME = "application/x-sprigcast-place"  # a destination being dragged to a new spot in the list
 
-# Each place's tile: two letters on the platform's own colour.
-PLATFORM_TILES = {
-    "twitch": ("Tw", "#9146ff", "#ffffff"), "youtube": ("Yt", "#ff2d48", "#ffffff"),
-    "kick": ("K", "#53fc18", "#0b0f0d"), "tiktok": ("Tt", "#0b0f0d", "#ffffff"),
-    "x": ("X", "#0b0f0d", "#ffffff"), "facebook": ("Fb", "#1877f2", "#ffffff"),
-    "chzzk": ("Cz", "#00ffa3", "#0b0f0d"), "mixcloud": ("Mx", "#5000ff", "#ffffff"),
-    "niconico": ("Nc", "#252525", "#ffffff"), "restream": ("Rs", "#ff5a1f", "#0b0f0d"),
-    "showroom": ("Sr", "#f5c518", "#0b0f0d"), "soop": ("So", "#0545b1", "#ffffff"),
-    "beam": ("Be", "#7c5cff", "#ffffff"), "shareplay": ("Sp", "#2ec4b6", "#0b0f0d"),
-    "vimeo": ("Vm", "#1ab7ea", "#0b0f0d"), "whowatch": ("Ww", "#ffd43b", "#0b0f0d"),
-}
-
 
 def _sentence(note: str) -> str:
     """Each part of a tile's line starts with a capital: "Horizontal · Ready" (the user's call, 2026-11-17)."""
@@ -725,7 +713,8 @@ class LiveSide(QWidget):
         for key, label in SERVICE_CHOICES:
             # A turn later, once the menu has closed: Settings opened from inside the menu's click came up with
             # nothing for screen readers to read (no controls listed at all; PC, 2026-11-20). Sound's menus: #784.
-            self.add_menu.addAction(label).triggered.connect(
+            self.add_menu.addAction(platform_logos.icon(key, 20, "RT" if key == "custom" else label[:2]),
+                                    label).triggered.connect(
                 lambda _=False, k=key: QTimer.singleShot(0, self, lambda: on_destination(f"new:{k}")))
         self.add_menu.addSeparator()
 
@@ -1016,12 +1005,12 @@ class LiveSide(QWidget):
         outer.setSpacing(6)
         line = QHBoxLayout()
         line.setSpacing(12)
-        letters, fill, ink = PLATFORM_TILES.get(place.service, (place.name[:2], theme.RAISED_HOVER, theme.TEXT))
-        tile = QLabel(letters)
+        tile = QLabel()
         tile.setFixedSize(32, 32)
-        tile.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        tile.setStyleSheet(f"background: {fill}; color: {ink}; border-radius: 10px; font-weight: 800;"
-                           f" border: 1px solid {theme.EDGE_STRONG if fill == theme.CHROME else fill};")
+        tile.setPixmap(platform_logos.tile(place.service, 32, place.name[:2], theme.RAISED_HOVER, theme.TEXT,
+                                           ratio=max(2.0, self.devicePixelRatioF())))
+        tile.setAccessibleName(place.name)
+        tile.setStyleSheet("background: transparent;")
         name, note = Elided(), QLabel()
         for label in (name, note):  # a long name or note is cut at the card's edge, never the switch
             label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)

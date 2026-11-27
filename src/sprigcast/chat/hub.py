@@ -9,11 +9,12 @@ screen, or a bloom has a chat source) and stops when nothing does. Every message
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 
 from PySide6.QtCore import QObject, Signal
 
-from sprigcast.chat import PLATFORMS, ChatMessage, hidden, make_reader
+from sprigcast.chat import PLATFORMS, ChatMessage, hidden, make_reader, word_filter
 from sprigcast.chat.feed import FEED
 from sprigcast.core import privacy
 from sprigcast.core.quiet import Every
@@ -37,6 +38,7 @@ class ChatHub(QObject):
         self.states: dict[str, str] = {}
         self.reasons: set[str] = set()
         self.hidden: frozenset[str] = frozenset(hidden.load())  # accounts whose lines are never shown
+        self.set_word_filter(*word_filter.load())
 
     def want(self, reason: str, on: bool) -> None:
         before = bool(self.reasons)
@@ -101,9 +103,21 @@ class ChatHub(QObject):
         log.info("chat: an account was hidden (%d hidden)", len(self.hidden))  # in the logbook, no names
         return True
 
+    def set_word_filter(self, words: list[str], links: bool, save: bool = False) -> None:
+        """Leave out lines with these words, or with links (from anyone but the owner, mods and VIPs)."""
+        if save:
+            word_filter.save(words, links)
+            log.info("chat: word filter set (%d words, links %s)", len(words), "hidden" if links else "shown")
+        self.blocked_words, self.hide_links = list(words), bool(links)
+        self._words = word_filter.pattern(self.blocked_words)
+
     def _message(self, message: ChatMessage) -> None:
         if self.hidden and not message.notice and message.user.lower() in self.hidden:
             return
+        if (self._words is not None or self.hide_links) and word_filter.blocks(message, self._words, self.hide_links):
+            return
+        if not message.at:
+            message.at = time.time()
         FEED.push(message)
         self.message.emit(message)
 

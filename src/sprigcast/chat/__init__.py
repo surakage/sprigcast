@@ -30,6 +30,7 @@ class ChatMessage:
     images: dict[str, str] = field(default_factory=dict)  # emote id -> picture URL (platforms without a template)
     action: bool = False  # "/me waves"
     notice: bool = False  # subs, raids and other events the platform announces
+    at: float = 0.0  # when it arrived here (time.time()), for the Chat panel's times
 
 
 PLATFORMS = {  # key -> (label, colour of its mark in the mixed list)

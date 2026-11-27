@@ -6,10 +6,10 @@ are found. One column that never scrolls sideways; type to narrow it, Enter or a
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtWidgets import QAbstractItemView, QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout, QWidget
 
-from sprigcast.app import theme
+from sprigcast.app import platform_logos, theme
 from sprigcast.app.transitions_panel import PopUp
 from sprigcast.output.stream import all_services
 
@@ -50,8 +50,9 @@ class PlacePicker(PopUp):
         self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.list.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.list.setIconSize(QSize(24, 24))
         for key, label in all_services():
-            item = QListWidgetItem(label)
+            item = QListWidgetItem(platform_logos.icon(key, 24, label[:2]), label)
             item.setData(Qt.ItemDataRole.UserRole, key)
             self.list.addItem(item)
         self.list.itemDoubleClicked.connect(lambda _item: self._pick())

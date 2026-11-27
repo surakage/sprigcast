@@ -1,6 +1,10 @@
 {
   "app": "SprigCast",
   "api": 0,
+  "apis": [
+    0,
+    1
+  ],
   "preview": true,
   "connect": {
     "path": "/sprigcast",
@@ -583,6 +587,10 @@
       "about": "Wrong password or key."
     },
     {
+      "code": 4010,
+      "about": "The app asked for an API version SprigCast doesn't speak (hello's apis lists them)."
+    },
+    {
       "code": 4011,
       "about": "Wrong or expired pairing code, or too many wrong codes (pairing locks for a minute)."
     }
@@ -635,11 +643,99 @@
     "fields.camelCase",
     "fields.ids",
     "actions.toggles",
-    "actions.aliases"
+    "actions.aliases",
+    "api.v1"
   ],
   "limits": {
     "steps": 100,
     "waitMs": 600000
+  },
+  "api1": {
+    "camelCaseAnswers": [
+      {
+        "from": "a_in",
+        "to": "aIn"
+      },
+      {
+        "from": "a_name",
+        "to": "aName"
+      },
+      {
+        "from": "b_in",
+        "to": "bIn"
+      },
+      {
+        "from": "b_name",
+        "to": "bName"
+      },
+      {
+        "from": "bandwidth_test",
+        "to": "bandwidthTest"
+      },
+      {
+        "from": "dry_run",
+        "to": "dryRun"
+      },
+      {
+        "from": "on_air",
+        "to": "onAir"
+      },
+      {
+        "from": "one_step",
+        "to": "oneStep"
+      },
+      {
+        "from": "same_on_both_canvases",
+        "to": "sameOnBothCanvases"
+      },
+      {
+        "from": "scale_x",
+        "to": "scaleX"
+      },
+      {
+        "from": "scale_y",
+        "to": "scaleY"
+      },
+      {
+        "from": "source_size",
+        "to": "sourceSize"
+      },
+      {
+        "from": "sources_removed",
+        "to": "sourcesRemoved"
+      },
+      {
+        "from": "unmatched_choices",
+        "to": "unmatchedChoices"
+      }
+    ],
+    "keptAsTheyAre": [
+      "data",
+      "defaults",
+      "settings"
+    ],
+    "needValue": [
+      {
+        "action": "camera.set",
+        "field": "on",
+        "toggle": "camera.toggle"
+      },
+      {
+        "action": "item.lock",
+        "field": "locked",
+        "toggle": "item.toggleLock"
+      },
+      {
+        "action": "media.loop",
+        "field": "on",
+        "toggle": "media.toggleLoop"
+      },
+      {
+        "action": "sound.mute",
+        "field": "muted",
+        "toggle": "sound.toggle"
+      }
+    ]
   },
   "actionAliases": [
     {

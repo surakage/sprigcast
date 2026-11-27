@@ -57,6 +57,38 @@ names are kept working; later versions add the new spellings next to them.
   and names are only ever added, so check a feature rather than a version number.
 - Error codes are never renamed. Old action, field and event names keep working.
 
+## API 1
+
+An app chooses its API version with `"api"` in its first message (the one with `auth`, `pair` or `events`).
+`hello` lists the versions SprigCast speaks in `apis`. Leaving `api` out means 0: everything stays exactly as it
+was. Asking for one SprigCast doesn't speak closes the connection with 4010.
+
+```
+server → {"hello": {"app": "SprigCast", "api": 0, "apis": [0, 1], "auth": {...}}}
+app    → {"api": 1, "auth": "<answer>", "events": ["bloom", "output"]}
+server → {"welcome": {"api": 1, "events": ["bloom", "output"]}}
+```
+
+With API 1:
+
+- **Fields go under `data`**, so they never clash with the message's own keys:
+  `{"id": "7", "do": "bloom.show", "data": {"bloom": "BRB"}}`. Steps in a step list are the same:
+  `{"id": "a", "do": "item.hide", "data": {...}}`. The answer is still `{"id", "ok", "result"}` or
+  `{"id", "ok": false, "error"}`.
+- **Events** come as `{"event": "bloom.shown", "group": "bloom", "data": {...}, "at": "2026-11-27T02:30:00.120Z"}`.
+  `app.closing` has `group` null, since every app gets it.
+- **Answers and events are camelCase**: `scaleX`, `onAir`, `sourceSize`, `sameOnBothCanvases`, `dryRun`... A
+  source's own `settings` (and `data` you broadcast) keep the names they have, because `source.set` takes them as
+  they are. protocol.json lists every rename under `api1`.
+- **Set actions need their value**: `sound.mute` needs `muted`, `media.loop` and `camera.set` need `on`,
+  `item.lock` needs `locked`. Without it the answer is `bad_request` naming the field; use `sound.toggle`,
+  `media.toggleLoop`, `camera.toggle` or `item.toggleLock` to toggle.
+
+Web links are one request each, so they stay as they are (the Streamer.bot pack uses them, so it needs no
+change). The Stream Deck plugin speaks API 1 when `hello` offers it and API 0 otherwise: do the same, so an app
+works with an older SprigCast too. API 1 is a preview until SprigCast Version 1, when it
+becomes the settled API.
+
 ## Events by name
 
 `events` (in the first message, or sent again at any time to change what you get) takes event groups
@@ -104,6 +136,7 @@ server → {"id": "9", "ok": true, "result": {"steps": [{"id": "hide", "ok": tru
 | 1001 | SprigCast closed, or its API was turned off (`app.closing` came first). Try again in a second or two. |
 | 4002 | A message wasn't a JSON object. |
 | 4009 | Wrong password or key. |
+| 4010 | The app asked for an API version SprigCast doesn't speak (`hello`'s `apis` lists them). |
 | 4011 | Wrong or expired pairing code, or too many wrong codes (pairing locks for a minute). |
 
 ## Features
@@ -117,4 +150,5 @@ server → {"id": "9", "ok": true, "result": {"steps": [{"id": "hide", "ok": tru
 | `fields.camelCase` | Every snake_case field also answers to its camelCase spelling (`scaleX`, `dryRun`) |
 | `fields.ids` | `bloomId`, `sprigId`, `sourceId`, `itemId`, `soundId`, `mediaId`, `filterId`, `placeId` take only an id |
 | `actions.toggles` | `sound.toggle`, `media.toggleLoop`, `item.toggleLock`, `camera.toggle` |
+| `api.v1` | `"api": 1` in the first message: fields under `data`, camelCase answers and events, events with `group` and `at`, set actions need their value |
 | `actions.aliases` | `record.togglePause` and `filter.share`, newer names for `record.toggle_pause` and `filters.share` |
