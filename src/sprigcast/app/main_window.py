@@ -1104,10 +1104,32 @@ class MainWindow(QMainWindow):
                 act.setChecked(choice == current)
                 act.triggered.connect(lambda _=False, c=choice: self._set_live_safe_zones(c))
         menu.addSeparator()
-        size = f"{canvas.width}×{canvas.height}, {canvas.fps} fps" if canvas is not None else ""
-        settings = menu.addAction(icons.icon("gear", theme.MUTED), f"Canvas settings…  {size}".rstrip())
-        settings.setToolTip("Size and frame rate (Settings → Video)")
+        self._preview_live_menu(menu)
+        size = f": {canvas.width}×{canvas.height}, {canvas.fps} fps" if canvas is not None else ""
+        settings = menu.addAction(icons.icon("gear", theme.MUTED), "Canvas…")  # one word: the size was clipped
+        settings.setToolTip(f"Size and frame rate{size} (Settings → Video)")
         settings.triggered.connect(lambda: self._open_settings("Video"))
+
+    def _preview_live_menu(self, menu: QMenu):
+        """Right-click a canvas on Live → Preview, on or off any time: the same switch as Settings → General → This
+        PC → Preview (a tester on a slow PC asked to turn the preview off, 2026-11-27). Both canvases; Preview while
+        live (Smooth, Light, Off) is its own setting."""
+        from sprigcast.app.settings_window import preview_on
+
+        act = menu.addAction("Preview")  # no icon: its tick shows on or off
+        act.setCheckable(True)
+        act.setChecked(preview_on())
+        act.setToolTip("Off leaves more of the graphics card for the stream; Build and projectors keep drawing")
+        act.toggled.connect(self._set_preview_shown)
+        return act
+
+    def _set_preview_shown(self, on: bool) -> None:
+        from sprigcast.app.settings_window import PREVIEW_SHOWN
+
+        QSettings().setValue(PREVIEW_SHOWN, bool(on))
+        self._preview_live = None  # read again on the next poll: both canvases follow
+        for preview in self.previews.values():
+            preview.update()
 
     # Projectors ------------------------------------------------------------------------
 
@@ -3350,14 +3372,19 @@ class MainWindow(QMainWindow):
             workers.run(name_them, name="busy-pc-log")
 
     def _preview_mode(self) -> str:
-        """Settings → General → This PC → Preview while live: "smooth" unless on air with Light or Off."""
+        """Preview off (right-click on Live, or Settings): the Live screen's previews are off any time; Build keeps
+        drawing (you're placing things there). Preview while live (Smooth, Light, Off) is how both draw while
+        live or recording, as before."""
+        known = getattr(self, "_preview_live", None)
+        if known is None:
+            from sprigcast.app.settings_window import preview_choice, preview_on
+
+            known = self._preview_live = (preview_on(), preview_choice())
+        shown, choice = known
+        if not shown and self.mode != "build":
+            return "off"
         if self.streaming is None and self.recording is None:
             return "smooth"
-        choice = getattr(self, "_preview_live", None)
-        if choice is None:
-            from sprigcast.app.settings_window import preview_choice
-
-            choice = self._preview_live = preview_choice()
         return choice
 
     def _watched_previews(self) -> frozenset[str]:

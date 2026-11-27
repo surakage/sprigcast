@@ -301,7 +301,7 @@ class Preview(QWidget):
             p.fillRect(rect, QColor("#000000"))
             p.setPen(QColor(theme.MUTED))
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
-                       "Preview off while live" if self.paused else self.empty_text)
+                       "Preview off" if self.paused else self.empty_text)
         else:
             if self.transparent:
                 self._paint_checker(p, rect)

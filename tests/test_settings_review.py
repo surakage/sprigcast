@@ -214,3 +214,29 @@ def test_the_camera_tab_lists_speakers_off_the_window_thread(app, monkeypatch):
         app.processEvents()
         time.sleep(0.01)
     assert tab.sound.findData("CABLE Input") > 0 and asked_on and asked_on[0] is not threading.main_thread()
+
+
+def test_preview_is_one_right_click_away_on_live(window):
+    from sprigcast.app.settings_window import PREVIEW_LIVE, PREVIEW_SHOWN, preview_on
+
+    window._set_mode("live")
+    menu = window._preview_menu("horizontal", -1)
+    act = next(a for a in menu.actions() if a.text() == "Preview")
+    assert act.isCheckable() and act.isChecked() and act.menu() is None  # just on or off
+    act.setChecked(False)
+    assert not preview_on() and window._preview_mode() == "off"  # off any time, live or not
+    window._set_mode("build")
+    assert window._preview_mode() == "smooth"  # Build keeps drawing
+    window._set_mode("live")
+    window._set_preview_shown(True)
+    QSettings().setValue(PREVIEW_LIVE, "light")
+    window._preview_live = None
+    assert window._preview_mode() == "smooth"  # Preview while live is its own setting: only on air
+    window.recording = object()
+    try:
+        assert window._preview_mode() == "light"
+    finally:
+        window.recording = None
+    menu.deleteLater()
+    QSettings().remove(PREVIEW_LIVE)
+    QSettings().remove(PREVIEW_SHOWN)
