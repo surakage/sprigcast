@@ -391,6 +391,8 @@ class NativeApi:
         self.host = host
         self.actions: dict[str, Action] = {}
         for attr in dir(self):
+            if isinstance(getattr(type(self), attr, None), property):
+                continue  # (col and friends need the window, which may not be there yet: open_early)
             fn = getattr(self, attr)
             meta = getattr(fn, "_action", None)
             if meta:
