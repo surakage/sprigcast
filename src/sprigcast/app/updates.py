@@ -38,6 +38,7 @@ from sprigcast.app.modal import modal
 from sprigcast.app import theme
 
 log = logging.getLogger(__name__)
+PROGRESS_EVERY_S = 0.25  # download progress shown at most this often
 
 AUTO_CHECK = "updates/auto_check"
 SKIPPED = "updates/skipped"
@@ -451,6 +452,12 @@ class Updater(QObject):
         self.downloaded.emit(str(target), problem)
 
     def _on_progress(self, done: int, total: int) -> None:
+        # At most PROGRESS_EVERY_S apart: each one laid the pop-up out again, and a stream of them held the
+        # window 1,545 ms on a laptop (CRGPlays, 2026-11-27).
+        now = time.monotonic()
+        if (total and done < total) and now - getattr(self, "_progress_at", float("-inf")) < PROGRESS_EVERY_S:
+            return
+        self._progress_at = now
         if self._prompt is not None:
             text = f"Downloading… {_mb(done)} of {_mb(total)}" if total else f"Downloading… {_mb(done)}"
             self._prompt.show_status(text, (done, total))

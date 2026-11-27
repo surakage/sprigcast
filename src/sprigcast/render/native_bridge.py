@@ -294,6 +294,9 @@ class NativeCanvases:
             from sprigcast.app import capture_helper
             from sprigcast.sources import browser
 
+            from sprigcast.app import gpu_usage
+
+            gpu_usage.ENGINE_CARD = gpu_usage.card_key(luid)  # the GPU meter tells this card from the others
             browser.use_card(luid)
             capture_helper.HELPER.use_card(luid)  # captures run on the same card, in the capture helper
 

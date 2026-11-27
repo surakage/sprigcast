@@ -38,7 +38,7 @@ def test_no_answer_starts_normally_after_the_count(caplog):
     assert "Starting normally in 2 s" in seen
     assert "safe mode question: no answer, starting normally" in caplog.text
     assert safe_mode.unattended()  # nobody there: the crash card isn't put up over the window (main.py)
-    assert safe_mode.AUTO_START_S == 15
+    assert safe_mode.AUTO_START_S == 8
 
 
 def test_a_click_stops_the_count_and_it_waits_for_the_answer(caplog):

@@ -154,3 +154,13 @@ def test_right_click_on_a_leaf_in_an_open_sprig(app, tmp_path, monkeypatch):
         w.close()
         QSettings().clear()
 
+
+
+def test_right_click_on_the_sprigs_heading_is_not_a_folder(app):
+    """CRGPlays, 2026-11-27: StopIteration three times: the Sprigs heading's key isn't a folder id."""
+    from sprigcast.app.library import PART_ROOT
+
+    col = _collection()
+    assert col.find_folder(PART_ROOT) is None and col.find_folder("") is None and col.find_folder(None) is None
+    folder = col.add_folder("horizontal", "Main Scenes")
+    assert col.find_folder(folder.id) is folder

@@ -785,6 +785,10 @@ class SceneCollection(BaseModel):
     def folder(self, folder_id: str) -> SceneFolder:
         return next(f for f in self.folders if f.id == folder_id)
 
+    def find_folder(self, folder_id: str | None) -> SceneFolder | None:
+        """The folder, or None for an id that isn't one (a heading's key, a folder just removed)."""
+        return next((f for f in self.folders if f.id == folder_id), None) if folder_id else None
+
     def add_folder(self, canvas_id: str, name: str, holds: str = "show") -> SceneFolder:
         used = len(self.folders_for(canvas_id) if holds == "show" else self.part_folders())
         # The first bloom folder on a canvas is its Live folder, like "Main Scenes"; change it any time.

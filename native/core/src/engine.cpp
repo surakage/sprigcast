@@ -2334,7 +2334,12 @@ SC_API int sc_engine_memory_note(sc_engine *engine, char *out, int size) {
         if (!out || size < 2) return fail(SC_ERR_ARGUMENT, "sc_engine_memory_note: no room");
         out[0] = 0;
         std::unique_lock<std::timed_mutex> frame(engine->frame, std::chrono::milliseconds(FRAME_WAIT_MS));
-        if (!frame.owns_lock()) return fail(SC_ERR_TIMEOUT, "sc_engine_memory_note: the engine's frame is stuck");
+        if (!frame.owns_lock()) {
+            // Only a note for the memory map line: a frame still drawing (a slow chip, CRGPlays 2026-11-27) isn't
+            // an error. A frame that really stays stuck is found and handled by the stuck-frame watch.
+            std::snprintf(out, static_cast<size_t>(size), "engine busy drawing, not counted this time");
+            return SC_OK;
+        }
         if (!engine->dev) return fail(SC_ERR_ARGUMENT, "sc_engine_memory_note: no device yet");
         sc_device &dev = *engine->dev;
         uint64_t card = 0, staging = 0, parts = 0, drawn = 0, big = 0;
