@@ -168,16 +168,48 @@ def _same(a: Path, b: Path) -> bool:
     return _compared[key]
 
 
+_versions: dict[tuple, int | None] = {}
+_FIXED_INFO = b"\xbd\x04\xef\xfe"  # VS_FIXEDFILEINFO's signature, 0xFEEF04BD, as it sits in the file
+
+
+def camera_version(path: Path) -> int | None:
+    """SprigCast Camera's own version (native/camera/version.h, FILEVERSION's first number), read from the
+    DLL's version resource; None for a camera built before it had one (2026-11-27). Read once per file as it
+    is now. Works on any system (it reads the bytes), so Setup's and the app's checks can be tested."""
+    st = path.stat()
+    key = (str(path), st.st_mtime_ns, st.st_size)
+    if key not in _versions:
+        data = path.read_bytes()
+        at = data.find(_FIXED_INFO)
+        found = None
+        if at >= 0 and at + 12 <= len(data):
+            file_version_ms = int.from_bytes(data[at + 8:at + 12], "little")
+            found = file_version_ms >> 16 or None
+        _versions[key] = found
+    return _versions[key]
+
+
+def _older(src: Path, dst: Path) -> bool:
+    """Is the installed `dst` older than the bundled `src`? By the camera's own version when this build has one:
+    the bytes differ on every build even when nothing changed, so comparing them asked for Windows' permission
+    on every update (PC, test builds 6 and 7, 2026-11-27). A camera with no version is older than one with."""
+    shipped = camera_version(src)
+    if shipped is None:  # a build without the version (a developer's): same bytes or not
+        return not _same(src, dst)
+    have = camera_version(dst)
+    return have is None or have < shipped
+
+
 def needs_update() -> bool:
-    """Set up, but with an older DLL than the one this SprigCast ships."""
+    """Set up, but with an older camera than the one this SprigCast ships."""
     src, dst = bundled_dll(), registered_path()
     if not src or not dst:
         return False
     src32, dst32 = bundled_dll(DLL32_NAME), dst.with_name(DLL32_NAME)
     try:
-        if not _same(src, dst):
+        if _older(src, dst):
             return True
-        return bool(src32) and (not dst32.exists() or not _same(src32, dst32))
+        return bool(src32) and (not dst32.exists() or _older(src32, dst32))
     except OSError:
         return False
 
@@ -228,7 +260,7 @@ def _install_step(src: Path, dll: Path, stamp: str | None = None) -> str:
 
         stamp = uuid.uuid4().hex[:8]
     new = f"{dll}.new"
-    return (f'del /q "{dll}.*.old" "{dll}.old" 2>nul & '
+    return (f'del /q "{dll}.*.old" "{dll}.old" "{dll.parent}\\*.inuse-*" 2>nul & '
             f'copy /y "{src}" "{new}" && (move /y "{dll}" "{dll}.{stamp}.old" 2>nul & move /y "{new}" "{dll}") & '
             f'regsvr32 /s "{dll}"')
 
