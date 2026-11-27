@@ -484,6 +484,11 @@ class GardenControl:
                 # Types only, no names: which matches to build next (user 2026-11-27: "track what failed to carry over")
                 log.info("import from %s: %d notes; didn't carry over: %s", convert.APP_NAMES.get(app, app),
                          len(notes), convert.missed_summary() or "nothing")
+                from sprigcast.app import share_reports
+
+                # Share logs automatically: what didn't carry over (types only) goes to the developer
+                share_reports.send_after_import(convert.APP_NAMES.get(app, app), convert.missed_summary(), len(notes),
+                                                collection=garden.model_copy(deep=True))
                 entry = self.shelf.add_garden(convert.guess_name(path, data), garden)
             else:
                 return f"{path.name} isn't a scene collection from SprigCast, OBS, Streamlabs or Meld."

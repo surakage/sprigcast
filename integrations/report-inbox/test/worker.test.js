@@ -62,3 +62,42 @@ test("health answers and ids avoid look-alike letters", async () => {
   assert.deepEqual(await r.json(), { ok: true });
   assert.equal(reportId(new Uint8Array([0, 1, 31, 32, 8, 9])), "SC-23Z2AB");
 });
+
+function readable(objects) {
+  return {
+    READ_TOKEN: "a-long-read-token-1234",
+    REPORTS: {
+      list: async ({ prefix }) => ({ objects: objects.filter((o) => o.key.startsWith(prefix)), truncated: false }),
+      get: async (key) => (objects.some((o) => o.key === key) ? { body: "zipbytes" } : null),
+    },
+  };
+}
+
+test("an import report keeps its install id", async () => {
+  const e = env();
+  const response = await worker.fetch(post(zip(), { "x-sprigcast-kind": "import", "x-sprigcast-version": "0.4.0",
+                                                    "x-sprigcast-install": "3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90" }),
+                                      e, ctx);
+  assert.equal(response.status, 201);
+  assert.equal(e.stored[0].options.customMetadata.kind, "import");
+  assert.equal(e.stored[0].options.customMetadata.install, "3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90");
+});
+
+test("reports can be listed and fetched only with the read token", async () => {
+  const today = new Date().toISOString().slice(0, 10);
+  const e = readable([{ key: `${today}/SC-ABCDEF.zip`, size: 1234,
+                        customMetadata: { version: "0.4.0", kind: "crash", cause: "x" } }]);
+  const get = (path, token) => new Request(`https://reports.example${path}`,
+                                           { headers: token ? { authorization: `Bearer ${token}` } : {} });
+  assert.equal((await worker.fetch(get("/v1/reports"), e, ctx)).status, 404);
+  assert.equal((await worker.fetch(get("/v1/reports", "wrong-token-wrong-token"), e, ctx)).status, 404);
+  const listed = await worker.fetch(get(`/v1/reports?since=${today}`, e.READ_TOKEN), e, ctx);
+  assert.equal(listed.status, 200);
+  assert.deepEqual(await listed.json(), [{ id: "SC-ABCDEF", date: today, version: "0.4.0", kind: "crash", cause: "x",
+                                           install: "", size: 1234 }]);
+  const one = await worker.fetch(get("/v1/reports/SC-ABCDEF", e.READ_TOKEN), e, ctx);
+  assert.equal(one.status, 200);
+  assert.equal(await one.text(), "zipbytes");
+  assert.equal((await worker.fetch(get("/v1/reports/SC-ZZZZZZ", e.READ_TOKEN), e, ctx)).status, 404);
+  assert.equal((await worker.fetch(get("/v1/reports/../x", e.READ_TOKEN), e, ctx)).status, 404);
+});
