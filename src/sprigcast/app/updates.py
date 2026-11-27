@@ -1,6 +1,10 @@
 """Check for updates: the window side of sprigcast/update.py.
 
-- At start (after a short wait) and every 12 hours, if Settings → General → Updates allows it.
+- At start (after a short wait) and every 12 hours (every 3 hours on a test build), if Settings → General →
+  Updates allows it.
+- A test build also hears about newer test builds ("Beta 0.5 test build 3 is ready"), so testers update in place.
+  The channel (stable, test builds, or both) is kept in updates/channel; the choice shows in Settings from
+  Version 1 on, until then a test build uses both and a release copy stable.
 - Tools → Check for updates… and the Check now button in Settings ask right away.
 - A rounded pop-up shows the new version and what's new. Update now downloads and checks the installer,
   closes SprigCast and lets Setup put the new version in and start it again.
@@ -29,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sprigcast import __version__, display_version, update
+from sprigcast import __version__, short_version, test_build, update
 from sprigcast.app.modal import modal
 from sprigcast.app import theme
 
@@ -38,13 +42,40 @@ log = logging.getLogger(__name__)
 AUTO_CHECK = "updates/auto_check"
 SKIPPED = "updates/skipped"
 LAST_CHECK = "updates/last_check"
+CHANNEL = "updates/channel"
 CHECK_EVERY_S = 12 * 3600
+TEST_CHECK_EVERY_S = 3 * 3600  # test builds come often: testers hear within a few hours
 FIRST_CHECK_MS = 20_000  # after start, once the window and sources have settled
 BUSY_RETRY_MS = 60_000
 
 
 def auto_check_enabled() -> bool:
     return QSettings().value(AUTO_CHECK, True, type=bool)
+
+
+def channel() -> str:
+    """The saved update channel when it's one we know, else the build's own default."""
+    saved = QSettings().value(CHANNEL, "", type=str)
+    return saved if saved in update.CHANNELS else update.default_channel()
+
+
+CHANNEL_NAMES = (("Stable versions", update.STABLE), ("Test builds", update.TESTS),
+                 ("Stable versions and test builds", update.BOTH))
+
+
+def channel_choice_shown() -> bool:
+    """The channel choice joins Settings → Updates with Version 1 (user, 2026-11-27)."""
+    parsed = update.parse_version(__version__)
+    return parsed is not None and parsed[0] >= 1
+
+
+def check_every_s() -> int:
+    return TEST_CHECK_EVERY_S if update.is_test_copy() else CHECK_EVERY_S
+
+
+def this_build() -> str:
+    """"Beta 0.5 test build 2" or "Beta 0.5"."""
+    return short_version(__version__, test_build())
 
 
 def downloads_dir() -> Path:
@@ -96,13 +127,13 @@ class UpdatePrompt(QWidget):
         words = QVBoxLayout()
         words.setSpacing(4)
         words.addStretch(1)
-        title = QLabel(f"SprigCast {display_version(release.version)} is ready")
+        title = QLabel(f"SprigCast {release.label} is ready")
         title.setObjectName("updateTitle")
         title.setWordWrap(True)
         title.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-size: 20px; font-weight: 700;")
         words.addWidget(title)
         size = f" · {_mb(release.installer_size)} download" if release.installer_size else ""
-        sub = QLabel(f"You have {display_version()}{size}")
+        sub = QLabel(f"You have {this_build()}{size}")
         sub.setStyleSheet(theme.MUTED_STYLE)
         words.addWidget(sub)
         words.addStretch(1)
@@ -231,11 +262,11 @@ class Updater(QObject):
         self._busy_timer.timeout.connect(self._show_waiting)
 
     def start(self) -> None:
-        """Automatic checks: one shortly after start, then every 12 hours. Only for installed copies."""
+        """Automatic checks: one shortly after start, then every 12 hours (3 on a test build). Installed copies only."""
         if not self.installed:
             return
         QTimer.singleShot(FIRST_CHECK_MS, lambda: self.check(manual=False))
-        self._timer.start(CHECK_EVERY_S * 1000)
+        self._timer.start(check_every_s() * 1000)
 
     # Checking --------------------------------------------------------------------
 
@@ -249,7 +280,7 @@ class Updater(QObject):
             if not auto_check_enabled() or self.pending is not None:
                 return
             last = settings.value(LAST_CHECK, 0.0, type=float)
-            if time.time() - last < CHECK_EVERY_S - 60:
+            if time.time() - last < check_every_s() - 60:
                 return
         self._checking = True
         settings.setValue(LAST_CHECK, time.time())
@@ -259,7 +290,7 @@ class Updater(QObject):
 
     def _check_worker(self, manual: bool) -> None:
         try:
-            release = update.fetch_latest()
+            release = update.fetch_newest(channel())  # QSettings is safe to read here (its own instance)
         except Exception as exc:  # noqa: BLE001 (offline, GitHub down, odd reply: never crash over it)
             log.info("update check failed: %s", exc)
             self.checked.emit(None, manual, str(exc) or exc.__class__.__name__)
@@ -273,13 +304,13 @@ class Updater(QObject):
                 self._message("Couldn't check for updates", "The update check got no answer. Check your connection and "
                               "try again.")
             return
-        if release is None or not update.is_newer(release.version):
-            log.info("update check: %s is the newest", __version__)
+        if not update.newer_than_this(release):
+            log.info("update check: %s is the newest (channel %s)", this_build(), channel())
             if manual:
-                self._message("You're up to date", f"SprigCast {display_version()} is the newest version.")
+                self._message("You're up to date", f"SprigCast {this_build()} is the newest version.")
             return
-        log.info("update check: %s is out (you have %s)", release.version, __version__)
-        if not manual and QSettings().value(SKIPPED, "", type=str) == release.version:
+        log.info("update check: %s is out (you have %s)", release.label, this_build())
+        if not manual and QSettings().value(SKIPPED, "", type=str) == release.skip_id:
             return
         if not manual and self.busy():
             self._waiting = release  # never pop up on air: wait until stream and recording are off
@@ -340,7 +371,7 @@ class Updater(QObject):
         dialog.add_tab("update", "Update", prompt)
         fit_to(dialog, prompt)
         prompt.later_button.clicked.connect(dialog.reject)
-        prompt.skip_button.clicked.connect(lambda: (QSettings().setValue(SKIPPED, release.version), dialog.reject()))
+        prompt.skip_button.clicked.connect(lambda: (QSettings().setValue(SKIPPED, release.skip_id), dialog.reject()))
         prompt.go_button.clicked.connect(lambda: self._go(release))
         dialog.finished.connect(lambda _code: setattr(self, "_cancel", self._downloading()))
         self._dialog, self._prompt = dialog, prompt

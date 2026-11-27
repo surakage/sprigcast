@@ -40,6 +40,10 @@ builds from 2026-11-25 on.
 - Control API: viewer counts for apps like StreamBridge, a published protocol.json, events by name, errors that
   name their field, step ids, camelCase spellings and toggle actions. Apps that ask for API 1 get camelCase
   answers and events with their data in one place; apps that don't see no change (#968, #970, #971, #973).
+- Test builds update themselves. Each test build is numbered (Beta 0.5 test build 1, 2, 3...), checks for a newer
+  one every few hours and installs it in place, the same way published versions do. A published version beats
+  every test build of it. From Version 1 on, Settings → Updates lets you pick stable versions, test builds or
+  both.
 
 ### Changed
 

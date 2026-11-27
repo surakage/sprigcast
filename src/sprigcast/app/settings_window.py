@@ -845,7 +845,7 @@ class SettingsWindow(QDialog):
             if not shiboken6.isValid(page):
                 return
             from sprigcast import build_label
-            from sprigcast.app.updates import auto_check_enabled
+            from sprigcast.app.updates import CHANNEL_NAMES, auto_check_enabled, channel, channel_choice_shown
 
             updates = QGroupBox("Updates")
             up_box = QVBoxLayout(updates)
@@ -853,6 +853,17 @@ class SettingsWindow(QDialog):
             self.auto_updates.setChecked(auto_check_enabled())
             self.auto_updates.setToolTip("Updates never install while you're live or recording")
             up_box.addWidget(self.auto_updates)
+            self.update_channel = None
+            if channel_choice_shown():
+                self.update_channel = QComboBox()
+                for text, value in CHANNEL_NAMES:
+                    self.update_channel.addItem(text, value)
+                self.update_channel.setCurrentIndex(max(0, self.update_channel.findData(channel())))
+                channel_row = QHBoxLayout()
+                channel_row.setSpacing(12)
+                channel_row.addWidget(QLabel("Get"))
+                channel_row.addWidget(self.update_channel, 1)
+                up_box.addLayout(channel_row)
             up_row = QHBoxLayout()
             up_row.setSpacing(12)
             self.check_updates_button = QPushButton("Check now")
@@ -1522,9 +1533,11 @@ class SettingsWindow(QDialog):
         for key, tick in ((tray.MINIMIZE_TO, self.tray_minimize), (tray.CLOSE_TO, self.tray_close)):
             settings.setValue(key, self._tray_kept.get(tick, tick.isChecked()))  # kept for when the tray is back
         settings.setValue(autostart.START_MINIMIZED, self.start_minimized.isChecked())
-        from sprigcast.app.updates import AUTO_CHECK
+        from sprigcast.app.updates import AUTO_CHECK, CHANNEL
 
         settings.setValue(AUTO_CHECK, self.auto_updates.isChecked())
+        if getattr(self, "update_channel", None) is not None:
+            settings.setValue(CHANNEL, self.update_channel.currentData())
         if autostart.supported() and self.start_with_windows.isChecked() != autostart.enabled():
             try:
                 autostart.set_enabled(self.start_with_windows.isChecked())
