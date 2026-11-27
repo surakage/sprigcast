@@ -95,7 +95,7 @@ SEARCH: list[tuple[str, str, bool]] = [
     ("Ask before stopping a recording", "General", False), ("Keep logs", "General", False),
     ("This PC", "General", False), ("Optimize for this PC", "General", False),
     ("Process priority", "General", False), ("Sources not on screen", "General", False),
-    ("Preview while live", "General", False),
+    ("Preview", "General", False), ("Preview while live", "General", False),
     ("Places to stream", "Stream/Places", False), ("Stream key", "Stream/Places", False),
     ("Server", "Stream/Places", False), ("Resolution", "Stream/Places", False),
     ("Frame rate (stream)", "Stream/Places", False), ("Bitrate (stream)", "Stream/Places", False),
@@ -1185,9 +1185,9 @@ class SettingsWindow(QDialog):
         for key, label in PREVIEW_CHOICES.items():
             self.preview_live.addItem(label, key)
         self.preview_live.setCurrentIndex(max(0, self.preview_live.findData(preview_choice())))
-        self.preview_live.setToolTip("Light or Off leaves more of the graphics card for the stream on a "
+        self.preview_live.setToolTip("While live or recording: Light or Off leaves more of the graphics card for the stream on a "
                                      "slower PC.\nProjectors keep drawing.")
-        form.addRow("Preview while live", self.preview_live)
+        form.addRow("Preview", self.preview_live)
         return card
 
     def _optimize(self) -> None:
