@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import logging
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -210,3 +211,42 @@ def remove(plugins_dir: Path, plugin_id: str, report: PluginReport | None = None
         if target.name in report.loaded:
             report.loaded.remove(target.name)
         report.failed.pop(target.name, None)
+
+
+_REGISTERS = re.compile(r"""(?:@register|register_filter)\(\s*["'](\w+)["']""")
+
+
+def provides(plugin: StorePlugin) -> set[str]:
+    """The source and effect kinds a store plugin adds ("slideshow", "barrel_roll"), read from its file."""
+    try:
+        return set(_REGISTERS.findall(plugin.file.read_text(encoding="utf-8", errors="replace")))
+    except OSError:
+        return set()
+
+
+def needed(collection, plugins_dir: Path | None, store_dir: Path = STORE_DIR) -> list[tuple[StorePlugin, list[str]]]:
+    """Store plugins a garden uses but this PC hasn't added (after an import: "add these for them to work"),
+    each with the names of what waits on it. Once one is added its leaves and effects work, no new import."""
+    from sprigcast.core.filters import filter_kind
+    from sprigcast.core.source import source_class
+
+    waiting: dict[str, list[str]] = {}  # kind -> names
+    for config in collection.sources:
+        if source_class(config.kind) is None:
+            waiting.setdefault(config.kind, []).append(config.name)
+        for f in config.filters:
+            if filter_kind(f.kind) is None:
+                waiting.setdefault(f.kind, []).append(config.name)
+    for scene in collection.scenes:
+        for item in scene.items:
+            for f in getattr(item, "effects", []):
+                if filter_kind(f.kind) is None:
+                    waiting.setdefault(f.kind, []).append(scene.name)
+    out = []
+    for plugin in catalog(store_dir):
+        if installed_version(plugins_dir, plugin.id) is not None:
+            continue
+        names = sorted({n for kind in provides(plugin) for n in waiting.get(kind, [])}, key=str.lower)
+        if names:
+            out.append((plugin, names))
+    return out
