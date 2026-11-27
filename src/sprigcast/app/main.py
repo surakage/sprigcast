@@ -516,13 +516,18 @@ def run() -> None:
 
         QTimer.singleShot(1500, window.first_run_optimizer)  # once: Optimize for this PC
         if crashed is not None:
-            from sprigcast.app import problem_report
+            from sprigcast.app import problem_report, share_reports
 
             if safe_mode.unattended():  # nobody answered the safe mode question: no card waiting over the window
                 logging.info("report: crash card not shown: nobody answered the safe mode question (it's in the "
                              "log; Help → Report a problem sends it)")
                 window.statusBar().showMessage("SprigCast closed unexpectedly last time. Help → Report a problem "
                                                "sends a report.", 60_000)
+            elif share_reports.covers("crash"):  # Share logs automatically: send it, no card (user 2026-11-27)
+                logging.info("report: crash report sent automatically (Share logs automatically is on)")
+                problem_report.send_report(window, "", True, crashed, show_result=False)
+                window.statusBar().showMessage("SprigCast closed unexpectedly last time. Its log was sent to help "
+                                               "fix it.", 30_000)
             else:
                 QTimer.singleShot(1200, lambda: problem_report.ask(window, crashed))  # what happened? send it?
     from PySide6.QtCore import QTimer

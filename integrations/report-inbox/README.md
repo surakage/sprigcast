@@ -46,6 +46,26 @@ pass it to Claude like a File → Export report zip. Or from the command line:
 npx wrangler r2 object get sprigcast-reports/2026-11-16/SC-7F3K2M.zip --file SC-7F3K2M.zip --remote
 ```
 
+## Pulling reports with a token (for the team and Claude threads)
+
+The Worker can list and hand out reports to anyone with its read token. Make one long random token, then:
+
+```
+cd integrations\report-inbox
+npx wrangler secret put READ_TOKEN
+npx wrangler deploy
+```
+
+Paste the same token into the Claude cloud environment's environment variables as `SPRIGCAST_REPORTS_TOKEN`,
+and allow `reports.slothbloom.com` in that environment's network access. Then:
+
+```
+python integrations/report-inbox/pull_reports.py --since 2026-11-27          # list
+python integrations/report-inbox/pull_reports.py SC-7F3K2M --out reports/    # download one zip
+```
+
+Without the token, `/v1/reports` answers 404, as if it weren't there.
+
 ## Changing it
 
 `npm test` runs the tests (Node 20+). `npx wrangler deploy` again after a change. SprigCast sends to

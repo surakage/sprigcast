@@ -5,7 +5,7 @@
 
 import { LOGO } from "./logo.js";
 
-export const UPDATED = "November 25, 2026";
+export const UPDATED = "November 27, 2026";
 // People are always sent to the website, never to GitHub (user, 2026-11-25). /source links to the code (GPL).
 const SITE = "https://sprigcast.slothbloom.com";
 const SOURCE = `${SITE}/source`;
@@ -402,11 +402,17 @@ name, with no sign-in. Kick chat comes through Kick's official API by way of Spr
   <li><strong>Update check:</strong> SprigCast asks GitHub for the newest version number.</li>
   <li><strong>Problem reports:</strong> only when you press Send report. A report holds your note and, if you
   leave it ticked, SprigCast's logs and PC details with stream keys, tokens, passwords, email addresses, your
-  user name and your PC's name hidden. Reports are kept for 30 days to fix bugs and then deleted.</li>
-  <li><strong>Stream summaries:</strong> only if you turn on "Help improve SprigCast" (it's off unless you do).
-  After each stream of a minute or more, SprigCast sends how each place did, your PC's details and SprigCast's
-  log, hidden the same way as problem reports. They are kept for 30 days and then deleted. Turn it off any
-  time in Settings → General.</li>
+  user name and your PC's name hidden, and a random install ID (it isn't tied to you or your PC; Settings shows
+  it, so you can ask us to delete your reports). Reports are kept for 30 days to fix bugs and then deleted.</li>
+  <li><strong>Automatic logs:</strong> only if you turn on "Share logs automatically" (it's off unless you do).
+  SprigCast then sends its log after a crash, after an import where something didn't carry over, and after each
+  stream of a minute or more, along with your PC's details (processor, graphics card, memory, screens) and your
+  SprigCast version. Stream keys, tokens, passwords, email addresses, your name, your PC's name, file paths with
+  your name, and chat messages are removed first, and nothing from your Google, YouTube, TikTok, Twitch or Kick
+  accounts is included. Each upload carries a random install ID that isn't linked to you or your PC. Uploads are
+  kept for 30 days to fix bugs and then deleted. Nothing is sent while you're live. Turn it off any time in
+  Settings → General → Logs. To have your uploads deleted sooner, post the install ID shown there in #help on the
+  SprigCast Discord.</li>
 </ul>
 
 <h2>Cookies</h2>

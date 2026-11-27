@@ -112,3 +112,58 @@ def test_the_answer_is_logged(caplog, monkeypatch):
     with caplog.at_level("INFO", logger="sprigcast.app.share_reports"):
         assert share_reports.maybe_ask(None, 300, FakeSettings()) is True
     assert f"answered: {share_reports.YES}" in caplog.text
+
+
+def test_a_stream_only_yes_covers_streams_until_asked_again():
+    settings = FakeSettings({share_reports.SETTING: True, share_reports.ASKED: True})  # said yes before version 2
+    assert share_reports.covers("stream", settings) and not share_reports.covers("crash", settings)
+    assert not share_reports.covers("import", settings) and share_reports.needs_ask(settings)
+    share_reports.set_enabled(True, settings)
+    assert share_reports.covers("crash", settings) and share_reports.covers("import", settings)
+    assert settings[share_reports.CONSENT] == share_reports.VERSION and settings[share_reports.CONSENT_DATE]
+    assert not share_reports.needs_ask(settings)
+    share_reports.set_enabled(False, settings)
+    assert not share_reports.covers("stream", settings) and not share_reports.needs_ask(settings)
+    assert share_reports.needs_ask(FakeSettings())
+
+
+def test_install_id_is_random_and_kept():
+    settings = FakeSettings()
+    first = share_reports.install_id(settings)
+    assert len(first) == 36 and share_reports.install_id(settings) == first
+    assert share_reports.install_id(FakeSettings()) != first
+
+
+def test_an_import_that_missed_something_is_sent_only_when_covered(tmp_path, monkeypatch):
+    monkeypatch.setattr(share_reports, "make", lambda target, *a, **k: zipfile.ZipFile(target, "w").close())
+    settings, sent = FakeSettings(), []
+
+    def sender(path, kind, cause):
+        with zipfile.ZipFile(path) as z:
+            sent.append((kind, cause, z.read("import.txt").decode()))
+        return "SC-ABCDEF"
+
+    missed = "source:vlc_source x2, filter:move_value_filter x1"
+    assert share_reports.send_after_import("OBS", missed, 3, settings=settings, run=_now_run, sender=sender) is None
+    share_reports.set_enabled(True, settings)
+    assert share_reports.send_after_import("OBS", "", 0, settings=settings, run=_now_run, sender=sender) is None
+    done = share_reports.send_after_import("OBS", missed, 3, settings=settings, run=_now_run, sender=sender)
+    assert done.result() == "SC-ABCDEF"
+    assert sent[0][0] == "import" and sent[0][1] == f"OBS: {missed}" and missed in sent[0][2]
+
+
+def test_an_import_report_is_wanted_only_when_covered_and_something_was_missed():
+    settings = FakeSettings()
+    assert not share_reports.wants_import_report("source:vlc_source x1", settings)
+    share_reports.set_enabled(True, settings)
+    assert share_reports.wants_import_report("source:vlc_source x1", settings)
+    assert not share_reports.wants_import_report("", settings)
+
+
+def test_the_import_hook_skips_while_live_and_copies_only_when_sending():
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / "src/sprigcast/app/gardens_menu.py").read_text(encoding="utf-8")
+    start = text.index("wants_import_report")
+    hook = text[start:text.index("entry = self.shelf.add_garden", start)]
+    assert "not self.busy()" in hook and hook.index("model_copy") > hook.index("not self.busy()")
