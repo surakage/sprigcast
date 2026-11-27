@@ -523,3 +523,20 @@ def test_more_obs_filters_come_over():
     assert [(f.kind, f.settings) for f in mic.filters] == [
         ("eq3", {"low_db": -3.0, "mid_db": 1.0, "high_db": 3.0}), ("invert_polarity", {}),
         ("upward_compressor", {"ratio": 2.0, "threshold_db": -30.0, "attack_ms": 10, "release_ms": 50})]
+
+
+def test_import_lists_what_did_not_carry_over_by_type_only():
+    from sprigcast.core import convert
+    data = {"name": "Mine", "current_scene": "Main", "sources": [
+        {"id": "scene", "name": "Main", "uuid": "s1", "settings": {"items": [
+            {"name": "Odd", "source_uuid": "o1", "id": 1, "visible": True}]},
+         "filters": [{"id": "move_value_filter", "name": "Grow", "settings": {}}]},
+        {"id": "some_plugin_source", "name": "Odd", "uuid": "o1", "settings": {},
+         "filters": [{"id": "fancy_filter", "name": "Sparkle", "settings": {}}]},
+    ]}
+    _garden, notes = convert.convert(data, _like())
+    summary = convert.missed_summary()
+    assert notes and "source:some_plugin_source x1" in summary
+    assert "Odd" not in summary and "Sparkle" not in summary and "Mine" not in summary
+    convert.convert({"name": "Empty", "current_scene": "", "sources": []}, _like())
+    assert convert.missed_summary() == ""

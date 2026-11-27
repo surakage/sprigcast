@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -95,10 +96,24 @@ def detect(data: Any) -> str:
 
 APP_NAMES = {"obs": "OBS", "streamlabs": "Streamlabs", "meld": "Meld"}
 
+# What the last import couldn't carry over, as "source:vlc_source"-style keys with counts: the plugin and type ids
+# only, never names or paths, so it can go in the logbook (core/privacy.py) and show which matches to build next.
+MISSED: Counter[str] = Counter()
+
+
+def _missed(what: str, kind: Any) -> None:
+    MISSED[f"{what}:{str(kind or 'unknown')[:60]}"] += 1
+
+
+def missed_summary() -> str:
+    """'filter:move_source_filter x3, source:vlc_source x1' (most first), or '' when everything came over."""
+    return ", ".join(f"{key} x{count}" for key, count in MISSED.most_common())
+
 
 def convert(data: Any, like: SceneCollection, size_of: SizeOf | None = None,
             audio_devices: list[str] | None = None) -> tuple[SceneCollection, list[str]]:
-    """Any supported file's data -> (garden, notes about what didn't come over)."""
+    """Any supported file's data -> (garden, notes about what didn't come over). MISSED says the same for the log."""
+    MISSED.clear()
     kind = detect(data)
     if kind == "obs":
         return from_obs(data, like, size_of, audio_devices)
@@ -215,6 +230,7 @@ def _source(obs: dict[str, Any], audio_devices: list[str] | None, notes: list[st
     elif kind == "ffmpeg_source":
         if s.get("is_local_file", True) is False:
             notes.append(f"{name}: a network stream (not a file) isn't supported yet.")
+            _missed("source", "ffmpeg_source:network")
             return None
         out = "media", {"path": str(s.get("local_file", "")), "loop": bool(s.get("looping", False)),
                         "restart_on_show": bool(s.get("restart_on_activate", True)),
@@ -290,9 +306,11 @@ def _source(obs: dict[str, Any], audio_devices: list[str] | None, notes: list[st
         out = "app_audio", {"apps": [exe] if exe else []}
     if out is None and kind == "obs_glow_source":
         notes.append(f"{name}: the Glow plugin's source has no match; add the Glow effect in Filters instead.")
+        _missed("source", kind)
         return None
     if out is None:
         notes.append(f"{name}: {kind or 'this kind of source'} has no match in SprigCast yet.")
+        _missed("source", kind)
         return None
     sk, settings = out
     if sk in ("audio_input", "audio_output", "app_audio", "media", "browser"):
@@ -455,6 +473,7 @@ def _filters(obs: dict[str, Any], notes: list[str]) -> list[Filter]:
             else:
                 notes.append(f"{obs.get('name')}: the {f.get('name') or 'LUT'} filter uses a picture LUT; "
                              "Mood takes .cube files.")
+                _missed("filter", "clut_filter:picture")
                 continue
         elif kind == "basic_eq_filter":
             mapped = "eq3", {"low_db": _num(s.get("low")), "mid_db": _num(s.get("mid")), "high_db": _num(s.get("high"))}
@@ -469,6 +488,7 @@ def _filters(obs: dict[str, Any], notes: list[str]) -> list[Filter]:
             mapped = _stroke_glow_shadow(kind, s)
         if mapped is None:
             notes.append(f"{obs.get('name')}: the {f.get('name') or kind} filter has no match yet.")
+            _missed("filter", kind)
             continue
         if mapped[0] in _PICTURE_FILTERS and str(obs.get("id") or "") in AUDIO_IDS:
             continue  # a picture filter on a sound does nothing in OBS either
@@ -1036,6 +1056,7 @@ def _scene_filters(scenes: list[dict[str, Any]], by_name: dict[str, dict], sourc
                              f"the Plugin store to use it).")
                 continue
             notes.append(f"{scene.get('name')}: the {label} filter has no match yet.")
+            _missed("scene filter", kind)
 
 
 def _transition(obs: dict[str, Any] | None, duration: int, notes: list[str]) -> Transition | None:
@@ -1063,6 +1084,7 @@ def _transition(obs: dict[str, Any] | None, duration: int, notes: list[str]) -> 
                           stinger=Stinger(path=path, vertical_path=vertical_twin(path), cut_ms=point,
                                           matte=matte if s.get("track_matte_enabled") else "none"))
     notes.append(f"{obs.get('name') or kind}: that transition has no match yet (using fade).")
+    _missed("transition", kind)
     return Transition(kind="fade", duration_ms=duration)
 
 
@@ -1088,6 +1110,7 @@ def _transitions(data: dict[str, Any], col: SceneCollection, by_name: dict[str, 
         scene = made.get(id(obs))
         if scene is None or scene.kind != "show":
             notes.append(f"{obs.get('name')}: its own transition ({name}) isn't carried over: it's a sprig here.")
+            _missed("sprig transition", "override")
         elif scene.linked_to:
             later.append((scene, override, str(name)))
         else:
@@ -1441,6 +1464,7 @@ def _meld_audio(track: dict[str, Any], names: dict[str, str], notes: list[str]) 
                             "settings": {"threshold": _num(node.get("threshold"), -6.0)}})
         else:
             notes.append(f"{name}: Meld's {label or 'sound'} effect has no match yet.")
+            _missed("meld effect", label)
     common = {"name": name, "uuid": str(track.get("id") or name), "volume": _num(track.get("gain"), 1.0),
               "muted": bool(track.get("muted", False)), "filters": filters}
     unique = str(track.get("uniqueId") or "")
