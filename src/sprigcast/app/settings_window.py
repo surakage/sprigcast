@@ -76,7 +76,7 @@ ABOUT = {  # one line under each page's title
 EXPERT = "settings/expert"  # QSettings: show the expert rows
 PREVIEW_LIVE = "general/preview_live"  # QSettings: how the previews draw while live or recording
 PREVIEW_SHOWN = "live/preview"  # QSettings: the Live screen's previews on or off, any time (right-click → Preview)
-PREVIEW_CHOICES = {"smooth": "Smooth: 30 fps", "light": "Light: 15 fps, half the work", "off": "Off: nothing drawn"}
+PREVIEW_CHOICES = {"smooth": "Smooth (30 fps)", "light": "Light (15 fps)"}  # while live; "off" is the switch
 PREVIEW_FPS = {"smooth": 30, "light": 15, "off": 0}
 
 # Settings search: what you might type, and where it lives ("Tab/Sub"). expert: shown only with Expert on.
@@ -96,7 +96,7 @@ SEARCH: list[tuple[str, str, bool]] = [
     ("Ask before stopping a recording", "General", False), ("Keep logs", "General", False),
     ("This PC", "General", False), ("Optimize for this PC", "General", False),
     ("Process priority", "General", False), ("Sources not on screen", "General", False),
-    ("Preview", "General", False), ("Preview while live", "General", False),
+    ("Preview", "General", False), ("Preview while live", "General", False), ("Preview speed", "General", False),
     ("Places to stream", "Stream/Places", False), ("Stream key", "Stream/Places", False),
     ("Server", "Stream/Places", False), ("Resolution", "Stream/Places", False),
     ("Frame rate (stream)", "Stream/Places", False), ("Bitrate (stream)", "Stream/Places", False),
@@ -249,7 +249,7 @@ def preview_choice() -> str:
     Optimize found light (half the preview's copies, next to the stream the PC is already busy with), else
     "smooth"."""
     value = QSettings().value(PREVIEW_LIVE, "")
-    if value in PREVIEW_CHOICES:
+    if value in ("smooth", "light", "off"):
         return value
     try:
         from sprigcast.app import lowend
@@ -1189,19 +1189,21 @@ class SettingsWindow(QDialog):
         form.addRow("Sources not on screen", self.sleep_sources)
         from sprigcast.app.live_stage import Switch
 
-        self.preview_shown = Switch()  # the same as right-click → Preview on Live
-        self.preview_shown.setChecked(preview_on())
-        self.preview_shown.setToolTip("Off: the Live screen's previews stop drawing, live or not.\n"
-                                      "Build and projectors keep drawing.")
-        form.addRow("Preview", self.preview_shown)
+        now = preview_choice()
+        self.preview_live_on = Switch()  # Preview while live: on or off, then how smooth (user 2026-11-27)
+        self.preview_live_on.setChecked(now != "off")
+        self.preview_live_on.setToolTip("Off: the previews stop drawing while you're live or recording, leaving more\n"
+                                        "of the graphics card for the stream. Your stream looks the same.")
+        form.addRow("Preview while live", self.preview_live_on)
         self.preview_live = QComboBox()
         for key, label in PREVIEW_CHOICES.items():
             self.preview_live.addItem(label, key)
-        self.preview_live.setCurrentIndex(max(0, self.preview_live.findData(preview_choice())))
-        self.preview_live.setToolTip("While you're live or recording. Light draws half as often; Off draws nothing.\n"
-                                     "Either leaves more of the graphics card for the stream on a slower PC.\n"
-                                     "Your stream is the same with any of them. Projectors keep drawing.")
-        form.addRow("Preview while live", self.preview_live)
+        self.preview_live.setCurrentIndex(max(0, self.preview_live.findData(now if now != "off" else "smooth")))
+        self.preview_live.setToolTip("Light draws the preview half as often: lighter on a slower PC.")
+        form.addRow("Preview speed", self.preview_live)
+        speed_row = form.rowCount() - 1
+        self.preview_live_on.toggled.connect(lambda on: form.setRowVisible(speed_row, on))
+        form.setRowVisible(speed_row, now != "off")
         return card
 
     def _optimize(self) -> None:
@@ -1569,8 +1571,7 @@ class SettingsWindow(QDialog):
             except OSError as exc:
                 msgbox.warning(self, "Start with Windows", f"Windows didn't allow it: {exc}")
         settings.setValue(SLEEP_SETTING, self.sleep_sources.currentData())
-        settings.setValue(PREVIEW_LIVE, self.preview_live.currentData())
-        settings.setValue(PREVIEW_SHOWN, self.preview_shown.isChecked())
+        settings.setValue(PREVIEW_LIVE, self.preview_live.currentData() if self.preview_live_on.isChecked() else "off")
         from sprigcast.app import features
 
         features.set_off({name for name, tick in self.feature_ticks.items() if not tick.isChecked()}, settings)

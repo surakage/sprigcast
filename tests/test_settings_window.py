@@ -287,15 +287,16 @@ def test_this_pc_card_priority_sleep_and_preview(app):
     w = _window(_collection())
     assert w.tier.text() == "Light" and w.optimize_button.isEnabled() and w.priority.count() > 0
     asked = []
-    w.optimize_requested.connect(lambda: asked.append(1))
-    w.preview_live.setCurrentIndex(w.preview_live.findData("off"))
+    assert w.preview_live_on.isChecked() and w.preview_live.currentData() == "light"
+    w.preview_live_on.setChecked(False)
     w.sleep_sources.setCurrentIndex(w.sleep_sources.findData("all"))
-    assert w.preview_shown.isChecked()
-    w.preview_shown.setChecked(False)
     assert w.apply() and preview_choice() == "off" and sleep_policy() == "all"
-    from sprigcast.app.settings_window import preview_on
-
-    assert not preview_on()  # the same switch as right-click → Preview on Live
+    w = _window(_collection())
+    assert not w.preview_live_on.isChecked()
+    w.preview_live_on.setChecked(True)
+    w.preview_live.setCurrentIndex(w.preview_live.findData("smooth"))
+    assert w.apply() and preview_choice() == "smooth"
+    w.optimize_requested.connect(lambda: asked.append(1))
     w.optimize_button.click()
     assert asked == [1]
     assert not _window(_collection(), streaming=True).optimize_button.isEnabled()
