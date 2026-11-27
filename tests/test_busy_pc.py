@@ -95,3 +95,12 @@ def test_a_heavy_scan_comes_before_streaming_apps(monkeypatch):
     assert busy_pc.heavy_apps()[0] == "Windows Defender"
     use["Windows Defender"] = 3.0 * cores  # a light one waits its turn
     assert busy_pc.heavy_apps() == ["OBS", "Meld Studio", "Streamfog"]
+
+
+def test_a_busy_graphics_card_doesnt_blame_windows_jobs():
+    """Tester CRGPlays (2026-11-27): "graphics card 100%: Windows Defender is using it" while SprigCast drew on
+    the laptop's small chip; a Defender scan is found by its CPU and doesn't draw."""
+    text = busy_pc.busy_message(["Windows Defender"], 20, 100)
+    assert "Defender" not in text and "graphics card 100%" in text and "Preview off" in text
+    assert "OBS is using it" in busy_pc.busy_message(["Windows Defender", "OBS"], 20, 100)  # an app may draw
+    assert "Defender" in busy_pc.busy_message(["Windows Defender"], 100, 100)  # the CPU is busy too: it counts
