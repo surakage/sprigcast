@@ -37,3 +37,22 @@ def test_the_video_encoder_load_counts_only_encode_engines():
     assert busiest_engine(samples) == 60.0
     assert busiest_engine(samples, "VideoEncode") == 30.0
     assert busiest_engine(samples[:1], "VideoEncode") == 0.0
+
+
+def test_load_by_card_tells_the_engines_card_from_the_screens_chip():
+    """CRGPlays, 2026-11-27: "graphics card 100%" on a hybrid laptop, and nothing said which chip."""
+    from sprigcast.app import gpu_usage
+
+    nvidia, intel = gpu_usage.card_key((0xD1A2, 0)), gpu_usage.card_key((0x5E0F, 0))
+    samples = [
+        (f"pid_10_luid_{nvidia}_phys_0_eng_0_engtype_3D", 30.0),
+        (f"pid_10_luid_{nvidia}_phys_0_eng_2_engtype_Copy", 12.0),
+        (f"pid_20_luid_{intel}_phys_0_eng_0_engtype_3D", 64.0),
+        (f"pid_10_luid_{intel}_phys_0_eng_0_engtype_3D", 40.0),
+    ]
+    cards = gpu_usage.by_card(samples)
+    assert cards[nvidia][:2] == (30.0, "3D") and cards[intel][:2] == (100.0, "3D")
+    assert cards[intel][2] == [(20, 64.0), (10, 40.0)]
+    names = {10: "SprigCast.exe", 20: "dwm.exe"}
+    line = gpu_usage.describe_cards(cards, nvidia, names.get)
+    assert line == "SprigCast's card 3D 30% (SprigCast.exe 30%); another card 3D 100% (dwm.exe 64%, SprigCast.exe 40%)"

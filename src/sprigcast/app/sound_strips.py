@@ -45,6 +45,7 @@ from sprigcast.app.sound_card import (  # the garden's sound types: these change
 
 LOW, HIGH = -60.0, 12.0  # the fader's range, as on the Tune page
 STRIP_W, STRIP_H = 104, 220
+STRIPS_AT_ONCE = 4  # new strips made in one turn of the event loop (a garden switch makes them all)
 BUTTON_PX, ICON_PX = 28, 16  # the round mute and gear buttons, and their icons
 FOLD_KEY = "build/sound_strips_open"
 SHOW_KEY = "build/sound_strips_show"  # "all" or "here" (this bloom): the chip you last picked
@@ -572,10 +573,13 @@ class SoundStrips(QFrame):
 
     def show_sound(self, sounds: list, kinds: dict[str, str], tags: dict[str, str] | None = None) -> None:
         """Sound items (app/sound_card.Sound), each one's source kind (for its icon) and where it plays."""
+        self._later = None  # this call is the newest: a batch still waiting from an older one is dropped
         shape = tuple(s.id for s in sounds)
         if shape != self._shape:
             # Only the sounds that came or went: making every strip again held the window ~0.3 s while live
-            # (PC test, 2026-11-17). The ones kept move into the new order.
+            # (PC test, 2026-11-17). The ones kept move into the new order. New ones come STRIPS_AT_ONCE at a
+            # time, the rest on the next turns of the event loop: a garden switch making them all at once held
+            # the window 549 ms (PC, 2026-11-27).
             self._shape = shape
             kinds_now = getattr(self, "_kinds", {})
             kept = {sid: strip for sid, strip in self.strips.items()
@@ -585,19 +589,29 @@ class SoundStrips(QFrame):
                     self.row.removeWidget(strip)
                     strip.deleteLater()
             self.strips = {}
-            for at, sound in enumerate(sounds):
+            made = 0
+            for sound in sounds:
                 strip = kept.get(sound.id)
                 if strip is None:
+                    if made >= STRIPS_AT_ONCE:
+                        self._shape = None  # not all made yet: the next batch looks again
+                        continue
+                    made += 1
                     strip = Strip(sound, kinds.get(sound.id, ""), self.on_change, self.on_open, self.on_menu,
                                   self.on_rename)
                 else:
                     self.row.removeWidget(strip)
-                self.row.insertWidget(at, strip)
+                self.row.insertWidget(len(self.strips), strip)
                 self.strips[sound.id] = strip
             self.set_open(self.is_open)
+            if self._shape is None:
+                self._later = (sounds, kinds, tags)
+                QTimer.singleShot(0, self, self._next_batch)
         self._kinds = dict(kinds)
         for sound in sounds:
-            strip = self.strips[sound.id]
+            strip = self.strips.get(sound.id)
+            if strip is None:
+                continue  # made in a later batch
             group = getattr(sound, "group", "Other") or "Other"
             if (group, group_colour(group)) != (strip.group, getattr(strip, "shade", None)):  # follows its type
                 strip.group = group
@@ -608,6 +622,11 @@ class SoundStrips(QFrame):
             strip.set_tag((tags or {}).get(sound.id, ""))
         self.set_selected(self.selected)
         self._filter()
+
+    def _next_batch(self) -> None:
+        later, self._later = getattr(self, "_later", None), None
+        if later is not None:
+            self.show_sound(*later)
 
     def set_selected(self, source_id: str | None) -> None:
         """Ring the strip whose controls are open on the right."""

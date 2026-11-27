@@ -104,3 +104,27 @@ def test_a_busy_graphics_card_doesnt_blame_windows_jobs():
     assert "Defender" not in text and "graphics card 100%" in text and "Preview off" in text
     assert "OBS is using it" in busy_pc.busy_message(["Windows Defender", "OBS"], 20, 100)  # an app may draw
     assert "Defender" in busy_pc.busy_message(["Windows Defender"], 100, 100)  # the CPU is busy too: it counts
+
+
+def test_a_pinned_graphics_card_eases_the_previews_until_it_calms(monkeypatch):
+    """CRGPlays, 2026-11-27: the card pinned at 100% on a hybrid laptop; previews go to 15 a second meanwhile."""
+    pytest = __import__("pytest")
+    pytest.importorskip("PySide6.QtWidgets")
+    import types
+
+    from sprigcast.app import main_window
+
+    clock = [0.0]
+    monkeypatch.setattr(main_window.time, "monotonic", lambda: clock[0])
+    w = types.SimpleNamespace()
+    ease = lambda gpu: main_window.MainWindow._ease_previews(w, gpu)  # noqa: E731
+    for t in range(0, 12, 2):
+        clock[0] = float(t)
+        ease(99.0)
+    assert w._previews_eased
+    clock[0] = 20.0
+    ease(80.0)  # not calm yet
+    for t in range(22, 60, 2):
+        clock[0] = float(t)
+        ease(40.0)
+    assert not w._previews_eased

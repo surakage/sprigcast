@@ -194,6 +194,8 @@ from sprigcast.app.names import (ask_name, plain_problem, short_name, short_stat
                                  status_summary, window_name)
 
 log = logging.getLogger(__name__)
+PREVIEW_EASE_PCT, PREVIEW_EASE_AFTER_S = 90.0, 10.0  # a card this busy this long: previews at 15 a second
+PREVIEW_CALM_PCT, PREVIEW_CALM_AFTER_S = 70.0, 30.0  # and back to 30 once it stays under this
 
 
 # Kinds that have their own button or dock; everything else with a `label` goes under + → Plugins.
@@ -1052,7 +1054,8 @@ class MainWindow(QMainWindow):
             self._fill_projector_menu(self._pop_out_menu(menu), canvas_id)
             if self.mode != "live":
                 self._snap_menu(menu)
-                menu.addAction("Canvas size and frame rate…").triggered.connect(lambda: self._open_settings("Video"))
+                menu.addAction("Canvas size and frame rate…").triggered.connect(
+                    lambda: QTimer.singleShot(0, self, lambda: self._open_settings("Video")))  # once the menu is gone
         return menu
 
     SNAP_DISTANCES = (5, 10, 20, 40)
@@ -1112,7 +1115,9 @@ class MainWindow(QMainWindow):
         size = f": {canvas.width}×{canvas.height}, {canvas.fps} fps" if canvas is not None else ""
         settings = menu.addAction(icons.icon("gear", theme.MUTED), "Canvas…")  # one word: the size was clipped
         settings.setToolTip(f"Size and frame rate{size} (Settings → Video)")
-        settings.triggered.connect(lambda: self._open_settings("Video"))
+        # Settings opens once the menu has closed, not inside the menu's own loop (CRGPlays, 2026-11-27: the
+        # preview's right-click held the window 2 s while Settings came up inside it).
+        settings.triggered.connect(lambda: QTimer.singleShot(0, self, lambda: self._open_settings("Video")))
 
     def _live_canvas_card(self, canvas_id: str):
         """Right-click a canvas on Live: one small card with Preview, Projector screens, Safe zones (tall
@@ -1477,9 +1482,11 @@ class MainWindow(QMainWindow):
     def _scene_context_menu(self, pos) -> None:
         menu = QMenu(self)
         under = self.scene_tree.itemAt(pos)
-        folder_id = under.data(0, ROLE_FOLDER) if under is not None else None
-        if folder_id:
-            self._folder_menu(menu, self.collection.folder(folder_id))
+        # A heading's key (the Sprigs heading's is PART_ROOT) isn't a folder: it gets the plain menu (CRGPlays,
+        # 2026-11-27: StopIteration three times on right-clicking there).
+        folder = self.collection.find_folder(under.data(0, ROLE_FOLDER) if under is not None else None)
+        if folder is not None:
+            self._folder_menu(menu, folder)
             theme.ui_burst()  # (as modal() does: a menu coming up builds its window)
             menu.exec(self.scene_tree.viewport().mapToGlobal(pos))
             menu.deleteLater()
@@ -1490,6 +1497,8 @@ class MainWindow(QMainWindow):
             menu.exec(self.scene_tree.viewport().mapToGlobal(pos))
             menu.deleteLater()
             return
+        if under is not None and under.data(0, ROLE_ROW) == "heading":
+            under = None  # a heading: only New, not the selected bloom's actions
         if under is not None and self._scene() is not None:
             scene = self._scene()
             if scene.kind == "show":
@@ -1892,10 +1901,10 @@ class MainWindow(QMainWindow):
         self.live_panel.show_scenes(self.collection)
 
     def _folder_expanded(self, item: QTreeWidgetItem, expanded: bool) -> None:
-        folder_id = item.data(0, ROLE_FOLDER)
-        if self._updating or not folder_id:
+        folder = self.collection.find_folder(item.data(0, ROLE_FOLDER))
+        if self._updating or folder is None:
             return
-        self.collection.folder(folder_id).collapsed = not expanded
+        folder.collapsed = not expanded
         self._changed()
 
     def _rename_selected(self) -> None:
@@ -3352,6 +3361,33 @@ class MainWindow(QMainWindow):
         self._warned_ram = bool(warning)
         self._check_busy_pc()
 
+    def _ease_previews(self, gpu: float | None) -> None:
+        """A graphics card that stays pinned gets the previews at 15 a second until it calms down: on a hybrid
+        laptop each preview frame also crosses to the chip the screen is on (CRGPlays, 2026-11-27: the card was
+        pinned at 100% and the render thread waited on it 593 times while SprigCast's own frame work took 2 ms).
+        The stream and the recording aren't touched."""
+        now = time.monotonic()
+        hot = gpu is not None and gpu >= PREVIEW_EASE_PCT
+        calm = gpu is None or gpu < PREVIEW_CALM_PCT
+        if not hot:
+            self._gpu_hot_since = None
+        elif getattr(self, "_gpu_hot_since", None) is None:
+            self._gpu_hot_since = now
+        if not calm:
+            self._gpu_calm_since = None
+        elif getattr(self, "_gpu_calm_since", None) is None:
+            self._gpu_calm_since = now
+        eased = getattr(self, "_previews_eased", False)
+        if not eased and hot and now - self._gpu_hot_since >= PREVIEW_EASE_AFTER_S:
+            from sprigcast.app import gpu_usage
+
+            self._previews_eased = True
+            log.info("graphics card at %.0f%% for %.0f s: previews at 15 a second until it calms down; by card: %s",
+                     gpu, PREVIEW_EASE_AFTER_S, gpu_usage.cards_line() or "unknown")
+        elif eased and calm and now - self._gpu_calm_since >= PREVIEW_CALM_AFTER_S:
+            self._previews_eased = False
+            log.info("graphics card calm again: previews back to 30 a second")
+
     def _check_busy_pc(self) -> None:
         """When the whole PC stays busy, name the other apps using it (looked up off the UI thread)."""
         from sprigcast.app import busy_pc
@@ -3368,10 +3404,16 @@ class MainWindow(QMainWindow):
         except Exception:
             cpu = None
         gpu = self.meter.gpu_pct
+        self._ease_previews(gpu)
         watch = getattr(self, "_busy_watch", None)
         if watch is None:
             watch = self._busy_watch = busy_pc.BusyWatch()
         if watch.feed(cpu, gpu):
+            if gpu is not None and gpu >= busy_pc.BUSY_PCT:
+                from sprigcast.app import gpu_usage
+
+                log.info("graphics load by card: %s", gpu_usage.cards_line() or "unknown")
+
             def look() -> None:
                 self._busy_note = busy_pc.busy_message(busy_pc.heavy_apps(), cpu, gpu)
 
@@ -3449,7 +3491,7 @@ class MainWindow(QMainWindow):
             if projector.view is not None:
                 projector.take_pending()
         mode = self._preview_mode()
-        fps = 15 if mode == "light" else 30
+        fps = 15 if mode == "light" or getattr(self, "_previews_eased", False) else 30
         if getattr(self.engine, "preview_fps", fps) != fps:
             self.engine.preview_fps = fps
         off = mode == "off"

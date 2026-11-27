@@ -208,3 +208,27 @@ def test_gear_clicks_are_logged_and_a_window_opened_early_is_made_whole(tmp_path
         assert not w.testAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
     finally:
         w.close()
+
+
+def test_a_garden_switch_makes_new_strips_a_few_at_a_time(monkeypatch):
+    """PC 2026-11-27: a garden switch made every strip at once and held the window 549 ms."""
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication([])
+    from sprigcast.app import sound_strips
+    from sprigcast.app.sound_card import Sound
+    from sprigcast.app.sound_strips import SoundStrips
+
+    strips = SoundStrips(lambda *a: None, lambda *a: None)
+    sounds = [Sound(id=f"s{i}", name=f"Sound {i}") for i in range(sound_strips.STRIPS_AT_ONCE * 2 + 1)]
+    strips.show_sound(sounds, {})
+    assert list(strips.strips) == [s.id for s in sounds[:sound_strips.STRIPS_AT_ONCE]]
+    for _ in range(5):
+        app.processEvents()
+    assert list(strips.strips) == [s.id for s in sounds]
+    order = [strips.row.itemAt(i).widget() for i in range(strips.row.count() - 1)]
+    assert order == [strips.strips[s.id] for s in sounds]
+    # A newer list while a batch waits: the waiting one is dropped
+    strips.show_sound(sounds[:2], {})
+    app.processEvents()
+    assert list(strips.strips) == ["s0", "s1"]
