@@ -18,7 +18,7 @@ Style tab's colors, font, text size and corners.
 
 Apps can read it too: {"do": "livecount.get"} answers {"total", "platforms": {name: viewers}, "live"}.
 
-It's SprigCast's clock card (core/cards.py), with a sprig badge that's green while you're live. It's light: the
+It's SprigCast's clock card (core/cards.py), with an eye badge and a pink on-air dot while you're live. It's light: the
 numbers come from a cache the window fills every few seconds (never a web call on the render thread), and the
 card is drawn again only when the words on it change. Off screen it does nothing at all.
 
@@ -109,7 +109,7 @@ def words(settings: dict[str, Any], count: dict[str, Any]) -> tuple[str, str]:
 
 
 def card_words(big: str, small: str, live: bool) -> cards.Words:
-    return cards.Words(big, small, badge="sprig" if live else "sprig_quiet")
+    return cards.Words(big, small, badge="viewers" if live else "viewers_quiet")
 
 
 def paint_fitted(big: str, small: str, settings: dict[str, Any], live: bool, detail: float = 1.0):
