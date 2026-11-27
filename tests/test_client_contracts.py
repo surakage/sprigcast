@@ -70,7 +70,9 @@ STREAMBRIDGE_CALLS = {
     "youtube.viewers": set(), "viewers.counts": set(),
 }
 STREAMBRIDGE_EVENTS = {"bloom.shown", "blooms.changed", "garden.changed", "stream.changed", "record.changed",
-                       "app.closing", "place.changed"}
+                       "app.closing", "place.changed",
+                       # asked for one by one, by name (StreamBridge #477, Break pauses TikTok): reads countdown.done source
+                       "countdown.done", "break.started", "break.ended"}
 STREAMBRIDGE_FEATURES = {"bloom.new", "places.status", "item.place_full", "item.scale_xy", "layout.get", "edit.undo",
                          "screenshot.source", "youtube.viewers", "viewers.counts", "events.place_changed"}
 
@@ -79,5 +81,7 @@ def test_what_streambridge_calls_still_exists():
     wrong = _check(STREAMBRIDGE_CALLS)
     assert not wrong, f"StreamBridge would break: {'; '.join(wrong)}"
     assert STREAMBRIDGE_EVENTS <= set(spec.EVENTS)
+    assert all(spec.known_event(e) for e in STREAMBRIDGE_EVENTS if "." in e)  # each can be asked for by name
+    assert "source" in spec.EVENTS["countdown.done"]["fields"]
     assert STREAMBRIDGE_FEATURES <= set(native.FEATURES)
     assert {g for g in ("bloom", "garden", "output")} <= set(native.EVENT_GROUPS)
