@@ -276,18 +276,41 @@ begin
             (not FileExists(BundledCamera32()) or RegKeyExists(HKLM32, CameraListing));
 end;
 
-// Set up once and kept: registered, listed for 64-bit and 32-bit apps, and the same files this Setup ships.
-// An update with the same camera changes nothing; a new camera, or a half-done one, is (re)done.
+// SprigCast Camera's own version (native/camera/version.h: FILEVERSION's first number); 0 when the file has none
+// (a camera built before 2026-11-27).
+function CameraVersion(const Path: String): Cardinal;
+var
+  MS, LS: Cardinal;
+begin
+  Result := 0;
+  if FileExists(Path) and GetVersionNumbers(Path, MS, LS) then
+    Result := MS shr 16;
+end;
+
+// Is the installed camera at Have as new as the bundled one at Shipped? By the camera's own version when this
+// Setup's has one: the bytes differ on every build even when nothing changed, so comparing them asked for
+// Windows' permission on every update (PC, test builds 6 and 7, 2026-11-27). Otherwise, the same bytes.
+function CameraFileCurrent(const Have, Shipped: String): Boolean;
+begin
+  if not FileExists(Have) then
+    Result := False
+  else if CameraVersion(Shipped) > 0 then
+    Result := CameraVersion(Have) >= CameraVersion(Shipped)
+  else
+    Result := GetSHA256OfFile(Have) = GetSHA256OfFile(Shipped);
+end;
+
+// Set up once and kept: registered, listed for 64-bit and 32-bit apps, and as new as the camera this Setup ships.
+// An update with the same camera changes nothing; a newer camera, or a half-done one, is (re)done.
 function CameraIsCurrent: Boolean;
 var
   Registered: String;
 begin
   Registered := RegisteredCamera();
   Result := (Registered <> '') and CameraListed() and FileExists(BundledCamera()) and
-            (GetSHA256OfFile(Registered) = GetSHA256OfFile(BundledCamera())) and
+            CameraFileCurrent(Registered, BundledCamera()) and
             (not FileExists(BundledCamera32()) or
-             (FileExists(CameraDir() + '\sprigcast_camera32.dll') and
-              (GetSHA256OfFile(CameraDir() + '\sprigcast_camera32.dll') = GetSHA256OfFile(BundledCamera32()))));
+             CameraFileCurrent(CameraDir() + '\sprigcast_camera32.dll', BundledCamera32()));
 end;
 
 function RunElevated(const Command: String): Boolean;
@@ -304,7 +327,7 @@ end;
 // which left the old 64-bit DLL in place), move the new one in, and always register what's there.
 function InstallDll(const Src, Dll, Stamp: String): String;
 begin
-  Result := 'del /q "' + Dll + '.*.old" "' + Dll + '.old" 2>nul & ' +
+  Result := 'del /q "' + Dll + '.*.old" "' + Dll + '.old" "' + ExtractFileDir(Dll) + '\*.inuse-*" 2>nul & ' +
             'copy /y "' + Src + '" "' + Dll + '.new" && (move /y "' + Dll + '" "' + Dll + '.' + Stamp + '.old" 2>nul & ' +
             'move /y "' + Dll + '.new" "' + Dll + '") & regsvr32 /s "' + Dll + '"';
 end;

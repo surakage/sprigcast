@@ -336,6 +336,22 @@ def test_the_update_popup_holds_its_notes_and_buttons():
         seen["notes_below_title"] = prompt.notes.geometry().top() > 0
         seen["buttons_below_notes"] = prompt.go_button.geometry().top() >= prompt.notes.geometry().bottom()
         seen["html"] = prompt.notes.toHtml()
+        size = dialog.size()
+        prompt.working(True)
+        prompt.show_status("Downloading… 124 MB of 163 MB", (124, 163))
+        QApplication.processEvents()
+        notes_bottom = prompt.notes.geometry().bottom()
+        seen["progress_below_notes"] = prompt.status.geometry().top() > notes_bottom + 8 \
+            and prompt.bar.geometry().top() > prompt.status.geometry().bottom()
+        seen["buttons_below_bar"] = prompt.go_button.geometry().top() > prompt.bar.geometry().bottom()
+        seen["same_size"] = dialog.size() == size  # its room was kept: nothing jumps when the download starts
+        seen["go"] = prompt.go_button.text()
+        prompt.working(False)
+        prompt.show_status("The download didn't finish. Check your connection and try again. " * 3)
+        QApplication.processEvents()
+        seen["long_fits"] = prompt.go_button.geometry().top() > prompt.status.geometry().bottom() \
+            and prompt.status.geometry().top() > prompt.notes.geometry().bottom()
+        seen["go_back"] = prompt.go_button.text()
         dialog.reject()
 
     old = updates.modal
@@ -346,6 +362,9 @@ def test_the_update_popup_holds_its_notes_and_buttons():
         updates.modal = old
     assert seen["size"][0] >= updates.UpdatePrompt.WIDTH and seen["size"][1] > updates.UpdatePrompt.NOTES_HEIGHT + 150
     assert seen["buttons_below_notes"] and "Another" in seen["html"]
+    assert seen["progress_below_notes"] and seen["buttons_below_bar"] and seen["same_size"]  # PC, builds 2-7
+    assert seen["go"] == "Downloading…" and seen["go_back"] == "Update now"
+    assert seen["long_fits"]  # a longer message grows the pop-up rather than running into the notes
 
 
 # Test builds and channels --------------------------------------------------------------

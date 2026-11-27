@@ -269,13 +269,14 @@ def test_needs_update_reads_the_files_once(monkeypatch, tmp_path):
     monkeypatch.setattr(virtualcam, "bundled_dll", lambda name=virtualcam.DLL_NAME: src if name == virtualcam.DLL_NAME else None)
     monkeypatch.setattr(virtualcam, "registered_path", lambda clsid=virtualcam.CLSID: dst)
     monkeypatch.setattr(virtualcam, "_compared", {})
+    monkeypatch.setattr(virtualcam, "_versions", {})
     reads = []
     real = virtualcam.Path.read_bytes
     monkeypatch.setattr(virtualcam.Path, "read_bytes", lambda self: (reads.append(self), real(self))[1])
     assert not virtualcam.needs_update() and not virtualcam.needs_update()
-    assert len(reads) == 2  # once each
+    assert len(reads) == 3  # once each (the bundled one twice: its version, then the bytes; a build with no version)
     dst.write_bytes(b"older" * 10)  # a different size: no read needed to know
-    assert virtualcam.needs_update() and len(reads) == 2
+    assert virtualcam.needs_update() and len(reads) == 3
 
 
 def test_the_native_engines_frames_reach_the_camera():
@@ -288,3 +289,61 @@ def test_the_native_engines_frames_reach_the_camera():
     assert ctypes.string_at(block.address + HEADER, 12) == bytes(range(1, 13))
     assert block.write(4, 2, memoryview(bytes(range(2, 14))))  # read-only
     assert ctypes.string_at(block.address + HEADER, 12) == bytes(range(2, 14))
+
+
+def _fixed_info_dll(path, version_ms: int | None):
+    """A stand-in DLL: some bytes, then a VS_FIXEDFILEINFO with this FILEVERSION (high word = camera version)."""
+    body = b"MZ" + b"\x00" * 200
+    if version_ms is not None:
+        body += virtualcam._FIXED_INFO + (0x00010000).to_bytes(4, "little") + version_ms.to_bytes(4, "little")
+        body += b"\x00" * 40
+    path.write_bytes(body + b"\x00" * 100)
+    return path
+
+
+def test_the_camera_is_compared_by_its_own_version_not_its_bytes(monkeypatch, tmp_path):
+    """PC, test builds 6 and 7 (2026-11-27): every build's DLL had new bytes, so every update asked for Windows'
+    permission to update a camera that hadn't changed."""
+    monkeypatch.setattr(virtualcam, "_versions", {})
+    monkeypatch.setattr(virtualcam, "_compared", {})
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    src = _fixed_info_dll(tmp_path / "a" / virtualcam.DLL_NAME, 2 << 16)
+    dst = tmp_path / "b" / virtualcam.DLL_NAME
+    monkeypatch.setattr(virtualcam, "bundled_dll", lambda name=virtualcam.DLL_NAME: src if name == virtualcam.DLL_NAME else None)
+    monkeypatch.setattr(virtualcam, "registered_path", lambda clsid=virtualcam.CLSID: dst)
+    assert virtualcam.camera_version(src) == 2
+    _fixed_info_dll(dst, None)
+    assert virtualcam.camera_version(dst) is None and virtualcam.needs_update()  # before versions: older
+    _fixed_info_dll(dst, (2 << 16) | 7)
+    dst.write_bytes(dst.read_bytes() + b"another build's bytes")
+    assert not virtualcam.needs_update()  # same camera version, different bytes: nothing to ask
+    _fixed_info_dll(dst, 1 << 16)
+    assert virtualcam.needs_update()
+    _fixed_info_dll(dst, 3 << 16)
+    assert not virtualcam.needs_update()  # newer than this build's (a downgrade): leave it
+
+
+def test_camera_version_is_bumped_when_the_camera_changes():
+    """native/camera/version.h must go up whenever the camera's code changes, or installed cameras keep the old
+    code (SprigCast and Setup only update a camera with a lower number). Changed the camera? Bump
+    SPRIGCAST_CAMERA_VERSION and add the new fingerprint below with it."""
+    import hashlib
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "native" / "camera"
+    version = int(re.search(r"#define SPRIGCAST_CAMERA_VERSION (\d+)", (root / "version.h").read_text()).group(1))
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root)
+        if path.is_file() and path.name != "version.h" and rel.parts[0] != "tools" and "__pycache__" not in rel.parts:
+            digest.update(rel.as_posix().encode())
+            digest.update(path.read_bytes().replace(b"\r\n", b"\n"))
+    known = {  # camera code fingerprint: the version it shipped as
+        "9ae31ae43d18ec9a": 2,
+    }
+    assert known.get(digest.hexdigest()[:16]) == version, (
+        f"native/camera changed (fingerprint {digest.hexdigest()[:16]}): bump SPRIGCAST_CAMERA_VERSION in "
+        f"version.h (now {version}) and add the fingerprint here")
+    assert (root / "sprigcast_camera.rc").read_text().count("SPRIGCAST_CAMERA_VERSION,0,0,0") == 2

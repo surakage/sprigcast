@@ -152,19 +152,29 @@ class UpdatePrompt(QWidget):
         self.notes.setFixedHeight(self.NOTES_HEIGHT)
         layout.addWidget(self.notes)
 
+        # Download progress gets its own row between the notes and the buttons, its room kept from the start: shown
+        # later into a pop-up already sized, it was drawn over the notes' bottom edge (PC, builds 2 to 7, 2026-11-27).
+        progress = QVBoxLayout()
+        progress.setContentsMargins(6, 0, 6, 0)
+        progress.setSpacing(8)
         self.status = QLabel()
         self.status.setObjectName("updateStatus")
         self.status.setWordWrap(True)
         self.status.setStyleSheet(theme.MUTED_STYLE)
-        self.status.hide()
-        layout.addWidget(self.status)
+        progress.addWidget(self.status)
         self.bar = QProgressBar()
         self.bar.setTextVisible(False)
         self.bar.setFixedHeight(8)
         self.bar.setStyleSheet(f"QProgressBar {{ background: {theme.TRACK}; border: none; border-radius: 4px; }}"
                                f"QProgressBar::chunk {{ background: {theme.ACCENT}; border-radius: 4px; }}")
-        self.bar.hide()
-        layout.addWidget(self.bar)
+        progress.addWidget(self.bar)
+        for part in (self.status, self.bar):
+            keep = part.sizePolicy()
+            keep.setRetainSizeWhenHidden(True)
+            part.setSizePolicy(keep)
+            part.hide()
+        self.status.setText(" ")  # one line's room, before there's anything to say
+        layout.addLayout(progress)
 
         buttons = QHBoxLayout()
         buttons.setSpacing(10)
@@ -204,6 +214,7 @@ class UpdatePrompt(QWidget):
     def show_status(self, text: str, progress: tuple[int, int] | None = None) -> None:
         self.status.setText(text)
         self.status.show()
+        self._room_for_status()
         if progress is None:
             self.bar.hide()
             return
@@ -215,9 +226,27 @@ class UpdatePrompt(QWidget):
         else:
             self.bar.setRange(0, 0)  # size unknown: a moving bar
 
+    def _room_for_status(self) -> None:
+        """A message longer than its one kept line (a failed download says why): the pop-up grows to hold it,
+        rather than the row squeezing into the notes."""
+        layout = self.layout()
+        layout.activate()
+        need = layout.totalMinimumSize().height()
+        self.setMinimumHeight(need)
+        short = need - self.height()
+        window = self.window()
+        if short > 0 and window is not self:
+            window.setMinimumHeight(window.minimumHeight() + short)
+            window.resize(window.width(), window.height() + short)
+
     def working(self, on: bool) -> None:
         for button in (self.skip_button, self.go_button):
             button.setEnabled(not on)
+        if on:  # the main button says what's happening (it's greyed out meanwhile)
+            self._go_text = self.go_button.text()
+            self.go_button.setText("Downloading…")
+        elif getattr(self, "_go_text", None):
+            self.go_button.setText(self._go_text)
 
 
 def fit_to(dialog: QWidget, page: QWidget) -> None:
@@ -438,6 +467,7 @@ class Updater(QObject):
         if self.restart and not self.busy():
             if self._prompt is not None:
                 self._prompt.show_status("Restarting to update…")
+                self._prompt.go_button.setText("Restarting…")
             QTimer.singleShot(600, self._restart_now)
             return
         self.restart = False  # went live while it downloaded: install on quit instead
