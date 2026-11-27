@@ -122,6 +122,7 @@ def test_setup_waits_for_sprigcast_to_close_then_runs_silently():
     assert "O''Neil" in script  # quoted for PowerShell
     assert "'/SILENT'" in script and "'/restartapp=1'" in script
     assert "restartapp" not in update.installer_command(Path("s.exe"), 1, restart=False)[-1]
+    assert "'/NOCAMERA=1'" in script  # no context-free permission prompt; Virtual Cam asks when started
     assert "/LOG=" in script and update.SETUP_LOG in script  # Setup's own log, for a slow update
     assert "-PassThru" in script and "Setup finished" in script  # how long Setup took
 

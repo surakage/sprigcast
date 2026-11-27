@@ -317,7 +317,12 @@ def installer_command(installer: Path, pid: int, restart: bool) -> list[str]:
     /restartapp=1 makes Setup start SprigCast again when it's done (sprigcast.iss, RestartAfterUpdate). Each
     step is written to update-helper.log beside the installer, so a quiet failure is seen at the next start.
     """
-    args = ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOCANCEL", f'/LOG="{installer.parent / SETUP_LOG}"']
+    # /NOCAMERA=1: Setup doesn't ask Windows' permission for a changed SprigCast Camera. Under the updater that
+    # prompt came with no context and sat about 2 minutes until Windows dropped it (test build 3 to 4,
+    # 2026-11-27: the files were in after 18 s). Starting Virtual Cam asks with context instead ("SprigCast
+    # Camera needs a quick update", main_window), and Settings > Output > Virtual camera can redo it.
+    args = ["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOCANCEL", "/NOCAMERA=1",
+            f'/LOG="{installer.parent / SETUP_LOG}"']
     if restart:
         args.append("/restartapp=1")
     arg_list = ",".join(f"'{_ps_quote(a)}'" for a in args)

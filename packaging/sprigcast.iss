@@ -316,7 +316,8 @@ begin
   if not FileExists(BundledCamera()) or CameraIsCurrent() then
     exit;
   // An install nobody is watching (a test run: /VERYSILENT /NOCAMERA=1) can't answer Windows' permission prompt:
-  // it waited about two minutes for it and then went on (PC 2026-11-21). An update a person started still asks.
+  // it waited about two minutes for it and then went on (PC 2026-11-21). The in-app updater passes it too (it sat
+  // 2 minutes there, 2026-11-27): starting Virtual Cam asks for a changed camera with context instead.
   if ExpandConstant('{param:NOCAMERA|0}') <> '0' then
   begin
     Log('SprigCast Camera: not set up (/NOCAMERA=1); Settings > Output > Virtual camera can set it up');
