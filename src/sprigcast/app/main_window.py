@@ -8062,6 +8062,9 @@ class MainWindow(QMainWindow):
                 self.camera = camera
                 self._camera_timer.start()
                 self._say("SprigCast Camera is on")
+                # Turned on by itself (at start): an older camera than this build ships was never offered its
+                # update, since updates skip Setup's prompt (#987). Ask once, a little after start.
+                QTimer.singleShot(self.CAMERA_UPDATE_OFFER_MS, self._offer_camera_update)
             else:
                 self._say(camera.error)
                 self._camera_error = camera.error
@@ -8099,6 +8102,38 @@ class MainWindow(QMainWindow):
                 self._offer_camera_privacy(virtualcam.privacy_block() or virtualcam.PRIVACY_HINT)
 
     CAMERA_SETUP_WAIT_S = 30.0
+    CAMERA_UPDATE_OFFER_MS = 8000
+    CAMERA_UPDATE_SKIPPED = "camera/update_skipped"  # the bundled camera someone said "Not now" to
+
+    def _offer_camera_update(self) -> None:
+        """SprigCast Camera is set up but older than the one this build ships: offer the update (one Windows
+        prompt), with context. "Not now" is remembered for this camera; the gear beside Virtual camera still
+        has the repair."""
+        from sprigcast.output import virtualcam
+
+        if self.camera is None or not virtualcam.needs_update() or QApplication.activeModalWidget() is not None:
+            return
+        src = virtualcam.bundled_dll()
+        try:
+            stat = src.stat() if src else None
+        except OSError:
+            stat = None
+        key = f"{stat.st_size}:{stat.st_mtime_ns}" if stat else ""
+        if key and QSettings().value(self.CAMERA_UPDATE_SKIPPED, "", type=str) == key:
+            return
+        box = msgbox.MessageCard("SprigCast Camera", "SprigCast Camera has an update.\nWindows will ask for "
+                                 "permission. Apps using the camera may need to reopen it.", self)
+        later = box.add_button("Not now")
+        update = box.add_button("Update", primary=True)
+        modal(box)
+        if box.clicked is update:
+            log.info("camera: update offered and accepted")
+            if not virtualcam.set_up():
+                self._say("SprigCast Camera wasn't updated. Use the gear beside Virtual camera to try again.")
+        elif box.clicked is later or box.clicked is None:
+            log.info("camera: update offered, not now")
+            if key:
+                QSettings().setValue(self.CAMERA_UPDATE_SKIPPED, key)
 
     def _guide_camera(self) -> str:
         """Turning the virtual camera on: set it up once if needed (one Windows prompt), check that Windows'

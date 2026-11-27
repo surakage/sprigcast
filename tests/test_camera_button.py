@@ -161,3 +161,54 @@ def test_turning_the_camera_on_sets_it_up_once_and_checks_windows_privacy(app, t
         assert w._guide_camera() == "" and done["set_up"] == 1 and len(asked) == 1  # not asked again
     finally:
         w.close()
+
+
+def test_an_older_camera_is_offered_its_update_once(app, monkeypatch, tmp_path):
+    """Updates skip Setup's camera prompt (#987), and the camera turns itself on at start, so an older
+    SprigCast Camera is offered its update from the app, with context. "Not now" is remembered for it."""
+    import types
+
+    from sprigcast.app import main_window as mw
+    from sprigcast.output import virtualcam
+
+    dll = tmp_path / "sprigcast_camera.dll"
+    dll.write_bytes(b"new camera")
+    monkeypatch.setattr(virtualcam, "bundled_dll", lambda *a: dll)
+    old = {"v": True}
+    monkeypatch.setattr(virtualcam, "needs_update", lambda: old["v"])
+    ran, said, answer = [], [], {"pick": "Update"}
+    monkeypatch.setattr(virtualcam, "set_up", lambda: ran.append(1) or True)
+
+    class Card:
+        def __init__(self, title, text, parent=None):
+            self.text, self.buttons, self.clicked = text, {}, None
+
+        def add_button(self, label, primary=False):
+            self.buttons[label] = object()
+            return self.buttons[label]
+
+    shown = []
+    monkeypatch.setattr(mw.msgbox, "MessageCard", Card)
+    monkeypatch.setattr(mw, "modal", lambda box: shown.append(box) or setattr(box, "clicked",
+                                                                              box.buttons[answer["pick"]]))
+    me = types.SimpleNamespace(camera=object(), CAMERA_UPDATE_SKIPPED=mw.MainWindow.CAMERA_UPDATE_SKIPPED,
+                               _say=said.append)
+    offer = lambda: mw.MainWindow._offer_camera_update(me)  # noqa: E731
+
+    offer()
+    assert ran == [1] and "has an update" in shown[0].text and "permission" in shown[0].text
+    answer["pick"] = "Not now"
+    offer()
+    assert ran == [1] and len(shown) == 2
+    offer()
+    assert len(shown) == 2  # "Not now" is remembered for this camera
+    dll.write_bytes(b"a newer camera again")
+    offer()
+    assert len(shown) == 3  # a different camera is offered again
+    old["v"] = False
+    offer()
+    assert len(shown) == 3  # current: nothing to offer
+    me.camera = None
+    old["v"] = True
+    offer()
+    assert len(shown) == 3  # camera off: no offer
