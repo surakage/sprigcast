@@ -21,7 +21,8 @@ builds from 2026-11-25 on.
   and can fill the canvas. Google's adb is downloaded only when you ask (#952, #953, #957, #958, #959, #961, #964,
   #965).
 - Get started has a Connect your places step, and place tiles show the official Twitch, YouTube, Kick, TikTok, X
-  and Facebook logos (#975).
+  and Facebook logos. The logos also show in the + Add menu, Show all, Settings → Stream and the mixed chat list
+  (#975, #977).
 - Echo Reducer filter, and a Listen card with meters in Filters (#962, #963, #966).
 - Video delay for cameras (#951).
 - Copy and paste filters, and leaves between sprigs; Duplicate (Ctrl+D); F2 renames blooms, sprigs and filters
