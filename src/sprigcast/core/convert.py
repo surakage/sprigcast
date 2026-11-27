@@ -298,10 +298,38 @@ def _source(obs: dict[str, Any], audio_devices: list[str] | None, notes: list[st
     if sk in ("audio_input", "audio_output", "app_audio", "media", "browser"):
         settings["volume_db"] = _volume_db(obs.get("volume", 1.0))
         settings["muted"] = bool(obs.get("muted", False))
+    if sk in SOUND_SHAPED:
+        _sound_details(obs, settings)
     monitoring = int(_num(obs.get("monitoring_type"), 0))  # OBS: 1 = monitor only, 2 = monitor and output
     if sk in ("audio_input", "audio_output", "app_audio", "media", "browser", "camera") and monitoring in (1, 2):
         settings["monitor"] = "only" if monitoring == 1 else True
     return SourceConfig(id="", kind=sk, name=name, settings=settings, filters=_filters(obs, notes))
+
+
+SOUND_SHAPED = ("audio_input", "audio_output", "app_audio", "media", "browser")
+OBS_FORCE_MONO = 1 << 1  # OBS's source flag
+OBS_ALL_TRACKS = 0b111111
+
+
+def _sound_details(obs: dict[str, Any], settings: dict[str, Any]) -> None:
+    """OBS's Advanced Audio Properties the SprigCast way: mono, balance, sync offset (a delay; SprigCast can't
+    play a sound early, so a negative offset is left at 0) and tracks (OBS track 1 is what's streamed and
+    recorded; tracks 4 and 5 are SprigCast's own picks; one on no track at all is heard nowhere)."""
+    if int(_num(obs.get("flags"))) & OBS_FORCE_MONO:
+        settings["mono"] = True
+    balance = _num(obs.get("balance"), 0.5)  # OBS: 0 left .. 0.5 centre .. 1 right
+    if abs(balance - 0.5) > 1e-3:
+        settings["balance"] = round(max(-1.0, min(1.0, (balance - 0.5) * 2)), 3)
+    sync_ms = int(round(_num(obs.get("sync")) / 1_000_000))  # nanoseconds
+    if sync_ms > 0:
+        settings["delay_ms"] = min(2000, sync_ms)
+    if "mixers" in obs:
+        mixers = int(_num(obs.get("mixers"), OBS_ALL_TRACKS))
+        if not mixers & 1:  # off track 1: not in the stream or the recording's main mix
+            settings["tracks"] = []
+        for bit, track in ((3, "track4"), (4, "track5")):
+            if mixers & (1 << bit) and mixers != OBS_ALL_TRACKS:
+                settings[track] = True
 
 
 def _device(name: str, device_id: str, devices: list[str] | None) -> str | None:
