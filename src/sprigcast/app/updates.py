@@ -265,6 +265,9 @@ class Updater(QObject):
         """Automatic checks: one shortly after start, then every 12 hours (3 on a test build). Installed copies only."""
         if not self.installed:
             return
+        report = update.helper_report(downloads_dir())
+        if report:  # how the last update went, in this run's log (the helper can't write ours)
+            log.info("update: last update's helper said:\n%s", report)
         QTimer.singleShot(FIRST_CHECK_MS, lambda: self.check(manual=False))
         self._timer.start(check_every_s() * 1000)
 
