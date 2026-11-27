@@ -518,6 +518,19 @@ def _filters(obs: dict[str, Any], notes: list[str]) -> list[Filter]:
             continue  # carried over as the camera's own Video delay (_source)
         elif kind in _IMAGE_MASKS and "alpha" in str(s.get("type", "")).lower() and s.get("image_path"):
             mapped = "shape", {"shape": "image", "mask_file": str(s.get("image_path"))}
+        elif kind in ("move_value_filter", "move_audio_value_filter"):  # OBS's Move plugin: slide a setting
+            mapped = "move_value", _move_value_settings(s)
+            notes.append(f"{obs.get('name')}: {f.get('name') or kind} is now a Move value (it needs the Move "
+                         f"plugin).")
+        elif kind == "move_directshow_filter":
+            mapped = "move_camera", {**_move_timing(s), "use_zoom": False}
+            notes.append(f"{obs.get('name')}: {f.get('name') or kind} is now a Camera move; pick its pan, tilt "
+                         f"or zoom again (it needs the Move plugin).")
+        elif kind == "audio_move_filter":
+            notes.append(f"{obs.get('name')}: for {f.get('name') or kind}, add a Sound move to what should react "
+                         f"and have it listen to {obs.get('name')} (the Move plugin).")
+            _missed("filter", kind)
+            continue
         if mapped is None:
             notes.append(f"{obs.get('name')}: the {f.get('name') or kind} filter has no match yet.")
             _missed("filter", kind)
@@ -1097,6 +1110,31 @@ def _move_easing(s: dict[str, Any]) -> str:
     return {0: "linear", 1: "ease_in", 2: "ease_out"}.get(match, "smooth")
 
 
+# The Move plugin's start triggers SprigCast has: activate / deactivate and show / hide of the scene or of the
+# item, and its video starting or ending. The rest (a hotkey, chaining, UDP) start from a hotkey or an app.
+_OBS_START = {1: "shown", 2: "hidden", 3: "on", 4: "off", 6: "shown", 7: "hidden", 8: "on", 9: "off",
+              10: "media_start", 11: "media_end"}
+
+
+def _move_timing(s: dict[str, Any]) -> dict[str, Any]:
+    """How long, the easing and what starts it, the same on every Move plugin filter."""
+    ms = _num(s.get("duration"), 300) if s.get("custom_duration", True) else 300
+    return {"seconds": max(0.05, min(60.0, ms / 1000)), "easing": _move_easing(s),
+            "when": _OBS_START.get(int(_num(s.get("start_trigger"), 0)), "asked"), "then": "stay"}
+
+
+def _obs_color(value) -> str:
+    """OBS keeps colors as one number, red in the lowest byte."""
+    n = int(_num(value, 0xFFFFFF))
+    return f"#{n & 0xFF:02x}{(n >> 8) & 0xFF:02x}{(n >> 16) & 0xFF:02x}"
+
+
+def _move_value_settings(s: dict[str, Any]) -> dict[str, Any]:
+    to = s.get("setting_float") if s.get("setting_float") is not None else s.get("setting_int")
+    return {**_move_timing(s), "filter": str(s.get("filter") or ""), "setting": str(s.get("setting_name") or ""),
+            "to": float(_num(to, 0.0)), "to_color": _obs_color(s.get("setting_color"))}
+
+
 def _move_settings(s: dict[str, Any], obs_item: dict[str, Any] | None, k: float) -> dict[str, Any]:
     """An OBS Move Source filter as a SprigCast Move: always by how much from where the item is (OBS's pixels are
     its canvas', and its pos is where the item's anchor sits), so it lands in the same spot on our canvas."""
@@ -1111,9 +1149,8 @@ def _move_settings(s: dict[str, Any], obs_item: dict[str, Any] | None, k: float)
         dx, dy = tx - px, ty - py
         size = (abs(sx) or 1.0) / (abs(ix) or 1.0) * 100
         turn = _num(s.get("rot")) - _num(obs_item.get("rot"))
-    ms = _num(s.get("duration"), 300) if s.get("custom_duration", True) else 300
     return {"relative": True, "x": round(dx * k, 1), "y": round(dy * k, 1), "size": max(1, min(1000, round(size))),
-            "turn": turn, "seconds": max(0.05, min(60.0, ms / 1000)), "easing": _move_easing(s), "then": "stay"}
+            "turn": turn, **_move_timing(s)}
 
 
 def _scene_filters(scenes: list[dict[str, Any]], by_name: dict[str, dict], sources: dict[int, SourceConfig],
@@ -1149,9 +1186,20 @@ def _scene_filters(scenes: list[dict[str, Any]], by_name: dict[str, dict], sourc
                                  and (i.get("name") == name or (uuid and i.get("source_uuid") == uuid))), None)
                 item.effects.append(Filter(id=f"f-{len(item.effects)}", kind="move", name=str(label), enabled=False,
                                            settings=_move_settings(s, obs_item, (scales or {}).get(id(scene), 1.0))))
-                notes.append(f"{label}: now a Move on {target.name} in {here.name}; give it a hotkey in Tools → "
-                             f"Hotkeys (it needs the Move plugin).")
+                starts = item.effects[-1].settings["when"] != "asked"
+                notes.append(f"{label}: now a Move on {target.name} in {here.name}"
+                             + ("" if starts else "; give it a hotkey in Tools → Hotkeys") + " (it needs the Move plugin).")
                 continue
+            if kind == "move_source_swap_filter" and here is not None:
+                a = sources.get(id(by_name.get(str(s.get("source_a", "")), {})))
+                b = sources.get(id(by_name.get(str(s.get("source_b", "")), {})))
+                first = next((i for i in here.items if a is not None and i.source == a.id), None)
+                if first is not None and b is not None and any(i.source == b.id for i in here.items):
+                    first.effects.append(Filter(id=f"f-{len(first.effects)}", kind="move", name=str(label),
+                                                enabled=False, settings={**_move_timing(s), "swap": b.name}))
+                    notes.append(f"{label}: now a Move where {a.name} trades places with {b.name} in {here.name} "
+                                 f"(it needs the Move plugin).")
+                    continue
             notes.append(f"{scene.get('name')}: the {label} filter has no match yet.")
             _missed("scene filter", kind)
 

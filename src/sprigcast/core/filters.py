@@ -287,7 +287,7 @@ _KINDS[BACKGROUND] = FilterKind(BACKGROUND, "Backdrop", "video", [
 NATIVE_DRAWN.add(BACKGROUND)  # its After picture in the Filters window comes from the native engine
 
 
-PLUGIN_VIDEO_KINDS = ("pixelate", "blackout", "barrel_roll", "freeze", "move")  # drawn by the GPU, offered by plugins
+PLUGIN_VIDEO_KINDS = ("pixelate", "blackout", "barrel_roll", "freeze", "move", "move_sound")  # drawn by the GPU, offered by plugins
 
 
 def parse_color(text: str) -> tuple[float, float, float]:
@@ -532,8 +532,9 @@ def video_effects(filters) -> VideoEffects:
                 fx.pixelate = max(1.0, float(s.get("size", 24)))
             elif flt.kind == "blackout":
                 fx.blackout = max(0.0, min(1.0, float(s.get("amount", 100)) / 100))
-            elif flt.kind == "move":
-                fx.move = move_of(flt.settings)
+            elif flt.kind in ("move", "move_sound"):  # a sound move's bounce is drawn as a short move
+                if flt.settings.get("from"):
+                    fx.move = move_of(flt.settings)
             else:
                 turns = float(s.get("turns", 1)) * (-1.0 if s.get("direction") == "anticlockwise" else 1.0)
                 fx.spin = (turns, max(0.1, float(s.get("seconds", 2.0))), int(flt.settings.get("run", 0)))  # run isn't a field: each trigger bumps it
