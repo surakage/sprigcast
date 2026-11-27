@@ -44,6 +44,8 @@ from sprigcast.core.scene import (  # noqa: I001
     TransitionRule,
 )
 
+from sprigcast.core.looks import FROM_FILE as LUT_FROM_FILE  # noqa: E402
+
 MAX_BYTES = 64 * 1024 * 1024  # a scene collection bigger than this isn't one
 PAGES_SLEEP_NOTE = ("Web pages: each sleeps while not on screen (OBS kept them all running). A page that must keep "
                     "running has a switch for it in its settings.")
@@ -314,8 +316,44 @@ def _device(name: str, device_id: str, devices: list[str] | None) -> str | None:
 _KEY_COLORS = {"green": "#00ff00", "blue": "#0000ff", "magenta": "#ff00ff"}
 
 
+# The Stroke Glow Shadow plugin's filters (OBS) as SprigCast's own Outline, Glow and Shadow. Its settings have
+# had a few names over its versions; the first one found is used, else SprigCast's default.
+_STROKE_GLOW_SHADOW = {"obs_stroke_filter": "stroke", "stroke_filter": "stroke", "obs_glow_filter": "glow",
+                       "glow_filter": "glow", "obs_shadow_filter": "shadow", "shadow_filter": "shadow"}
+
+
+def _first(s: dict[str, Any], *names: str) -> Any:
+    return next((s[n] for n in names if n in s), None)
+
+
+def _stroke_glow_shadow(kind: str, s: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    mine = _STROKE_GLOW_SHADOW[kind]
+    color = _first(s, f"{mine}_color", "color", "fill_color")
+    opacity = _first(s, f"{mine}_opacity", "opacity", "fill_opacity")
+    out: dict[str, Any] = {}
+    if color is not None:
+        out["color"] = obs_color(color)[:7]
+    if mine == "stroke":
+        out["width"] = max(0.5, min(40.0, _num(_first(s, "stroke_size", "size", "width"), 4.0)))
+        if opacity is not None:
+            out["opacity"] = int(max(0.0, min(100.0, _num(opacity) * (100 if _num(opacity) <= 1 else 1))))
+    elif mine == "glow":
+        out["size"] = max(1.0, min(60.0, _num(_first(s, "glow_size", "size"), 16.0)))
+        strength = _first(s, "intensity", "glow_intensity", "strength")
+        if strength is not None:
+            out["strength"] = int(max(0.0, min(100.0, _num(strength) * (100 if _num(strength) <= 1 else 1))))
+    else:
+        out["offset_x"] = max(-100.0, min(100.0, _num(_first(s, "shadow_offset_x", "offset_x"), 8.0)))
+        out["offset_y"] = max(-100.0, min(100.0, _num(_first(s, "shadow_offset_y", "offset_y"), 8.0)))
+        out["blur"] = max(0.0, min(60.0, _num(_first(s, "shadow_blur", "blur_size", "blur"), 12.0)))
+        if opacity is not None:
+            out["opacity"] = int(max(0.0, min(100.0, _num(opacity) * (100 if _num(opacity) <= 1 else 1))))
+    return mine, out
+
+
 _BY_NAME = "name:"  # a filter naming another sound, until the sound has its SprigCast id
-_PICTURE_FILTERS = {"blur", "chroma_key", "color_correction", "sharpen", "scroll"}
+_PICTURE_FILTERS = {"blur", "chroma_key", "color_correction", "sharpen", "scroll", "color_key", "luma_key", "lut",
+                    "stroke", "glow", "shadow"}
 
 
 def _filters(obs: dict[str, Any], notes: list[str]) -> list[Filter]:
@@ -373,6 +411,34 @@ def _filters(obs: dict[str, Any], notes: list[str]) -> list[Filter]:
             mapped = "blur", {"mode": "blur", "size": max(0.5, min(64.0, _num(s.get("Filter.Blur.Size"), 5.0)))}
         elif kind == "scroll_filter":
             mapped = "scroll", {"speed_x": _num(s.get("speed_x")), "speed_y": _num(s.get("speed_y"))}
+        elif kind in ("color_key_filter", "color_key_filter_v2"):
+            key = _KEY_COLORS.get(str(s.get("key_color_type", "green")))
+            mapped = "color_key", {"key_color": key or obs_color(s.get("key_color", 0xFF00FF00))[:7],
+                                   "similarity": int(_num(s.get("similarity"), 80)),
+                                   "smoothness": int(_num(s.get("smoothness"), 50))}
+        elif kind in ("luma_key_filter", "luma_key_filter_v2"):
+            mapped = "luma_key", {"luma_min": _num(s.get("luma_min"), 0.0), "luma_max": _num(s.get("luma_max"), 1.0),
+                                  "smoothness": max(_num(s.get("luma_min_smooth")), _num(s.get("luma_max_smooth")))}
+        elif kind == "clut_filter":
+            path = str(s.get("image_path", ""))
+            if path.lower().endswith(".cube"):
+                mapped = "lut", {"look": LUT_FROM_FILE, "file": path,
+                                 "amount": int(round(_num(s.get("clut_amount"), 1.0) * 100))}
+            else:
+                notes.append(f"{obs.get('name')}: the {f.get('name') or 'LUT'} filter uses a picture LUT; "
+                             "Mood takes .cube files.")
+                continue
+        elif kind == "basic_eq_filter":
+            mapped = "eq3", {"low_db": _num(s.get("low")), "mid_db": _num(s.get("mid")), "high_db": _num(s.get("high"))}
+        elif kind == "invert_polarity_filter":
+            mapped = "invert_polarity", {}
+        elif kind == "upward_compressor_filter":
+            mapped = "upward_compressor", {"ratio": _num(s.get("ratio"), 1.5),
+                                           "threshold_db": _num(s.get("threshold"), -20.0),
+                                           "attack_ms": max(1, int(_num(s.get("attack_time"), 10))),
+                                           "release_ms": max(1, int(_num(s.get("release_time"), 50)))}
+        elif kind in _STROKE_GLOW_SHADOW:
+            mapped = _stroke_glow_shadow(kind, s)
         if mapped is None:
             notes.append(f"{obs.get('name')}: the {f.get('name') or kind} filter has no match yet.")
             continue

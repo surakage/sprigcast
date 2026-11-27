@@ -489,3 +489,37 @@ def test_obs_scene_transitions_on_sprigs_and_vertical_blooms():
     main = next(s for s in col.scenes if s.name == "Just Chatting" and s.canvas == "horizontal")
     assert [(r.to_scene, r.transition.kind) for r in col.transition_rules] == [(main.id, "stinger")]
     assert "Overlay: its own transition (Sting) isn't carried over: it's a sprig here." in notes
+
+
+def test_more_obs_filters_come_over():
+    data = obs_file()
+    cam = next(s for s in data["sources"] if s["name"] == "Cam")
+    cam["filters"] = [
+        {"id": "color_key_filter_v2", "name": "Black out", "settings": {"key_color_type": "custom",
+                                                                         "key_color": 0xFF000000, "similarity": 120}},
+        {"id": "luma_key_filter_v2", "name": "Lights", "settings": {"luma_min": 0.2, "luma_max_smooth": 0.1}},
+        {"id": "clut_filter", "name": "Warm", "settings": {"image_path": "C:/luts/warm.cube", "clut_amount": 0.5}},
+        {"id": "clut_filter", "name": "Old LUT", "settings": {"image_path": "C:/luts/old.png"}},
+        {"id": "obs_stroke_filter", "name": "Edge", "settings": {"stroke_size": 6, "stroke_color": 0xFFFFFFFF}},
+        {"id": "obs_glow_filter", "name": "Shine", "settings": {"glow_size": 20}},
+        {"id": "obs_shadow_filter", "name": "Drop", "settings": {"shadow_offset_x": 4, "shadow_offset_y": 6}},
+    ]
+    mic = next(s for s in data["sources"] if s["name"] == "[AIC] Mic")
+    mic["filters"] = [{"id": "basic_eq_filter", "name": "EQ", "settings": {"low": -3, "mid": 1, "high": 3}},
+                      {"id": "invert_polarity_filter", "name": "Flip", "settings": {}},
+                      {"id": "upward_compressor_filter", "name": "Lift", "settings": {"ratio": 2, "threshold": -30}},
+                      {"id": "luma_key_filter", "name": "Picture on a sound", "settings": {}}]
+    garden, notes = from_obs(data, _like(), audio_devices=["Mic (Elgato Wave:3)"])
+    cam = next(s for s in garden.sources if s.name == "Cam")
+    got = {f.name: (f.kind, f.settings) for f in cam.filters}
+    assert got["Black out"] == ("color_key", {"key_color": "#000000", "similarity": 120, "smoothness": 50})
+    assert got["Lights"] == ("luma_key", {"luma_min": 0.2, "luma_max": 1.0, "smoothness": 0.1})
+    assert got["Warm"] == ("lut", {"look": "file", "file": "C:/luts/warm.cube", "amount": 50})
+    assert "Old LUT" not in got and any("picture LUT" in n for n in notes)
+    assert got["Edge"] == ("stroke", {"color": "#ffffff", "width": 6.0})
+    assert got["Shine"][0] == "glow" and got["Shine"][1]["size"] == 20.0
+    assert got["Drop"][1]["offset_x"] == 4.0 and got["Drop"][1]["offset_y"] == 6.0
+    mic = next(s for s in garden.sources if s.name == "[AIC] Mic")
+    assert [(f.kind, f.settings) for f in mic.filters] == [
+        ("eq3", {"low_db": -3.0, "mid_db": 1.0, "high_db": 3.0}), ("invert_polarity", {}),
+        ("upward_compressor", {"ratio": 2.0, "threshold_db": -30.0, "attack_ms": 10, "release_ms": 50})]
