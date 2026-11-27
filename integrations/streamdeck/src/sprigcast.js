@@ -17,6 +17,11 @@ import WebSocket from "ws";
 const RETRY_MS = [1000, 2000, 5000, 10000]; // then every 10 s: a refused local connection costs nothing
 export const AUTO_PORTS = [4455, 4456];
 export const EVENTS = ["bloom", "sound", "output", "item", "plugin", "media", "filter", "transition", "garden", "path", "sprig"];
+// API 1 (SprigCast's hello lists apis [0, 1]): fields go under data, events come as {event, group, data, at}, and
+// a set action needs its value. An older SprigCast (no apis) is spoken to in API 0, as before.
+// Without its value, an action that toggles in API 0 is sent as its own toggle action in API 1.
+export const TOGGLES = { "sound.mute": ["muted", "sound.toggle"], "media.loop": ["on", "media.toggleLoop"],
+	"item.lock": ["locked", "item.toggleLock"], "camera.set": ["on", "camera.toggle"] };
 const HELLO_MS = 5000; // SprigCast says hello at once; anything slower isn't SprigCast
 const PING_MS = 15000;
 const WATCH_FILE_MS = 2000; // how often to look for api.json while SprigCast is closed (a file check: nothing)
@@ -95,6 +100,7 @@ export class SprigCast extends EventEmitter {
 		this.WebSocketClass = WebSocketClass;
 		this.socket = null;
 		this.ready = false;
+		this.api = 0; // the SprigCast API version spoken on this connection (1 when SprigCast offers it)
 		this.wanted = false;
 		this.state = freshState();
 		this.status = "Not connected";
@@ -168,8 +174,16 @@ export class SprigCast extends EventEmitter {
 				fn(value);
 			};
 			this._pending.set(id, { resolve: done(resolve), reject: done(reject) });
-			this.socket.send(JSON.stringify({ id, do: action, ...fields }));
+			this.socket.send(JSON.stringify(this.request(id, action, fields)));
 		});
+	}
+
+	/** One request as this connection's API version spells it. */
+	request(id, action, fields = {}) {
+		if (this.api < 1) return { id, do: action, ...fields };
+		const toggle = TOGGLES[action];
+		if (toggle && fields[toggle[0]] === undefined) action = toggle[1];
+		return { id, do: action, data: fields };
 	}
 
 	_open() {
@@ -272,16 +286,18 @@ export class SprigCast extends EventEmitter {
 			socket.on("error", () => {});
 			socket.close();
 		} else if (message.hello && this.pairCode) {
-			this.socket.send(JSON.stringify({ pair: this.pairCode, name: "Stream Deck", events: EVENTS }));
+			this.api = this._apiOffered(message.hello);
+			this.socket.send(JSON.stringify({ ...this._asked(), pair: this.pairCode, name: "Stream Deck", events: EVENTS }));
 		} else if (message.paired) {
 			this.password = String(message.paired.key ?? ""); // this device's own key from now on
 			this.pairCode = "";
 			this.emit("paired", this.password);
 		} else if (message.hello) {
+			this.api = this._apiOffered(message.hello);
 			const auth = message.hello.auth;
 			const password = this.password || this._found?.password || "";
 			const answer = auth ? authAnswer(password, auth.salt, auth.challenge) : null;
-			this.socket.send(JSON.stringify({ auth: answer, name: "Stream Deck", events: EVENTS })); // name: for SprigCast's log
+			this.socket.send(JSON.stringify({ ...this._asked(), auth: answer, name: "Stream Deck", events: EVENTS })); // name: for SprigCast's log
 		} else if (message.welcome) {
 			this.ready = true;
 			this._tries = 0;
@@ -295,8 +311,17 @@ export class SprigCast extends EventEmitter {
 			if (message.ok) resolve(message.result ?? {});
 			else reject(new Error(message.error?.message ?? "SprigCast said no"));
 		} else if (message.event) {
-			this._event(message);
+			// API 1 events carry their fields in data: read them the same way as API 0's flat ones
+			this._event(this.api >= 1 && message.data ? { ...message.data, event: message.event } : message);
 		}
+	}
+
+	_apiOffered(hello) {
+		return Array.isArray(hello?.apis) && hello.apis.includes(1) ? 1 : 0;
+	}
+
+	_asked() {
+		return this.api >= 1 ? { api: 1 } : {};
 	}
 
 	async _catchUp() {
