@@ -84,7 +84,9 @@ With API 1:
   `item.lock` needs `locked`. Without it the answer is `bad_request` naming the field; use `sound.toggle`,
   `media.toggleLoop`, `camera.toggle` or `item.toggleLock` to toggle.
 
-Web links are one request each, so they stay as they are. API 1 is a preview until SprigCast Version 1, when it
+Web links are one request each, so they stay as they are (the Streamer.bot pack uses them, so it needs no
+change). The Stream Deck plugin speaks API 1 when `hello` offers it and API 0 otherwise: do the same, so an app
+works with an older SprigCast too. API 1 is a preview until SprigCast Version 1, when it
 becomes the settled API.
 
 ## Events by name
