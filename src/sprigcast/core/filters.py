@@ -287,7 +287,7 @@ _KINDS[BACKGROUND] = FilterKind(BACKGROUND, "Backdrop", "video", [
 NATIVE_DRAWN.add(BACKGROUND)  # its After picture in the Filters window comes from the native engine
 
 
-PLUGIN_VIDEO_KINDS = ("pixelate", "blackout", "barrel_roll", "freeze")  # drawn by the GPU, offered by plugins
+PLUGIN_VIDEO_KINDS = ("pixelate", "blackout", "barrel_roll", "freeze", "move")  # drawn by the GPU, offered by plugins
 
 
 def parse_color(text: str) -> tuple[float, float, float]:
@@ -344,6 +344,9 @@ class VideoEffects:
     halos: tuple[Halo, ...] = ()  # shadow, glow and stroke, drawn behind in this order
     blackout: float = 0.0  # 0 .. 1 toward black (Hide it plugin)
     spin: tuple[float, float, int] = (0.0, 0.0, 0)  # (turns, seconds, run): a barrel roll (Barrel Roll plugin)
+    # A move (Move plugin): the item is drawn from where it was to where it is now. (dx, dy, scale, turn, seconds,
+    # run, easing): where it starts, as an offset from where it ends (canvas pixels, a size factor, radians).
+    move: tuple[float, float, float, float, float, int, int] = (0.0, 0.0, 1.0, 0.0, 0.0, 0, 0)
     bg_mode: int = 0  # the Background filter: BACKGROUND_MODES, 0 off
     bg_blur: float = 0.6  # 0 .. 1
     bg_edge: float = 0.3  # 0 .. 1, how soft the person's edge is
@@ -354,6 +357,69 @@ class VideoEffects:
     bg_light: float = 0.0  # the person's brightness, -1 .. 1
     bg_room_light: float = 0.0  # the blurred room's or picture's brightness, -1 .. 1
     active: bool = field(default=False, compare=False)
+
+
+MOVE_EASINGS = ("smooth", "linear", "ease_in", "ease_out", "bounce", "elastic", "back")  # the engines' order
+
+
+def move_of(settings: dict) -> tuple[float, float, float, float, float, int, int]:
+    """A Move filter's last move as the engines draw it (see VideoEffects.move). Nothing to draw before it played."""
+    start = settings.get("from") or ()
+    if len(start) != 4:
+        return VideoEffects.move
+    try:
+        dx, dy, scale, turn = (float(v) for v in start)
+        seconds = max(0.05, float(settings.get("seconds", 1.0) or 1.0))
+    except (TypeError, ValueError):
+        return VideoEffects.move
+    easing = str(settings.get("easing", "smooth"))
+    return (dx, dy, max(0.001, scale), turn, seconds, int(settings.get("run", 0) or 0),
+            MOVE_EASINGS.index(easing) if easing in MOVE_EASINGS else 0)
+
+
+def ease(t: float, easing: int) -> float:
+    """0..1 -> 0..1 along one of MOVE_EASINGS (native/core/src/compositor.cpp ease() is the same)."""
+    t = min(1.0, max(0.0, t))
+    if easing == 1:
+        return t
+    if easing == 2:
+        return t * t * t
+    if easing == 3:
+        return 1 - (1 - t) ** 3
+    if easing == 4:  # bounce, as it lands
+        n, d = 7.5625, 2.75
+        if t < 1 / d:
+            return n * t * t
+        if t < 2 / d:
+            t -= 1.5 / d
+            return n * t * t + 0.75
+        if t < 2.5 / d:
+            t -= 2.25 / d
+            return n * t * t + 0.9375
+        t -= 2.625 / d
+        return n * t * t + 0.984375
+    if easing == 5:  # elastic: overshoots and settles
+        if t in (0.0, 1.0):
+            return t
+        return 2 ** (-10 * t) * math.sin((t * 10 - 0.75) * (2 * math.pi / 3)) + 1
+    if easing == 6:  # back: a little past, then home
+        c = 1.70158
+        return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2
+    return t * t * (3.0 - 2.0 * t)
+
+
+def moved_quad(quad: list, move, elapsed: float) -> list:
+    """The quad part way through a move: from its start (move's offset) to where it is, `elapsed` seconds in."""
+    dx, dy, scale, turn, seconds, _run, easing = move
+    e = ease(elapsed / seconds, easing) if seconds > 0 else 1.0
+    k = scale + (1.0 - scale) * e
+    a = turn * (1.0 - e)
+    ox, oy = dx * (1.0 - e), dy * (1.0 - e)
+    cx = sum(p[0] for p in quad) / 4
+    cy = sum(p[1] for p in quad) / 4
+    ca, sa = math.cos(a), math.sin(a)
+    return [(cx + ox + k * ((x - cx) * ca - (y - cy) * sa), cy + oy + k * ((x - cx) * sa + (y - cy) * ca), u, v)
+            for x, y, u, v in quad]
 
 
 def freeze_of(filters) -> tuple[int, float] | None:
@@ -373,7 +439,8 @@ def with_item(base: VideoEffects, item: VideoEffects) -> VideoEffects:
 
     return dataclasses.replace(base, pixelate=item.pixelate or base.pixelate,
                                blackout=max(item.blackout, base.blackout),
-                               spin=item.spin if item.spin[0] else base.spin, active=True)
+                               spin=item.spin if item.spin[0] else base.spin,
+                               move=item.move if item.move[4] else base.move, active=True)
 
 
 def active(flt: Filter) -> bool:
@@ -465,6 +532,8 @@ def video_effects(filters) -> VideoEffects:
                 fx.pixelate = max(1.0, float(s.get("size", 24)))
             elif flt.kind == "blackout":
                 fx.blackout = max(0.0, min(1.0, float(s.get("amount", 100)) / 100))
+            elif flt.kind == "move":
+                fx.move = move_of(flt.settings)
             else:
                 turns = float(s.get("turns", 1)) * (-1.0 if s.get("direction") == "anticlockwise" else 1.0)
                 fx.spin = (turns, max(0.1, float(s.get("seconds", 2.0))), int(flt.settings.get("run", 0)))  # run isn't a field: each trigger bumps it

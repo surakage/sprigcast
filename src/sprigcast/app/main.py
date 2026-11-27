@@ -390,6 +390,9 @@ def run() -> None:
         starting = show_starting(brand_mark())
     shown: list = []  # the window, once it exists (a second launch before then just waits)
     server = single_instance.listen(lambda: shown and single_instance.bring_forward(shown[0]), app)
+    from sprigcast.app import control_server
+
+    control_server.open_early(app)  # Streamer.bot and friends sign in while SprigCast starts (answered once it's up)
     crashed = crash_report.check(config_dir(), logbook.crash_log())  # did the last run close cleanly?
     app.aboutToQuit.connect(lambda: crash_report.closed_cleanly(config_dir()))
     # Windows' Restart Manager (the installer) and signing out ask through the session: the close log line says so
