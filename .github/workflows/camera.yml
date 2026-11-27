@@ -36,6 +36,12 @@ jobs:
           $deps = & $dumpbin.FullName /dependents $dll | Out-String
           if ($deps -match "VCRUNTIME|MSVCP") { throw "the DLL must not need the VC++ runtime: $deps" }
           Write-Output $deps
+          # The camera's own version (version.h) must be in the file: SprigCast and Setup compare it to update.
+          $want = [int]([regex]::Match((Get-Content native/camera/version.h -Raw), "SPRIGCAST_CAMERA_VERSION (\d+)").Groups[1].Value)
+          foreach ($f in $dll, "build/camera32/Release/sprigcast_camera32.dll") {
+            $got = (Get-Item $f).VersionInfo.FileMajorPart
+            if ($got -ne $want) { throw "$f has camera version $got, version.h says $want" }
+          }
       - name: Register it and capture frames like an app would (DirectShow)
         shell: pwsh
         run: |

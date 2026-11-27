@@ -3,11 +3,11 @@
 # Build: cmake -S native/camera -B build/camera -A x64 && cmake --build build/camera --config Release
 # 32-bit apps need a 32-bit copy: -A Win32 builds sprigcast_camera32.dll.
 cmake_minimum_required(VERSION 3.20)
-project(sprigcast_camera CXX)
+project(sprigcast_camera CXX RC)  # RC: the version information (sprigcast_camera.rc, version.h)
 set(CMAKE_CXX_STANDARD 17)
 # Static C runtime: Windows services and other apps load this DLL, and it shouldn't need a VC++ redistributable.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-add_library(sprigcast_camera SHARED sprigcast_camera.cpp sprigcast_dshow.cpp sprigcast_camera.def)
+add_library(sprigcast_camera SHARED sprigcast_camera.cpp sprigcast_dshow.cpp sprigcast_camera.def sprigcast_camera.rc)
 if(CMAKE_SIZEOF_VOID_P EQUAL 4)
   set_target_properties(sprigcast_camera PROPERTIES OUTPUT_NAME sprigcast_camera32)
 endif()
