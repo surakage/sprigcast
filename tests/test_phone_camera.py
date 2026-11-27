@@ -64,6 +64,7 @@ def server(tmp_path):
     srv.use(["code1"])
     yield srv
     srv.use([])
+    srv.stop()
 
 
 def _get(url, data=None, key=None):
@@ -152,14 +153,29 @@ def test_a_wrong_code_finds_nothing(server):
         _get(f"http://127.0.0.1:{server.view_port}/phone/code1")  # the view port serves only the view
 
 
-def test_the_server_runs_only_while_a_leaf_needs_it(tmp_path):
+def test_the_server_runs_only_while_a_leaf_needs_it(tmp_path, monkeypatch):
+    """26t (2026-11-26): it stopped two seconds after a bloom switch and started again when the bloom came back,
+    cutting off the phone. A leaf gone for a moment keeps it (and its phone) running; gone for good, it stops."""
+    import time
+
+    monkeypatch.setattr(phone_server, "STOP_AFTER_S", 0.3)
     srv = phone_server.PhoneServer(tmp_path)
     srv.use([])
     assert not srv.running
     srv.use(["a"])
     assert srv.running and (tmp_path / "phone.crt").is_file()
+    srv.sessions["a"] = phone_server.Session()
+    port = srv.phone_port
     srv.use([])
-    assert not srv.running
+    assert srv.running  # not at once
+    srv.use(["a"])  # back within the moment
+    time.sleep(0.5)
+    assert srv.running and srv.phone_port == port and "a" in srv.sessions
+    srv.use([])
+    deadline = time.monotonic() + 3
+    while srv.running and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not srv.running and not srv.sessions
 
 
 def test_a_new_leaf_is_a_page_of_its_own(monkeypatch, tmp_path):
@@ -185,7 +201,8 @@ def test_a_new_leaf_is_a_page_of_its_own(monkeypatch, tmp_path):
     finally:
         Garden.sources = []
         phone_camera.sync(Garden)
-    assert not phone_camera._server.running
+    assert phone_camera._server._stop_later is not None  # stops a moment later
+    phone_camera._server.stop()
 
 
 def test_add_phone_camera_puts_in_a_phone_leaf_and_starts_its_page(tmp_path, monkeypatch):
@@ -205,10 +222,10 @@ def test_add_phone_camera_puts_in_a_phone_leaf_and_starts_its_page(tmp_path, mon
             scene.items = [i for i in scene.items if i.source != leaf.id]
         col.sources.remove(leaf)
         w._changed()
-        assert not phone_camera._server.running
+        assert phone_camera._server._stop_later is not None  # stops a moment later
     finally:
         w.close()
-        phone_camera._server.use([])
+        phone_camera._server.stop()
 
 
 def test_a_browser_stalled_at_the_handshake_holds_up_no_one(server):
@@ -276,7 +293,7 @@ def test_the_page_serves_with_truststore_standing_in(tmp_path, monkeypatch):
     try:
         assert _get(f"https://127.0.0.1:{srv.phone_port}/phone/code1")[0] == 200
     finally:
-        srv.use([])
+        srv.stop()
 
 
 def test_the_leaf_page_says_what_it_receives(server, caplog):
@@ -344,7 +361,7 @@ def test_the_pop_up_shows_the_code_and_what_sprigcast_shows(tmp_path, monkeypatc
         dialog.accept()
         assert stopped
     finally:
-        srv.use([])
+        srv.stop()
 
 
 def test_a_leaf_that_follows_the_phone_turns_with_it(server, monkeypatch):
@@ -435,3 +452,9 @@ def test_a_cleared_picture_is_said_in_the_log():
     assert "cleared" in phone_server._report_line(json.dumps({"cleared": True, "frames": 10}))
     assert "pictures arriving" in phone_server._report_line(json.dumps({"cleared": False, "frames": 10}))
     assert "if (stale !== cleared) { cleared = stale; report(); }" in phone_server.VIEW_PAGE
+
+
+def test_the_cleared_word_waits_for_a_picture_on_this_connection():
+    """26t (2026-11-26): "picture cleared" was logged as a phone connected, 62 ms before its first picture."""
+    page = phone_server.VIEW_PAGE
+    assert "cleared: cleared && seen" in page and "seen = cleared = false;" in page
