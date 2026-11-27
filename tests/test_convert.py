@@ -573,3 +573,18 @@ def test_obs_flips_mirror_a_camera_and_note_the_rest():
     item = next(i for sc in garden.scenes for i in sc.items if i.source == cam.id)
     assert item.x == 0  # flipped from x 1920 leftwards: the box still starts at the left edge
     assert any("Logo: flipped in OBS" in n for n in notes) and "item:flip x1" in convert.missed_summary()
+
+
+def test_obs_blend_modes_and_show_transitions_are_noted():
+    from sprigcast.core import convert
+
+    data = {"name": "Mine", "current_scene": "Main", "sources": [
+        {"id": "scene", "name": "Main", "uuid": "s1", "settings": {"items": [
+            {"name": "Glow", "source_uuid": "g1", "id": 1, "visible": True, "blend_type": "additive",
+             "show_transition": {"id": "fade_transition", "duration": 300}}]}},
+        {"id": "color_source_v3", "name": "Glow", "uuid": "g1", "settings": {"width": 100, "height": 100}},
+    ]}
+    _garden, notes = convert.convert(data, _like())
+    assert any("additive blending" in n for n in notes) and any("own show transition" in n for n in notes)
+    summary = convert.missed_summary()
+    assert "item:blend:additive x1" in summary and "item:show_transition:fade_transition x1" in summary

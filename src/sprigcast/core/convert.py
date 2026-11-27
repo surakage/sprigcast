@@ -677,6 +677,15 @@ def from_obs(data: dict[str, Any], like: SceneCollection, size_of: SizeOf | None
             elif flip_x or flip_y:
                 notes.append(f"{config.name}: flipped in OBS; SprigCast can't flip it yet, so it shows unflipped.")
                 _missed("item", "flip")
+            blend = str(item.get("blend_type") or "normal")
+            if blend != "normal":
+                notes.append(f"{config.name}: uses OBS's {blend.replace('_', ' ')} blending; it blends normally here.")
+                _missed("item", f"blend:{blend}")
+            for when in ("show", "hide"):
+                moving = item.get(f"{when}_transition")
+                if isinstance(moving, dict) and moving.get("id"):
+                    notes.append(f"{config.name}: its own {when} transition isn't carried over yet.")
+                    _missed("item", f"{when}_transition:{moving.get('id')}")
 
     # Blooms: "X (Vertical)" switches with "X"; the twin keeps the plain name (its canvas says which).
     shows = [s for s in col.scenes if s.kind == "show"]
