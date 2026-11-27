@@ -100,7 +100,8 @@ class Words:
     big: str  # the time
     small: str = ""  # a label above it, or a line under it
     small_on_top: bool = False
-    badge: str = "sprig"  # "sprig", "sun", "moon", "viewers" (an eye), "drop", "cup", "clip" or "hourglass";
+    badge: str = "sprig"  # "sprig", "sun", "moon", "viewers" (an eye), "drop", "cup", "clip", "hourglass",
+    # "bubble", "calendar", "gamepad", "pin" or "tag";
     # "sprig_quiet", "viewers_quiet", "cup_quiet"...: the same in grey
     vine: float | None = None  # a countdown's share of time left, 0..1 (None: no vine)
     shrink: float = 1.0  # card_width: the big words may be drawn this much smaller to fit (a Done text)
@@ -356,7 +357,84 @@ def _hourglass(p, cx, cy, r, colour) -> None:
     p.drawPath(sand)
 
 
-_GLYPHS = {"drop": _drop, "cup": _cup, "clip": _clip, "hourglass": _hourglass}
+def _bubble(p, cx, cy, r, colour) -> None:
+    """A chat bubble (Chat word counter)."""
+    from PySide6.QtCore import QPointF, QRectF, Qt
+    from PySide6.QtGui import QPainterPath
+
+    p.setPen(_pen(colour, r))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawRoundedRect(QRectF(cx - r * 0.45, cy - r * 0.36, r * 0.9, r * 0.6), r * 0.18, r * 0.18)
+    tail = QPainterPath(QPointF(cx - r * 0.2, cy + r * 0.24))
+    tail.lineTo(QPointF(cx - r * 0.28, cy + r * 0.44))
+    tail.lineTo(QPointF(cx, cy + r * 0.24))
+    p.drawPath(tail)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(colour)
+    for dx in (-0.2, 0.0, 0.2):
+        p.drawEllipse(QPointF(cx + r * dx, cy - r * 0.06), r * 0.06, r * 0.06)
+
+
+def _calendar(p, cx, cy, r, colour) -> None:
+    """A calendar page (Next stream)."""
+    from PySide6.QtCore import QPointF, QRectF, Qt
+
+    p.setPen(_pen(colour, r))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawRoundedRect(QRectF(cx - r * 0.42, cy - r * 0.3, r * 0.84, r * 0.72), r * 0.1, r * 0.1)
+    p.drawLine(QPointF(cx - r * 0.42, cy - r * 0.08), QPointF(cx + r * 0.42, cy - r * 0.08))
+    for dx in (-0.2, 0.2):
+        p.drawLine(QPointF(cx + r * dx, cy - r * 0.44), QPointF(cx + r * dx, cy - r * 0.24))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(colour)
+    p.drawEllipse(QPointF(cx + r * 0.14, cy + r * 0.16), r * 0.09, r * 0.09)
+
+
+def _gamepad(p, cx, cy, r, colour) -> None:
+    """A game controller (Playing now)."""
+    from PySide6.QtCore import QPointF, QRectF, Qt
+
+    p.setPen(_pen(colour, r))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawRoundedRect(QRectF(cx - r * 0.5, cy - r * 0.26, r * 1.0, r * 0.56), r * 0.26, r * 0.26)
+    p.drawLine(QPointF(cx - r * 0.3, cy + r * 0.02), QPointF(cx - r * 0.1, cy + r * 0.02))
+    p.drawLine(QPointF(cx - r * 0.2, cy - r * 0.08), QPointF(cx - r * 0.2, cy + r * 0.12))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(colour)
+    p.drawEllipse(QPointF(cx + r * 0.2, cy - r * 0.04), r * 0.06, r * 0.06)
+    p.drawEllipse(QPointF(cx + r * 0.32, cy + r * 0.08), r * 0.06, r * 0.06)
+
+
+def _pin(p, cx, cy, r, colour) -> None:
+    """A pin (Pinned message)."""
+    from PySide6.QtCore import QPointF, Qt
+
+    p.setPen(_pen(colour, r))
+    p.drawLine(QPointF(cx, cy + r * 0.5), QPointF(cx, cy + r * 0.12))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(colour)
+    p.drawEllipse(QPointF(cx, cy - r * 0.18), r * 0.3, r * 0.3)
+
+
+def _tag(p, cx, cy, r, colour) -> None:
+    """A name tag (Name tag)."""
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QPainterPath
+
+    p.setPen(_pen(colour, r))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    t = QPainterPath(QPointF(cx - r * 0.45, cy - r * 0.3))
+    for x, y in ((0.15, -0.3), (0.45, 0.0), (0.15, 0.3), (-0.45, 0.3)):
+        t.lineTo(QPointF(cx + r * x, cy + r * y))
+    t.closeSubpath()
+    p.drawPath(t)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(colour)
+    p.drawEllipse(QPointF(cx + r * 0.12, cy), r * 0.07, r * 0.07)
+
+
+_GLYPHS = {"drop": _drop, "cup": _cup, "clip": _clip, "hourglass": _hourglass, "bubble": _bubble,
+           "calendar": _calendar, "gamepad": _gamepad, "pin": _pin, "tag": _tag}
 
 
 def colour(text, fallback: str):
