@@ -25,6 +25,7 @@ import json
 import logging
 import re
 from collections import OrderedDict, deque
+from dataclasses import dataclass
 
 from PySide6.QtCore import QSettings, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QIcon, QTextDocument
@@ -73,6 +74,69 @@ USER_LINK = "chatuser:"  # a name's link: opens the chatter's card, never a page
 MARK_SIZE = 16  # the platform logo that starts each line when several chats are mixed
 
 URL_RE = re.compile(r"(https?://[^\s<]+)")
+LOOK = "chat/look"  # how the panel draws lines: "classic" | "bubbles" | "compact" | "big"
+LOOKS = (("classic", "Classic"), ("bubbles", "Bubbles"), ("compact", "Compact"), ("big", "Big text"))
+SHOWS = (("times", "chat/show_times", "Times", False), ("logos", "chat/show_logos", "Platform logos", True),
+         ("badges", "chat/show_badges", "Badges", True), ("colors", "chat/name_colors", "Name colors", True))
+BUBBLE_INSET = 4  # a bubble's gap to the panel's sides
+BUBBLE_PAD = 5  # room above and below the words inside a bubble (Look.spacing leaves 16 px between lines: 6 px gap)
+BUBBLE_RADIUS = 12
+
+
+@dataclass(frozen=True)
+class Look:
+    """How the Chat panel draws its lines (menu → Look). Only the panel: the on-stream chat has its own Style tab."""
+
+    style: str = "classic"
+    times: bool = False  # the time each line came in
+    logos: bool = True  # the platform logo, when several chats are mixed
+    badges: bool = True  # the dots for you, mods and VIPs, and the First tag
+    colors: bool = True  # each chatter's own name colour (off: every name in one colour)
+
+    @classmethod
+    def saved(cls) -> "Look":
+        settings = QSettings()
+        style = str(settings.value(LOOK, "classic") or "classic")
+        shows = {field: _flag(settings.value(key, default)) for field, key, _, default in SHOWS}
+        return cls(style if style in dict(LOOKS) else "classic", **shows)
+
+    def save(self) -> None:
+        settings = QSettings()
+        settings.setValue(LOOK, self.style)
+        for field, key, _, _ in SHOWS:
+            settings.setValue(key, getattr(self, field))
+
+    @property
+    def margin(self) -> str:
+        return {"bubbles": "16px 16px", "compact": "1px 0", "big": "5px 0"}.get(self.style, "3px 0")
+
+    @property
+    def spacing(self) -> tuple[int, int]:  # (above and below, each side) of a line, in px
+        return {"bubbles": (16, 16), "compact": (1, 0), "big": (5, 0)}.get(self.style, (3, 0))
+
+    @property
+    def font_px(self) -> int:  # 0: the panel's own size
+        return {"compact": 11, "big": 18}.get(self.style, 0)
+
+    @property
+    def mark(self) -> int:
+        return 22 if self.style == "big" else MARK_SIZE
+
+    @property
+    def emote(self) -> int:
+        return {"compact": 18, "big": 30}.get(self.style, EMOTE_SIZE)
+
+
+def _flag(value) -> bool:
+    return value is True or str(value).lower() in ("true", "1")
+
+
+def clock(at: float) -> str:
+    """'9:05' (12-hour, no AM/PM: chat moves fast enough that the half of the day is never in doubt)."""
+    import time
+
+    t = time.localtime(at)
+    return f"{t.tm_hour % 12 or 12}:{t.tm_min:02d}"
 
 CHIP_STYLE = theme.button_style(15, "7px 16px")
 FIELD_STYLE = (
@@ -94,22 +158,30 @@ def mentions(text: str, names: frozenset[str]) -> bool:
     return not words.isdisjoint(names)
 
 
-def message_html(message: ChatMessage, mark: bool = False, names: frozenset[str] = frozenset()) -> str:
+def message_html(message: ChatMessage, mark: bool = False, names: frozenset[str] = frozenset(),
+                 look: Look = Look()) -> str:
     """One chat line as rich text: coloured name, then the words with emotes and links.
     `mark`: start with the platform's logo, for when several chats are mixed.
-    `names`: your own names, so lines that mention you stand out."""
-    colour = readable_colour(message.color, message.user)
+    `names`: your own names, so lines that mention you stand out.
+    `look`: the panel's Look (menu → Look)."""
+    colour = readable_colour(message.color, message.user) if look.colors else theme.TEXT
+    size = f"font-size:{look.font_px}px" if look.font_px else ""  # on a span: Qt drops it from <p>
     start = ""
-    if mark and message.platform in PLATFORMS:
-        start = (f"<img src='platform:{message.platform}' width={MARK_SIZE} height={MARK_SIZE} align=middle"
+    if look.times and message.at:
+        start = f"<span style='color:{theme.MUTED}'>{clock(message.at)}</span>&nbsp; "
+    if mark and look.logos and message.platform in PLATFORMS:
+        start += (f"<img src='platform:{message.platform}' width={look.mark} height={look.mark} align=middle"
                  f" alt='{PLATFORMS[message.platform][0]}'>&nbsp;")
     if message.notice:
-        return (f"<p style='margin:6px 0'>{start}<span style='color:{theme.SELECT_TEXT}; background:{theme.SELECT_BG};'>"
-                f"&nbsp;✿ {_body(message)}&nbsp;</span></p>")
+        margin = look.margin if look.style == "bubbles" else "6px 0"
+        return (f"<p style='margin:{margin}'><span style='{size}'>{start}<span style='color:{theme.SELECT_TEXT};"
+                f" background:{theme.SELECT_BG};'>&nbsp;✿ {_body(message, look.emote)}&nbsp;</span></span></p>")
     name = (f"<a href='{USER_LINK}' style='text-decoration:none'><span style='color:{colour}; font-weight:600'>"
             f"{html.escape(message.user)}</span></a>")  # a click opens their card (ChatView.user_asked)
     marks = ""
-    if "broadcaster" in message.badges:
+    if not look.badges:
+        pass
+    elif "broadcaster" in message.badges:
         marks = f"<span style='color:{theme.LIVE_TEXT}'>● </span>"
     elif "moderator" in message.badges:
         marks = f"<span style='color:{theme.ACCENT}'>● </span>"
@@ -117,24 +189,24 @@ def message_html(message: ChatMessage, mark: bool = False, names: frozenset[str]
         marks = f"<span style='color:{theme.INFO}'>● </span>"
     elif "member" in message.badges or "subscriber" in message.badges or "og" in message.badges:
         marks = ""
-    if "first" in message.badges:  # a first-time chatter: a small tag, so you can welcome them
+    if look.badges and "first" in message.badges:  # a first-time chatter: a small tag, so you can welcome them
         marks += (f"<span style='color:{theme.SELECT_TEXT}; background:{theme.SELECT_BG}; font-size:11px;"
                   f" font-weight:700'>&nbsp;First&nbsp;</span> ")
-    body = _body(message)
+    body = _body(message, look.emote)
     if message.action:
         body = f"<span style='color:{colour}'><i>{body}</i></span>"
     if mentions(message.text, names):  # ChatView also washes the whole line soft green
         body = f"<span style='color:{theme.SELECT_TEXT}'>{body}</span>"
-    return f"<p style='margin:3px 0'>{start}{marks}{name}&nbsp; {body}</p>"
+    return f"<p style='margin:{look.margin}'><span style='{size}'>{start}{marks}{name}&nbsp; {body}</span></p>"
 
 
-def _body(message: ChatMessage) -> str:
+def _body(message: ChatMessage, emote: int = EMOTE_SIZE) -> str:
     text, out, at = message.text, [], 0
     for start, end, emote_id in message.emotes:
         if start < at or end >= len(text):
             continue
         out.append(_words(text[at:start]))
-        out.append(f"<img src='emote:{html.escape(emote_id)}' width={EMOTE_SIZE} height={EMOTE_SIZE}"
+        out.append(f"<img src='emote:{html.escape(emote_id)}' width={emote} height={emote}"
                    f" title='{html.escape(text[start:end + 1])}' style='vertical-align: middle'>")
         at = end + 1
     out.append(_words(text[at:]))
@@ -270,6 +342,7 @@ class ChatView(QTextBrowser):
         self.powers = lambda message: ()  # ...and what you may do to a line's sender (chat/moderation.POWERS)
         self.mixed = False  # several chats at once: mark each line with its platform
         self.names: frozenset[str] = frozenset()  # your channel names, lowercase, for mention highlights
+        self.look = Look.saved()
         self._urls: dict[str, str] = {}  # emote id -> picture, for platforms that send their own
         self._net = None
         self._asked: set[str] = set()  # emote ids waiting, downloading, or that failed
@@ -485,8 +558,8 @@ class ChatView(QTextBrowser):
             for message in pending:
                 if not document.isEmpty():
                     cursor.insertBlock(cursor.blockFormat(), cursor.charFormat())
-                cursor.insertHtml(message_html(message, self.mixed, self.names))
-                self._wash_with(cursor, mentions(message.text, self.names))
+                cursor.insertHtml(message_html(message, self.mixed, self.names, self.look))
+                self._wash_with(cursor, self._washed(message))
             cursor.endEditBlock()
         if stay:
             self.to_bottom()
@@ -567,29 +640,83 @@ class ChatView(QTextBrowser):
         self.quick.hide()
         self._pending.clear()  # every kept line is drawn below
         self._flush.stop()
-        self.setHtml("".join(message_html(m, self.mixed, self.names) for m in self.messages))
+        self.setHtml("".join(message_html(m, self.mixed, self.names, self.look) for m in self.messages))
         block = self.document().firstBlock()
         for message in self.messages:
-            self._wash(block, mentions(message.text, self.names))
+            self._wash(block, self._washed(message))
             block = block.next()
         self.to_bottom()
 
-    @staticmethod
-    def _wash(block, on: bool) -> None:
+    def _washed(self, message: ChatMessage) -> bool:
+        """Does the line get the soft green wash? In Bubbles its bubble turns green instead (paintEvent)."""
+        return self.look.style != "bubbles" and mentions(message.text, self.names)
+
+    def set_look(self, look: Look) -> None:
+        if look != self.look:
+            self.look = look
+            self._fresh_cache()  # starts the page over, so the logos come again at the new size
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        """Bubbles: a rounded card behind each line, drawn under the text (the page itself is see-through)."""
+        if self.look.style == "bubbles" and self.messages:
+            from PySide6.QtCore import QRectF
+            from PySide6.QtGui import QPainter
+
+            painter = QPainter(self.viewport())
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(Qt.PenStyle.NoPen)
+            layout, shift = self.document().documentLayout(), -self.verticalScrollBar().value()
+            top, bottom = event.rect().top(), event.rect().bottom()
+            first = self.cursorForPosition(event.rect().topLeft()).block()  # skip what's scrolled away
+            messages = self.messages if self.document().blockCount() == len(self.messages) else ()
+            block, number = first, first.blockNumber()
+            plain, notice, mention = QColor(theme.RAISED), QColor(theme.SELECT_BG), QColor(theme.SELECT_BG)
+            plain.setAlpha(200)
+            dx = BUBBLE_INSET
+            while block.isValid():
+                box = layout.blockBoundingRect(block).translated(0, shift)
+                if box.top() > bottom:
+                    break
+                text = block.layout().boundingRect().translated(box.topLeft())  # the words, without the margins
+                if box.bottom() >= top and text.height() > 0:
+                    message = messages[number] if number < len(messages) else None
+                    fill = plain
+                    if message is not None and message.notice:
+                        fill = notice
+                    elif message is not None and mentions(message.text, self.names):
+                        fill = mention
+                    painter.setBrush(fill)
+                    bubble = QRectF(dx, text.top() - BUBBLE_PAD, self.viewport().width() - 2 * dx,
+                                    text.height() + 2 * BUBBLE_PAD)
+                    painter.drawRoundedRect(bubble, BUBBLE_RADIUS, BUBBLE_RADIUS)
+                block, number = block.next(), number + 1
+            painter.end()
+        super().paintEvent(event)
+
+    def _wash(self, block, on: bool) -> None:
         """Lines that mention you get a soft green background across the whole width (a new line
         copies the one before it, so every line sets it either way)."""
         from PySide6.QtGui import QTextCursor
 
-        ChatView._wash_with(QTextCursor(block), on)
+        self._wash_with(QTextCursor(block), on)
 
-    @staticmethod
-    def _wash_with(cursor, on: bool) -> None:
+    def _wash_with(self, cursor, on: bool) -> None:
+        """The line's wash, and its spacing for the Look (set on the block: a new line copies the one before,
+        so the HTML margin alone doesn't hold)."""
         fmt = cursor.blockFormat()
+        vertical, side = self.look.spacing
+        changed = (fmt.topMargin(), fmt.bottomMargin(), fmt.leftMargin(), fmt.rightMargin()) != \
+            (vertical, vertical, side, side)
+        if changed:
+            fmt.setTopMargin(vertical)
+            fmt.setBottomMargin(vertical)
+            fmt.setLeftMargin(side)
+            fmt.setRightMargin(side)
         if on:
             fmt.setBackground(QColor(theme.SELECT_BG))
         elif fmt.hasProperty(fmt.Property.BackgroundBrush):
             fmt.clearBackground()
-        else:
+        elif not changed:
             return
         cursor.setBlockFormat(fmt)
 
@@ -605,7 +732,7 @@ class ChatView(QTextBrowser):
         if url.scheme() == "platform" and kind == QTextDocument.ResourceType.ImageResource:
             from sprigcast.app import platform_logos
 
-            return platform_logos.tile(url.path(), MARK_SIZE, ratio=max(2.0, self.devicePixelRatioF()))
+            return platform_logos.tile(url.path(), self.look.mark, ratio=max(2.0, self.devicePixelRatioF()))
         if url.scheme() == "emote" and kind == QTextDocument.ResourceType.ImageResource:
             picture = self._pictures.get(url.path())
             if picture is not None:
@@ -1641,7 +1768,8 @@ class ChatPanel(QWidget):
 
         kind, _ = self.source()
         key = (bool(self.reading()), kind, bool(QSettings().value(LINK, "")), bool(self._account()),
-               self.web is not None, len(self.hub.hidden))
+               self.web is not None, len(self.hub.hidden), len(self.hub.blocked_words) + int(self.hub.hide_links),
+               len(self.mod_log), self.view.look)
         menu = getattr(self, "_menu", None)
         if menu is not None and shiboken6.isValid(menu) and self._menu_key == key:
             return
@@ -1678,6 +1806,8 @@ class ChatPanel(QWidget):
         menu.addAction(f"Word filter ({words})…" if words else "Word filter…").triggered.connect(self.ask_words)
         if self.mod_log:
             menu.addAction(f"Mod log ({len(self.mod_log)})…").triggered.connect(self.show_mod_log)
+        if kind == "chat":
+            self._look_menu(menu.addMenu("Look"))
         if not self._account():
             menu.addAction("Sign in…").triggered.connect(self._connect)
         menu.addSeparator()
@@ -1686,6 +1816,31 @@ class ChatPanel(QWidget):
         elif kind == "link" and self.web is not None:
             menu.addAction("Reload").triggered.connect(self.web.reload)
         return menu
+
+    def _look_menu(self, menu: QMenu) -> None:
+        """Classic, Bubbles, Compact or Big text, then what each line shows."""
+        from dataclasses import replace
+
+        from PySide6.QtGui import QActionGroup
+
+        look = self.view.look
+        group = QActionGroup(menu)
+        for key, label in LOOKS:
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(look.style == key)
+            group.addAction(action)
+            action.triggered.connect(lambda _=False, k=key: self.use_look(replace(self.view.look, style=k)))
+        menu.addSeparator()
+        for field, _, label, _ in SHOWS:
+            action = menu.addAction(label)
+            action.setCheckable(True)
+            action.setChecked(getattr(look, field))
+            action.toggled.connect(lambda on, f=field: self.use_look(replace(self.view.look, **{f: on})))
+
+    def use_look(self, look: Look) -> None:
+        look.save()
+        self.view.set_look(look)
 
     def shutdown(self) -> None:
         self.hub.stop()
