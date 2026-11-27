@@ -147,3 +147,15 @@ def test_about_buttons_stay_round_under_the_app_style():
         page.close()
     finally:
         app.setStyleSheet(old)
+
+
+def test_numbered_test_builds_say_their_number(tmp_path, monkeypatch):
+    import sprigcast
+
+    monkeypatch.setattr(sprigcast, "__file__", str(tmp_path / "__init__.py"))
+    (tmp_path / "build.json").write_text(json.dumps({"kind": "test", "run": "449", "commit": "eafa358", "test": 3,
+                                                     "tag": "test-0.5-3"}), encoding="utf-8-sig")
+    assert sprigcast.build_label() == f"{sprigcast.display_version()} test build 3 (eafa358)"
+    assert sprigcast.test_build() == 3
+    assert sprigcast.short_version("0.5.0", 3) == "Beta 0.5 test build 3"
+    assert sprigcast.short_version("0.5.0") == "Beta 0.5"

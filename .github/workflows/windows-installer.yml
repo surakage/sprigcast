@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tester_tag:
-        description: "Publish a tester pre-release under this new test-* tag (for example test-2026-11-23). Leave empty for a plain build."
+        description: "Publish a tester pre-release under this new tag: test-<version>-<number>, for example test-0.5-1 for Beta 0.5 test build 1. Leave empty for a plain build."
         required: false
         default: ""
   push:
@@ -37,6 +37,9 @@ jobs:
           echo $dir | Out-File -FilePath $env:GITHUB_PATH -Append
       - name: Build
         shell: pwsh
+        env:
+          # test-0.5-3 (typed in, or pushed) stamps "test build 3" into the app (build_windows.ps1).
+          TESTER_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tester_tag || (startsWith(github.ref, 'refs/tags/test-') && github.ref_name || '') }}
         run: ./packaging/build_windows.ps1
       - name: Check the installed copy starts
         shell: pwsh
@@ -244,13 +247,13 @@ jobs:
           $target = @("--verify-tag")
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
             $tag = $env:TESTER_TAG.Trim()
-            if ($tag -notmatch '^test-[A-Za-z0-9._-]+$') { throw "tester_tag must look like test-2026-11-23, not '$tag'" }
+            if ($tag -notmatch '^test-[A-Za-z0-9._-]+$') { throw "tester_tag must look like test-0.5-1, not '$tag'" }
             $target = @("--target", "${{ github.sha }}")
           }
           $label = (& packaging\build\python\python.exe -c "import sprigcast; print(sprigcast.build_label())").Trim()
           $setup = Get-ChildItem packaging\out\SprigCast-Setup-*.exe | Select-Object -First 1
           if (-not $setup) { throw "No installer was built" }
-          gh release create $tag $setup.FullName packaging\out\SHA256.txt --title "SprigCast test build ($label)" --notes-file docs\tester-guide.md @target --prerelease
+          gh release create $tag $setup.FullName packaging\out\SHA256.txt --title "SprigCast $label" --notes-file docs\tester-guide.md @target --prerelease
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "label=$label" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "setup=$($setup.FullName)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append

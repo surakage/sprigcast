@@ -135,8 +135,18 @@ uv run --no-project --with pefile python (Join-Path $PSScriptRoot "prune.py") $p
 & $python (Join-Path $PSScriptRoot "notices.py") $py $root
 # A test build (any build that isn't from a v* tag) says so, with its run number and commit, in the version
 # SprigCast shows and logs (sprigcast.build_label), so reports and logs can tell builds apart.
+# A tester build (TESTER_TAG test-0.5-3) also carries its number, "Beta 0.5 test build 3", and its tag, which the
+# tester updater compares (user, 2026-11-27). The tag's version must be the app's own.
 if ($env:GITHUB_RUN_ID -and -not ($env:GITHUB_REF -like "refs/tags/v*")) {
-    $stamp = @{ kind = "test"; run = $env:GITHUB_RUN_ID; commit = $env:GITHUB_SHA.Substring(0, 7) } | ConvertTo-Json -Compress
+    $stamp = @{ kind = "test"; run = $env:GITHUB_RUN_ID; commit = $env:GITHUB_SHA.Substring(0, 7) }
+    $tag = "$env:TESTER_TAG".Trim()
+    if ($tag -match '^test-(\d+)\.(\d+)-(\d+)$') {
+        $own = (& $python -c "import importlib.metadata as m; v = m.version('sprigcast').split('.'); print(v[0] + '.' + v[1])").Trim()
+        if ("$($Matches[1]).$($Matches[2])" -ne $own) { throw "Tester tag $tag doesn't match this version ($own): use test-$own-N" }
+        $stamp.test = [int]$Matches[3]
+        $stamp.tag = $tag
+    }
+    $stamp = $stamp | ConvertTo-Json -Compress
     Set-Content -Path (Join-Path $py "Lib\site-packages\sprigcast\build.json") -Value $stamp -Encoding utf8
 }
 # Every file this version installs: the next update deletes what it no longer ships (manifest.py).

@@ -328,3 +328,94 @@ def test_the_update_popup_holds_its_notes_and_buttons():
         updates.modal = old
     assert seen["size"][0] >= updates.UpdatePrompt.WIDTH and seen["size"][1] > updates.UpdatePrompt.NOTES_HEIGHT + 150
     assert seen["buttons_below_notes"] and "Another" in seen["html"]
+
+
+# Test builds and channels --------------------------------------------------------------
+
+
+def _test_json(minor=5, number=1, **extra):
+    data = _release_json("0.%d.0" % minor, tag_name=f"test-0.{minor}-{number}", prerelease=True,
+                         body=f"Test build {number}")
+    data.update(extra)
+    return data
+
+
+def test_test_builds_count_only_on_the_test_channels():
+    assert update.release_from_json(_test_json()) is None  # the stable reading skips pre-releases
+    build = update.release_from_json(_test_json(number=3), tests=True)
+    assert build.version == "0.5.0" and build.test == 3 and build.label == "Beta 0.5 test build 3"
+    assert build.skip_id == "test-0.5-3" and build.installer_name == "SprigCast-Setup-0.5.0.exe"
+    assert update.release_from_json(_test_json(tag_name="test-2026-11-27j"), tests=True) is None  # old date tags
+    assert update.release_from_json(_test_json(number=0, tag_name="test-0.5-0"), tests=True) is None
+
+
+def test_a_published_version_beats_every_test_build_of_it():
+    one, nine = (update.release_from_json(_test_json(number=n), tests=True) for n in (1, 9))
+    stable = update.release_from_json(_release_json("0.5.0"))
+    next_test = update.release_from_json(_test_json(minor=6, number=1), tests=True)
+    assert one.key < nine.key < stable.key < next_test.key
+    test_two = update.current_key("0.5.0", {"kind": "test", "test": 2})
+    assert update.newer_than_this(nine, test_two) and not update.newer_than_this(one, test_two)
+    assert update.newer_than_this(stable, test_two)
+    assert not update.newer_than_this(nine, update.current_key("0.5.0", {}))  # a release copy never goes back
+    assert update.newer_than_this(stable, update.current_key("0.5.0", {"kind": "test", "run": "449"}))
+    assert update.pick([one, nine, stable, next_test], update.STABLE) is stable
+    assert update.pick([one, nine, stable], update.TESTS) is nine
+    assert update.pick([one, nine, stable], update.BOTH) is stable
+    assert update.pick([], update.BOTH) is None
+
+
+def test_the_test_channels_read_the_release_list():
+    import json
+
+    listing = [_test_json(number=2), _test_json(number=1), _release_json("0.4.0"),
+               _test_json(tag_name="test-2026-11-27j"), {"draft": True, "tag_name": "test-0.5-3", "prerelease": True}]
+    opener = _opener({update.RELEASES_URL: json.dumps(listing).encode(),
+                      update.LATEST_URL: json.dumps(_release_json("0.4.0")).encode()})
+    assert update.fetch_newest(update.BOTH, opener=opener).tag == "test-0.5-2"
+    assert update.fetch_newest(update.TESTS, opener=opener).test == 2
+    assert update.fetch_newest(update.STABLE, opener=opener).version == "0.4.0"
+    assert update.fetch_newest("nonsense", opener=opener).version == "0.4.0"
+    assert update.fetch_newest(update.BOTH, opener=_opener({})) is None
+
+
+def test_test_builds_default_to_both_and_check_more_often(monkeypatch):
+    pytest.importorskip("PySide6")
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.app import updates
+
+    assert update.default_channel({}) == update.STABLE
+    assert update.default_channel({"kind": "test", "test": 1}) == update.BOTH
+    monkeypatch.setattr(update, "build_stamp", lambda: {"kind": "test", "test": 4})
+    QSettings().remove(updates.CHANNEL)
+    assert updates.channel() == update.BOTH and updates.check_every_s() == updates.TEST_CHECK_EVERY_S
+    QSettings().setValue(updates.CHANNEL, update.TESTS)
+    assert updates.channel() == update.TESTS
+    QSettings().setValue(updates.CHANNEL, "weird")
+    assert updates.channel() == update.BOTH
+    QSettings().remove(updates.CHANNEL)
+    assert not updates.channel_choice_shown()  # it joins Settings with Version 1
+    monkeypatch.setattr(updates, "__version__", "1.0.0")
+    assert updates.channel_choice_shown()
+
+
+def test_the_prompt_names_test_builds(qt, monkeypatch):
+    from PySide6.QtCore import QSettings
+
+    from sprigcast.app import updates
+
+    monkeypatch.setattr(updates, "test_build", lambda: 2)
+    prompt = updates.UpdatePrompt(update.release_from_json(_test_json(number=3), tests=True), False, True)
+    texts = [label.text() for label in prompt.findChildren(updates.QLabel)]
+    assert "SprigCast Beta 0.5 test build 3 is ready" in texts
+    assert any(t.startswith("You have Beta 0.5 test build 2") for t in texts)
+    updater, _state, shown, _ = _updater(qt, monkeypatch)
+    build = update.release_from_json(_test_json(number=3), tests=True)
+    monkeypatch.setattr(update, "build_stamp", lambda: {"kind": "test", "test": 2})
+    QSettings().setValue(updates.SKIPPED, "test-0.5-3")
+    updater._on_checked(build, False, "")
+    assert shown == []
+    QSettings().remove(updates.SKIPPED)
+    updater._on_checked(build, False, "")
+    assert shown == [build]

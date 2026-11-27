@@ -5,6 +5,81 @@ full release plus decimals (Beta 0.4). Each new section is grouped as Added, Cha
 
 "Tested" means tried on a real Windows PC. Everything else passed the automated tests but still needs a try.
 
+## Beta 0.5 (not released yet)
+
+Your phone as a camera or a screen, a Control API that other apps can build on, and a long list of fixes from
+real streams and a tester's low-end PC. Everything here was merged after Beta 0.4 and went to testers as test
+builds from 2026-11-25 on.
+
+### Added
+
+- Phone Camera: any phone's camera over Wi-Fi, with a QR code and a pairing code, nothing to install. It has a
+  live view and a full-screen view on the phone, follows the phone's shape as it turns, sends the phone's mic
+  (on by default), goes blank 2 s after the phone stops and reconnects by itself after a restart (#952, #955,
+  #958, #959, #961, #962, #963, #966, #968).
+- Android Screen: an Android phone's screen over USB, with its sound. It turns with the phone, trims black edges
+  and can fill the canvas. Google's adb is downloaded only when you ask (#952, #953, #957, #958, #959, #961, #964,
+  #965).
+- Get started has a Connect your places step, and place tiles show the official Twitch, YouTube, Kick, TikTok, X
+  and Facebook logos. The logos also show in the + Add menu, Show all, Settings → Stream and the mixed chat list
+  (#975, #977).
+- Chat mod tools: Delete, Timeout and Ban buttons when you hover a chat line, a chatter's card when you click their
+  name, and moderation for YouTube chat. A Mod bar for your Twitch chat (slow, followers-only, subs-only,
+  emote-only, Shield, clear), a First tag for first-time chatters, a word and link filter, and a mod log (#978,
+  #979).
+- Chat looks: pick Classic, Bubbles, Compact or Big text in the Chat panel's ⋯ menu, and turn times, platform logos,
+  badges and name colors on or off (#980).
+- Echo Reducer filter, and a Listen card with meters in Filters (#962, #963, #966).
+- Video delay for cameras (#951).
+- Copy and paste filters, and leaves between sprigs; Duplicate (Ctrl+D); F2 renames blooms, sprigs and filters
+  (#939, #942, #946, #947, #948).
+- Twelve store plugins: Live count, breaks, hydration, ads, clips, socials and more (#968, #969).
+- Stream Deck: ready for the Elgato Marketplace, with a Teleprompter key, Show or hide on both canvases, and leaves
+  inside sprigs. It speaks Control API 1 when SprigCast offers it (#933, #941, #974).
+- Tools → Check for updates… (#931).
+- Control API: viewer counts for apps like StreamBridge, a published protocol.json, events by name, errors that
+  name their field, step ids, camelCase spellings and toggle actions. Apps that ask for API 1 get camelCase
+  answers and events with their data in one place; apps that don't see no change (#968, #970, #971, #973).
+- Test builds update themselves. Each test build is numbered (Beta 0.5 test build 1, 2, 3...), checks for a newer
+  one every few hours and installs it in place, the same way published versions do. A published version beats
+  every test build of it. From Version 1 on, Settings → Updates lets you pick stable versions, test builds or
+  both.
+
+### Changed
+
+- Importing from OBS, Streamlabs or Meld brings over more: extra OBS filters, sound details (mono, balance, sync,
+  tracks), camera flips, slide shows, and your OBS profile's frame rate, recording and encoder settings (never
+  stream keys). The import report groups what to check, with Open buttons, and offers the store plugins the
+  import needs (#981).
+- Links in the app, the installer and the notices send people to sprigcast.slothbloom.com, not GitHub (#930).
+- Twitch asks for more permissions for the new plugins and mod tools, so reconnect Twitch once in Settings → Stream
+  (#969, #979).
+- YouTube streams over RTMPS and reconnects a stalled connection after 5 s (#937).
+- PNGtuber upgrade, and every flat pop-up now has titled section cards; Filters has sections and label colors
+  (#939, #940).
+- Transitions: the card fits the Live screen, Between blooms is grouped by bloom, and Move glides one sprig placed
+  twice (#943, #944).
+- Light PCs: lighter background work on PCs with little memory, PCs under 6 GB keep their memory pages, and the
+  transition preview is mixed small (#934, #935, #949, #950).
+- Sound uses Windows audio scheduling with more capture room (#936).
+- Mic priority and memory breakdown in the logs (#936, #937).
+
+### Fixed
+
+- A freeze in Filters, a freeze after stopping a stream, x264 log spam, the bitrate-step warning and the stream
+  report's numbers on low-end PCs (#949, #954).
+- Break & End Guard no longer stops stream start and end events from reaching other apps (#970).
+- Web pages never show an error page and reconnect on their own; they no longer open a video capture service
+  (#937, #963).
+- The canvas keeps its look while you edit a sprig (#965).
+- Pop-ups: long drop-down items, framed windows on small screens, and scrolling only on small screens (#938,
+  #955).
+- Command search opens on the window's screen, and the search button takes every click (#945, #947, #949).
+- Hide reaches a vertical bloom's own sprig and works on every shape (#947, #948).
+- The PNGtuber card opens without a stall, and Filters opens without a hitch (#942, #943).
+- About buttons keep their rounded shape in the installed app, and the Build inspector fits beside its scroll bar
+  (#932, #967).
+
 ## Beta 0.4 (2026-11-24)
 
 Lighter on older PCs, steadier with the HD60 X, and a first-start tour with Pip. Everything here was merged after
