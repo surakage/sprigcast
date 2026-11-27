@@ -29,7 +29,8 @@ builds from 2026-11-25 on.
   inside sprigs (#933, #941).
 - Tools → Check for updates… (#931).
 - Control API: viewer counts for apps like StreamBridge, a published protocol.json, events by name, errors that
-  name their field, step ids, camelCase spellings and toggle actions (#968, #970, #971).
+  name their field, step ids, camelCase spellings and toggle actions. Apps that ask for API 1 get camelCase
+  answers and events with their data in one place; apps that don't see no change (#968, #970, #971, #973).
 
 ### Changed
 
