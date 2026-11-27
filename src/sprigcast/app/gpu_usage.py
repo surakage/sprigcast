@@ -51,6 +51,68 @@ def busiest_processes(samples: list[tuple[str, float]], top: int = 4) -> list[tu
     return ranked[:top]
 
 
+def card_key(luid: tuple[int, int]) -> str:
+    """A (low, high) LUID as the counters spell it: "0x00000000_0x0000d1a2" (high part first), lower case."""
+    low, high = luid
+    return f"0x{high & 0xFFFFFFFF:08x}_0x{low & 0xFFFFFFFF:08x}"
+
+
+ENGINE_CARD: str | None = None  # card_key of the card the engine draws on (native_bridge tells it)
+
+
+def by_card(samples: list[tuple[str, float]]) -> dict[str, tuple[float, str, list[tuple[int, float]]]]:
+    """Each card's load: {card_key: (its busiest engine's %, that engine's type, [(pid, %) on that engine])}.
+    A hybrid laptop has two: the one SprigCast draws on, and the one the screen is wired to (CRGPlays,
+    2026-11-27: "graphics card 100%" with SprigCast's own frame work at 2 ms, and nothing said which chip)."""
+    engines: dict[str, float] = defaultdict(float)
+    users: dict[str, dict[int, float]] = defaultdict(lambda: defaultdict(float))
+    for name, value in samples:
+        rest = name.split("_luid_", 1)
+        if len(rest) != 2:
+            continue
+        engines[rest[1]] += value
+        try:
+            users[rest[1]][int(rest[0].split("_", 1)[1])] += value
+        except (IndexError, ValueError):
+            pass
+    cards: dict[str, tuple[float, str, list[tuple[int, float]]]] = {}
+    for engine, load in engines.items():
+        parts = engine.lower().split("_")
+        if len(parts) < 2:
+            continue
+        key = f"{parts[0]}_{parts[1]}"
+        if key in cards and cards[key][0] >= load:
+            continue
+        kind = engine.rsplit("engtype_", 1)[-1] if "engtype_" in engine else "?"
+        top = sorted(((pid, v) for pid, v in users[engine].items() if v >= 1.0), key=lambda r: -r[1])[:3]
+        cards[key] = (min(100.0, load), kind, top)
+    return cards
+
+
+def describe_cards(cards: dict[str, tuple[float, str, list[tuple[int, float]]]], own: str | None,
+                   name_of=None) -> str:
+    """"SprigCast's card 3D 41% (SprigCast.exe 30%); the other chip 3D 100% (dwm.exe 64%, SprigCast.exe 22%)"."""
+    if name_of is None:
+        name_of = _process_name
+    parts = []
+    for key, (load, kind, top) in sorted(cards.items(), key=lambda kv: (kv[0] != own, -kv[1][0])):
+        if load < 1.0 and key != own:
+            continue
+        who = ", ".join(f"{name_of(pid)} {v:.0f}%" for pid, v in top) or "nobody"
+        label = "SprigCast's card" if key == own else ("another card" if own else f"card {key}")
+        parts.append(f"{label} {kind} {load:.0f}% ({who})")
+    return "; ".join(parts) or "no card busy"
+
+
+def _process_name(pid: int) -> str:
+    try:
+        import psutil
+
+        return psutil.Process(pid).name()
+    except Exception:  # noqa: BLE001 (gone already, or not allowed to look)
+        return "?"
+
+
 def describe_processes(ranked: list[tuple[int, str, float]]) -> str:
     """"msedge.exe (pid 4242) 3D 85%, SprigCast.exe (pid 10) 3D 20%" or "nothing busy"."""
     import os
@@ -110,6 +172,7 @@ class GpuCounter:
         pdh.PdhCollectQueryData(self._query)  # a rate needs two samples: this is the first
         self.encode: float | None = None  # the video encoder's load at the last read
         self.processes: list[tuple[int, str, float]] = []  # the busiest processes at the last read
+        self.cards: dict = {}  # by_card at the last read
         self.read_at = 0.0
 
     def read(self) -> float:
@@ -132,6 +195,7 @@ class GpuCounter:
         samples = [(items[i].name or "", items[i].value) for i in range(count.value) if items[i].status in (0, 1)]
         self.encode = busiest_engine(samples, "VideoEncode")
         self.processes = busiest_processes(samples)
+        self.cards = by_card(samples)
         self.read_at = time.monotonic()
         return busiest_engine(samples)
 
@@ -171,6 +235,13 @@ def windows_gpu_load() -> float | None:
         return _counter.read()
     except (OSError, ValueError):
         return None
+
+
+def cards_line() -> str | None:
+    """Each card's load at the GPU meter's last read, said plainly (None when unknown)."""
+    if not _counter or not getattr(_counter, "cards", None):
+        return None
+    return describe_cards(_counter.cards, ENGINE_CARD)
 
 
 def windows_encoder_load() -> float | None:

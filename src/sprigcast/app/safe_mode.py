@@ -42,7 +42,8 @@ def choose(argv: list[str], crashed, minimized: bool, ask) -> bool:
     return _on
 
 
-AUTO_START_S = 15  # the question starts normally on its own after this long, unless touched
+AUTO_START_S = 8  # the question starts normally on its own after this long, unless touched (15 s made a start
+# after a crash take 16.6 s, with 17 Control API requests waiting behind it, PC 2026-11-27)
 
 
 def ask(seconds: int | None = None) -> bool:

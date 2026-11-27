@@ -434,8 +434,14 @@ class LivePanel(QWidget):
                      tuple(c.id for c in collection.canvases if c.enabled), self.view,
                      tuple(sorted((collection.hotkeys or {}).items())))
         if signature != self._signature:
+            if self.window().isVisible() and not self.isVisible():
+                # Build mode, or another page: the tiles are made when the Live panel shows (a garden switch
+                # in Build made them all at once and held the window 443 ms, PC 2026-11-27).
+                self._waiting = collection
+                return
             self._signature = signature
             self._rebuild(collection)
+        self._waiting = None
         current = {p.id: p.state for p in collection.parts()}
         for (part_id, name), button in self.state_buttons.items():
             button.blockSignals(True)
@@ -450,6 +456,12 @@ class LivePanel(QWidget):
                 button.blockSignals(True)
                 button.setChecked(scene.id == active)
                 button.blockSignals(False)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        waiting = getattr(self, "_waiting", None)
+        if waiting is not None:
+            self.show_scenes(waiting)
 
     def _rebuild(self, collection: SceneCollection) -> None:
         self._collection = collection
