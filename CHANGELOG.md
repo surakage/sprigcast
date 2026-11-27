@@ -43,14 +43,22 @@ builds from 2026-11-25 on.
 - Test builds update themselves. Each test build is numbered (Beta 0.5 test build 1, 2, 3...), checks for a newer
   one every few hours and installs it in place, the same way published versions do. A published version beats
   every test build of it. From Version 1 on, Settings → Updates lets you pick stable versions, test builds or
-  both.
+  both. A tester who skipped builds sees what changed in every build since theirs (#984).
+- Move store plugin: something in a bloom slides, grows or turns when you press a hotkey or a Stream Deck button,
+  an app asks, its bloom shows or goes off air, it's switched on or off, its video starts or ends, you go live or
+  stop, recording starts, or another move ends. Seven easings, stay or go back, trade places with another item,
+  and one more thing on the way (show it, hide it at the end, bring it to the front, play or pause its video,
+  mute or unmute it). Both engines draw the trip frame by frame. Move value slides a setting (a filter's
+  strength, a text's size, a color); Sound move bounces, grows or wobbles while a mic is loud; Camera move turns
+  a webcam's own pan, tilt and zoom on cameras that can. OBS Move filters come over as these (#984).
+- On-stream chat looks: Garden card, Clean outline, Minimal and Big text (#984).
 
 ### Changed
 
 - Importing from OBS, Streamlabs or Meld brings over more: extra OBS filters, sound details (mono, balance, sync,
   tracks), camera flips, slide shows, and your OBS profile's frame rate, recording and encoder settings (never
   stream keys). The import report groups what to check, with Open buttons, and offers the store plugins the
-  import needs (#981).
+  import needs (#981). OBS's camera Video Delay and Image Mask come over too (#984).
 - Links in the app, the installer and the notices send people to sprigcast.slothbloom.com, not GitHub (#930).
 - Twitch asks for more permissions for the new plugins and mod tools, so reconnect Twitch once in Settings → Stream
   (#969, #979).
@@ -66,6 +74,8 @@ builds from 2026-11-25 on.
 
 ### Fixed
 
+- Streamer.bot and other apps can connect as soon as SprigCast starts: the Control API opens first and answers
+  their requests once the window is ready, so they no longer fail and wait 30 s to try again (#984).
 - A freeze in Filters, a freeze after stopping a stream, x264 log spam, the bitrate-step warning and the stream
   report's numbers on low-end PCs (#949, #954).
 - Break & End Guard no longer stops stream start and end events from reaching other apps (#970).

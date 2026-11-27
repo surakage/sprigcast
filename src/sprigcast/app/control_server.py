@@ -175,6 +175,11 @@ class WindowHost:
     def collection(self):
         return self.w.collection
 
+    def commit_quiet(self) -> None:
+        """A plugin's moment-to-moment change (a setting sliding, a bounce to a voice): the engine gets a copy at
+        most once a frame, as while dragging; nothing is saved or added to undo for it."""
+        self.w._changed(save=False)
+
     def commit_settings(self, sources) -> None:
         """Only these sources' settings changed (a plugin's own state): see MainWindow._settings_changed."""
         self.w._settings_changed(sources)
