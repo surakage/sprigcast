@@ -122,6 +122,24 @@ def test_setup_waits_for_sprigcast_to_close_then_runs_silently():
     assert "O''Neil" in script  # quoted for PowerShell
     assert "'/SILENT'" in script and "'/restartapp=1'" in script
     assert "restartapp" not in update.installer_command(Path("s.exe"), 1, restart=False)[-1]
+    assert "'/NOCAMERA=1'" in script  # no context-free permission prompt; Virtual Cam asks when started
+    assert "/LOG=" in script and update.SETUP_LOG in script  # Setup's own log, for a slow update
+    assert "-PassThru" in script and "Setup finished" in script  # how long Setup took
+
+
+def test_setup_log_shows_the_slow_steps(tmp_path):
+    (tmp_path / update.HELPER_LOG).write_text("Setup started\nSetup finished (exit 0)\n", encoding="utf-8")
+    (tmp_path / update.SETUP_LOG).write_text(
+        "2026-11-27 09:37:52.100   Log opened.\n"
+        "2026-11-27 09:37:53.000   Starting the installation process.\n"
+        "2026-11-27 09:39:50.500   Installing the file: python\\SprigCast.exe\n"
+        "2026-11-27 09:39:51.000   Installation process succeeded.\n", encoding="utf-8")
+    report = update.helper_report(tmp_path)
+    assert "total 118.9 s" in report
+    assert "117.5 s after: Starting the installation process. -> Installing the file" in report
+    assert "Log opened" not in report.split("slow steps:")[1].split("total")[1]  # a 0.9 s step isn't listed
+    assert not (tmp_path / update.SETUP_LOG).exists()
+    assert update.setup_slow_steps(tmp_path) is None
 
 
 def test_only_an_installed_copy_updates_itself(tmp_path):
