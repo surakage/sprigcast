@@ -156,12 +156,11 @@ def test_preview_while_live(window, app, monkeypatch):
     assert window._preview_mode() == "smooth" and window.engine.preview_fps == 30
     QSettings().setValue(PREVIEW_LIVE, "light")
     window._after_settings()
-    assert window._preview_mode() == "smooth"  # nothing on air: always smooth
-    window.recording = object()
-    try:
-        assert window._preview_mode() == "light"
-    finally:
-        window.recording = None
+    window._set_mode("live")
+    assert window._preview_mode() == "light"  # on Live, live or not (user 2026-11-27)
+    window._set_mode("build")
+    assert window._preview_mode() == "smooth"  # Build always draws: you're placing things
+    window._set_mode("live")
     mode = ["light"]
     monkeypatch.setattr(window, "_preview_mode", lambda: mode[0])
     window._poll_engine()
@@ -222,7 +221,7 @@ def test_preview_while_live_is_one_right_click_away_on_live(window):
     window._set_mode("live")
     menu = window._preview_menu("horizontal", -1)
     sub = next(a.menu() for a in menu.actions() if a.text() == "Preview")
-    assert [a.text() for a in sub.actions()] == ["Smooth", "Light (15 fps)", "Off"]
+    assert [a.text() for a in sub.actions()] == ["Smooth (30 fps)", "Light (15 fps)", "Off"]
     next(a for a in sub.actions() if a.text() == "Off").trigger()
     assert preview_choice() == "off" and window._preview_live is None  # both canvases follow on the next poll
     menu.deleteLater()

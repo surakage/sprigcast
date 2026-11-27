@@ -136,7 +136,7 @@ def stops() -> list[Stop]:
              "you run it. Switch any time, or press Ctrl+1 and Ctrl+2.", _named("modePills"), mode="live", pip="pip-hello"),
         Stop("Live", "What viewers see", "Your canvases, as they go out: horizontal, and vertical if you use it.",
              _attr("live_stage", "card"), mode="live"),
-        Stop("Live", "Preview", "On a slower PC, right-click a canvas and pick Preview, then Light or Off for while you're live. "
+        Stop("Live", "Preview", "On a slower PC, right-click a canvas and pick Preview, then Light or Off. "
              "Your stream looks the same, and your graphics card has more room for it.",
              _attr("live_stage", "card"), mode="live"),
         Stop("Live", "Go live", "Starts your stream on every place that's switched on.",

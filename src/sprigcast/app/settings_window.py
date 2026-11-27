@@ -74,8 +74,8 @@ ABOUT = {  # one line under each page's title
     "Connections": "Let other apps on your PC control SprigCast.",
 }
 EXPERT = "settings/expert"  # QSettings: show the expert rows
-PREVIEW_LIVE = "general/preview_live"  # QSettings: the previews while live or recording
-PREVIEW_CHOICES = {"smooth": "Smooth", "light": "Light (15 fps)", "off": "Off"}
+PREVIEW_LIVE = "general/preview_live"  # QSettings: the previews on the Live screen (Smooth, Light, Off)
+PREVIEW_CHOICES = {"smooth": "Smooth (30 fps)", "light": "Light (15 fps)", "off": "Off"}
 PREVIEW_FPS = {"smooth": 30, "light": 15, "off": 0}
 
 # Settings search: what you might type, and where it lives ("Tab/Sub"). expert: shown only with Expert on.
@@ -1185,7 +1185,7 @@ class SettingsWindow(QDialog):
         for key, label in PREVIEW_CHOICES.items():
             self.preview_live.addItem(label, key)
         self.preview_live.setCurrentIndex(max(0, self.preview_live.findData(preview_choice())))
-        self.preview_live.setToolTip("While live or recording: Light or Off leaves more of the graphics card for the stream on a "
+        self.preview_live.setToolTip("On the Live screen. Light or Off leaves more of the graphics card for the stream on a "
                                      "slower PC.\nProjectors keep drawing.")
         form.addRow("Preview", self.preview_live)
         return card
