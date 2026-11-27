@@ -27,6 +27,8 @@ builds from 2026-11-25 on.
   name, and moderation for YouTube chat. A Mod bar for your Twitch chat (slow, followers-only, subs-only,
   emote-only, Shield, clear), a First tag for first-time chatters, a word and link filter, and a mod log (#978,
   #979).
+- Chat looks: pick Classic, Bubbles, Compact or Big text in the Chat panel's ⋯ menu, and turn times, platform logos,
+  badges and name colors on or off (#980).
 - Echo Reducer filter, and a Listen card with meters in Filters (#962, #963, #966).
 - Video delay for cameras (#951).
 - Copy and paste filters, and leaves between sprigs; Duplicate (Ctrl+D); F2 renames blooms, sprigs and filters
