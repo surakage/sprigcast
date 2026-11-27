@@ -43,6 +43,10 @@ builds from 2026-11-25 on.
 
 ### Changed
 
+- Importing from OBS, Streamlabs or Meld brings over more: extra OBS filters, sound details (mono, balance, sync,
+  tracks), camera flips, slide shows, and your OBS profile's frame rate, recording and encoder settings (never
+  stream keys). The import report groups what to check, with Open buttons, and offers the store plugins the
+  import needs (#981).
 - Links in the app, the installer and the notices send people to sprigcast.slothbloom.com, not GitHub (#930).
 - Twitch asks for more permissions for the new plugins and mod tools, so reconnect Twitch once in Settings → Stream
   (#969, #979).
