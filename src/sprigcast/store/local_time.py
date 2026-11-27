@@ -6,7 +6,7 @@ right corner of your bloom, in every shape. Move or resize it like anything else
 Settings: Show date (adds e.g. "Sat, Nov 14" under the time), 24-hour, Seconds, Time zone (adds
 e.g. "CST"), Text colour and Card colour (a colour ending in 00 is see-through: no card).
 
-It's SprigCast's clock card (core/cards.py): a leaf-cut card with a sun by day and a moon by night. Its box
+It's SprigCast's clock card: a leaf-cut card with a sun by day and a moon by night. Its box
 is the card, so a selection hugs it; the box is as wide as the widest time and date the settings can show,
 so it never changes as the minutes go by.
 

@@ -9,7 +9,7 @@ Where the numbers come from:
                                a Live count is in your garden. Nothing new to sign in to or approve.
     Any other platform         sent in by an app (StreamBridge, Streamer.bot, a web link) with livecount.set:
                                {"do": "livecount.set", "platform": "Facebook", "viewers": 12}
-                               A number not sent again for OTHER_KEEP_S stops counting (that app went quiet).
+                               A number not sent again for 3 minutes stops counting (that app went quiet).
                                TikTok joins the platforms SprigCast reads itself once its app is approved.
 
 Settings: Label (the small words under the number, "watching" to start), Each platform (the small words list each
@@ -18,7 +18,7 @@ the Style tab's colors, font, text size and corners.
 
 Apps can read it too: {"do": "livecount.get"} answers {"total", "platforms": {name: viewers}, "live"}.
 
-It's SprigCast's clock card (core/cards.py), with an eye badge that's green while you're live and blinks now and
+It's SprigCast's clock card, with an eye badge that's green while you're live and blinks now and
 then (Blink switches that off). With nobody watching (0) the eye stays shut. It's light: the
 numbers come from a cache the window fills every few seconds (never a web call on the render thread), and the
 card is drawn again only when the words on it change. Off screen it does nothing at all.

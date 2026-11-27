@@ -19,6 +19,9 @@
     # Sound levels, about 15 times a second: {source id: (peak dBFS, RMS dBFS)}, plus "master".
     register_level_watcher(lambda api, levels: ...)
 
+    # Right-click on a chat line in the Chat panel: add(label, callback) (message is a chat.ChatMessage).
+    register_chat_menu(lambda message, add: add("Pin on stream", lambda: ...))
+
     # An entry of your own in the Tools menu.
     register_tool("My window…", lambda api: ...)
 
@@ -262,6 +265,25 @@ def fill_item_menu(api, source, add: Callable[[str, Callable[[], None]], None], 
             fn(api, what, add)
         except Exception:
             log.exception("a plugin's right-click entries failed")
+
+
+_CHAT_MENUS: list[Callable[[Any, Callable[[str, Callable[[], None]], None]], None]] = []
+
+
+def register_chat_menu(fn: Callable[[Any, Callable[[str, Callable[[], None]], None]], None]) -> None:
+    """fn(message, add) when a chat line is right-clicked in the Chat panel; add(label, callback) for each entry."""
+    _CHAT_MENUS[:] = [f for f in _CHAT_MENUS if not _same(f, fn)]
+    _CHAT_MENUS.append(fn)
+
+
+def fill_chat_menu(message, add: Callable[[str, Callable[[], None]], None]) -> None:
+    for fn in list(_CHAT_MENUS):
+        if not _alive(fn):
+            continue
+        try:
+            fn(message, add)
+        except Exception:
+            log.exception("a plugin's chat entries failed")
 
 
 # One item in a bloom or sprig: effects on it alone ------------------------------------------------

@@ -3,7 +3,9 @@
 Uses Twitch's Device Code Grant Flow, the sign-in made for apps without a web server:
 SprigCast shows a short code, you approve it at twitch.tv/activate, and Twitch hands back
 tokens. Only `channel:read:stream_key`, `user:write:chat` (send chat from the Chat panel) and
-`channel:manage:broadcast` (Stream details: title, category, tags) are requested. Tokens live in the OS credential
+`channel:manage:broadcast` (Stream details: title, category, tags) are requested, plus chat moderation and, for
+store plugins, `channel:read:ads` (Ad break countdown) and `channel:manage:clips` (Random clip player: your own
+clips' video files). Tokens live in the OS credential
 store (like stream keys), never in scenes.json.
 
 Twitch needs a registered app's Client ID. A Public client has no secret, so the ID can be
@@ -30,7 +32,11 @@ DEFAULT_CLIENT_ID = "jsv3nwvolg6ph5e5s9tyzphwzcyvbp"  # SprigCast's public Twitc
 CHAT_SCOPE = "user:write:chat"
 # Chat moderation from the Chat panel: timeout and ban, delete a message, block an account.
 MOD_SCOPES = ("moderator:manage:banned_users", "moderator:manage:chat_messages", "user:manage:blocked_users")
-SCOPES = "channel:read:stream_key user:write:chat channel:manage:broadcast " + " ".join(MOD_SCOPES)
+# Store plugins: the Ad break countdown reads when ads come; the Random clip player fetches your own clips' videos.
+ADS_SCOPE = "channel:read:ads"
+CLIPS_SCOPE = "channel:manage:clips"
+SCOPES = ("channel:read:stream_key user:write:chat channel:manage:broadcast " + " ".join(MOD_SCOPES)
+          + f" {ADS_SCOPE} {CLIPS_SCOPE}")
 TOKEN_REF = "twitch/oauth"  # keyring entry holding {"access_token", "refresh_token", "expires_at", "login", "user_id"}
 DEVICE_URL = "https://id.twitch.tv/oauth2/device"
 TOKEN_URL = "https://id.twitch.tv/oauth2/token"
@@ -258,6 +264,37 @@ def fetch_stream_key(cid: str | None = None) -> str:
     if not keys or not keys[0].get("stream_key"):
         raise TwitchAuthError("Twitch didn't return a stream key.")
     return keys[0]["stream_key"]
+
+
+# Reading as the signed-in account (store plugins) --------------------------------------------
+
+
+class MissingScope(TwitchAuthError):
+    """Signed in before SprigCast asked for this permission: connect Twitch again once."""
+
+
+def has_scope(scope: str) -> bool:
+    tokens = _load()
+    return bool(tokens) and scope in (tokens.get("scope") or [])
+
+
+def helix_get(path_for, scope: str | None = None, cid: str | None = None) -> dict:
+    """GET a Helix path as the signed-in account, refreshing the token when it's old or turned down.
+    path_for(user_id) gives the path (most ask for your own id). Raises TwitchAuthError worded for the user:
+    MissingScope when the sign-in predates `scope`."""
+    cid = cid or client_id()
+    tokens = _load()
+    if not tokens:
+        raise TwitchAuthError("Connect Twitch first (Settings → Stream).")
+    if scope and scope not in (tokens.get("scope") or []):
+        raise MissingScope("Connect Twitch again once to allow this (Settings → Stream).")
+    if time.time() >= float(tokens.get("expires_at", 0)):
+        tokens = _refresh(tokens, cid)
+    try:
+        return _get(path_for(str(tokens["user_id"])), tokens["access_token"], cid)
+    except PermissionError:
+        tokens = _refresh(tokens, cid)
+        return _get(path_for(str(tokens["user_id"])), tokens["access_token"], cid)
 
 
 # Sending chat -----------------------------------------------------------------------------
