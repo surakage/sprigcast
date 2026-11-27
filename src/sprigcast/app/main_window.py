@@ -1022,6 +1022,10 @@ class MainWindow(QMainWindow):
         menu.deleteLater()  # a new menu each right-click: kept, each one held a window handle for good
 
     def _on_preview_menu(self, canvas_id: str, index: int, where) -> None:
+        if index < 0 and self.mode == "live" and canvas_id in self.previews:  # the canvas card (user, 2026-11-27)
+            theme.ui_burst()
+            self._live_canvas_card(canvas_id).show_at(where)
+            return
         menu = self._preview_menu(canvas_id, index)
         theme.ui_burst()  # (as modal() does: a menu coming up builds its window)
         menu.exec(where)
@@ -1109,6 +1113,28 @@ class MainWindow(QMainWindow):
         settings = menu.addAction(icons.icon("gear", theme.MUTED), "Canvas…")  # one word: the size was clipped
         settings.setToolTip(f"Size and frame rate{size} (Settings → Video)")
         settings.triggered.connect(lambda: self._open_settings("Video"))
+
+    def _live_canvas_card(self, canvas_id: str):
+        """Right-click a canvas on Live: one small card with Preview, Projector screens, Safe zones (tall
+        canvases), Fit to view (zoomed in) and Canvas… (user's pick of three looks, 2026-11-27)."""
+        from sprigcast.app.canvas_card import CanvasCard, Screen
+        from sprigcast.app.settings_window import preview_on
+
+        canvas = self.collection.canvas(canvas_id)
+        tall = canvas is not None and canvas.height > canvas.width
+        primary = QGuiApplication.primaryScreen()
+        screens = [Screen(f"Screen {i + 1}", sc is primary, f"{sc.geometry().width()}×{sc.geometry().height()}",
+                          lambda sc=sc: self.open_projector(canvas_id, sc))
+                   for i, sc in enumerate(QGuiApplication.screens())]
+        zones = None
+        if tall:  # the vertical apps' buttons and captions
+            zones = (list(safe_zones.CHOICES), QSettings().value("live/safe_zones", "Off"),
+                     self._set_live_safe_zones)
+        preview = self.previews.get(canvas_id)
+        fit = preview.fit_view if preview is not None and preview.zoom > 1.0 else None
+        return CanvasCard(f"{'Vertical' if tall else 'Horizontal'} canvas", preview_on(), self._set_preview_shown,
+                          screens, lambda: self.open_projector(canvas_id, None), lambda: self._open_settings("Video"),
+                          zones, fit, self)
 
     def _preview_live_menu(self, menu: QMenu):
         """Right-click a canvas on Live → Preview, on or off any time: the same switch as Settings → General → This

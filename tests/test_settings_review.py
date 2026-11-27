@@ -240,3 +240,28 @@ def test_preview_is_one_right_click_away_on_live(window):
     menu.deleteLater()
     QSettings().remove(PREVIEW_LIVE)
     QSettings().remove(PREVIEW_SHOWN)
+
+
+def test_live_right_click_is_one_canvas_card(window):
+    """The user's pick (2026-11-27, "B"): Preview as a switch, Projector screens as buttons, Canvas… at the end."""
+    from sprigcast.app.settings_window import preview_on
+
+    window._set_mode("live")
+    opened, projected = [], []
+    window._open_settings = opened.append
+    window.open_projector = lambda canvas, screen, *a: projected.append((canvas, screen))
+    card = window._live_canvas_card("horizontal")
+    texts = card.texts()
+    assert texts[:3] == ["Preview", "Projector", "Screen 1 Main"] and texts[-2:] == ["Window", "Canvas…"]
+    assert "Safe zones" not in texts  # only tall canvases
+    assert card.preview.isChecked()
+    card.preview.setChecked(False)
+    assert not preview_on()
+    card.window_button.click()
+    assert projected == [("horizontal", None)]
+    card = window._live_canvas_card("horizontal")
+    card.canvas_button.click()
+    assert opened == ["Video"]
+    card = window._live_canvas_card("horizontal")
+    card.screen_buttons[0].click()
+    assert projected[-1][1] is not None
