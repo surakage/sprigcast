@@ -118,6 +118,7 @@ struct Compositor {
     std::unordered_map<uint64_t, Target> parts;          // a sprig's drawing, by snapshot scene id
     std::unordered_map<uint64_t, Drawn> drawn;           // sources drawn from a list (store plugins' animations)
     std::map<std::pair<uint64_t, int>, double> spins;    // (source, run) -> when its barrel roll started
+    std::map<std::pair<uint64_t, int>, double> moves;    // (source, run) -> when its move started (Move plugin)
     std::shared_ptr<const Snapshot> snapshot;
 };
 

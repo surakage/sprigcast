@@ -58,6 +58,7 @@ LABELS = {
     "keep_running": "Keep running when hidden",
     "hide_after": "Hide after (seconds)",
     "platform_marks": "Platform colors",
+    "chat_look": "Look",
     "text_color": "Text color",
     "card_color": "Card color",
     "hour_24": "24-hour clock",

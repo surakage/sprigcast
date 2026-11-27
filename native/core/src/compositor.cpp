@@ -140,6 +140,32 @@ void set4(float *dst, double a, double b, double c, double d) {
     dst[3] = static_cast<float>(d);
 }
 
+// 0..1 -> 0..1 along core/filters.py MOVE_EASINGS (filters.ease is the same).
+double ease(double t, int easing) {
+    t = std::clamp(t, 0.0, 1.0);
+    switch (easing) {
+    case 1: return t;
+    case 2: return t * t * t;
+    case 3: return 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
+    case 4: {  // bounce, as it lands
+        const double n = 7.5625, d = 2.75;
+        if (t < 1.0 / d) return n * t * t;
+        if (t < 2.0 / d) { t -= 1.5 / d; return n * t * t + 0.75; }
+        if (t < 2.5 / d) { t -= 2.25 / d; return n * t * t + 0.9375; }
+        t -= 2.625 / d;
+        return n * t * t + 0.984375;
+    }
+    case 5:  // elastic: overshoots and settles
+        if (t <= 0.0 || t >= 1.0) return t;
+        return std::pow(2.0, -10.0 * t) * std::sin((t * 10.0 - 0.75) * (2.0 * PI / 3.0)) + 1.0;
+    case 6: {  // back: a little past, then home
+        const double c = 1.70158;
+        return 1.0 + (c + 1.0) * std::pow(t - 1.0, 3) + c * std::pow(t - 1.0, 2);
+    }
+    default: return t * t * (3.0 - 2.0 * t);
+    }
+}
+
 double wrap01(double x) {  // Python's x % 1.0: always 0 <= result < 1
     double r = std::fmod(x, 1.0);
     return r < 0 ? r + 1.0 : r;
@@ -351,6 +377,22 @@ struct Renderer {
                 double dx = corner.x - cx, dy = corner.y - cy;
                 corner.x = cx + dx * ca - dy * sa;
                 corner.y = cy + dx * sa + dy * ca;
+            }
+        }
+
+        if (fx.move_seconds > 0.0f) {  // a move: from where it was (move_from) to where it is now
+            if (comp.moves.size() > 64) comp.moves.clear();
+            double start = comp.moves.emplace(std::make_pair(source, fx.move_run), time).first->second;
+            double e = ease(std::clamp((time - start) / fx.move_seconds, 0.0, 1.0), fx.move_easing);
+            double k = fx.move_from[2] + (1.0 - fx.move_from[2]) * e;
+            double a = fx.move_from[3] * (1.0 - e);
+            double ox = fx.move_from[0] * (1.0 - e), oy = fx.move_from[1] * (1.0 - e);
+            double cx = (q[0].x + q[1].x + q[2].x + q[3].x) / 4, cy = (q[0].y + q[1].y + q[2].y + q[3].y) / 4;
+            double ca = std::cos(a), sa = std::sin(a);
+            for (auto &corner : q) {
+                double dx = corner.x - cx, dy = corner.y - cy;
+                corner.x = cx + ox + k * (dx * ca - dy * sa);
+                corner.y = cy + oy + k * (dx * sa + dy * ca);
             }
         }
 
@@ -822,7 +864,8 @@ bool still_walk(const Snapshot &snap, uint64_t scene_id, const std::unordered_se
         if (it.effects >= 0 && static_cast<size_t>(it.effects) < snap.effects.size()) {
             const sc_effects &fx = snap.effects[static_cast<size_t>(it.effects)];
             // Filters that move on their own, frame by frame: Scroll, a barrel roll, the Background filter.
-            if (fx.scroll[0] != 0.0f || fx.scroll[1] != 0.0f || fx.spin_turns != 0.0f || fx.bg_mode != 0) {
+            if (fx.scroll[0] != 0.0f || fx.scroll[1] != 0.0f || fx.spin_turns != 0.0f || fx.move_seconds != 0.0f ||
+                fx.bg_mode != 0) {
                 why = it.source;
                 return false;
             }

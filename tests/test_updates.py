@@ -419,3 +419,15 @@ def test_the_prompt_names_test_builds(qt, monkeypatch):
     QSettings().remove(updates.SKIPPED)
     updater._on_checked(build, False, "")
     assert shown == [build]
+
+
+def test_a_tester_who_skipped_builds_sees_every_change_since_theirs():
+    builds = [update.release_from_json(_test_json(number=n, body=f"- Change {n}"), tests=True) for n in (1, 2, 3, 4)]
+    on_two = update.current_key("0.5.0", {"kind": "test", "test": 2})
+    newest = update.with_notes_since(builds, builds[3], on_two)
+    assert newest.test == 4 and newest.notes.index("test build 4") < newest.notes.index("test build 3")
+    assert "Change 3" in newest.notes and "Change 2" not in newest.notes
+    assert update.with_notes_since(builds, builds[3], update.current_key("0.5.0", {"kind": "test", "test": 3})) \
+        is builds[3]  # one build behind: its own notes
+    stable = update.release_from_json(_release_json("0.5.0"))
+    assert update.with_notes_since(builds + [stable], stable, on_two) is stable

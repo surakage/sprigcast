@@ -168,12 +168,17 @@ def _outcome(out: dict | None) -> str | dict | None:
 class WindowHost:
     """ControlApi's view of the main window (see control/api.py Host)."""
 
-    def __init__(self, window: MainWindow):
-        self.w = window
+    def __init__(self, window: MainWindow | None):
+        self.w = window  # None while SprigCast starts (open_early): apps can sign in, their requests wait
 
     @property
     def collection(self):
         return self.w.collection
+
+    def commit_quiet(self) -> None:
+        """A plugin's moment-to-moment change (a setting sliding, a bounce to a voice): the engine gets a copy at
+        most once a frame, as while dragging; nothing is saved or added to undo for it."""
+        self.w._changed(save=False)
 
     def commit_settings(self, sources) -> None:
         """Only these sources' settings changed (a plugin's own state): see MainWindow._settings_changed."""
@@ -534,6 +539,7 @@ class ControlServer(QObject):
     """
 
     _later_done = Signal(object)  # (socket, steps, Later, future) from a worker: answered on the window's thread
+    ready = True  # False while it was opened before the window (open_early)
 
     def __init__(self, api: ControlApi, parent: QObject | None = None, native: NativeApi | None = None):
         super().__init__(parent)
@@ -573,6 +579,11 @@ class ControlServer(QObject):
         self._answering = False
         self._drain_queued = False
         self._waiting: dict[object, int] = {}  # connection -> its messages in the inbox
+        # Open before the window (open_early): apps connect and sign in at once, and what they ask waits in _held
+        # until the window is there (ready). Streamer.bot tried while SprigCast was still starting and, refused,
+        # waited 30 s to try again (PC, 2026-11-26: port open 8.2 s after start, its attempt at 6.1 s).
+        self.ready = True
+        self._held: list[tuple[QWebSocket, str]] = []
 
     def _stored_devices(self) -> tuple[str, list | None]:
         """The saved value as it is now, and its devices (None if it can't be read here)."""
@@ -852,7 +863,7 @@ class ControlServer(QObject):
                 log.info("control: %s app connected from %s (%s)%s", "a SprigCast API" if native else "an OBS-style",
                          socket.peerAddress().toString(), self._labels[socket][0], _CONNECT_LOG.skipped("connect"))
             marks.append(("log", time.perf_counter()))
-            if first:  # start comparing from now
+            if first and self.ready:  # start comparing from now (before the window: when it's ready)
                 (self.native if native else self.api).changes()
             marks.append(("first look", time.perf_counter()))
             self.watch.start()
@@ -970,6 +981,9 @@ class ControlServer(QObject):
 
     def _received(self, socket: QWebSocket, text: str) -> None:
         session = self.sessions.get(socket)
+        if session is not None and not self.ready and (_signed_in(session) or '"do"' in text or '"steps"' in text):
+            self.__dict__.setdefault("_held", []).append((socket, text))  # asked before the window was there: answered once it is
+            return
         if session is not None:
             self._pump(socket, session.receive(text))
             self._mark_seen(session)
@@ -1054,6 +1068,23 @@ class ControlServer(QObject):
 
     # Events ----------------------------------------------------------------------------
 
+    def become_ready(self) -> None:
+        """The window is there: apps that connected while SprigCast started get their first look and answers."""
+        if self.ready:
+            return
+        self.ready = True
+        if self._obs():
+            self.api.changes()
+        if self._natives():
+            self.native.changes()
+        held, self._held = self.__dict__.get("_held", []), []
+        if held:
+            log.info("control: answering %d request(s) asked while SprigCast was starting", len(held))
+        for socket, text in held:
+            if socket in self.sessions:
+                self._waiting[socket] = self._waiting.get(socket, 0) + 1
+                self._queue(socket, lambda s=socket, t=text: self._received(s, t))
+
     def soon(self) -> None:
         """Something may have changed: compare once the current work is done (many edits, one look)."""
         self._edited = True
@@ -1070,6 +1101,9 @@ class ControlServer(QObject):
         self._light = 0 if full else getattr(self, "_light", 0) + 1
         if not full and (self._edited or self._light >= FULL_EVERY):
             full, self._light = True, 0  # a plugin may change its own settings: looked at fully now and then
+        if not self.ready:
+            self._notify_queued = False
+            return  # no window yet: nothing to compare (become_ready takes the first look)
         if full:
             self._notify_queued, self._edited = False, False
             self._full_at = time.monotonic()
@@ -1115,8 +1149,45 @@ class ControlServer(QObject):
             self.native_broadcast("clip.saved", {"files": [str(p) for p in paths]})
 
 
+_EARLY: ControlServer | None = None  # opened by open_early, taken over by start_for
+
+
+def _signed_in(session) -> bool:
+    return bool(getattr(session, "identified", False) or getattr(session, "welcomed", False))
+
+
+def open_early(parent: QObject) -> None:
+    """Listen as soon as the app is made, before the garden loads and the window is built, so an app that connects
+    while SprigCast starts (Streamer.bot does, then waits 30 s after a refusal) signs in at once. Requests wait
+    until the window is there (start_for). Never stops SprigCast from opening."""
+    global _EARLY
+    try:
+        if not saved_settings()["enabled"]:
+            return
+        server = ControlServer(ControlApi(WindowHost(None)), parent)
+        server.ready = False
+        apply_settings(server)
+        if server.listening:
+            _EARLY = server
+            log.info("control: open early, while SprigCast starts")
+        else:
+            server.stop()
+            server.deleteLater()
+    except Exception:  # noqa: BLE001
+        log.exception("control: couldn't open early; it opens with the window")
+
+
 def start_for(window: MainWindow) -> ControlServer:
-    """Make the window's control server and start it if Settings → Connections has it on."""
+    """Make the window's control server and start it if Settings → Connections has it on. One opened early
+    (open_early) is handed the window and answers what apps asked meanwhile."""
+    global _EARLY
+    server, _EARLY = _EARLY, None
+    if server is not None:
+        server.api.host.w = window
+        server.setParent(window)
+        apply_settings(server, window)
+        server.become_ready()
+        return server
     server = ControlServer(ControlApi(WindowHost(window)), window)
     apply_settings(server, window)
     return server

@@ -525,6 +525,25 @@ def test_more_obs_filters_come_over():
         ("upward_compressor", {"ratio": 2.0, "threshold_db": -30.0, "attack_ms": 10, "release_ms": 50})]
 
 
+def test_a_camera_video_delay_and_an_alpha_mask_come_over():
+    data = obs_file()
+    cam = next(s for s in data["sources"] if s["name"] == "Cam")
+    assert cam["id"] == "dshow_input"
+    cam["filters"] = [
+        {"id": "async_delay_filter", "name": "Lip sync", "settings": {"delay_ms": 400}},
+        {"id": "mask_filter_v2", "name": "Circle", "settings": {"type": "mask_alpha_filter.effect",
+                                                                 "image_path": "C:/masks/circle.png"}},
+        {"id": "mask_filter_v2", "name": "Blend", "settings": {"type": "blend_multiply_filter.effect",
+                                                                "image_path": "C:/masks/paper.png"}},
+    ]
+    garden, notes = from_obs(data, _like())
+    cam = next(s for s in garden.sources if s.name == "Cam")
+    assert cam.settings["delay_ms"] == 400
+    got = {f.name: (f.kind, f.settings) for f in cam.filters}
+    assert got == {"Circle": ("shape", {"shape": "image", "mask_file": "C:/masks/circle.png"})}
+    assert any("Blend" in n for n in notes)
+
+
 def test_import_lists_what_did_not_carry_over_by_type_only():
     from sprigcast.core import convert
     data = {"name": "Mine", "current_scene": "Main", "sources": [

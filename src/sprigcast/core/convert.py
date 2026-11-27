@@ -329,6 +329,15 @@ def _source(obs: dict[str, Any], audio_devices: list[str] | None, notes: list[st
         settings["muted"] = bool(obs.get("muted", False))
     if sk in SOUND_SHAPED:
         _sound_details(obs, settings)
+    if sk == "camera":  # OBS's Video Delay filter on a camera: the camera's own Video delay (at most 1 s)
+        delay = next((f for f in obs.get("filters") or [] if str(f.get("id") or "") in _VIDEO_DELAYS
+                      and f.get("enabled", True)), None)
+        if delay is not None:
+            ms = int(_num((delay.get("settings") or {}).get("delay_ms"), 0))
+            if ms > 0:
+                settings["delay_ms"] = min(1000, ms)
+                if ms > 1000:
+                    notes.append(f"{name}: its video delay was {ms} ms; SprigCast's camera delay goes up to 1000 ms.")
     monitoring = int(_num(obs.get("monitoring_type"), 0))  # OBS: 1 = monitor only, 2 = monitor and output
     if sk in ("audio_input", "audio_output", "app_audio", "media", "browser", "camera") and monitoring in (1, 2):
         settings["monitor"] = "only" if monitoring == 1 else True
@@ -414,8 +423,10 @@ def _stroke_glow_shadow(kind: str, s: dict[str, Any]) -> tuple[str, dict[str, An
     return mine, out
 
 
+_VIDEO_DELAYS = ("async_delay_filter", "gpu_delay")  # Video Delay (async) and Render Delay
+_IMAGE_MASKS = ("mask_filter", "mask_filter_v2")  # Image Mask/Blend: an alpha mask becomes the Frame's picture shape
 _BY_NAME = "name:"  # a filter naming another sound, until the sound has its SprigCast id
-_PICTURE_FILTERS = {"blur", "chroma_key", "color_correction", "sharpen", "scroll", "color_key", "luma_key", "lut",
+_PICTURE_FILTERS = {"blur", "chroma_key", "color_correction", "sharpen", "scroll", "color_key", "luma_key", "lut", "shape",
                     "stroke", "glow", "shadow"}
 
 
@@ -503,6 +514,23 @@ def _filters(obs: dict[str, Any], notes: list[str]) -> list[Filter]:
                                            "release_ms": max(1, int(_num(s.get("release_time"), 50)))}
         elif kind in _STROKE_GLOW_SHADOW:
             mapped = _stroke_glow_shadow(kind, s)
+        elif kind in _VIDEO_DELAYS and str(obs.get("id") or "") == "dshow_input":
+            continue  # carried over as the camera's own Video delay (_source)
+        elif kind in _IMAGE_MASKS and "alpha" in str(s.get("type", "")).lower() and s.get("image_path"):
+            mapped = "shape", {"shape": "image", "mask_file": str(s.get("image_path"))}
+        elif kind in ("move_value_filter", "move_audio_value_filter"):  # OBS's Move plugin: slide a setting
+            mapped = "move_value", _move_value_settings(s)
+            notes.append(f"{obs.get('name')}: {f.get('name') or kind} is now a Move value (it needs the Move "
+                         f"plugin).")
+        elif kind == "move_directshow_filter":
+            mapped = "move_camera", {**_move_timing(s), "use_zoom": False}
+            notes.append(f"{obs.get('name')}: {f.get('name') or kind} is now a Camera move; pick its pan, tilt "
+                         f"or zoom again (it needs the Move plugin).")
+        elif kind == "audio_move_filter":
+            notes.append(f"{obs.get('name')}: for {f.get('name') or kind}, add a Sound move to what should react "
+                         f"and have it listen to {obs.get('name')} (the Move plugin).")
+            _missed("filter", kind)
+            continue
         if mapped is None:
             notes.append(f"{obs.get('name')}: the {f.get('name') or kind} filter has no match yet.")
             _missed("filter", kind)
@@ -659,6 +687,7 @@ def from_obs(data: dict[str, Any], like: SceneCollection, size_of: SizeOf | None
             placements[part.id] = config
         return placements[part.id]
 
+    scales: dict[int, float] = {}  # OBS scene -> its size on our canvas (the Move filter's pixels)
     for obs in scenes:
         scene = made.get(id(obs))
         if scene is None:
@@ -666,6 +695,7 @@ def from_obs(data: dict[str, Any], like: SceneCollection, size_of: SizeOf | None
         obs_w, obs_h = obs_sizes[canvas_of[id(obs)]]
         target = col.canvas(scene.canvas)
         k = min(target.width / obs_w, target.height / obs_h) if obs_w and obs_h else 1.0
+        scales[id(obs)] = k
         for item in (obs.get("settings") or {}).get("items", []):
             if item.get("group_item_backup"):
                 continue  # a group's insides, copied here for old OBS versions
@@ -741,7 +771,7 @@ def from_obs(data: dict[str, Any], like: SceneCollection, size_of: SizeOf | None
         col.active_scenes[canvas_id] = on.id
 
     _transitions(data, col, by_name, made, notes)
-    _scene_filters(scenes, by_name, sources, made, notes)
+    _scene_filters(scenes, by_name, sources, made, notes, scales)
     _hotkeys(raw, made, sources, col)
     col.wrap_blooms()
     set_aside_unused(col, notes)
@@ -1069,8 +1099,62 @@ def vertical_twin(path: str) -> str:
     return ""
 
 
+_OBS_EASING = {8: "elastic", 9: "bounce", 10: "back"}  # the Move plugin's easing functions SprigCast has as such
+
+
+def _move_easing(s: dict[str, Any]) -> str:
+    match = int(_num(s.get("easing_match"), 0))
+    special = _OBS_EASING.get(int(_num(s.get("easing_function_match"), 0)))
+    if match and special:
+        return special
+    return {0: "linear", 1: "ease_in", 2: "ease_out"}.get(match, "smooth")
+
+
+# The Move plugin's start triggers SprigCast has: activate / deactivate and show / hide of the scene or of the
+# item, and its video starting or ending. The rest (a hotkey, chaining, UDP) start from a hotkey or an app.
+_OBS_START = {1: "shown", 2: "hidden", 3: "on", 4: "off", 6: "shown", 7: "hidden", 8: "on", 9: "off",
+              10: "media_start", 11: "media_end"}
+
+
+def _move_timing(s: dict[str, Any]) -> dict[str, Any]:
+    """How long, the easing and what starts it, the same on every Move plugin filter."""
+    ms = _num(s.get("duration"), 300) if s.get("custom_duration", True) else 300
+    return {"seconds": max(0.05, min(60.0, ms / 1000)), "easing": _move_easing(s),
+            "when": _OBS_START.get(int(_num(s.get("start_trigger"), 0)), "asked"), "then": "stay"}
+
+
+def _obs_color(value) -> str:
+    """OBS keeps colors as one number, red in the lowest byte."""
+    n = int(_num(value, 0xFFFFFF))
+    return f"#{n & 0xFF:02x}{(n >> 8) & 0xFF:02x}{(n >> 16) & 0xFF:02x}"
+
+
+def _move_value_settings(s: dict[str, Any]) -> dict[str, Any]:
+    to = s.get("setting_float") if s.get("setting_float") is not None else s.get("setting_int")
+    return {**_move_timing(s), "filter": str(s.get("filter") or ""), "setting": str(s.get("setting_name") or ""),
+            "to": float(_num(to, 0.0)), "to_color": _obs_color(s.get("setting_color"))}
+
+
+def _move_settings(s: dict[str, Any], obs_item: dict[str, Any] | None, k: float) -> dict[str, Any]:
+    """An OBS Move Source filter as a SprigCast Move: always by how much from where the item is (OBS's pixels are
+    its canvas', and its pos is where the item's anchor sits), so it lands in the same spot on our canvas."""
+    tx, ty = _xy(s.get("pos"))
+    sx, _sy = _xy(s.get("scale"), (1.0, 1.0))
+    if s.get("transform_relative") or obs_item is None:
+        dx, dy, size = tx, ty, (abs(sx) or 1.0) * 100 if not s.get("transform_relative") else 100.0
+        turn = _num(s.get("rot"))
+    else:
+        px, py = _xy(obs_item.get("pos"))
+        ix, _iy = _xy(obs_item.get("scale"), (1.0, 1.0))
+        dx, dy = tx - px, ty - py
+        size = (abs(sx) or 1.0) / (abs(ix) or 1.0) * 100
+        turn = _num(s.get("rot")) - _num(obs_item.get("rot"))
+    return {"relative": True, "x": round(dx * k, 1), "y": round(dy * k, 1), "size": max(1, min(1000, round(size))),
+            "turn": turn, **_move_timing(s)}
+
+
 def _scene_filters(scenes: list[dict[str, Any]], by_name: dict[str, dict], sources: dict[int, SourceConfig],
-                   made: dict[int, Scene], notes: list[str]) -> None:
+                   made: dict[int, Scene], notes: list[str], scales: dict[int, float] | None = None) -> None:
     """Filters on OBS scenes. A Move filter that only turns one thing in the scene (a barrel roll) becomes a
     Barrel roll on that item there (its own effect: the same source elsewhere doesn't spin, like in OBS), off
     until triggered; anything else is noted, not dropped quietly (PC, 2026-11-19: "THSV Barrel Roll" on the
@@ -1095,6 +1179,27 @@ def _scene_filters(scenes: list[dict[str, Any]], by_name: dict[str, dict], sourc
                 notes.append(f"{label}: now a Barrel roll on {target.name} in {here.name} (it needs the Barrel Roll "
                              f"plugin).")
                 continue
+            if kind == "move_source_filter" and item is not None:
+                name = str(s.get("source", ""))
+                uuid = (by_name.get(name) or {}).get("uuid")
+                obs_item = next((i for i in (scene.get("settings") or {}).get("items", []) if isinstance(i, dict)
+                                 and (i.get("name") == name or (uuid and i.get("source_uuid") == uuid))), None)
+                item.effects.append(Filter(id=f"f-{len(item.effects)}", kind="move", name=str(label), enabled=False,
+                                           settings=_move_settings(s, obs_item, (scales or {}).get(id(scene), 1.0))))
+                starts = item.effects[-1].settings["when"] != "asked"
+                notes.append(f"{label}: now a Move on {target.name} in {here.name}"
+                             + ("" if starts else "; give it a hotkey in Tools → Hotkeys") + " (it needs the Move plugin).")
+                continue
+            if kind == "move_source_swap_filter" and here is not None:
+                a = sources.get(id(by_name.get(str(s.get("source_a", "")), {})))
+                b = sources.get(id(by_name.get(str(s.get("source_b", "")), {})))
+                first = next((i for i in here.items if a is not None and i.source == a.id), None)
+                if first is not None and b is not None and any(i.source == b.id for i in here.items):
+                    first.effects.append(Filter(id=f"f-{len(first.effects)}", kind="move", name=str(label),
+                                                enabled=False, settings={**_move_timing(s), "swap": b.name}))
+                    notes.append(f"{label}: now a Move where {a.name} trades places with {b.name} in {here.name} "
+                                 f"(it needs the Move plugin).")
+                    continue
             notes.append(f"{scene.get('name')}: the {label} filter has no match yet.")
             _missed("scene filter", kind)
 
