@@ -503,6 +503,26 @@ Hide it and Barrel Roll take `in` (a bloom's or sprig's name or id): then only t
 | `replay.play` | Instant replay | Play the last seconds back on stream. | `source` (optional; default every Instant replay), `seconds` (1-120, default its Seconds), `speed` (0.25-1; 0.5 is slow motion) |
 | `replay.stop` | Instant replay | End a replay that's playing (it wipes out). | `source` (optional) |
 | `visualizer.set` | Audio visualizer | Change the look: style, colors, sensitivity. | `style` (bars, wave, circle or line), `color`, `peak_color` (#rrggbb), `sensitivity` (0.05 to 10), `source` (optional; default every visualizer), all optional |
+| `livecount.set` | Live count | Add a platform SprigCast doesn't read itself (Facebook...). Send it at least every 3 minutes; `viewers` below 0 takes it off. | `platform`, `viewers` |
+| `livecount.get` | Live count | The total, each platform's number, and whether you're live. | |
+| `hydrate.show` | Hydration | Show the "Time for a sip" card now (and count a sip). | |
+| `hydrate.snooze` | Hydration | Put the next reminder off. | `minutes` (optional, default 10) |
+| `hydrate.get` | Hydration | `{"sips", "showing", "nextInSeconds"}`. | |
+| `break.start` | Break & End Guard | A break now: your Break bloom goes on air, then what was on before comes back. | `minutes` (optional; default its Break minutes) |
+| `break.end` | Break & End Guard | End the break now and put back what was on air. | |
+| `break.later` | Break & End Guard | Put the next break off. | `minutes` (optional, default 30) |
+| `end.later` | Break & End Guard | Move the stream limit later. | `minutes` (optional, default 60) |
+| `break.get` | Break & End Guard | `{"onBreak", "breakLeft", "nextBreakIn", "endIn"}` (seconds or null). | |
+| `adbreak.get` | Ad break countdown | `{"nextAdIn", "adLeft", "duration"}` (seconds or null). | |
+| `clips.next` | Random clip player | Skip to the next clip. | |
+| `clips.get` | Random clip player | `{"title", "by", "problem"}` of the clip playing. | |
+| `wordcount.get` | Chat word counter | `{"count", "word"}`. | |
+| `wordcount.add` | Chat word counter | More (or fewer, negative). | `amount` (optional, default 1) |
+| `wordcount.reset` | Chat word counter | Back to 0. | |
+| `pin.set` | Pinned message | Pin words on stream. | `text`, `user` (optional) |
+| `pin.clear` | Pinned message | Take the pinned message down. | |
+| `pin.get` | Pinned message | `{"text", "user"}` (null when nothing is pinned). | |
+| `nametag.show` | Name tag | Slide the name tag in again. | |
 
 **Death count** answers every `deaths.*` action with `{"count": N}` and sends a `deaths.changed` event (`{"count": N}`, `plugin` group) after each change. Without `source` it changes every Death count you've added. The count is saved with your blooms, so it survives a restart. Adding a Death count (+ → Plugins → Death count) makes a sprig of its own on top of the bloom, like Snap: a gravestone grows out of the ground at the bottom, flips to the new number, holds for a few seconds (its Seconds setting) and sinks back.
 
@@ -517,6 +537,14 @@ Hide it and Barrel Roll take `in` (a bloom's or sprig's name or id): then only t
 **Now playing** shows the song Windows says is playing (Spotify, YouTube Music, browsers and most players; no keys or sign-in), with its cover, a time bar and sound bars, in the bottom left corner, in one of four styles. It fades away when the music pauses or stops. It listens to Windows only while the card is on screen, and only when told something changed. `nowplaying.get` answers `{"playing", "title", "artist", "album", "app", "length", "position"}` (seconds; 0 when the app doesn't say), and `nowplaying.changed` (same fields) comes when the song changes, pauses or jumps while the card is on screen.
 
 **Audio visualizer** draws bars, a wave, a circle or a line that move with a sound SprigCast already mixes (everything viewers hear, or one sound: a mic, desktop, music, an app). It listens only while it's on air. `visualizer.set` answers with the names it changed and the style and colors now. Adding one (+ → Plugins → Audio visualizer) makes a sprig of its own along the bottom of the bloom.
+
+**Live count** adds up how many watch across YouTube, Twitch and Kick (SprigCast reads those itself, at most once a minute, from `viewers.counts`) plus any platform an app sends with `livecount.set`. Its eye blinks now and then while you're live and stays shut with nobody watching.
+
+**Hydration** shows a "Time for a sip" card every Every minutes (45) while you're live, for Show for seconds (10), and counts the sips this stream. **Break & End Guard** counts from going live: every Every minutes (60) a break (with Start by itself, after a note Warning minutes before; otherwise a note asks), your Break bloom for Break minutes, then what was on before comes back. A note comes End warning minutes before your Stream limit (240) with One more hour; at the limit, with Switch to ending, your Ending bloom goes on air. It never stops the stream, and going off air ends everything. Apps hear `break.started`, `break.ended` and `stream.limit`. The notes are only in SprigCast; on stream its card says "Back in 4:32".
+
+**Ad break countdown** reads Twitch's ad schedule (`channel:read:ads`) about every 30 seconds while you're live (every 10 close to an ad) and shows "Ads in 0:45" before and "Back in 0:30" while ads play. **Random clip player** plays your own Twitch clips (Get Clips, then Get Clips Download with `channel:manage:clips`), fetched one ahead on a worker and played by SprigCast itself; **Clip title** shows each one's title and who clipped it. Both permissions are asked for when you connect Twitch; a sign-in from before asks you to connect Twitch once more (the plugin's status says so).
+
+**Socials** shows your handles one at a time (one line each, `Twitch: @yourname`) with each platform's icon. **Next stream** shows your next stream's day and time ("Friday 7 PM", "in 2 days") and moves on a week once it's passed. **Chat word counter** counts a word or emote in the Chat panel's chat across platforms ("GG × 42"), starting over each stream. **Playing now** shows your Twitch (or Kick) category, read once a minute. **Pinned message** shows a chat line you pick (right-click it in the Chat panel, Pin on stream). **Name tag** is a lower third that slides in when its bloom comes on.
 
 **Snap** has no actions of its own: it turns every saved screenshot (`screenshot.take`, the button or its hotkey) into a polaroid animation on stream. A camera pops up, flashes and prints the screenshot. The polaroid shows the whole screenshot. The saved file is the plain screenshot, and a screenshot taken while a polaroid is up leaves it out; turn on **Save a polaroid copy** in the Snap's settings (off by default) to also save the framed polaroid next to it. Adding a Snap (+ → Plugins → Snap) makes a sprig of its own that fills the canvas, on top of the bloom in every shape, so it overlays the stream without any placing. With **Freeze the screen while it prints** on (the default), the bloom on air holds still from the snapped frame until the polaroid slides away, so viewers see exactly the moment that was snapped; the Snap itself keeps moving.
 
