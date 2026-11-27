@@ -1184,9 +1184,20 @@ def streamlabs_to_obs(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
             continue
         filters = [{"id": f.get("type"), "name": f.get("name"), "enabled": f.get("enabled", True),
                     "settings": f.get("settings") or {}} for f in (s.get("filters") or {}).get("items", [])]
-        sources.append({"id": s.get("type"), "name": s.get("name"), "uuid": s.get("id"),
-                        "settings": s.get("settings") or {}, "volume": s.get("volume", 1.0),
-                        "muted": s.get("muted", False), "filters": filters})
+        obs = {"id": s.get("type"), "name": s.get("name"), "uuid": s.get("id"),
+               "settings": s.get("settings") or {}, "volume": s.get("volume", 1.0),
+               "muted": s.get("muted", False), "filters": filters}
+        # Streamlabs' Advanced Audio Properties, in OBS's words (_sound_details reads them)
+        if s.get("forceMono"):
+            obs["flags"] = OBS_FORCE_MONO
+        offset = s.get("syncOffset")
+        if isinstance(offset, dict):
+            obs["sync"] = int(_num(offset.get("sec"))) * 1_000_000_000 + int(_num(offset.get("nsec")))
+        if "audioMixers" in s:
+            obs["mixers"] = int(_num(s.get("audioMixers"), OBS_ALL_TRACKS))
+        if "monitoringType" in s:
+            obs["monitoring_type"] = int(_num(s.get("monitoringType")))
+        sources.append(obs)
         if s.get("propertiesManager") == "widget":
             notes.append(f"{s.get('name')}: a Streamlabs widget; it comes over as its browser page.")
     vertical_uuid = "streamlabs-vertical"

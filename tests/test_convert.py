@@ -588,3 +588,16 @@ def test_obs_blend_modes_and_show_transitions_are_noted():
     assert any("additive blending" in n for n in notes) and any("own show transition" in n for n in notes)
     summary = convert.missed_summary()
     assert "item:blend:additive x1" in summary and "item:show_transition:fade_transition x1" in summary
+
+
+def test_streamlabs_sound_details_come_over():
+    from sprigcast.core.convert import streamlabs_to_obs
+
+    data = {"nodeType": "RootNode", "sources": {"nodeType": "SourcesNode", "items": [
+        {"id": "m1", "name": "Music", "type": "wasapi_process_output_capture", "settings": {}, "volume": 1,
+         "forceMono": True, "syncOffset": {"sec": 0, "nsec": 200_000_000}, "audioMixers": 0b001000,
+         "monitoringType": 1}]}, "scenes": {"items": []}}
+    obs, _notes = streamlabs_to_obs(data)
+    music = obs["sources"][0]
+    assert music["flags"] == 2 and music["sync"] == 200_000_000 and music["mixers"] == 8
+    assert music["monitoring_type"] == 1
