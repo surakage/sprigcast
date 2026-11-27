@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,8 @@ from sprigcast.core.scene import (  # noqa: I001
     Transition,
     TransitionRule,
 )
+
+from sprigcast.core.looks import FROM_FILE as LUT_FROM_FILE  # noqa: E402
 
 MAX_BYTES = 64 * 1024 * 1024  # a scene collection bigger than this isn't one
 PAGES_SLEEP_NOTE = ("Web pages: each sleeps while not on screen (OBS kept them all running). A page that must keep "
@@ -93,10 +96,24 @@ def detect(data: Any) -> str:
 
 APP_NAMES = {"obs": "OBS", "streamlabs": "Streamlabs", "meld": "Meld"}
 
+# What the last import couldn't carry over, as "source:vlc_source"-style keys with counts: the plugin and type ids
+# only, never names or paths, so it can go in the logbook (core/privacy.py) and show which matches to build next.
+MISSED: Counter[str] = Counter()
+
+
+def _missed(what: str, kind: Any) -> None:
+    MISSED[f"{what}:{str(kind or 'unknown')[:60]}"] += 1
+
+
+def missed_summary() -> str:
+    """'filter:move_source_filter x3, source:vlc_source x1' (most first), or '' when everything came over."""
+    return ", ".join(f"{key} x{count}" for key, count in MISSED.most_common())
+
 
 def convert(data: Any, like: SceneCollection, size_of: SizeOf | None = None,
             audio_devices: list[str] | None = None) -> tuple[SceneCollection, list[str]]:
-    """Any supported file's data -> (garden, notes about what didn't come over)."""
+    """Any supported file's data -> (garden, notes about what didn't come over). MISSED says the same for the log."""
+    MISSED.clear()
     kind = detect(data)
     if kind == "obs":
         return from_obs(data, like, size_of, audio_devices)
@@ -210,9 +227,21 @@ def _source(obs: dict[str, Any], audio_devices: list[str] | None, notes: list[st
     out: tuple[str, dict[str, Any]] | None = None
     if kind == "image_source":
         out = "image", {"path": str(s.get("file", ""))}
+    elif kind in ("slideshow", "slideshow_v2"):  # the Slide show plugin (Plugin store) plays a folder
+        files = [str(f.get("value", "")) for f in s.get("files") or [] if isinstance(f, dict) and f.get("value")]
+        folders = {f if not Path(f).suffix else str(Path(f).parent) for f in files}
+        out = "slideshow", {"folder": sorted(folders)[0] if folders else "",
+                            "seconds": max(1, round(_num(s.get("slide_time"), 8000) / 1000)),
+                            "shuffle": bool(s.get("randomize", False)), "loop": bool(s.get("loop", True)),
+                            **_slide_box(s.get("use_custom_size"))}
+        if len(folders) > 1:
+            notes.append(f"{name}: OBS played pictures from {len(folders)} folders; the Slide show plays one, "
+                         "so put them in one folder.")
+            _missed("source", "slideshow:several_folders")
     elif kind == "ffmpeg_source":
         if s.get("is_local_file", True) is False:
             notes.append(f"{name}: a network stream (not a file) isn't supported yet.")
+            _missed("source", "ffmpeg_source:network")
             return None
         out = "media", {"path": str(s.get("local_file", "")), "loop": bool(s.get("looping", False)),
                         "restart_on_show": bool(s.get("restart_on_activate", True)),
@@ -288,18 +317,54 @@ def _source(obs: dict[str, Any], audio_devices: list[str] | None, notes: list[st
         out = "app_audio", {"apps": [exe] if exe else []}
     if out is None and kind == "obs_glow_source":
         notes.append(f"{name}: the Glow plugin's source has no match; add the Glow effect in Filters instead.")
+        _missed("source", kind)
         return None
     if out is None:
         notes.append(f"{name}: {kind or 'this kind of source'} has no match in SprigCast yet.")
+        _missed("source", kind)
         return None
     sk, settings = out
     if sk in ("audio_input", "audio_output", "app_audio", "media", "browser"):
         settings["volume_db"] = _volume_db(obs.get("volume", 1.0))
         settings["muted"] = bool(obs.get("muted", False))
+    if sk in SOUND_SHAPED:
+        _sound_details(obs, settings)
     monitoring = int(_num(obs.get("monitoring_type"), 0))  # OBS: 1 = monitor only, 2 = monitor and output
     if sk in ("audio_input", "audio_output", "app_audio", "media", "browser", "camera") and monitoring in (1, 2):
         settings["monitor"] = "only" if monitoring == 1 else True
     return SourceConfig(id="", kind=sk, name=name, settings=settings, filters=_filters(obs, notes))
+
+
+SOUND_SHAPED = ("audio_input", "audio_output", "app_audio", "media", "browser")
+OBS_FORCE_MONO = 1 << 1  # OBS's source flag
+OBS_ALL_TRACKS = 0b111111
+
+
+def _slide_box(custom: Any) -> dict[str, int]:
+    """OBS's slide show size: "1280x720", or "Automatic" (the biggest picture; here the usual 1920x1080)."""
+    match = re.fullmatch(r"\s*(\d+)\s*x\s*(\d+)\s*", str(custom or ""))
+    return {"width": int(match[1]), "height": int(match[2])} if match else {"width": 1920, "height": 1080}
+
+
+def _sound_details(obs: dict[str, Any], settings: dict[str, Any]) -> None:
+    """OBS's Advanced Audio Properties the SprigCast way: mono, balance, sync offset (a delay; SprigCast can't
+    play a sound early, so a negative offset is left at 0) and tracks (OBS track 1 is what's streamed and
+    recorded; tracks 4 and 5 are SprigCast's own picks; one on no track at all is heard nowhere)."""
+    if int(_num(obs.get("flags"))) & OBS_FORCE_MONO:
+        settings["mono"] = True
+    balance = _num(obs.get("balance"), 0.5)  # OBS: 0 left .. 0.5 centre .. 1 right
+    if abs(balance - 0.5) > 1e-3:
+        settings["balance"] = round(max(-1.0, min(1.0, (balance - 0.5) * 2)), 3)
+    sync_ms = int(round(_num(obs.get("sync")) / 1_000_000))  # nanoseconds
+    if sync_ms > 0:
+        settings["delay_ms"] = min(2000, sync_ms)
+    if "mixers" in obs:
+        mixers = int(_num(obs.get("mixers"), OBS_ALL_TRACKS))
+        if not mixers & 1:  # off track 1: not in the stream or the recording's main mix
+            settings["tracks"] = []
+        for bit, track in ((3, "track4"), (4, "track5")):
+            if mixers & (1 << bit) and mixers != OBS_ALL_TRACKS:
+                settings[track] = True
 
 
 def _device(name: str, device_id: str, devices: list[str] | None) -> str | None:
@@ -314,8 +379,44 @@ def _device(name: str, device_id: str, devices: list[str] | None) -> str | None:
 _KEY_COLORS = {"green": "#00ff00", "blue": "#0000ff", "magenta": "#ff00ff"}
 
 
+# The Stroke Glow Shadow plugin's filters (OBS) as SprigCast's own Outline, Glow and Shadow. Its settings have
+# had a few names over its versions; the first one found is used, else SprigCast's default.
+_STROKE_GLOW_SHADOW = {"obs_stroke_filter": "stroke", "stroke_filter": "stroke", "obs_glow_filter": "glow",
+                       "glow_filter": "glow", "obs_shadow_filter": "shadow", "shadow_filter": "shadow"}
+
+
+def _first(s: dict[str, Any], *names: str) -> Any:
+    return next((s[n] for n in names if n in s), None)
+
+
+def _stroke_glow_shadow(kind: str, s: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    mine = _STROKE_GLOW_SHADOW[kind]
+    color = _first(s, f"{mine}_color", "color", "fill_color")
+    opacity = _first(s, f"{mine}_opacity", "opacity", "fill_opacity")
+    out: dict[str, Any] = {}
+    if color is not None:
+        out["color"] = obs_color(color)[:7]
+    if mine == "stroke":
+        out["width"] = max(0.5, min(40.0, _num(_first(s, "stroke_size", "size", "width"), 4.0)))
+        if opacity is not None:
+            out["opacity"] = int(max(0.0, min(100.0, _num(opacity) * (100 if _num(opacity) <= 1 else 1))))
+    elif mine == "glow":
+        out["size"] = max(1.0, min(60.0, _num(_first(s, "glow_size", "size"), 16.0)))
+        strength = _first(s, "intensity", "glow_intensity", "strength")
+        if strength is not None:
+            out["strength"] = int(max(0.0, min(100.0, _num(strength) * (100 if _num(strength) <= 1 else 1))))
+    else:
+        out["offset_x"] = max(-100.0, min(100.0, _num(_first(s, "shadow_offset_x", "offset_x"), 8.0)))
+        out["offset_y"] = max(-100.0, min(100.0, _num(_first(s, "shadow_offset_y", "offset_y"), 8.0)))
+        out["blur"] = max(0.0, min(60.0, _num(_first(s, "shadow_blur", "blur_size", "blur"), 12.0)))
+        if opacity is not None:
+            out["opacity"] = int(max(0.0, min(100.0, _num(opacity) * (100 if _num(opacity) <= 1 else 1))))
+    return mine, out
+
+
 _BY_NAME = "name:"  # a filter naming another sound, until the sound has its SprigCast id
-_PICTURE_FILTERS = {"blur", "chroma_key", "color_correction", "sharpen", "scroll"}
+_PICTURE_FILTERS = {"blur", "chroma_key", "color_correction", "sharpen", "scroll", "color_key", "luma_key", "lut",
+                    "stroke", "glow", "shadow"}
 
 
 def _filters(obs: dict[str, Any], notes: list[str]) -> list[Filter]:
@@ -373,8 +474,38 @@ def _filters(obs: dict[str, Any], notes: list[str]) -> list[Filter]:
             mapped = "blur", {"mode": "blur", "size": max(0.5, min(64.0, _num(s.get("Filter.Blur.Size"), 5.0)))}
         elif kind == "scroll_filter":
             mapped = "scroll", {"speed_x": _num(s.get("speed_x")), "speed_y": _num(s.get("speed_y"))}
+        elif kind in ("color_key_filter", "color_key_filter_v2"):
+            key = _KEY_COLORS.get(str(s.get("key_color_type", "green")))
+            mapped = "color_key", {"key_color": key or obs_color(s.get("key_color", 0xFF00FF00))[:7],
+                                   "similarity": int(_num(s.get("similarity"), 80)),
+                                   "smoothness": int(_num(s.get("smoothness"), 50))}
+        elif kind in ("luma_key_filter", "luma_key_filter_v2"):
+            mapped = "luma_key", {"luma_min": _num(s.get("luma_min"), 0.0), "luma_max": _num(s.get("luma_max"), 1.0),
+                                  "smoothness": max(_num(s.get("luma_min_smooth")), _num(s.get("luma_max_smooth")))}
+        elif kind == "clut_filter":
+            path = str(s.get("image_path", ""))
+            if path.lower().endswith(".cube"):
+                mapped = "lut", {"look": LUT_FROM_FILE, "file": path,
+                                 "amount": int(round(_num(s.get("clut_amount"), 1.0) * 100))}
+            else:
+                notes.append(f"{obs.get('name')}: the {f.get('name') or 'LUT'} filter uses a picture LUT; "
+                             "Mood takes .cube files.")
+                _missed("filter", "clut_filter:picture")
+                continue
+        elif kind == "basic_eq_filter":
+            mapped = "eq3", {"low_db": _num(s.get("low")), "mid_db": _num(s.get("mid")), "high_db": _num(s.get("high"))}
+        elif kind == "invert_polarity_filter":
+            mapped = "invert_polarity", {}
+        elif kind == "upward_compressor_filter":
+            mapped = "upward_compressor", {"ratio": _num(s.get("ratio"), 1.5),
+                                           "threshold_db": _num(s.get("threshold"), -20.0),
+                                           "attack_ms": max(1, int(_num(s.get("attack_time"), 10))),
+                                           "release_ms": max(1, int(_num(s.get("release_time"), 50)))}
+        elif kind in _STROKE_GLOW_SHADOW:
+            mapped = _stroke_glow_shadow(kind, s)
         if mapped is None:
             notes.append(f"{obs.get('name')}: the {f.get('name') or kind} filter has no match yet.")
+            _missed("filter", kind)
             continue
         if mapped[0] in _PICTURE_FILTERS and str(obs.get("id") or "") in AUDIO_IDS:
             continue  # a picture filter on a sound does nothing in OBS either
@@ -557,6 +688,21 @@ def from_obs(data: dict[str, Any], like: SceneCollection, size_of: SizeOf | None
             else:
                 continue
             scene.items.append(_item(item, config.id, size, k, notes, config.name))
+            flip_x, flip_y = flips(item)
+            if flip_x and not flip_y and getattr(config, "kind", "") == "camera":
+                config.settings["mirror"] = True  # a camera flipped left to right: SprigCast's Mirror
+            elif flip_x or flip_y:
+                notes.append(f"{config.name}: flipped in OBS; SprigCast can't flip it yet, so it shows unflipped.")
+                _missed("item", "flip")
+            blend = str(item.get("blend_type") or "normal")
+            if blend != "normal":
+                notes.append(f"{config.name}: uses OBS's {blend.replace('_', ' ')} blending; it blends normally here.")
+                _missed("item", f"blend:{blend}")
+            for when in ("show", "hide"):
+                moving = item.get(f"{when}_transition")
+                if isinstance(moving, dict) and moving.get("id"):
+                    notes.append(f"{config.name}: its own {when} transition isn't carried over yet.")
+                    _missed("item", f"{when}_transition:{moving.get('id')}")
 
     # Blooms: "X (Vertical)" switches with "X"; the twin keeps the plain name (its canvas says which).
     shows = [s for s in col.scenes if s.kind == "show"]
@@ -852,7 +998,7 @@ _LEFT_OUT = re.compile(r"has no match|isn't supported")
 
 def _size(config: SourceConfig, size_of: SizeOf, canvas: tuple[float, float]) -> tuple[float, float] | None:
     s = config.settings
-    if config.kind in ("browser", "color"):
+    if config.kind in ("browser", "color", "slideshow"):
         return _num(s.get("width"), 800), _num(s.get("height"), 600)
     if config.kind == "camera":
         return _num(s.get("width"), 1920), _num(s.get("height"), 1080)
@@ -869,6 +1015,7 @@ def _item(item: dict[str, Any], source_id: str, size: tuple[float, float] | None
     """One OBS scene item. OBS's pos is the anchor point; SprigCast keeps the box's top-left corner."""
     px, py = _xy(item.get("pos"))
     sx, sy = _xy(item.get("scale"), (1.0, 1.0))
+    flip_x, flip_y = sx < 0, sy < 0  # OBS flips with a negative scale: the picture then runs the other way from pos
     sx, sy = abs(sx) or 1.0, abs(sy) or 1.0
     crop = tuple(max(0, int(_num(item.get(f"crop_{side}")))) for side in ("left", "top", "right", "bottom"))
     align = _ALIGN.get(int(_num(item.get("align"), 5)), "top_left")
@@ -890,8 +1037,15 @@ def _item(item: dict[str, Any], source_id: str, size: tuple[float, float] | None
         if align != "top_left":
             notes.append(f"{name}: check where it sits (its size wasn't known).")
     ax, ay = (_ALIGN_SHARE[align])
+    ax, ay = (1 - ax) if flip_x else ax, (1 - ay) if flip_y else ay
     out.x, out.y = (px - w * ax) * k, (py - h * ay) * k
     return out
+
+
+def flips(item: dict[str, Any]) -> tuple[bool, bool]:
+    """(left-right, upside down): OBS's Transform → Flip, kept as a negative scale."""
+    sx, sy = _xy(item.get("scale"), (1.0, 1.0))
+    return sx < 0, sy < 0
 
 
 _ALIGN_SHARE = {a: ((i % 3) / 2, (i // 3) / 2) for i, a in enumerate(
@@ -938,10 +1092,11 @@ def _scene_filters(scenes: list[dict[str, Any]], by_name: dict[str, dict], sourc
                     id=f"f-{len(item.effects)}", kind="barrel_roll", name=str(label), enabled=False,
                     settings={"seconds": max(0.5, min(120.0, ms / 1000)), "turns": max(1, round(abs(turn) / 360)),
                               "direction": "anticlockwise" if s.get("rot_sign") == "-" else "clockwise"}))
-                notes.append(f"{label}: now a Barrel roll on {target.name} in {here.name} (add Barrel Roll from "
-                             f"the Plugin store to use it).")
+                notes.append(f"{label}: now a Barrel roll on {target.name} in {here.name} (it needs the Barrel Roll "
+                             f"plugin).")
                 continue
             notes.append(f"{scene.get('name')}: the {label} filter has no match yet.")
+            _missed("scene filter", kind)
 
 
 def _transition(obs: dict[str, Any] | None, duration: int, notes: list[str]) -> Transition | None:
@@ -969,6 +1124,7 @@ def _transition(obs: dict[str, Any] | None, duration: int, notes: list[str]) -> 
                           stinger=Stinger(path=path, vertical_path=vertical_twin(path), cut_ms=point,
                                           matte=matte if s.get("track_matte_enabled") else "none"))
     notes.append(f"{obs.get('name') or kind}: that transition has no match yet (using fade).")
+    _missed("transition", kind)
     return Transition(kind="fade", duration_ms=duration)
 
 
@@ -994,6 +1150,7 @@ def _transitions(data: dict[str, Any], col: SceneCollection, by_name: dict[str, 
         scene = made.get(id(obs))
         if scene is None or scene.kind != "show":
             notes.append(f"{obs.get('name')}: its own transition ({name}) isn't carried over: it's a sprig here.")
+            _missed("sprig transition", "override")
         elif scene.linked_to:
             later.append((scene, override, str(name)))
         else:
@@ -1044,9 +1201,20 @@ def streamlabs_to_obs(data: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
             continue
         filters = [{"id": f.get("type"), "name": f.get("name"), "enabled": f.get("enabled", True),
                     "settings": f.get("settings") or {}} for f in (s.get("filters") or {}).get("items", [])]
-        sources.append({"id": s.get("type"), "name": s.get("name"), "uuid": s.get("id"),
-                        "settings": s.get("settings") or {}, "volume": s.get("volume", 1.0),
-                        "muted": s.get("muted", False), "filters": filters})
+        obs = {"id": s.get("type"), "name": s.get("name"), "uuid": s.get("id"),
+               "settings": s.get("settings") or {}, "volume": s.get("volume", 1.0),
+               "muted": s.get("muted", False), "filters": filters}
+        # Streamlabs' Advanced Audio Properties, in OBS's words (_sound_details reads them)
+        if s.get("forceMono"):
+            obs["flags"] = OBS_FORCE_MONO
+        offset = s.get("syncOffset")
+        if isinstance(offset, dict):
+            obs["sync"] = int(_num(offset.get("sec"))) * 1_000_000_000 + int(_num(offset.get("nsec")))
+        if "audioMixers" in s:
+            obs["mixers"] = int(_num(s.get("audioMixers"), OBS_ALL_TRACKS))
+        if "monitoringType" in s:
+            obs["monitoring_type"] = int(_num(s.get("monitoringType")))
+        sources.append(obs)
         if s.get("propertiesManager") == "widget":
             notes.append(f"{s.get('name')}: a Streamlabs widget; it comes over as its browser page.")
     vertical_uuid = "streamlabs-vertical"
@@ -1347,6 +1515,7 @@ def _meld_audio(track: dict[str, Any], names: dict[str, str], notes: list[str]) 
                             "settings": {"threshold": _num(node.get("threshold"), -6.0)}})
         else:
             notes.append(f"{name}: Meld's {label or 'sound'} effect has no match yet.")
+            _missed("meld effect", label)
     common = {"name": name, "uuid": str(track.get("id") or name), "volume": _num(track.get("gain"), 1.0),
               "muted": bool(track.get("muted", False)), "filters": filters}
     unique = str(track.get("uniqueId") or "")
@@ -1536,3 +1705,146 @@ def guess_name(path: Path, data: Any) -> str:
     if detect(data) == "meld" and path.stem.casefold() == "session":
         return "Meld"
     return path.stem.replace("_", " ")
+
+
+# OBS's profile (Settings → Output and Video), the SprigCast way. A scene collection doesn't hold these: they sit
+# in the profile folder next to it (obs-studio/basic/profiles/<name>/basic.ini + streamEncoder.json). Stream keys
+# (service.json) are never read.
+
+_OBS_ENCODERS = {"obs_x264": "libx264", "x264": "libx264", "jim_nvenc": "h264_nvenc", "ffmpeg_nvenc": "h264_nvenc",
+                 "obs_nvenc_h264_tex": "h264_nvenc", "nvenc": "h264_nvenc", "jim_hevc_nvenc": "hevc_nvenc",
+                 "obs_nvenc_hevc_tex": "hevc_nvenc", "nvenc_hevc": "hevc_nvenc", "jim_av1_nvenc": "av1_nvenc",
+                 "obs_nvenc_av1_tex": "av1_nvenc", "nvenc_av1": "av1_nvenc", "h264_texture_amf": "h264_amf",
+                 "amd_amf_h264": "h264_amf", "amd": "h264_amf", "h265_texture_amf": "hevc_amf",
+                 "amd_amf_h265": "hevc_amf", "amd_hevc": "hevc_amf", "av1_texture_amf": "av1_amf",
+                 "obs_qsv11": "h264_qsv", "obs_qsv11_v2": "h264_qsv", "qsv": "h264_qsv",
+                 "obs_qsv11_hevc": "hevc_qsv", "obs_qsv11_av1": "av1_qsv"}
+CLIP_LENGTHS = (15, 30, 45, 60)
+
+
+def encoder_words(name: str) -> str:
+    """'h264_nvenc' -> 'NVIDIA H.264', 'libx264' -> 'x264 (CPU)'."""
+    if name == "libx264":
+        return "x264 (CPU)"
+    codec, _, maker = name.partition("_")
+    return f"{ {'nvenc': 'NVIDIA', 'amf': 'AMD', 'qsv': 'Intel'}.get(maker, maker)} " \
+           f"{ {'h264': 'H.264', 'hevc': 'HEVC', 'av1': 'AV1'}.get(codec, codec)}"
+
+
+def find_profile(collection_path: Path) -> Path | None:
+    """The OBS profile folder that goes with a scene collection in obs-studio/basic/scenes: the one OBS last used
+    (global.ini or user.ini → [Basic] ProfileDir), or the only one there is."""
+    basic = collection_path.parent.parent
+    profiles = basic / "profiles"
+    if collection_path.parent.name.lower() != "scenes" or not profiles.is_dir():
+        return None
+    for ini in (basic.parent / "user.ini", basic.parent / "global.ini"):
+        folder = _ini(ini).get("Basic", {}).get("ProfileDir")
+        if folder and (profiles / folder / "basic.ini").is_file():
+            return profiles / folder
+    found = [p for p in profiles.iterdir() if (p / "basic.ini").is_file()]
+    return found[0] if len(found) == 1 else None
+
+
+def _ini(path: Path) -> dict[str, dict[str, str]]:
+    """An OBS .ini as {section: {key: value}} ({} when it isn't there or can't be read)."""
+    import configparser
+
+    parser = configparser.ConfigParser(interpolation=None, strict=False)
+    parser.optionxform = str  # OBS's keys are case-sensitive
+    try:
+        parser.read_string(path.read_text(encoding="utf-8-sig", errors="replace"))
+    except (OSError, configparser.Error):
+        return {}
+    return {name: dict(parser[name]) for name in parser.sections()}
+
+
+def apply_profile(col: SceneCollection, folder: Path, notes: list[str]) -> None:
+    """Frame rate, output size, recording folder and format, clip length and the stream's encoder settings."""
+    ini = _ini(folder / "basic.ini")
+    video, output = ini.get("Video", {}), ini.get("Output", {})
+    advanced = output.get("Mode", "Simple").lower() == "advanced"
+    out = ini.get("AdvOut" if advanced else "SimpleOutput", {})
+    changed: list[str] = []
+    fps = _obs_fps(video)
+    base = (int(_num(video.get("BaseCX"))), int(_num(video.get("BaseCY"))))
+    scaled = (int(_num(video.get("OutputCX"))), int(_num(video.get("OutputCY"))))
+    wide = next((c for c in col.canvases if c.width >= c.height), None)
+    if wide is not None and fps:
+        wide.fps = fps
+        changed.append(f"{fps} fps")
+    if wide is not None and all(base) and all(scaled) and scaled != base and min(scaled) < min(wide.width, wide.height):
+        wide.output_short_side = min(scaled)
+        changed.append(f"sent out at {scaled[0]}x{scaled[1]}")
+    folder_key, format_key = ("RecFilePath", "RecFormat2") if advanced else ("FilePath", "RecFormat2")
+    rec_folder = out.get(folder_key) or out.get("FilePath")
+    if rec_folder:
+        col.recording.folder = rec_folder
+        changed.append("recordings folder")
+    container = (out.get(format_key) or out.get("RecFormat") or "").lower()
+    if container in ("mkv", "mp4", "fragmented_mp4", "hybrid_mp4"):
+        col.recording.container = "mkv" if container == "mkv" else "mp4"
+        changed.append(f"records as {col.recording.container.upper()}")
+    seconds = int(_num(out.get("RecRBTime")))
+    if seconds:
+        col.recording.replay_seconds = min(CLIP_LENGTHS, key=lambda n: abs(n - seconds))
+        changed.append(f"{col.recording.replay_seconds}-second clips")
+    _stream_encoder(col, folder, out, advanced, changed, notes)
+    if changed:
+        notes.append(f"From your OBS profile ({folder.name}): {', '.join(changed)}.")
+
+
+def _obs_fps(video: dict[str, str]) -> int:
+    kind = int(_num(video.get("FPSType"), 0))  # 0 common, 1 whole number, 2 fraction
+    if kind == 1:
+        return int(_num(video.get("FPSInt")))
+    if kind == 2:
+        den = _num(video.get("FPSDen"), 1) or 1
+        return int(round(_num(video.get("FPSNum")) / den))
+    common = str(video.get("FPSCommon") or "")
+    return int(round(_num(common.split()[0]))) if common else 0
+
+
+def _stream_encoder(col: SceneCollection, folder: Path, out: dict[str, str], advanced: bool, changed: list[str],
+                    notes: list[str]) -> None:
+    encoder = col.stream_encoder
+    name = out.get("Encoder" if advanced else "StreamEncoder") or ""
+    if name in _OBS_ENCODERS:
+        encoder.encoder = _OBS_ENCODERS[name]
+        changed.append(f"{encoder_words(encoder.encoder)} encoder")
+    elif name:
+        _missed("encoder", name)
+    bitrate = int(_num(out.get("VBitrate")))
+    if advanced:
+        try:
+            settings = json.loads((folder / "streamEncoder.json").read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            settings = {}
+        if not isinstance(settings, dict):
+            settings = {}
+        bitrate = int(_num(settings.get("bitrate"), bitrate))
+        rate = str(settings.get("rate_control", "")).lower()
+        if rate in ("cbr", "vbr", "cqp"):
+            encoder.rate_control = rate  # type: ignore[assignment]
+            if rate == "cqp" and "cqp" in settings:
+                encoder.cq_level = int(_num(settings["cqp"], encoder.cq_level))
+        if "keyint_sec" in settings:
+            encoder.keyint_sec = max(0, int(_num(settings["keyint_sec"])))
+        preset = str(settings.get("preset2") or "")
+        if preset in ("p1", "p2", "p3", "p4", "p5", "p6", "p7"):
+            encoder.preset = preset  # type: ignore[assignment]
+        if settings.get("tune") in ("hq", "ll", "ull"):
+            encoder.tuning = settings["tune"]
+        if settings.get("multipass") in ("disabled", "qres", "fullres"):
+            encoder.multipass = settings["multipass"]
+        if settings.get("profile") in ("high", "main", "baseline"):
+            encoder.profile = settings["profile"]
+        if encoder.encoder == "libx264" and settings.get("preset"):
+            encoder.x264_preset = str(settings["preset"])
+        if rate:
+            changed.append(f"{rate.upper()}")
+    if bitrate:
+        for place in col.outputs:
+            if place.type == "stream":
+                place.bitrate_kbps = bitrate
+        notes.append(f"OBS streamed at {bitrate} kbps; set each place's bitrate in Settings → Stream if it differs.")
