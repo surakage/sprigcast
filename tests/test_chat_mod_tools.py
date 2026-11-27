@@ -176,3 +176,129 @@ def test_youtube_timeout_ban_and_delete_calls(monkeypatch):
 
     with pytest.raises(moderation.ModerationError):
         moderation.act("youtube", "", "ban", user_id="UCx")  # no stream found yet
+
+
+# The mod bar (Twitch) ---------------------------------------------------------------------------------------
+
+
+def test_twitch_chat_modes_shield_and_clear_call_helix(monkeypatch):
+    from sprigcast.output import twitch_auth
+
+    tokens = {"access_token": "t", "refresh_token": "r", "expires_at": 9e12, "login": "surakage",
+              "user_id": "42", "scope": list(twitch_auth.MOD_SCOPES)}
+    monkeypatch.setattr(twitch_auth, "_load", lambda: tokens)
+    with pytest.raises(twitch_auth.NeedsReconnect):  # an older sign-in: once more to allow the mod bar
+        twitch_auth.set_chat_mode("surakage", "slow_mode", True)
+    assert {twitch_auth.SETTINGS_SCOPE, twitch_auth.SHIELD_SCOPE} <= set(twitch_auth.SCOPES.split())
+    tokens["scope"] += [twitch_auth.SETTINGS_SCOPE, twitch_auth.SHIELD_SCOPE]
+    calls = []
+
+    def send(method, path, body, token, cid):
+        calls.append((method, path, body))
+        if path.startswith("/chat/settings") and method == "GET":
+            return {"data": [{"slow_mode": True, "follower_mode": False, "subscriber_mode": False, "emote_mode": True}]}
+        if path.startswith("/moderation/shield_mode") and method == "GET":
+            return {"data": [{"is_active": True}]}
+        return {}
+
+    monkeypatch.setattr(twitch_auth, "_send", send)
+    where = "broadcaster_id=42&moderator_id=42"
+    assert twitch_auth.chat_modes("surakage") == {"slow_mode": True, "follower_mode": False,
+                                                  "subscriber_mode": False, "emote_mode": True, "shield": True}
+    calls.clear()
+    twitch_auth.set_chat_mode("surakage", "slow_mode", True)
+    twitch_auth.set_chat_mode("surakage", "emote_mode", False)
+    twitch_auth.set_chat_mode("surakage", "shield", True)
+    twitch_auth.clear_chat("surakage")
+    assert calls == [("PATCH", f"/chat/settings?{where}", {"slow_mode": True, "slow_mode_wait_time": 30}),
+                     ("PATCH", f"/chat/settings?{where}", {"emote_mode": False}),
+                     ("PUT", f"/moderation/shield_mode?{where}", {"is_active": True}),
+                     ("DELETE", f"/moderation/chat?{where}", None)]
+
+
+def test_mod_bar_shows_for_your_twitch_chat_and_switches_modes(app, monkeypatch):
+    import time
+
+    from sprigcast.app import chat_panel
+    from sprigcast.chat import twitch
+    from sprigcast.output import twitch_auth
+
+    monkeypatch.setattr(twitch.TwitchChat, "start", lambda self, ch: setattr(self, "channel", ch))
+    monkeypatch.setattr(twitch_auth, "chat_modes", lambda channel: {"slow_mode": True, "shield": False})
+    switched = []
+    monkeypatch.setattr(twitch_auth, "set_chat_mode", lambda channel, mode, on: switched.append((channel, mode, on)))
+    cleared = []
+    monkeypatch.setattr(twitch_auth, "clear_chat", lambda channel: cleared.append(channel))
+    QSettings().setValue(twitch_auth.LOGIN_SETTING, "surakage")
+    panel = chat_panel.ChatPanel()
+    panel.show()
+    panel.activate()
+    try:
+        assert panel.mod_toggle.isVisible() and not panel.mod_row.isVisible()
+        panel.mod_toggle.setChecked(True)
+
+        def settle(done):
+            for _ in range(100):
+                app.processEvents()
+                if done():
+                    return
+                time.sleep(0.01)
+
+        settle(lambda: panel.mode_buttons["slow_mode"].isEnabled())
+        assert panel.mod_row.isVisible() and panel.mode_buttons["slow_mode"].isChecked()
+        assert not panel.mode_buttons["shield"].isChecked()
+        panel.mode_buttons["shield"].click()
+        settle(lambda: switched and panel.mode_buttons["shield"].isEnabled())
+        assert switched == [("surakage", "shield", True)] and panel.mode_buttons["shield"].isChecked()
+        panel.clear_button.click()  # asks first
+        assert panel.clear_button.text() == "Sure?" and not cleared
+        panel.clear_button.click()
+        settle(lambda: cleared)
+        assert cleared == ["surakage"]
+        panel.mod_toggle.setChecked(False)
+        assert not panel.mod_row.isVisible()
+    finally:
+        panel.sleep()
+
+
+def test_word_filter_leaves_out_words_and_links_but_not_mods():
+    from sprigcast.chat import word_filter
+
+    words = word_filter.pattern(word_filter.parse("spam*\nBad Word, cheap"))
+    blocks = lambda text, **kw: word_filter.blocks(ChatMessage("twitch", "a", text, **kw), words, True)  # noqa: E731
+    assert blocks("total SPAMMER here") and blocks("a bad word") and blocks("so cheap")
+    assert not blocks("cheaper") and not blocks("hello friends")
+    assert blocks("see https://x.example/free") and blocks("visit freestuff.com")
+    assert not blocks("https://x.example", badges=("moderator",))
+    assert not word_filter.blocks(ChatMessage("twitch", "a", "spam"), None, False)
+
+
+def test_hub_applies_the_word_filter_and_panel_logs_what_you_did(app, monkeypatch):
+    from sprigcast.app import chat_panel
+    from sprigcast.chat import hub as hub_module
+
+    shown = []
+    panel = chat_panel.ChatPanel()
+    panel.hub.message.connect(lambda m: shown.append(m.text))
+    panel.hub.set_word_filter(["spam*"], False, save=True)
+    panel.hub._message(ChatMessage("twitch", "a", "spammy stuff"))
+    panel.hub._message(ChatMessage("twitch", "b", "hello"))
+    assert shown == ["hello"]
+    assert hub_module.word_filter.load() == (["spam*"], False)
+    panel.mode_set.emit("clear", True, "")
+    app.processEvents()
+    assert panel.mod_log and panel.mod_log[-1].endswith("Twitch: chat cleared")
+    panel.show_mod_log()
+    assert "chat cleared" in panel.log_view.toPlainText()
+    panel.sleep()
+
+
+def test_first_time_chatters_get_a_tag():
+    from sprigcast.app import chat_panel
+    from sprigcast.chat import twitch
+
+    line = ("@badges=;display-name=Newbie;first-msg=1;id=x1;user-id=5 :newbie!newbie@newbie.tmi.twitch.tv "
+            "PRIVMSG #surakage :hi all")
+    message = twitch.message_from_line(line)
+    assert "first" in message.badges
+    assert ">&nbsp;First&nbsp;<" in chat_panel.message_html(message)

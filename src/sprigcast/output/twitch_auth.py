@@ -35,8 +35,11 @@ MOD_SCOPES = ("moderator:manage:banned_users", "moderator:manage:chat_messages",
 # Store plugins: the Ad break countdown reads when ads come; the Random clip player fetches your own clips' videos.
 ADS_SCOPE = "channel:read:ads"
 CLIPS_SCOPE = "channel:manage:clips"
+# The Chat panel's mod bar: slow, followers-only, subscribers-only and emote-only modes, and Shield Mode.
+SETTINGS_SCOPE = "moderator:manage:chat_settings"
+SHIELD_SCOPE = "moderator:manage:shield_mode"
 SCOPES = ("channel:read:stream_key user:write:chat channel:manage:broadcast " + " ".join(MOD_SCOPES)
-          + f" {ADS_SCOPE} {CLIPS_SCOPE}")
+          + f" {ADS_SCOPE} {CLIPS_SCOPE} {SETTINGS_SCOPE} {SHIELD_SCOPE}")
 TOKEN_REF = "twitch/oauth"  # keyring entry holding {"access_token", "refresh_token", "expires_at", "login", "user_id"}
 DEVICE_URL = "https://id.twitch.tv/oauth2/device"
 TOKEN_URL = "https://id.twitch.tv/oauth2/token"
@@ -452,3 +455,78 @@ def moderate(channel: str, action: str, *, user_id: str = "", message_id: str = 
     except PermissionError as exc:
         raise NeedsReconnect("Sign in to Twitch again to allow moderation (Settings → Stream).") from exc
     log.info("twitch chat: %s done", action)  # in the logbook, no names
+
+
+# The mod bar --------------------------------------------------------------------------------------------
+
+CHAT_MODES = ("slow_mode", "follower_mode", "subscriber_mode", "emote_mode")
+SLOW_SECONDS = 30  # Slow on: one message every 30 seconds (Twitch allows 3 to 120)
+
+
+def _as_moderator(channel: str, scope: str, call, cid: str | None = None):
+    """call(token, where, broadcaster_id) as the connected account in `channel`'s chat, where = the
+    broadcaster_id and moderator_id query. NeedsReconnect when the connection is older than `scope`."""
+    cid = cid or client_id()
+    tokens = _load()
+    if not tokens:
+        raise NeedsReconnect("Sign in to Twitch to moderate chat.")
+    if scope not in (tokens.get("scope") or []):
+        raise NeedsReconnect("Sign in to Twitch again once to allow the mod bar (Settings → Stream).")
+    if time.time() >= float(tokens.get("expires_at", 0)):
+        tokens = _refresh(tokens, cid)
+    channel = channel.lower().lstrip("#")
+
+    def attempt(tok: dict):
+        broadcaster = tok["user_id"]
+        if channel != str(tok.get("login", "")).lower():
+            users = _get(f"/users?login={urllib.parse.quote(channel)}", tok["access_token"], cid).get("data") or []
+            if not users:
+                raise TwitchAuthError(f"No Twitch channel called {channel}.")
+            broadcaster = users[0]["id"]
+        return call(tok["access_token"], f"broadcaster_id={broadcaster}&moderator_id={tok['user_id']}", cid)
+
+    try:
+        try:
+            return attempt(tokens)
+        except PermissionError:
+            return attempt(_refresh(tokens, cid))
+    except PermissionError as exc:
+        raise NeedsReconnect("Sign in to Twitch again to allow the mod bar (Settings → Stream).") from exc
+
+
+def chat_modes(channel: str) -> dict:
+    """{"slow_mode", "follower_mode", "subscriber_mode", "emote_mode", "shield": bool} for `channel`. Worker."""
+    def call(token, where, cid):
+        found = (_send("GET", f"/chat/settings?{where}", None, token, cid).get("data") or [{}])[0]
+        out = {mode: bool(found.get(mode)) for mode in CHAT_MODES}
+        try:
+            shield = (_send("GET", f"/moderation/shield_mode?{where}", None, token, cid).get("data") or [{}])[0]
+            out["shield"] = bool(shield.get("is_active"))
+        except TwitchAuthError:
+            out["shield"] = False
+        return out
+
+    return _as_moderator(channel, SETTINGS_SCOPE, call)
+
+
+def set_chat_mode(channel: str, mode: str, on: bool) -> None:
+    """Turn one of CHAT_MODES, or "shield", on or off in `channel`'s chat. Worker."""
+    if mode == "shield":
+        _as_moderator(channel, SHIELD_SCOPE, lambda token, where, cid: _send(
+            "PUT", f"/moderation/shield_mode?{where}", {"is_active": bool(on)}, token, cid))
+    elif mode in CHAT_MODES:
+        body: dict = {mode: bool(on)}
+        if mode == "slow_mode" and on:
+            body["slow_mode_wait_time"] = SLOW_SECONDS
+        _as_moderator(channel, SETTINGS_SCOPE, lambda token, where, cid: _send(
+            "PATCH", f"/chat/settings?{where}", body, token, cid))
+    else:
+        raise ValueError(mode)
+    log.info("twitch chat: %s %s", mode, "on" if on else "off")
+
+
+def clear_chat(channel: str) -> None:
+    """Remove every message in `channel`'s chat (Twitch's /clear). Worker."""
+    _as_moderator(channel, MOD_SCOPES[1], lambda token, where, cid: _send(
+        "DELETE", f"/moderation/chat?{where}", None, token, cid))
+    log.info("twitch chat: cleared")

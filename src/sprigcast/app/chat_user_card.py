@@ -15,7 +15,7 @@ from sprigcast.chat import PLATFORMS, ChatMessage
 
 RECENT = 5  # their newest lines shown
 BADGE_WORDS = {"broadcaster": "Streamer", "moderator": "Moderator", "vip": "VIP", "subscriber": "Subscriber",
-               "member": "Member", "og": "OG", "verified": "Verified"}
+               "member": "Member", "og": "OG", "verified": "Verified", "first": "First message"}
 
 
 class UserCard(card.CardDialog):
