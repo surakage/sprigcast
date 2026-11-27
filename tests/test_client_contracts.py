@@ -85,3 +85,27 @@ def test_what_streambridge_calls_still_exists():
     assert "source" in spec.EVENTS["countdown.done"]["fields"]
     assert STREAMBRIDGE_FEATURES <= set(native.FEATURES)
     assert {g for g in ("bloom", "garden", "output")} <= set(native.EVENT_GROUPS)
+
+
+def test_what_streambridge_reads_in_api_1():
+    """StreamBridge #479 on API 1: step lists as {id, oneStep, steps: [{do, data}]} with no top-level do,
+    blooms.list onAir as a list of shapes, and errors as {code, message, what, name}."""
+    import json
+
+    from sprigcast.control.native import NativeSession
+    from test_control_native import _api
+
+    api, _ = _api()
+    session = NativeSession(api=api)
+    list(session.receive(json.dumps({"api": 1, "events": "none"})))
+
+    def ask(message):
+        return [json.loads(m) for m in session.receive(json.dumps(message)) if isinstance(m, str)][-1]
+
+    bloom = ask({"id": "1", "do": "blooms.list", "data": {}})["result"]["blooms"][0]
+    assert isinstance(bloom["onAir"], list) and {"id", "name", "shapes"} <= set(bloom)
+    error = ask({"id": "2", "do": "bloom.show", "data": {"bloom": "Nope"}})["error"]
+    assert error == {"code": "not_found", "message": "No bloom called 'Nope'.", "what": "bloom", "name": "Nope"}
+    assert ask({"id": "3", "oneStep": True, "steps": [
+        {"do": "item.hide", "data": {"bloom": "Chatting", "item": "Alert"}}]})["ok"]
+    assert ask({"id": "4", "steps": [{"do": "item.show", "data": {"bloom": "Chatting", "item": "Alert"}}]})["ok"]
