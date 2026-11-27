@@ -9,6 +9,7 @@ screen, or a bloom has a chat source) and stops when nothing does. Every message
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 
 from PySide6.QtCore import QObject, Signal
@@ -115,6 +116,8 @@ class ChatHub(QObject):
             return
         if (self._words is not None or self.hide_links) and word_filter.blocks(message, self._words, self.hide_links):
             return
+        if not message.at:
+            message.at = time.time()
         FEED.push(message)
         self.message.emit(message)
 
