@@ -23,6 +23,8 @@ builds from 2026-11-25 on.
 - Get started has a Connect your places step, and place tiles show the official Twitch, YouTube, Kick, TikTok, X
   and Facebook logos. The logos also show in the + Add menu, Show all, Settings → Stream and the mixed chat list
   (#975, #977).
+- Chat mod tools: Delete, Timeout and Ban buttons when you hover a chat line, a chatter's card when you click their
+  name, and moderation for YouTube chat (#978).
 - Echo Reducer filter, and a Listen card with meters in Filters (#962, #963, #966).
 - Video delay for cameras (#951).
 - Copy and paste filters, and leaves between sprigs; Duplicate (Ctrl+D); F2 renames blooms, sprigs and filters
