@@ -2,6 +2,8 @@
 // build, the link to Python, the log queue, graphics cards and devices, and a first canvas that pictures can be
 // drawn on and read back, which the pixel tests use to compare the engine with what SprigCast draws today.
 #include "internal.h"
+
+#include <dxgi1_6.h>
 #include "shader_hash.h"
 #ifdef SPRIGCORE_BAKED
 #include "baked_shaders.h"
@@ -147,6 +149,29 @@ void fill_info(const DXGI_ADAPTER_DESC1 &desc, sc_adapter_info *out) {
     out->dedicated_video_memory = desc.DedicatedVideoMemory;
     out->shared_system_memory = desc.SharedSystemMemory;
     out->software = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) ? 1 : 0;
+}
+
+// The card to draw on when none is named: Windows' high-performance one. On a laptop with two (an Intel or AMD
+// chip plus an NVIDIA or AMD card) the default is the small chip, which the screen hangs off: SprigCast drew there
+// at 98-100% while NVENC encoded on the GTX 1070 (tester CRGPlays, i7-7700HQ + HD 630 + GTX 1070, 2026-11-27).
+// A PC with one card gets that card, as before. Needs Windows 10 1803 (IDXGIFactory6); older ones keep the default.
+HRESULT preferred_adapter(ComPtr<IDXGIAdapter1> &out) {
+    ComPtr<IDXGIFactory1> factory;
+    HRESULT hr = CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void **>(factory.GetAddressOf()));
+    if (FAILED(hr)) return hr;
+    ComPtr<IDXGIFactory6> six;
+    if (FAILED(factory.As(&six))) return E_NOINTERFACE;
+    for (UINT i = 0;; ++i) {
+        ComPtr<IDXGIAdapter1> adapter;
+        hr = six->EnumAdapterByGpuPreference(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, __uuidof(IDXGIAdapter1),
+                                             reinterpret_cast<void **>(adapter.GetAddressOf()));
+        if (FAILED(hr)) return hr;  // DXGI_ERROR_NOT_FOUND: only software ones
+        DXGI_ADAPTER_DESC1 desc;
+        if (SUCCEEDED(adapter->GetDesc1(&desc)) && !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) {
+            out = adapter;
+            return S_OK;
+        }
+    }
 }
 
 HRESULT adapter_at(int index, ComPtr<IDXGIAdapter1> &out) {
@@ -306,12 +331,18 @@ SC_API int sc_device_create(int index, int flags, sc_device **out) {
         *out = nullptr;
         ComPtr<IDXGIAdapter1> adapter;
         D3D_DRIVER_TYPE type = D3D_DRIVER_TYPE_HARDWARE;
+        bool picked = false;
         if (flags & SC_DEVICE_WARP) {
             type = D3D_DRIVER_TYPE_WARP;
         } else if (index >= 0) {
             HRESULT hr = adapter_at(index, adapter);
             if (FAILED(hr)) return fail_hr(SC_ERR_ARGUMENT, "Finding that graphics card", hr);
             type = D3D_DRIVER_TYPE_UNKNOWN;
+        } else if (SUCCEEDED(preferred_adapter(adapter))) {
+            type = D3D_DRIVER_TYPE_UNKNOWN;  // the high-performance card (a laptop's NVIDIA or AMD one)
+            picked = true;
+        } else {
+            adapter.Reset();  // Windows' default, as before
         }
         // 10.0 is the floor: the oldest cards SprigCast supports (Intel HD 4000, Radeon R2) have 11.0 or better.
         const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0,
@@ -329,6 +360,14 @@ SC_API int sc_device_create(int index, int flags, sc_device **out) {
             hr = D3D11CreateDevice(adapter.Get(), type, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels,
                                    static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION, &dev->device,
                                    &dev->level, &dev->context);
+        if (FAILED(hr) && picked) {  // the high-performance card wouldn't make one: Windows' default, as before
+            log_line(SC_LOG_WARNING, "device: the high-performance card made no device; using Windows' default");
+            adapter.Reset();
+            type = D3D_DRIVER_TYPE_HARDWARE;
+            hr = D3D11CreateDevice(nullptr, type, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels,
+                                   static_cast<UINT>(std::size(levels)), D3D11_SDK_VERSION, &dev->device,
+                                   &dev->level, &dev->context);
+        }
         if (FAILED(hr)) return fail_hr(SC_ERR_DEVICE, "D3D11CreateDevice", hr);
         // An encoder session on this device works from its own thread: Direct3D keeps the two apart.
         ComPtr<ID3D11Multithread> guard;

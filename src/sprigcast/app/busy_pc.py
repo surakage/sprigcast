@@ -174,6 +174,14 @@ def busy_message(apps: list[str], cpu: float | None, gpu: float | None) -> str:
     if gpu is not None and gpu >= BUSY_PCT:
         parts.append(f"graphics card {gpu:.0f}%")
     load = " and ".join(parts) or "busy"
+    if gpu is not None and gpu >= BUSY_PCT and not (cpu is not None and cpu >= BUSY_PCT):
+        # Only the graphics card is busy: Windows' own jobs (a Defender scan, updates) are found by CPU and don't
+        # draw, so they aren't named (tester CRGPlays, 2026-11-27: "Windows Defender is using it" at graphics
+        # 100%, while SprigCast drew on the laptop's small chip). Other apps (games, OBS) may well be drawing.
+        apps = [a for a in apps if a not in ADVICE]
+        if not apps:
+            return (f"Your PC is busy ({load}). Turning Preview off (right-click a canvas) or using fewer canvases "
+                    "gives it room.")
     if not apps:
         return f"Your PC is busy ({load}). Dropped frames now are from the PC being busy, not from SprigCast."
     if apps[0] in ADVICE:  # Windows' own job (heavy_apps puts it first): what to do about that one

@@ -100,6 +100,14 @@ __declspec(dllexport) int sprigcast_crash_guard(const wchar_t *dump_path) {
     return 1;
 }
 
+/* On a laptop with two graphics chips, ask for the strong one (NVIDIA Optimus, AMD PowerXpress / switchable
+   graphics). The drivers look for these names in the program's own .exe. Qt's OpenGL (the window and previews)
+   follows them; the engine picks the high-performance card itself (native/core sprigcore.cpp preferred_adapter).
+   Tester CRGPlays (i7-7700HQ, HD 630 + GTX 1070, 2026-11-27): everything was drawn on the HD 630 at 98-100%.
+   A PC with one card is unaffected. */
+__declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR command_line, int show) {
     (void)instance; (void)previous; (void)command_line; (void)show;
     int argc = 0;
