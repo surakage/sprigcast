@@ -431,3 +431,30 @@ def test_a_tester_who_skipped_builds_sees_every_change_since_theirs():
         is builds[3]  # one build behind: its own notes
     stable = update.release_from_json(_release_json("0.5.0"))
     assert update.with_notes_since(builds + [stable], stable, on_two) is stable
+
+
+def test_the_setup_helper_leaves_sprigcasts_job_and_says_what_it_did(tmp_path, monkeypatch):
+    started = []
+
+    class Popen:
+        def __init__(self, command, creationflags=0, **kw):
+            if creationflags & 0x01000000:
+                raise PermissionError("the job doesn't allow breakaway")
+            started.append((command, creationflags))
+
+    monkeypatch.setattr(update.subprocess, "Popen", Popen)
+    monkeypatch.setattr(update.subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000, raising=False)
+    monkeypatch.setattr(update.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    monkeypatch.setattr(update.subprocess, "DETACHED_PROCESS", 0x00000008, raising=False)
+    update.launch_installer(tmp_path / "SprigCast-Setup-0.5.0.exe", 42, restart=True)
+    command, flags = started[0]  # tried outside the job first, then inside it
+    assert flags & 0x08000000 and not flags & 0x00000008  # a hidden console, not none
+    script = command[-1]
+    assert "update-helper.log" in script and "Setup did not start" in script
+    assert script.index("Get-Process -Id 42") < script.index("Start-Process")
+    (tmp_path / update.HELPER_LOG).write_text("waiting\nSetup started\n", encoding="utf-8")
+    (tmp_path / "old.exe").write_text("x")
+    update.clear_old(tmp_path)
+    assert (tmp_path / update.HELPER_LOG).exists()  # kept for the next start to read
+    assert update.helper_report(tmp_path) == "waiting\nSetup started"
+    assert update.helper_report(tmp_path) is None
