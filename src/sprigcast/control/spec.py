@@ -218,6 +218,7 @@ CLOSE_CODES: dict[int, str] = {
     1001: "SprigCast closed, or its API was turned off (app.closing came first).",
     4002: "A message wasn't a JSON object.",
     4009: "Wrong password or key.",
+    4010: "The app asked for an API version SprigCast doesn't speak (hello's apis lists them).",
     4011: "Wrong or expired pairing code, or too many wrong codes (pairing locks for a minute).",
 }
 
@@ -244,7 +245,7 @@ def protocol(include_plugins: bool = True, app_version: bool = True) -> dict[str
 
         out["version"] = __version__
     out.update({
-        "api": native.API_VERSION, "preview": native.PREVIEW,
+        "api": native.API_VERSION, "apis": list(native.APIS), "preview": native.PREVIEW,
         "connect": {"path": "/sprigcast", "defaultPort": 4455, "webLinks": "/api/<action>"},
         "eventGroups": [{"group": g, "highVolume": g in native.HIGH_VOLUME}
                         for g in (*native.EVENT_GROUPS, *native.HIGH_VOLUME)],
@@ -255,6 +256,9 @@ def protocol(include_plugins: bool = True, app_version: bool = True) -> dict[str
         "closeCodes": [{"code": c, "about": a} for c, a in sorted(CLOSE_CODES.items())],
         "features": list(native.FEATURES),
         "limits": {"steps": native.MAX_STEPS, "waitMs": native.MAX_WAIT_MS},
+        "api1": {"camelCaseAnswers": [{"from": old, "to": new} for old, new in sorted(native.CAMEL_OUT.items())],
+                 "keptAsTheyAre": sorted(native.KEEP_INSIDE),
+                 "needValue": [{"action": a, "field": f, "toggle": t} for a, (f, t) in sorted(native.NEEDS_VALUE.items())]},
         "actionAliases": [{"name": new, "sameAs": old} for new, old in sorted(native.ACTION_ALIASES.items())],
         "idFields": [{"field": f, "for": base} for f, base in native.ID_FIELDS.items()],
         "actions": [],
