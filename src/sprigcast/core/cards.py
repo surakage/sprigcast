@@ -100,7 +100,8 @@ class Words:
     big: str  # the time
     small: str = ""  # a label above it, or a line under it
     small_on_top: bool = False
-    badge: str = "sprig"  # "sprig", "sprig_quiet", "sun", "moon", "viewers" or "viewers_quiet" (an eye)
+    badge: str = "sprig"  # "sprig", "sun", "moon", "viewers" (an eye), "drop", "cup", "clip" or "hourglass";
+    # "sprig_quiet", "viewers_quiet", "cup_quiet"...: the same in grey
     vine: float | None = None  # a countdown's share of time left, 0..1 (None: no vine)
     shrink: float = 1.0  # card_width: the big words may be drawn this much smaller to fit (a Done text)
     openness: float = 1.0  # the "viewers" eye: 1 open, 0 shut (Live count blinks it now and then)
@@ -199,7 +200,9 @@ def _badge(p, cx: float, cy: float, kind: str, accent: str = ACCENT, openness: f
     from PySide6.QtGui import QColor, QPainterPath, QPen
 
     r = BADGE / 2
-    quiet = kind in ("sprig_quiet", "viewers_quiet")
+    quiet = kind.endswith("_quiet")
+    if quiet and kind[:-6] in _GLYPHS:
+        kind = kind[:-6]
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(QColor(BADGE_QUIET if quiet else BADGE_FILL))
     p.drawEllipse(QPointF(cx, cy), r, r)
@@ -245,6 +248,9 @@ def _badge(p, cx: float, cy: float, kind: str, accent: str = ACCENT, openness: f
         p.drawEllipse(QPointF(cx + r * 0.08, cy - r * 0.08), r * 0.08, r * 0.08)  # its glint
         p.restore()
         return
+    if kind in _GLYPHS:  # the store plugins' marks: Hydration, Break & End Guard, Clip player, Ad break
+        _GLYPHS[kind](p, cx, cy, r, QColor(QUIET) if quiet else style.qcolor(accent))
+        return
     colour = QColor(QUIET) if quiet else style.qcolor(accent)
     k = r * 1.5 / 24  # the sprig is drawn on a 24 grid, like the app's icon
     ox, oy = cx - 12 * k, cy - 12.6 * k
@@ -262,6 +268,94 @@ def _badge(p, cx: float, cy: float, kind: str, accent: str = ACCENT, openness: f
     p.drawPath(_leaf(at(12, 12.5), at(20.5, 6), 0.42))
     p.drawPath(_leaf(at(11.7, 16), at(3.5, 11), -0.42))
     p.drawEllipse(at(12, 5.2), 1.9 * k, 1.9 * k)  # the bud, like the logo's dot
+
+
+def _pen(colour, r):
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QPen
+
+    return QPen(colour, r * 0.11, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+
+
+def _drop(p, cx, cy, r, colour) -> None:
+    """A water drop (Hydration)."""
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QColor, QPainterPath
+
+    d = QPainterPath(QPointF(cx, cy - r * 0.5))
+    d.cubicTo(QPointF(cx + r * 0.1, cy - r * 0.3), QPointF(cx + r * 0.4, cy), QPointF(cx + r * 0.4, cy + r * 0.15))
+    d.cubicTo(QPointF(cx + r * 0.4, cy + r * 0.4), QPointF(cx + r * 0.2, cy + r * 0.5), QPointF(cx, cy + r * 0.5))
+    d.cubicTo(QPointF(cx - r * 0.2, cy + r * 0.5), QPointF(cx - r * 0.4, cy + r * 0.4), QPointF(cx - r * 0.4, cy + r * 0.15))
+    d.cubicTo(QPointF(cx - r * 0.4, cy), QPointF(cx - r * 0.1, cy - r * 0.3), QPointF(cx, cy - r * 0.5))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(colour)
+    p.drawPath(d)
+    p.setBrush(QColor(BADGE_FILL))
+    p.drawEllipse(QPointF(cx - r * 0.15, cy + r * 0.18), r * 0.08, r * 0.12)  # its shine
+
+
+def _cup(p, cx, cy, r, colour) -> None:
+    """A steaming cup (Break & End Guard)."""
+    from PySide6.QtCore import QPointF, QRectF, Qt
+    from PySide6.QtGui import QPainterPath
+
+    p.setPen(_pen(colour, r))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    cup = QPainterPath(QPointF(cx - r * 0.42, cy - r * 0.12))
+    cup.lineTo(QPointF(cx + r * 0.28, cy - r * 0.12))
+    cup.cubicTo(QPointF(cx + r * 0.28, cy + r * 0.3), QPointF(cx + r * 0.15, cy + r * 0.42),
+                QPointF(cx - r * 0.07, cy + r * 0.42))
+    cup.cubicTo(QPointF(cx - r * 0.3, cy + r * 0.42), QPointF(cx - r * 0.42, cy + r * 0.3),
+                QPointF(cx - r * 0.42, cy - r * 0.12))
+    p.drawPath(cup)
+    p.drawArc(QRectF(cx + r * 0.16, cy - r * 0.04, r * 0.3, r * 0.3), -90 * 16, 180 * 16)  # the handle
+    for dx in (-0.22, 0.08):  # steam
+        s = QPainterPath(QPointF(cx + r * dx, cy - r * 0.28))
+        s.cubicTo(QPointF(cx + r * (dx - 0.08), cy - r * 0.38), QPointF(cx + r * (dx + 0.08), cy - r * 0.46),
+                  QPointF(cx + r * dx, cy - r * 0.56))
+        p.drawPath(s)
+
+
+def _clip(p, cx, cy, r, colour) -> None:
+    """A screen with a play mark (Clip player)."""
+    from PySide6.QtCore import QPointF, QRectF, Qt
+    from PySide6.QtGui import QPainterPath
+
+    p.setPen(_pen(colour, r))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawRoundedRect(QRectF(cx - r * 0.48, cy - r * 0.32, r * 0.96, r * 0.7), r * 0.12, r * 0.12)
+    t = QPainterPath(QPointF(cx - r * 0.1, cy - r * 0.14))
+    t.lineTo(QPointF(cx + r * 0.2, cy + r * 0.03))
+    t.lineTo(QPointF(cx - r * 0.1, cy + r * 0.2))
+    t.closeSubpath()
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(colour)
+    p.drawPath(t)
+
+
+def _hourglass(p, cx, cy, r, colour) -> None:
+    """An hourglass (Ad break countdown)."""
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QPainterPath
+
+    p.setPen(_pen(colour, r))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    h = QPainterPath(QPointF(cx - r * 0.3, cy - r * 0.45))
+    h.lineTo(QPointF(cx + r * 0.3, cy - r * 0.45))
+    h.lineTo(QPointF(cx - r * 0.3, cy + r * 0.45))
+    h.lineTo(QPointF(cx + r * 0.3, cy + r * 0.45))
+    h.closeSubpath()
+    p.drawPath(h)
+    sand = QPainterPath(QPointF(cx - r * 0.16, cy + r * 0.38))
+    sand.lineTo(QPointF(cx + r * 0.16, cy + r * 0.38))
+    sand.lineTo(QPointF(cx, cy + r * 0.16))
+    sand.closeSubpath()
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(colour)
+    p.drawPath(sand)
+
+
+_GLYPHS = {"drop": _drop, "cup": _cup, "clip": _clip, "hourglass": _hourglass}
 
 
 def colour(text, fallback: str):
