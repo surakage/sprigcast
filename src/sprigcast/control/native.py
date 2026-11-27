@@ -30,6 +30,7 @@ import copy
 import json
 import logging
 import math
+import re
 import secrets
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -87,6 +88,10 @@ FEATURES = (
     "places.ready",        # places.list name, ready, problem ("Needs a stream key"): why a place can't go live yet
     "app_audio.pids",      # app_audio settings pids: [process id, ...] catches those processes' trees instead of apps
     "sprig.remove",        # sprig.remove: a sprig in every shape; sounds always stay
+    "app.protocol",        # app.protocol and /api/protocol.json: every action's typed fields, events, errors
+    "events.by_name",      # events takes single events by name ("place.changed"); welcome lists unknown ones
+    "errors.field",        # bad_request (and a taken name's busy) errors carry field and reason
+    "steps.ids",           # a step's own id comes back with its answer
 )
 
 
@@ -152,8 +157,27 @@ def _saving(later: Later) -> Later:
     return Later(later.job, then)
 
 
-def _bad(message: str) -> ApiError:
-    return ApiError("bad_request", message)
+# What a bad_request message says about its field, so an app can act on it without reading English:
+# "volume is missing." -> field "volume", reason "missing". Messages that name no field get neither.
+_BAD_FIELD = (
+    (re.compile(r"^([a-zA-Z_]+) is missing"), "missing"),
+    (re.compile(r"^([a-zA-Z_]+) is empty"), "empty"),
+    (re.compile(r"^([a-zA-Z_]+) (?:must be a number|must be a list|must be an? |has the wrong type|must be true or false)"),
+     "wrong_type"),
+    (re.compile(r"^([a-zA-Z_]+) must be (?:between )?-?[0-9.]+ (?:to|and) -?[0-9.]+"), "out_of_range"),
+    (re.compile(r"^([a-zA-Z_]+) must be (?:one of )?[a-z_]+(?:, [a-z_]+)+,? (?:or [a-z_]+)?"), "not_one_of"),
+)
+
+
+def _bad(message: str, **extra: Any) -> ApiError:
+    """bad_request; field and reason are added from the message when it names its field (see _BAD_FIELD)."""
+    if "field" not in extra:
+        for pattern, reason in _BAD_FIELD:
+            found = pattern.match(message)
+            if found:
+                extra = {"field": found.group(1), "reason": reason, **extra}
+                break
+    return ApiError("bad_request", message, **extra)
 
 
 def _missing(message: str, what: str = "", name: Any = None) -> ApiError:
@@ -327,7 +351,7 @@ class NativeApi:
         if not name:
             raise _bad("name is empty.")
         if any(s.kind == "show" and s.name == name for s in self.col.scenes):
-            raise ApiError("busy", f"There's already a bloom called {name!r}.")
+            raise ApiError("busy", f"There's already a bloom called {name!r}.", field="name", reason="already_exists")
         shape = self._shape(data)
         canvases = [c.id for c in self.col.canvases if c.enabled or c.id == self.col.canvases[0].id]
         canvases = canvases if shape == "both" else [shape]
@@ -558,6 +582,13 @@ class NativeApi:
                 "canvases": [{"id": c.id, "width": c.width, "height": c.height, "fps": c.fps, "enabled": c.enabled}
                              for c in self.col.canvases],
                 "events": list(EVENT_GROUPS + HIGH_VOLUME), "features": features()}
+
+    @action("app.protocol", "The whole API described for programs: every action with typed fields (type, needed, "
+            "default, range, words it takes), every event, error code, error reason and close code.")
+    def app_protocol(self, data):
+        from sprigcast.control.spec import protocol
+
+        return protocol()
 
     @action("app.actions", "Every action with what it does and its fields (fields starting with ? are optional).")
     def app_actions(self, data):
@@ -919,7 +950,7 @@ class NativeApi:
         taken = {s.name for s in self.col.sources if s.kind != PART_KIND}
         name = (_get(data, "name", str, optional=True) or "").strip()
         if name and name in taken:
-            raise ApiError("busy", f"There's already a source called {name!r}.")
+            raise ApiError("busy", f"There's already a source called {name!r}.", field="name", reason="already_exists")
         n = 2
         while not name:
             name, n = (f"{source.name} {n}" if f"{source.name} {n}" not in taken else ""), n + 1
@@ -1226,7 +1257,7 @@ class NativeApi:
         if kind == PART_KIND or kind not in known_kinds():
             raise _bad(f"kind must be one of {', '.join(sorted(k for k in known_kinds() if k != PART_KIND))}.")
         if any(s.name == name for s in self.col.sources if s.kind != PART_KIND):
-            raise ApiError("busy", f"There's already a source called {name!r}.")
+            raise ApiError("busy", f"There's already a source called {name!r}.", field="name", reason="already_exists")
         defaults = dict(getattr(source_class(kind), "defaults", None) or {})
         settings = _checked_settings(self.col, kind, settings)
         source = SourceConfig(id=self.col.new_source_id(kind), kind=kind, name=name, settings={**defaults, **settings})
@@ -1337,7 +1368,8 @@ class NativeApi:
                         "message": f"{name!r} can't be in one step. These can: {', '.join(sorted(BATCH_ACTIONS))}."}})
                     break
                 result = answer(self, step)
-                result.pop("id", None)
+                if "id" not in step:  # a step's own id comes back with its answer
+                    result.pop("id", None)
                 results.append(result)
                 if not result["ok"]:
                     break
@@ -1482,7 +1514,7 @@ class NativeApi:
             places="?list of place ids from places.list: go live only if exactly these are switched on")
     def stream_start(self, data):
         if self.host.stream_status() is not None:
-            raise ApiError("busy", "Already live.")
+            raise ApiError("busy", "Already live.", reason="already_running")
         going = [{"id": o.id, "service": o.service, "shape": o.canvas}
                  for o in self.col.outputs if o.type == "stream" and o.enabled]
         expected = _get(data, "places", list, optional=True)
@@ -1579,7 +1611,7 @@ class NativeApi:
             force="?true: record anyway")
     def record_start(self, data):
         if self.host.record_status() is not None:
-            raise ApiError("busy", "Already recording.")
+            raise ApiError("busy", "Already recording.", reason="already_running")
         return self._start(self.host.start_record, data, "recording")
 
     @action("record.stop", "Stop recording.")
@@ -2198,7 +2230,7 @@ def event_group(name: str) -> str:
 # Actions that only look: answering one changes nothing, so it needn't start a full look for events
 # (control_server soon). An app reconnecting 23 times a minute to ask record.status started a full look
 # (every source's settings written out as JSON) each time (PC native run, 2026-11-17).
-LOOKING_SUFFIXES = (".list", ".get", ".status", ".info", ".actions", ".stats", ".current", ".kinds")
+LOOKING_SUFFIXES = (".list", ".get", ".status", ".info", ".actions", ".stats", ".current", ".kinds", ".protocol")
 
 
 def may_change(message: Any) -> bool:
@@ -2226,6 +2258,8 @@ class NativeSession:
     name: str = ""  # what it calls itself in its greeting ("name"): only ever for the log
     welcomed: bool = False
     events: set[str] = field(default_factory=lambda: set(EVENT_GROUPS))
+    event_names: set[str] = field(default_factory=set)  # single events asked for by name ("place.changed")
+    unknown_events: list[str] = field(default_factory=list)  # what the last events choice named that isn't one
     salt: str = field(default_factory=lambda: secrets.token_urlsafe(24))
     challenge: str = field(default_factory=lambda: secrets.token_urlsafe(24))
     may_change: bool = True  # whether the last message received could have changed something (may_change)
@@ -2241,17 +2275,36 @@ class NativeSession:
     def event(self, name: str, data: dict[str, Any]) -> str | None:
         if name == ALWAYS_SENT and self.welcomed:
             pass  # every app hears that SprigCast is closing, whatever groups it asked for
-        elif not self.wants(event_group(name)):
+        elif not (self.wants(event_group(name)) or (self.welcomed and name in self.event_names)):
             return None
         return json.dumps({"event": name, **data}, default=str)
 
     def _set_events(self, wanted: Any) -> None:
+        """"all", "none", or a list of groups ("bloom"), high-volume groups ("meters") and single events by name
+        ("place.changed"). What isn't any of those is kept in unknown_events, for the welcome to say so."""
+        from sprigcast.control.spec import known_event
+
+        self.unknown_events = []
         if wanted == "all":
-            self.events = set(EVENT_GROUPS)
+            self.events, self.event_names = set(EVENT_GROUPS), set()
         elif wanted == "none":
-            self.events = set()
+            self.events, self.event_names = set(), set()
         elif isinstance(wanted, list):
-            self.events = {str(w) for w in wanted}
+            self.events, self.event_names = set(), set()
+            for entry in wanted:
+                entry = str(entry)
+                if entry in EVENT_GROUPS or entry in HIGH_VOLUME:
+                    self.events.add(entry)
+                elif "." in entry and known_event(entry):
+                    self.event_names.add(entry)
+                else:
+                    self.unknown_events.append(entry)
+
+    def _welcome(self) -> str:
+        welcome: dict[str, Any] = {"api": API_VERSION, "events": sorted(self.events | self.event_names)}
+        if self.unknown_events:
+            welcome["unknown"] = self.unknown_events
+        return json.dumps({"welcome": welcome})
 
     def receive(self, text: str) -> Iterator[str | Close | Sleep]:
         try:
@@ -2290,12 +2343,12 @@ class NativeSession:
                 self.name = "".join(c for c in said if c.isprintable()).strip()[:40]
             self._set_events(message.get("events", "all"))
             self.welcomed = True
-            yield json.dumps({"welcome": {"api": API_VERSION, "events": sorted(self.events)}})
+            yield self._welcome()
             if "do" not in message:
                 return
         if "events" in message and "do" not in message:
             self._set_events(message["events"])
-            yield json.dumps({"welcome": {"api": API_VERSION, "events": sorted(self.events)}})
+            yield self._welcome()
             return
         if "steps" in message:
             yield from self._steps(message)
@@ -2349,10 +2402,11 @@ class NativeSession:
                         break
                     continue
                 yield Sleep(wait / 1000)
-                results.append({"ok": True, "waited": wait})
+                results.append({**({"id": step["id"]} if "id" in step else {}), "ok": True, "waited": wait})
                 continue
             result = answer(self.api, step if isinstance(step, dict) else {})
-            result.pop("id", None)
+            if not (isinstance(step, dict) and "id" in step):  # a step's own id comes back with its answer
+                result.pop("id", None)
             results.append(result)
             if stop and not result["ok"]:
                 break
