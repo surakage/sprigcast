@@ -156,11 +156,12 @@ def test_preview_while_live(window, app, monkeypatch):
     assert window._preview_mode() == "smooth" and window.engine.preview_fps == 30
     QSettings().setValue(PREVIEW_LIVE, "light")
     window._after_settings()
-    window._set_mode("live")
-    assert window._preview_mode() == "light"  # on Live, live or not (user 2026-11-27)
-    window._set_mode("build")
-    assert window._preview_mode() == "smooth"  # Build always draws: you're placing things
-    window._set_mode("live")
+    assert window._preview_mode() == "smooth"  # nothing on air: always smooth
+    window.recording = object()
+    try:
+        assert window._preview_mode() == "light"
+    finally:
+        window.recording = None
     mode = ["light"]
     monkeypatch.setattr(window, "_preview_mode", lambda: mode[0])
     window._poll_engine()
@@ -215,18 +216,27 @@ def test_the_camera_tab_lists_speakers_off_the_window_thread(app, monkeypatch):
     assert tab.sound.findData("CABLE Input") > 0 and asked_on and asked_on[0] is not threading.main_thread()
 
 
-def test_preview_while_live_is_one_right_click_away_on_live(window):
-    from sprigcast.app.settings_window import PREVIEW_LIVE, preview_choice
+def test_preview_is_one_right_click_away_on_live(window):
+    from sprigcast.app.settings_window import PREVIEW_LIVE, PREVIEW_SHOWN, preview_on
 
     window._set_mode("live")
     menu = window._preview_menu("horizontal", -1)
-    sub = next(a.menu() for a in menu.actions() if a.text() == "Preview")
-    assert [a.text() for a in sub.actions()] == ["Smooth (30 fps)", "Light (15 fps)", "Off"]
-    next(a for a in sub.actions() if a.text() == "Off").trigger()
-    assert preview_choice() == "off" and window._preview_live is None  # both canvases follow on the next poll
+    act = next(a for a in menu.actions() if a.text() == "Preview")
+    assert act.isCheckable() and act.isChecked() and act.menu() is None  # just on or off
+    act.setChecked(False)
+    assert not preview_on() and window._preview_mode() == "off"  # off any time, live or not
+    window._set_mode("build")
+    assert window._preview_mode() == "smooth"  # Build keeps drawing
+    window._set_mode("live")
+    window._set_preview_shown(True)
+    QSettings().setValue(PREVIEW_LIVE, "light")
+    window._preview_live = None
+    assert window._preview_mode() == "smooth"  # Preview while live is its own setting: only on air
+    window.recording = object()
+    try:
+        assert window._preview_mode() == "light"
+    finally:
+        window.recording = None
     menu.deleteLater()
-    menu = window._preview_menu("horizontal", -1)
-    sub = next(a.menu() for a in menu.actions() if a.text() == "Preview")
-    assert next(a for a in sub.actions() if a.text() == "Off").isChecked()
     QSettings().remove(PREVIEW_LIVE)
-    menu.deleteLater()
+    QSettings().remove(PREVIEW_SHOWN)

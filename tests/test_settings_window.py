@@ -290,7 +290,12 @@ def test_this_pc_card_priority_sleep_and_preview(app):
     w.optimize_requested.connect(lambda: asked.append(1))
     w.preview_live.setCurrentIndex(w.preview_live.findData("off"))
     w.sleep_sources.setCurrentIndex(w.sleep_sources.findData("all"))
+    assert w.preview_shown.isChecked()
+    w.preview_shown.setChecked(False)
     assert w.apply() and preview_choice() == "off" and sleep_policy() == "all"
+    from sprigcast.app.settings_window import preview_on
+
+    assert not preview_on()  # the same switch as right-click → Preview on Live
     w.optimize_button.click()
     assert asked == [1]
     assert not _window(_collection(), streaming=True).optimize_button.isEnabled()

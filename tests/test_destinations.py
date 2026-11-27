@@ -539,7 +539,7 @@ def test_projector_shows_a_canvas_full_size(app, tmp_path, monkeypatch):
         labels = [a.text() for a in full.actions() if a.text()]
         assert labels[0].startswith("Full screen on Screen 1") and "In a window" in labels
         texts = [a.text() for a in menu.actions() if a.text()]  # Live: this canvas only, no editing items
-        assert texts == ["Projector", "Safe zones", "Canvas settings…  1080×1920, 60 fps"]
+        assert texts == ["Projector", "Safe zones", "Preview", "Canvas…"]
         zones = next(a for a in menu.actions() if a.text() == "Safe zones").menu()
         next(a for a in zones.actions() if a.text() == "TikTok").trigger()
         assert w.previews["vertical"].live_safe_zones == "TikTok" and w.previews["vertical"].safe_zones == "All platforms"
