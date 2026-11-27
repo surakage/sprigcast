@@ -80,3 +80,30 @@ def test_a_slow_warm_up_names_what_took_it():
             (3.0, "sprigcast.app.about")]
     assert warm.slowest(took, 900.0) == ""
     assert warm.slowest(took, 3698.0) == "; slowest: output.recorder 2100 ms, app.doctor 600 ms, av.video.frame 12 ms"
+
+
+def test_keyring_goes_straight_to_windows_credential_manager(monkeypatch):
+    """keyring's own search imports every backend, and the macOS one leaves sys.modules again part way: that
+    raced Qt's signature code and crashed test build 6 at start (PC 2026-11-27). On Windows the store is named."""
+    from sprigcast.core import warm
+
+    monkeypatch.delenv("PYTHON_KEYRING_BACKEND", raising=False)
+    monkeypatch.setattr(warm.sys, "platform", "linux")
+    warm.windows_store_only()
+    assert "PYTHON_KEYRING_BACKEND" not in __import__("os").environ  # elsewhere keyring picks as before
+    monkeypatch.setattr(warm.sys, "platform", "win32")
+    warm.windows_store_only()
+    assert __import__("os").environ["PYTHON_KEYRING_BACKEND"] == "keyring.backends.Windows.WinVaultKeyring"
+    monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "mine.Store")
+    warm.windows_store_only()
+    assert __import__("os").environ["PYTHON_KEYRING_BACKEND"] == "mine.Store"  # someone's own choice stays
+
+
+def test_the_windows_store_name_loads():
+    """The name must be one keyring can load (a typo would leave keys unreadable on Windows)."""
+    import keyring.backends.Windows as win
+
+    from sprigcast.core import warm
+
+    module, _, name = warm.WINDOWS_STORE.rpartition(".")
+    assert module == win.__name__ and hasattr(win, name)

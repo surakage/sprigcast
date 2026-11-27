@@ -8123,6 +8123,7 @@ class MainWindow(QMainWindow):
             return
         box = msgbox.MessageCard("SprigCast Camera", "SprigCast Camera has an update.\nWindows will ask for "
                                  "permission. Apps using the camera may need to reopen it.", self)
+        log.info("camera: update offered (SprigCast Camera is older than this build's)")
         later = box.add_button("Not now")
         update = box.add_button("Update", primary=True)
         modal(box)
