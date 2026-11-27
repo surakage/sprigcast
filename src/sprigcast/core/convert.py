@@ -1705,6 +1705,15 @@ _OBS_ENCODERS = {"obs_x264": "libx264", "x264": "libx264", "jim_nvenc": "h264_nv
 CLIP_LENGTHS = (15, 30, 45, 60)
 
 
+def encoder_words(name: str) -> str:
+    """'h264_nvenc' -> 'NVIDIA H.264', 'libx264' -> 'x264 (CPU)'."""
+    if name == "libx264":
+        return "x264 (CPU)"
+    codec, _, maker = name.partition("_")
+    return f"{ {'nvenc': 'NVIDIA', 'amf': 'AMD', 'qsv': 'Intel'}.get(maker, maker)} " \
+           f"{ {'h264': 'H.264', 'hevc': 'HEVC', 'av1': 'AV1'}.get(codec, codec)}"
+
+
 def find_profile(collection_path: Path) -> Path | None:
     """The OBS profile folder that goes with a scene collection in obs-studio/basic/scenes: the one OBS last used
     (global.ini or user.ini → [Basic] ProfileDir), or the only one there is."""
@@ -1785,7 +1794,7 @@ def _stream_encoder(col: SceneCollection, folder: Path, out: dict[str, str], adv
     name = out.get("Encoder" if advanced else "StreamEncoder") or ""
     if name in _OBS_ENCODERS:
         encoder.encoder = _OBS_ENCODERS[name]
-        changed.append(f"{encoder.encoder} encoder")
+        changed.append(f"{encoder_words(encoder.encoder)} encoder")
     elif name:
         _missed("encoder", name)
     bitrate = int(_num(out.get("VBitrate")))

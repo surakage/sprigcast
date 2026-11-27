@@ -729,16 +729,55 @@ class _Progress:
         return result.get("value")
 
 
+# The import report's three groups (user 2026-11-27: an import report checklist with fix buttons).
+_LEFT_OUT = ("has no match", "isn't supported", "isn't carried over", "can't flip", "blends normally", "left out")
+_TO_CHECK = ("check where it sits", "muted until", "pick the apps", "pick its", "set each place", "Plugin store")
+REPORT_SHOWN = 12  # lines shown per group before "…and n more"
+
+
+def report_groups(notes: list[str]) -> list[tuple[str, list[str]]]:
+    """(title, lines) for the import report: what didn't come over, what to check, what changed to fit."""
+    left = [n for n in notes if any(w in n for w in _LEFT_OUT)]
+    check = [n for n in notes if n not in left and any(w in n for w in _TO_CHECK)]
+    rest = [n for n in notes if n not in left and n not in check]
+    return [(t, lines) for t, lines in (("Didn't come over", left), ("Check these", check),
+                                        ("Brought over differently", rest)) if lines]
+
+
+def open_source(window: MainWindow, source_id: str) -> bool:
+    """Show a leaf or sound by id in Build and open its settings, as a double-click would. False if it's gone."""
+    col = window.collection
+    config = col.source(source_id)
+    if config is None:
+        return False
+    scene = next((sc for sc in col.scenes if any(i.source == source_id for i in sc.items)), None)
+    if scene is None:  # a sound placed in no bloom: its own strip
+        window._select_sound(source_id)
+        return True
+    index = next(i for i, item in enumerate(scene.items) if item.source == source_id)
+    window.selected_scene_id = scene.id
+    window._refresh_scenes()
+    window._refresh_sources(keep_row=len(scene.items) - 1 - index)
+    window._edit_source_settings()
+    return True
+
+
 class ImportNotes(popups.CardDialog):
-    """What an import couldn't bring over, one line each."""
+    """The import report: each group in its own card, one line each, with Open on lines about one leaf or sound."""
 
     def __init__(self, window: MainWindow, name: str, notes: list[str]):
-        super().__init__(f"{name}: to check", window, width=600)
-        box = self.body
-        text = QLabel("\n".join(f"•  {n}" for n in notes[:40]) + (f"\n…and {len(notes) - 40} more" if len(notes) > 40 else ""))
-        text.setWordWrap(True)
-        text.setTextInteractionFlags(text.textInteractionFlags() | Qt.TextInteractionFlag.TextSelectableByMouse)
-        box.addWidget(text)
+        super().__init__(f"{name}: import report", window, width=640)
+        self.window_ = window
+        by_name = {c.name: c.id for c in window.collection.sources}
+        self.opened: list[str] = []
+        for title, lines in report_groups(notes):
+            box = self.section(title, spacing=8)
+            for line in lines[:REPORT_SHOWN]:
+                box.addLayout(self._row(line, by_name.get(line.split(":", 1)[0].strip())))
+            if len(lines) > REPORT_SHOWN:
+                more = QLabel(f"…and {len(lines) - REPORT_SHOWN} more")
+                more.setStyleSheet(f"color: {theme.MUTED}")
+                box.addWidget(more)
         done = QPushButton("Done")
         done.setStyleSheet(popups.PRIMARY_PILL)
         done.setDefault(True)
@@ -746,4 +785,25 @@ class ImportNotes(popups.CardDialog):
         end = QHBoxLayout()
         end.addStretch(1)
         end.addWidget(done)
-        box.addLayout(end)
+        self.body.addLayout(end)
+
+    def _row(self, line: str, source_id: str | None) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        text = QLabel(line)
+        text.setStyleSheet(f"color: {theme.TEXT}")
+        text.setWordWrap(True)
+        text.setTextInteractionFlags(text.textInteractionFlags() | Qt.TextInteractionFlag.TextSelectableByMouse)
+        row.addWidget(text, 1)
+        if source_id is not None:
+            button = QPushButton("Open")
+            button.setStyleSheet(theme.button_style(14, "6px 16px"))
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+
+            def go(_=False, b=button, sid=source_id) -> None:
+                if open_source(self.window_, sid):
+                    self.opened.append(sid)
+                    b.setText("✓ Opened")
+            button.clicked.connect(go)
+            row.addWidget(button, 0, Qt.AlignmentFlag.AlignTop)
+        return row
