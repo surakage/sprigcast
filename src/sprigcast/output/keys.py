@@ -26,6 +26,9 @@ def get_key(key_ref: str | None) -> str | None:
     if not key_ref:
         return None
     try:
+        from sprigcast.core.warm import windows_store_only
+
+        windows_store_only()
         import keyring
 
         key = keyring.get_password(KEYRING_SERVICE, key_ref) or None
@@ -42,6 +45,9 @@ def get_key(key_ref: str | None) -> str | None:
 
 def set_key(key_ref: str, key: str) -> None:
     """Save a key, or delete it when key is empty. Raises if the credential store is unavailable."""
+    from sprigcast.core.warm import windows_store_only
+
+    windows_store_only()
     import keyring
 
     if key:

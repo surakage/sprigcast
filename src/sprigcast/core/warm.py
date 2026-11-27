@@ -157,6 +157,23 @@ def warm_encoders(recording=None, stream=None) -> None:
         log.info("warm-up: encoder check failed: %s", exc)
 
 
+WINDOWS_STORE = "keyring.backends.Windows.WinVaultKeyring"
+
+
+def windows_store_only() -> None:
+    """Point keyring straight at Windows Credential Manager, before it's first used.
+
+    Left to itself, keyring finds its store by importing every backend it has. Its macOS one fails part way
+    on Windows and is taken back out of sys.modules. Done on the warm-up worker, that raced Qt's signature
+    code on the window's thread, which was walking sys.modules at that moment: KeyError
+    'keyring.backends.macOS.api', then a fail-fast crash (test build 6 start, PC 2026-11-27). Naming the store
+    imports only the Windows backend. Someone who set PYTHON_KEYRING_BACKEND themselves keeps theirs."""
+    import os
+
+    if sys.platform == "win32":
+        os.environ.setdefault("PYTHON_KEYRING_BACKEND", WINDOWS_STORE)
+
+
 keyring_loading = threading.Event()  # set while warm_keyring is at it: a read from the window would wait for it
 
 
@@ -168,6 +185,7 @@ def warm_keyring() -> None:
     keyring_loading.set()
     try:
         began = time.perf_counter()
+        windows_store_only()
         import keyring
 
         backend = keyring.get_keyring()

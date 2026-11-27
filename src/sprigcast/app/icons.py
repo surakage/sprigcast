@@ -324,6 +324,12 @@ def _draw(p: QPainter, name: str) -> None:
         p.drawLine(P(10, 8), P(10, 4))
         p.drawLine(P(14, 8), P(14, 4))
         p.drawLine(P(12, 15), P(12, 20))
+    elif name == "eye":  # shown (Preview on a canvas's right-click card)
+        path = QPainterPath(P(3, 12))
+        path.quadTo(P(12, 4), P(21, 12))
+        path.quadTo(P(12, 20), P(3, 12))
+        p.drawPath(path)
+        p.drawEllipse(P(12, 12), 2.6, 2.6)
     elif name == "eye-off":  # hidden here
         path = QPainterPath(P(3, 12))
         path.quadTo(P(12, 4), P(21, 12))
@@ -477,7 +483,7 @@ FILTER_ICONS = ("spin", "curtain", "mist", "greenscreen", "backdrop", "tone", "c
 NAMES = ("sprig", "bloom", "leaf", "gear", "search", "lock", "unlock", "link", "key", "upload", "monitor", "mic",
          "camera", "disk", "bolt", "panel", "plus", "compass", "folder", "trash", "speaker", "speaker-off",
          "gamepad", "keyboard", "shutter", "chat", "note", "trophy", "ball", "broadcast", "record", "landscape",
-         "portrait", "dual", "clip", "heart", "tree", "paw", "chevron-down", "chevron-up", "chevron-left", "minus", "swap", "warning", "clock", "moon", "plug", "eye-off", "sliders", "close") + FILTER_ICONS
+         "portrait", "dual", "clip", "heart", "tree", "paw", "chevron-down", "chevron-up", "chevron-left", "minus", "swap", "warning", "clock", "moon", "plug", "eye", "eye-off", "sliders", "close") + FILTER_ICONS
 
 
 def paint_icon(p: QPainter, r: QRectF, name: str, colour: str | QColor | None = None, width: float = 1.9) -> None:

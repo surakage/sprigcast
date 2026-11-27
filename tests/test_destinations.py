@@ -1109,3 +1109,26 @@ def test_a_place_is_ended_and_started_again_while_the_rest_stay_live(app, tmp_pa
         w.streaming = None
         w.close()
         QSettings().clear()
+
+
+def test_a_tall_canvas_card_has_safe_zones(app, tmp_path, monkeypatch):
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
+    QCoreApplication.setOrganizationName("SprigCastTests")
+    QCoreApplication.setApplicationName("CanvasCardTest")
+    QSettings().clear()
+    from sprigcast.app.main_window import MainWindow
+
+    w = MainWindow(_collection(), tmp_path / "scenes.json")
+    try:
+        w.show()
+        w._set_mode("live")
+        card = w._live_canvas_card("vertical")
+        assert "Safe zones" in card.texts() and card.zone_buttons["Off"].isChecked()
+        card.zone_buttons["TikTok"].click()
+        assert w.previews["vertical"].live_safe_zones == "TikTok"
+        assert w._live_canvas_card("vertical").zone_buttons["TikTok"].isChecked()
+    finally:
+        w.close()
+        QSettings().clear()
