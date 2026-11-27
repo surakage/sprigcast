@@ -36,7 +36,7 @@ def test_every_event_sent_is_described():
     for path in [*SRC.joinpath("control").glob("*.py"), SRC / "app" / "control_server.py", *SRC.joinpath("store").glob("*.py")]:
         text = path.read_text(encoding="utf-8")
         sent |= set(re.findall(r'out\.append\(\("([a-z_]+\.[a-zA-Z_]+)"', text))
-        sent |= set(re.findall(r'send_event\(api, "([a-z_]+\.[a-zA-Z_]+)"', text))
+        sent |= set(re.findall(r'(?:send_event|_event)\(api, "([a-z_]+\.[a-zA-Z_]+)"', text))
         sent |= set(re.findall(r'native_broadcast\("([a-z_.]+)"', text))
     sent |= {f"{k}.changed" for k in ("garden", "path")} | {f"{k}s.changed" for k in ("garden", "path")}
     sent |= {"replay.started", "replay.ended"}
@@ -111,3 +111,14 @@ def test_steps_answer_with_their_own_ids():
     [one] = [json.loads(m) for m in session.receive(json.dumps({"one_step": True, "steps": [
         {"id": "a", "do": "item.hide", "bloom": "Chatting", "item": "Alert"}]}))]
     assert one["result"]["steps"][0]["id"] == "a"
+
+
+def test_a_plugin_event_named_like_ours_keeps_ours_in_its_group(monkeypatch):
+    monkeypatch.setattr(native, "_PLUGIN_EVENTS", set())
+    monkeypatch.setattr(native, "_PLUGIN_EVENT_NAMES", set())
+    api, _ = _api()
+    native.send_event(api, "stream.limit", {})  # Break & End Guard
+    assert native.event_group("stream.limit") == "plugin"
+    assert native.event_group("stream.changed") == "output"
+    native.send_event(api, "snap.taken", {})
+    assert native.event_group("snap.taken") == "plugin" and native.event_group("snap.other") == "plugin"

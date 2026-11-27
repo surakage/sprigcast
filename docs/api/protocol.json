@@ -91,6 +91,30 @@
       ]
     },
     {
+      "name": "break.ended",
+      "group": "plugin",
+      "plugin": "Break & End Guard",
+      "about": "A break ended.",
+      "fields": [
+        "onBreak",
+        "breakLeft",
+        "nextBreakIn",
+        "endIn"
+      ]
+    },
+    {
+      "name": "break.started",
+      "group": "plugin",
+      "plugin": "Break & End Guard",
+      "about": "A break started.",
+      "fields": [
+        "onBreak",
+        "breakLeft",
+        "nextBreakIn",
+        "endIn"
+      ]
+    },
+    {
       "name": "camera.changed",
       "group": "output",
       "about": "SprigCast Camera was turned on or off.",
@@ -432,6 +456,13 @@
       "fields": [
         "on"
       ]
+    },
+    {
+      "name": "stream.limit",
+      "group": "plugin",
+      "plugin": "Break & End Guard",
+      "about": "The stream limit is close.",
+      "fields": []
     },
     {
       "name": "timer.changed",

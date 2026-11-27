@@ -1148,6 +1148,8 @@ While live on YouTube: how many watch, in all and on each YouTube stream (read f
 | `app.closing` | every app | none | SprigCast is closing or turning its API off; every app gets it. The connection closes next: look again in a second or two, it's often a restart. |
 | `bloom.shown` | bloom | `bloom`, `bloomId`, `shape` | A bloom went on air. |
 | `blooms.changed` | bloom | `blooms` | Blooms were added, removed or renamed. |
+| `break.ended` | plugin | `onBreak`, `breakLeft`, `nextBreakIn`, `endIn` | A break ended. (Break & End Guard plugin) |
+| `break.started` | plugin | `onBreak`, `breakLeft`, `nextBreakIn`, `endIn` | A break started. (Break & End Guard plugin) |
 | `camera.changed` | output | `on` | SprigCast Camera was turned on or off. |
 | `clip.saved` | output | `files` | A clip's files are written. |
 | `clips.changed` | output | `on` | Clips were made ready or stopped. |
@@ -1181,6 +1183,7 @@ While live on YouTube: how many watch, in all and on each YouTube stream (read f
 | `sources.changed` | source | `sources`, `added`, `removed`, `renamed` | Sources were added, removed or renamed. |
 | `sprig.state` | sprig | `sprig`, `sprigId`, `state` | A sprig switched Live state. |
 | `stream.changed` | output | `on` | The stream started or ended. |
+| `stream.limit` | plugin | none | The stream limit is close. (Break & End Guard plugin) |
 | `timer.changed` | plugin | `source`, `mode`, `seconds`, `running`, `done`, `text` | A stream timer changed. (Stream timer plugin) |
 | `timer.done` | plugin | `source` | A countdown reached 0 on screen. (Stream timer plugin) |
 | `transition.changed` | transition | `kind`, `ms` | The usual transition changed. |

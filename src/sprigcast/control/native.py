@@ -239,6 +239,7 @@ def _checked_settings(col, kind: str, settings: dict[str, Any]) -> dict[str, Any
 _PLUGIN_ACTIONS: dict[str, Action] = {}
 ALWAYS_SENT = "app.closing"  # sent just before SprigCast closes (or its server stops): look again soon
 _PLUGIN_EVENTS: set[str] = set()  # the first word of events plugins send ("snap" for snap.taken): group "plugin"
+_PLUGIN_EVENT_NAMES: set[str] = set()  # the whole names, for a plugin event whose first word is SprigCast's own
 
 
 def send_event(api, name: str, data: dict[str, Any]) -> None:
@@ -250,6 +251,7 @@ def send_event(api, name: str, data: dict[str, Any]) -> None:
     if "." not in name:
         raise ValueError("plugin events are named '<plugin>.<what>'")
     _PLUGIN_EVENTS.add(name.split(".", 1)[0])
+    _PLUGIN_EVENT_NAMES.add(name)
     api.plugin_event(name, data)
 
 
@@ -2220,11 +2222,21 @@ class NativeApi:
 def event_group(name: str) -> str:
     """bloom.shown -> bloom; stream.changed -> output; meters -> meters."""
     head = name.split(".", 1)[0]
+    if name in _PLUGIN_EVENT_NAMES:
+        return "plugin"
+    own = _OWN_EVENT_HEADS.get(head)
+    if own is not None:  # Break & End Guard's stream.limit must not take stream.changed into "plugin" with it
+        return own
     if head in _PLUGIN_EVENTS:
         return "plugin"
-    return {"blooms": "bloom", "stream": "output", "record": "output", "clips": "output",
+    return head
+
+
+_OWN_EVENT_HEADS = {
+    **{g: g for g in EVENT_GROUPS}, **{g: g for g in HIGH_VOLUME},
+    **{"blooms": "bloom", "stream": "output", "record": "output", "clips": "output",
             "places": "output", "place": "output", "camera": "output", "items": "item", "gardens": "garden", "paths": "path",
-            "sources": "source", "plugins": "plugin", "effect": "filter"}.get(head, head)
+            "sources": "source", "plugins": "plugin", "effect": "filter"}}
 
 
 # Actions that only look: answering one changes nothing, so it needn't start a full look for events

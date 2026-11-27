@@ -145,6 +145,12 @@ EVENTS: dict[str, dict[str, Any]] = {
     "meters": {"group": "meters", "about": "Sound levels, about 15 a second; only when asked for by name.",
                "fields": ["levels"]},
     # Store plugins' own events (group "plugin").
+    "break.started": {"group": "plugin", "plugin": "Break & End Guard", "about": "A break started.",
+                      "fields": ["onBreak", "breakLeft", "nextBreakIn", "endIn"]},
+    "break.ended": {"group": "plugin", "plugin": "Break & End Guard", "about": "A break ended.",
+                    "fields": ["onBreak", "breakLeft", "nextBreakIn", "endIn"]},
+    "stream.limit": {"group": "plugin", "plugin": "Break & End Guard", "about": "The stream limit is close.",
+                     "fields": []},
     "countdown.changed": {"group": "plugin", "plugin": "Countdown", "about": "A countdown changed.",
                           "fields": ["source", "seconds", "running", "done", "text"]},
     "countdown.done": {"group": "plugin", "plugin": "Countdown", "about": "A countdown reached 0 on screen.",
