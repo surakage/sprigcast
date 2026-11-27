@@ -44,7 +44,6 @@ BADGE_FILL = "#1d3428"
 BADGE_QUIET = "#222c27"
 SUN = "#f2cf63"
 MOON = "#dfeee6"
-LIVE = "#f0477f"  # the on-air dot (Live count), the app's Live pink
 
 FAMILIES = ["Nunito", "Segoe UI Variable Display", "Segoe UI", "Inter", "Arial"]
 LOOK_BASE = {"text_color": TEXT, "card_color": CARD, "accent_color": ACCENT, "corners": "leaf"}
@@ -101,9 +100,10 @@ class Words:
     big: str  # the time
     small: str = ""  # a label above it, or a line under it
     small_on_top: bool = False
-    badge: str = "sprig"  # "sprig", "sprig_quiet", "sun", "moon", "viewers" or "viewers_quiet"
+    badge: str = "sprig"  # "sprig", "sprig_quiet", "sun", "moon", "viewers" or "viewers_quiet" (an eye)
     vine: float | None = None  # a countdown's share of time left, 0..1 (None: no vine)
     shrink: float = 1.0  # card_width: the big words may be drawn this much smaller to fit (a Done text)
+    openness: float = 1.0  # the "viewers" eye: 1 open, 0 shut (Live count blinks it now and then)
 
 
 def _fonts(look: style.Style = PLAIN):
@@ -191,7 +191,7 @@ def _leaf(base, tip, bulge: float):
     return path
 
 
-def _badge(p, cx: float, cy: float, kind: str, accent: str = ACCENT) -> None:
+def _badge(p, cx: float, cy: float, kind: str, accent: str = ACCENT, openness: float = 1.0) -> None:
     """The round badge: a sprig (SprigCast's mark), or a sun by day and a moon by night for the clock."""
     import math
 
@@ -221,25 +221,29 @@ def _badge(p, cx: float, cy: float, kind: str, accent: str = ACCENT) -> None:
         p.drawPath(moon.subtracted(bite))
         p.drawEllipse(QPointF(cx + r * 0.42, cy + r * 0.3), r * 0.05, r * 0.05)  # a star
         return
-    if kind in ("viewers", "viewers_quiet"):  # Live count: an open eye, and while live a pink on-air dot
+    if kind in ("viewers", "viewers_quiet"):  # Live count: an eye, green while live (it blinks: openness)
         colour = QColor(QUIET) if quiet else style.qcolor(accent)
-        w, h = r * 0.62, r * 0.36  # half the eye's width and height
+        open_ = max(0.0, min(1.0, openness))
+        w, h = r * 0.62, r * 0.36 * max(open_, 0.04)  # half the eye's width and height
         eye = QPainterPath(QPointF(cx - w, cy))
         eye.quadTo(QPointF(cx, cy - h * 2), QPointF(cx + w, cy))
         eye.quadTo(QPointF(cx, cy + h * 2), QPointF(cx - w, cy))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(QPen(colour, r * 0.11, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        if open_ < 0.3:  # shut: one lid, curved like a closed eye
+            lid = QPainterPath(QPointF(cx - w, cy))
+            lid.quadTo(QPointF(cx, cy + r * 0.3), QPointF(cx + w, cy))
+            p.drawPath(lid)
+            return
         p.drawPath(eye)
+        p.save()
+        p.setClipPath(eye)  # the iris stays inside the lids as they close
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(colour)
         p.drawEllipse(QPointF(cx, cy), r * 0.25, r * 0.25)  # the iris
         p.setBrush(QColor(BADGE_QUIET if quiet else BADGE_FILL))
         p.drawEllipse(QPointF(cx + r * 0.08, cy - r * 0.08), r * 0.08, r * 0.08)  # its glint
-        if not quiet:
-            p.setBrush(QColor(BADGE_FILL))
-            p.drawEllipse(QPointF(cx + r * 0.62, cy - r * 0.62), r * 0.27, r * 0.27)  # a ring round the dot
-            p.setBrush(QColor(LIVE))
-            p.drawEllipse(QPointF(cx + r * 0.62, cy - r * 0.62), r * 0.19, r * 0.19)
+        p.restore()
         return
     colour = QColor(QUIET) if quiet else style.qcolor(accent)
     k = r * 1.5 / 24  # the sprig is drawn on a 24 grid, like the app's icon
@@ -321,11 +325,11 @@ def paint(width: int, words: Words, text_colour: str | None = None, card_colour:
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPath(shape)
     if card.alpha() and _badge_shown(look):
-        _badge(p, x + BADGE_LEFT + BADGE / 2, y + h / 2, words.badge, accent)
+        _badge(p, x + BADGE_LEFT + BADGE / 2, y + h / 2, words.badge, accent, words.openness)
     if not _small_shown(look):
-        words = Words(words.big, "", words.small_on_top, words.badge, words.vine, words.shrink)
+        words = Words(words.big, "", words.small_on_top, words.badge, words.vine, words.shrink, words.openness)
     if not look.shows("vine"):
-        words = Words(words.big, words.small, words.small_on_top, words.badge, None, words.shrink)
+        words = Words(words.big, words.small, words.small_on_top, words.badge, None, words.shrink, words.openness)
 
     big, small = _fonts(look)
     big.setPixelSize(_big_size(words, look))

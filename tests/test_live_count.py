@@ -79,3 +79,23 @@ def test_the_window_asks_only_while_a_live_count_is_in_the_garden(lc):
     api.col.sources = [SimpleNamespace(kind="live_count")]
     lc.look_now(api)
     assert asked == [{}] and lc._read == {"kick": {"live": False}}
+
+
+def test_the_eye_blinks_now_and_then_while_live(lc, monkeypatch):
+    assert lc.openness(0.0) == 0.5 and lc.openness(0.07) == 0.0 and lc.openness(1.0) == 1.0
+    clock = [100.0]
+    monkeypatch.setattr(lc.time, "monotonic", lambda: clock[0])
+    lc._read = {"twitch": {"live": True, "viewers": 5}}
+    source = create_source("live_count", "b", {})
+    open_ = source.video_frame()
+    assert open_ is not None and source.video_frame() is None  # open: nothing more to draw
+    clock[0] = source._blink_at + 0.07
+    shut = source.video_frame()
+    assert shut is not None and not (shut.shape == open_.shape and (shut == open_).all())  # the lid closed
+    clock[0] = source._blink_at + 0.5
+    assert source.video_frame() is not None  # open again, and the next blink is some seconds away
+    assert 0.1 <= source._blink_at - clock[0] <= lc.BLINK_EVERY[1]
+    source.update({**source.settings, "blink": False})
+    clock[0] = source._blink_at + 0.07
+    source.video_frame()
+    assert source.video_frame() is None  # Blink off: the eye stays open

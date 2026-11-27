@@ -13,12 +13,13 @@ Where the numbers come from:
                                TikTok joins the platforms SprigCast reads itself once its app is approved.
 
 Settings: Label (the small words under the number, "watching" to start), Each platform (the small words list each
-platform's number instead), YouTube, Twitch, Kick and Other apps (which ones count), Hide when not live, and the
-Style tab's colors, font, text size and corners.
+platform's number instead), YouTube, Twitch, Kick and Other apps (which ones count), Hide when not live, Blink, and
+the Style tab's colors, font, text size and corners.
 
 Apps can read it too: {"do": "livecount.get"} answers {"total", "platforms": {name: viewers}, "live"}.
 
-It's SprigCast's clock card (core/cards.py), with an eye badge and a pink on-air dot while you're live. It's light: the
+It's SprigCast's clock card (core/cards.py), with an eye badge that's green while you're live and blinks now and
+then (Blink switches that off). It's light: the
 numbers come from a cache the window fills every few seconds (never a web call on the render thread), and the
 card is drawn again only when the words on it change. Off screen it does nothing at all.
 
@@ -29,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import math
+import random
 import time
 from typing import Any
 
@@ -108,16 +110,32 @@ def words(settings: dict[str, Any], count: dict[str, Any]) -> tuple[str, str]:
     return big, small
 
 
-def card_words(big: str, small: str, live: bool) -> cards.Words:
-    return cards.Words(big, small, badge="viewers" if live else "viewers_quiet")
+def card_words(big: str, small: str, live: bool, openness: float = 1.0) -> cards.Words:
+    return cards.Words(big, small, badge="viewers" if live else "viewers_quiet", openness=openness)
 
 
-def paint_fitted(big: str, small: str, settings: dict[str, Any], live: bool, detail: float = 1.0):
+# The eye blinks now and then while live: a few pictures over a fifth of a second, every BLINK_EVERY seconds or so.
+BLINK_EVERY = (3.0, 9.0)
+BLINK = ((0.05, 0.5), (0.10, 0.0), (0.16, 0.5))  # (seconds into the blink, how open) until it's open again
+BLINK_LONG = 0.22
+TWICE = 0.2  # now and then a quick second blink
+
+
+def openness(since: float) -> float:
+    """How open the eye is this far into a blink."""
+    for until, open_ in BLINK:
+        if since < until:
+            return open_
+    return 1.0
+
+
+def paint_fitted(big: str, small: str, settings: dict[str, Any], live: bool, detail: float = 1.0,
+                 open_: float = 1.0):
     """The card at the width its words need (worked out on the pictures lane, never the render thread). The
     number is measured as its widest digits, so it doesn't twitch as it changes by one."""
     look = cards.look_of(settings)
     width = cards.card_width([cards.Words(cards.even(big), small)], look)
-    return cards.paint(width, card_words(big, small, live), detail=detail, look=look)
+    return cards.paint(width, card_words(big, small, live, open_), detail=detail, look=look)
 
 
 # The window's side: the numbers, every few seconds, from SprigCast's own cache --------------------
@@ -179,7 +197,7 @@ except Exception:  # pragma: no cover - no Qt: the card shows what apps send
 class LiveCountSource(Source):
     label = "Live count"
     defaults = {"label": "watching", "each_platform": False, "youtube": True, "twitch": True, "kick": True,
-                "other_apps": True, "hide_when_offline": True,
+                "other_apps": True, "hide_when_offline": True, "blink": True,
                 "text_color": "#f2f7f3", "card_color": "#151c19e0", "accent_color": "#4fd88f", "font": "",
                 "text_scale": 100, "corners": "leaf", "show_badge": True, "custom_look": ""}
     sleeps = True  # off screen it does nothing
@@ -195,6 +213,7 @@ class LiveCountSource(Source):
         self._frame = painted.Frame()
         self._card = painted.Aside(self._frame)  # painted on the pictures lane, not the render thread
         self._hidden_key: tuple | None = None
+        self._blink_at = time.monotonic() + random.uniform(*BLINK_EVERY)
         self._w = W
         self.status = "ok"
 
@@ -226,8 +245,17 @@ class LiveCountSource(Source):
             return painted.clear_frame(self._w, H)
         self._hidden_key = None
         big, small = words(settings, count)
-        key = (big, small, count["live"], cards.look_of(settings).key, self.detail)
-        frame = self._card.picture(key, paint_fitted, big, small, dict(settings), count["live"], self.detail)
+        open_ = 1.0
+        if count["live"] and settings.get("blink", True):
+            now = time.monotonic()
+            since = now - self._blink_at
+            if since >= BLINK_LONG:  # done: the next one some seconds from now (or a quick second one)
+                again = 0.15 if random.random() < TWICE and since < BLINK_LONG + 0.05 else random.uniform(*BLINK_EVERY)
+                self._blink_at = now + again
+            elif since >= 0:
+                open_ = openness(since)
+        key = (big, small, count["live"], open_, cards.look_of(settings).key, self.detail)
+        frame = self._card.picture(key, paint_fitted, big, small, dict(settings), count["live"], self.detail, open_)
         if frame is not None:
             self._w = int(frame.shape[1])
         return frame
