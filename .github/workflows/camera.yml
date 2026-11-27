@@ -41,6 +41,8 @@ jobs:
           foreach ($f in $dll, "build/camera32/Release/sprigcast_camera32.dll") {
             $got = (Get-Item $f).VersionInfo.FileMajorPart
             if ($got -ne $want) { throw "$f has camera version $got, version.h says $want" }
+            $text = (Get-Item $f).VersionInfo.FileVersion  # what Properties > Details shows
+            if ($text -ne "$want.0.0.0") { throw "$f shows file version '$text', want $want.0.0.0" }
           }
       - name: Register it and capture frames like an app would (DirectShow)
         shell: pwsh
