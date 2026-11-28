@@ -86,34 +86,44 @@ def _hw_accel():
 COLOR_MATRICES = {1: "709", 5: "601", 6: "601", 9: "2020", 10: "2020"}  # FFmpeg AVColorSpace -> ours
 
 
-def pack_i420(frame, size: tuple[int, int]) -> tuple[np.ndarray, str] | None:
+def pack_i420(frame, size: tuple[int, int], crop: tuple[int, int, int, int] | None = None) \
+        -> tuple[np.ndarray, str] | None:
     """A decoded 4:2:0 picture as one 1-channel array for the GPU to convert (render/compositor.py src()):
     Y rows, then rows of U | V side by side, then the alpha rows. ("I420A/709/tv", ...) says how to read it.
 
     About 40% of the RGBA picture it replaces (1080p: 5 MB with alpha instead of 8), and the CPU skips
     the colour conversion. None when it doesn't fit (another pixel format, an odd size, a shrink needed).
+    `crop` (left, top, right, bottom) leaves those edges out as it packs (the result is even across and a
+    multiple of 4 down, as sources/android_screen.crop_yuv's), with no copy of the whole picture first.
     """
     kind = {"yuv420p": "I420", "yuvj420p": "I420", "yuva420p": "I420A", "nv12": "I420"}.get(frame.format.name)
     w, h = frame.width, frame.height
     if kind is None or (w, h) != tuple(size) or w % 2 or h % 2:
         return None
+    x0 = y0 = 0
+    if crop is not None and any(crop):
+        left, top, right, bottom = (int(c) for c in crop)
+        x0, y0 = left // 2 * 2, top // 2 * 2
+        w, h = (w - left - right) // 2 * 2, (h - top - bottom) // 4 * 4
+        if min(left, top, right, bottom) < 0 or w < 16 or h < 16:
+            return None
     cw, ch = w // 2, h // 2
     out = np.empty((h + ch + (h if kind == "I420A" else 0), w), dtype=np.uint8)
 
-    def plane(i: int, width: int, rows: int) -> np.ndarray:
+    def plane(i: int, width: int, rows: int, x: int = 0, y: int = 0) -> np.ndarray:
         p = frame.planes[i]
-        return np.frombuffer(p, dtype=np.uint8).reshape(-1, p.line_size)[:rows, :width]
+        return np.frombuffer(p, dtype=np.uint8).reshape(-1, p.line_size)[y:y + rows, x:x + width]
 
-    out[:h] = plane(0, w, h)
+    out[:h] = plane(0, w, h, x0, y0)
     if frame.format.name == "nv12":  # hardware decoding: U and V share one plane, UVUV...
-        uv = plane(1, w, ch)
+        uv = plane(1, w, ch, x0, y0 // 2)
         out[h:h + ch, :cw] = uv[:, 0::2]
         out[h:h + ch, cw:] = uv[:, 1::2]
     else:
-        out[h:h + ch, :cw] = plane(1, cw, ch)
-        out[h:h + ch, cw:] = plane(2, cw, ch)
+        out[h:h + ch, :cw] = plane(1, cw, ch, x0 // 2, y0 // 2)
+        out[h:h + ch, cw:] = plane(2, cw, ch, x0 // 2, y0 // 2)
     if kind == "I420A":
-        out[h + ch:] = plane(3, w, h)
+        out[h + ch:] = plane(3, w, h, x0, y0)
     # Untagged video is read as BT.601 TV range, as FFmpeg's own conversion did before.
     matrix = COLOR_MATRICES.get(int(frame.colorspace or 2), "601")
     full = int(frame.color_range or 0) == 2 or frame.format.name.startswith("yuvj")  # JPEG-style full range

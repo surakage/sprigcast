@@ -42,6 +42,10 @@ constexpr size_t LEAD = BLOCK;                            // ... and plays once 
 // stays well ahead of that for two seconds (a capture whose clock runs fast) drops the extra, so the delay can't build.
 constexpr size_t CUSHION_STEP = BLOCK / 2;
 constexpr size_t MAX_CUSHION = BLOCK * 4;
+// What a sound may ask to keep ahead (sc_mixer_source_cushion): a phone's sound, which shows a quarter second late
+// with its pictures anyway, keeps that quarter second here, so Python held up for a moment on a slow PC isn't a gap
+// (a tester's 4 GB PC, 2026-11-27: it ran dry up to 40 times in 30 s with four blocks).
+constexpr size_t MAX_ASKED = BLOCK * 16;
 constexpr int CUSHION_WINDOW = 94;  // blocks: about 2 s
 constexpr int CALM_WINDOWS = 30;    // windows without running dry: about a minute
 constexpr size_t TAP_QUEUE = 64;                          // blocks an output keeps until taken (about 1.4 s)
@@ -426,7 +430,7 @@ struct sc_mixer {
                 if (have < static_cast<size_t>(BLOCK * 2)) {  // ran dry: waits for a block (and its cushion) again
                     s.primed = false;
                     ++s.underruns;
-                    s.cushion = std::min(MAX_CUSHION, s.cushion + CUSHION_STEP);
+                    s.cushion = std::max(s.floor_cushion, std::min(MAX_CUSHION, s.cushion + CUSHION_STEP));
                     s.calm = 0;
                 } else {
                     keep_even(s);
@@ -728,9 +732,12 @@ SC_API int sc_mixer_source_push(sc_mixer *mixer, int id, const float *stereo, in
         if (found == mixer->sources.end()) return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_source_push: no such sound");
         Source &s = found->second;
         s.queued.insert(s.queued.end(), stereo, stereo + static_cast<size_t>(frames) * 2);
-        if (s.queued.size() > MAX_QUEUED * 2) {  // never let the delay build up: the oldest goes
+        // Never let the delay build up: the oldest goes. (A sound that asked for a deep cushion keeps that, the
+        // block it plays from and room for a burst.)
+        const size_t most = std::max(MAX_QUEUED, s.floor_cushion + LEAD + static_cast<size_t>(BLOCK) * 6);
+        if (s.queued.size() > most * 2) {
             s.queued.erase(s.queued.begin(),
-                           s.queued.begin() + static_cast<std::ptrdiff_t>(s.queued.size() - MAX_QUEUED * 2));
+                           s.queued.begin() + static_cast<std::ptrdiff_t>(s.queued.size() - most * 2));
         }
         return SC_OK;
     });
@@ -743,7 +750,7 @@ SC_API int sc_mixer_source_cushion(sc_mixer *mixer, int id, int frames) {
         auto found = mixer->sources.find(id);
         if (found == mixer->sources.end()) return sc::fail(SC_ERR_ARGUMENT, "sc_mixer_source_cushion: no such sound");
         Source &s = found->second;
-        s.floor_cushion = std::min(MAX_CUSHION, static_cast<size_t>(frames));
+        s.floor_cushion = std::min(MAX_ASKED, static_cast<size_t>(frames));
         s.cushion = std::max(s.cushion, s.floor_cushion);
         return SC_OK;
     });

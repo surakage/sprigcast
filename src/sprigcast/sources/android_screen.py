@@ -53,6 +53,8 @@ DEFAULTS: dict[str, Any] = {"serial": "", "longest": 1280, "bitrate_kbps": 8000,
 TRIM_EVERY_S = 1.0
 TRIM_SURE = 3
 TRIM_MOST = 0.08  # of a side: more than that is the picture being dark, not a bar
+TRIM_LEAST = 8  # pixels: less than that isn't worth a pass over every picture, and came and went with what was on
+# the screen (a tester's stream, 2026-11-27: 2 pixels on, off, on another side, each one a new picture size)
 DARK = 28  # luma (16 is video black)
 SOUND_JAR = "sprigcast-sound.jar"
 SOUND_ON_PHONE = "/data/local/tmp/sprigcast-sound.jar"
@@ -64,6 +66,8 @@ SHOW_AFTER_S = 0.25  # each picture (and the sound with it) shows this late, so 
 # 2026-11-26), are taken back before they ever show
 SOUND_KEEP_S = 0.25  # more than this waiting (the mixer fell behind): the oldest goes, so it never lags
 SOUND_RETRY_S = 3.0
+SOUND_SHORT_S = 10.0  # the helper ending sooner than this "ended at once"
+SOUND_RETRY_MOST_S = 60.0
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 # Google's adb isn't shipped with SprigCast: one already on the PC is used, or it's downloaded from Google when
@@ -75,7 +79,26 @@ ADB_URL = f"https://dl.google.com/android/repository/platform-tools-latest-{_ZIP
 KEEP = ("adb", "adb.exe", "AdbWinApi.dll", "AdbWinUsbApi.dll", "NOTICE.txt", "source.properties")
 
 
-def find_adb() -> str | None:
+ADB_KNOWN_S = 60.0  # adb's place, once found, is used this long before it's looked at again
+ADB_NONE_S = 10.0  # ... and "not on this PC" this long
+_adb_known: tuple[float, Path | None, str | None] | None = None  # (when, ADB_HOME then, where)
+
+
+def find_adb(fresh: bool = False) -> str | None:
+    """Google's adb (look_for_adb), remembered: looking walks every folder on PATH, 0.7-1.1 s each time on a
+    tester's hard disk, and the leaf asked each time it tried the phone and the pop-up each time it looked (the
+    window stopped answering, 2026-11-27). `fresh` looks again now (adb was just downloaded)."""
+    global _adb_known
+    known, now = _adb_known, time.monotonic()
+    if known is not None and not fresh and known[1] == ADB_HOME and \
+            now - known[0] < (ADB_KNOWN_S if known[2] else ADB_NONE_S):
+        return known[2]
+    found = look_for_adb()
+    _adb_known = (now, ADB_HOME, found)
+    return found
+
+
+def look_for_adb() -> str | None:
     """Google's adb: one already on the PC (on PATH, Android Studio's SDK, scrcpy's folder) or the one
     SprigCast downloaded from Google for you (ADB_HOME)."""
     name = "adb.exe" if sys.platform == "win32" else "adb"
@@ -124,6 +147,8 @@ def install_adb(zip_path: Path, home: Path) -> Path:
                     out.chmod(0o755)
     if adb is None:
         raise ValueError("adb wasn't in the download")
+    global _adb_known
+    _adb_known = None  # it's there now: looked for again
     return adb
 
 
@@ -189,7 +214,7 @@ def black_edges(y: np.ndarray) -> tuple[int, int, int, int]:
 
     def run(flags: np.ndarray, most: int) -> int:
         n = int(np.argmin(flags)) if not flags.all() else len(flags)
-        return n // 2 * 2 if n <= most else 0
+        return n // 2 * 2 if TRIM_LEAST <= n <= most else 0
 
     return (run(cols, int(w * TRIM_MOST)), run(rows, int(h * TRIM_MOST)),
             run(cols[::-1], int(w * TRIM_MOST)), run(rows[::-1], int(h * TRIM_MOST)))
@@ -382,6 +407,30 @@ class AndroidScreenSource(Source):
             self._sound_frames -= filled
         return out
 
+    # With the engine's mixer the sound's lateness (SHOW_AFTER_S, to stay with the pictures) is kept queued in the
+    # engine instead of here: Python held up for a moment (a busy 4 GB PC, 2026-11-27: "ran dry" up to 40 times in
+    # 30 s) then plays from that queue, where before every late block was a gap.
+    sound_ahead = int(SHOW_AFTER_S * SOUND_RATE)
+
+    def read_ahead(self, n: int) -> np.ndarray | None:
+        """The next n frames as they came, or None while the phone hasn't sent that many (nothing is made up)."""
+        with self._sound_lock:
+            if self._sound_frames < n:
+                return None
+            out = np.empty((n, 2), dtype=np.float32)
+            filled = 0
+            while filled < n:
+                chunk = self._sound[0]
+                take = min(n - filled, len(chunk))
+                out[filled:filled + take] = chunk[:take]
+                filled += take
+                if take == len(chunk):
+                    self._sound.pop(0)
+                else:
+                    self._sound[0] = chunk[take:]
+            self._sound_frames -= n
+        return out
+
     def _heard(self, samples: np.ndarray) -> None:
         with self._sound_lock:
             self._sound.append(samples)
@@ -404,10 +453,14 @@ class AndroidScreenSource(Source):
 
     def _sound_run(self, adb: str, serial: str, jar: Path) -> None:
         """Copy the helper to the phone and read what it sends, again after a few seconds if it stops."""
+        failed, pushed, copied = 0, "", False
         while not self._stop.is_set():
             if not self.settings.get("sound", True):
                 return  # switched off (update ended the helper)
-            pushed = _run([adb, "-s", serial, "push", str(jar), SOUND_ON_PHONE], timeout=15)
+            if not copied or failed >= 2:  # once, and again if it keeps ending (the phone cleared it away)
+                pushed = _run([adb, "-s", serial, "push", str(jar), SOUND_ON_PHONE], timeout=15)
+                copied = True
+            began = time.monotonic()
             command = [adb, "-s", serial, "exec-out", f"CLASSPATH={SOUND_ON_PHONE}", "app_process", "/",
                        SOUND_CLASS]
             try:
@@ -464,8 +517,14 @@ class AndroidScreenSource(Source):
                 log.info("%s: no phone sound: %s", self.id, line)
                 self._sound_given_up = True  # the phone can't: not tried again until the leaf restarts
                 return
-            log.info("%s: the phone's sound stopped (%s); trying again", self.id, line)
-            self._stop.wait(SOUND_RETRY_S)
+            # One that ends at once goes round later each time: a tester's ended every 3.4 s for the last 14
+            # minutes of a stream, the helper copied to the phone again each time (2026-11-27).
+            failed = failed + 1 if time.monotonic() - began < SOUND_SHORT_S else 0
+            wait = min(SOUND_RETRY_S * 2 ** min(failed, 5), SOUND_RETRY_MOST_S) if failed else SOUND_RETRY_S
+            if failed <= 1 or failed % 5 == 0:
+                log.info("%s: the phone's sound stopped (%s); trying again%s", self.id, line,
+                         f" in {wait:.0f} s (it has ended at once {failed} times)" if failed > 1 else "")
+            self._stop.wait(wait)
 
     def video_frame(self) -> np.ndarray | None:
         self._release()
@@ -622,6 +681,7 @@ class AndroidScreenSource(Source):
             # one starts, and a still screen sends no next one (screenrecord sends a picture when the screen
             # changes): the leaf stayed on "starting" for minutes (PC 2026-11-26). Here, once adb has sent
             # nothing for IDLE_S, the parser is flushed and the picture it holds shows.
+            quiet_damaged()
             codec = av.CodecContext.create("h264", "r")
             codec.thread_count = 1
             try:  # each picture out of the decoder as soon as it's in
@@ -631,7 +691,7 @@ class AndroidScreenSource(Source):
             except (ImportError, AttributeError, TypeError, ValueError):
                 pass
             chunks: queue.Queue = queue.Queue(maxsize=256)
-            threading.Thread(target=_read_into, args=(proc.stdout, chunks), name=f"android-{self.id}-read",
+            threading.Thread(target=_read_into, args=(proc.stdout, chunks, proc), name=f"android-{self.id}-read",
                              daemon=True).start()
             held = ended = False
             damaged = [0]
@@ -732,9 +792,7 @@ class AndroidScreenSource(Source):
                 return True
             if self._held(mine, frame):
                 continue
-            if self.settings.get("trim", True):
-                frame = self._trimmed(frame)
-            picture, order, size = camera_picture(frame, None)
+            picture, order, size = self._picture(frame, camera_picture)
             note = self.sound_note if sound_on(self.settings) else ""
             self.status = f"capturing {size[0]}x{size[1]}" + (f"; no phone sound: {note}" if note else "")
             with self._lock:
@@ -744,10 +802,43 @@ class AndroidScreenSource(Source):
                     del self._waiting[0]
         return False
 
+    def _picture(self, frame, camera_picture):
+        """The picture for the graphics card, without the phone's own black bars when Trim is on: packed straight
+        from the decoder's planes in one copy (cut to a new frame first, it was four whole-picture copies a
+        picture: crop_yuv was what the phone's thread was busy with on a tester's 4 GB PC, 2026-11-27)."""
+        edges = self._trim_edges(frame) if self.settings.get("trim", True) else None
+        if edges is not None and any(edges):
+            from sprigcast.sources.media import pack_i420
+
+            try:
+                packed = pack_i420(frame, (frame.width, frame.height), crop=edges)
+            except (ValueError, TypeError):
+                packed = None
+            if packed is not None:
+                return packed[0], packed[1], (packed[0].shape[1], packed[0].shape[0] * 2 // 3)
+            try:
+                frame = crop_yuv(frame, *edges)
+            except (ValueError, TypeError) as exc:
+                log.info("%s: couldn't trim the picture: %s", self.id, exc)
+                self._trim = ((frame.width, frame.height), (0, 0, 0, 0))
+        return camera_picture(frame, None)
+
     def _trimmed(self, frame):
-        """The picture without the black bars the phone draws itself (in landscape, the strip beside the camera
-        cutout: PC 2026-11-26). Looked at once a second; a change is used once seen TRIM_SURE times running,
-        so a dark moment in a game doesn't trim it."""
+        """The picture as a frame without the black bars (kept for checks; _picture is what shows)."""
+        edges = self._trim_edges(frame)
+        if edges is None or not any(edges):
+            return frame
+        try:
+            return crop_yuv(frame, *edges)
+        except (ValueError, TypeError) as exc:
+            log.info("%s: couldn't trim the picture: %s", self.id, exc)
+            self._trim = ((frame.width, frame.height), (0, 0, 0, 0))
+            return frame
+
+    def _trim_edges(self, frame) -> tuple[int, int, int, int] | None:
+        """The black bars the phone draws itself (in landscape, the strip beside the camera cutout: PC
+        2026-11-26), as (left, top, right, bottom), or None. Looked at once a second; a change is used once seen
+        TRIM_SURE times running, so a dark moment in a game doesn't trim it."""
         dims = (frame.width, frame.height)
         now = time.monotonic()
         if self._trim is not None and self._trim[0] != dims:  # turned: this shape's trim, if it had one
@@ -772,14 +863,9 @@ class AndroidScreenSource(Source):
                 self._trim = seen
                 self._trims[dims] = edges
                 log.info("%s: black edges trimmed: %s", self.id, edges)
-        if self._trim is None or self._trim[0] != dims or not any(self._trim[1]):
-            return frame
-        try:
-            return crop_yuv(frame, *self._trim[1])
-        except (ValueError, TypeError) as exc:
-            log.info("%s: couldn't trim the picture: %s", self.id, exc)
-            self._trim = (dims, (0, 0, 0, 0))
-            return frame
+        if self._trim is None or self._trim[0] != dims:
+            return None
+        return self._trim[1]
 
     def _end_all(self) -> None:
         with self._lock:
@@ -791,18 +877,44 @@ class AndroidScreenSource(Source):
 _EOF = b""
 
 
-def _read_into(pipe, chunks: queue.Queue) -> None:
-    """adb's output into `chunks` as it comes, then _EOF."""
+class DamagedQuiet(logging.Filter):
+    """FFmpeg's own lines about a damaged picture ("error while decoding MB", "No start code is found", four
+    ERROR lines for one skipped picture in a tester's log, 2026-11-27) are kept out of the log: the leaf says once,
+    in plain words, that a damaged picture was skipped."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Only the phone's own decoding (its threads are named android-...): a video file's or camera's stay.
+        return not (record.levelno >= logging.WARNING and threading.current_thread().name.startswith("android-"))
+
+
+def quiet_damaged() -> None:
+    logger = logging.getLogger("libav.h264")
+    if not any(isinstance(f, DamagedQuiet) for f in logger.filters):
+        logger.addFilter(DamagedQuiet())
+
+
+def _read_into(pipe, chunks: queue.Queue, proc: subprocess.Popen | None = None) -> None:
+    """adb's output into `chunks` as it comes, then _EOF. Once adb has ended and nobody takes what's queued (its
+    recording was over) the thread ends: three of them were left waiting on a full queue after a tester's stream
+    (2026-11-27)."""
+    def put(data) -> bool:
+        while True:
+            try:
+                chunks.put(data, timeout=0.5)
+                return True
+            except queue.Full:
+                if proc is None or proc.poll() is not None:
+                    return False
+
     try:
         while True:
             data = pipe.read(65536)
-            if not data:
+            if not data or not put(data):
                 break
-            chunks.put(data)
     except (OSError, ValueError):
         pass
     finally:
-        chunks.put(_EOF)
+        put(_EOF)
 
 
 def _end(proc: subprocess.Popen) -> None:

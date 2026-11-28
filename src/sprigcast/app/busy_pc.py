@@ -46,6 +46,8 @@ ADVICE = {
     "Windows Search": "let it finish before you go live",
 }
 BACKGROUND_PCT = 10.0  # of the whole PC: a background job using this much is worth saying
+BLAME_PCT = 25.0  # ... once it uses this much, or more than any other app (a tester's note blamed Defender at 10%
+# of a CPU pinned by other things, 2026-11-27)
 HEAVY_PCT = 25.0  # any other program using this much is named in the Stream doctor
 IGNORE = {"system idle process", "idle", "system", "sprigcast.exe", "python.exe", "pythonw.exe"}
 
@@ -80,9 +82,12 @@ def friendly(name: str) -> str:
 
 def background_jobs(apps: list[tuple[str, float]]) -> list[tuple[str, float]]:
     """Of (name, % of the whole PC) pairs: Windows' own jobs that can wait (Defender, Update, Search) using
-    BACKGROUND_PCT or more, heaviest first."""
+    BLAME_PCT or more, or BACKGROUND_PCT and more than any other app, heaviest first."""
     names = set(BACKGROUND.values())
-    return sorted(((n, pct) for n, pct in apps if n in names and pct >= BACKGROUND_PCT), key=lambda a: -a[1])
+    most = max((pct for _n, pct in apps), default=0.0)
+    return sorted(((n, pct) for n, pct in apps
+                   if n in names and pct >= BACKGROUND_PCT and (pct >= BLAME_PCT or pct >= most)),
+                  key=lambda a: -a[1])
 
 
 def job_message(name: str, pct: float) -> str:
@@ -163,6 +168,7 @@ def heavy_apps(limit: int = 3, wait: float = 1.0, with_use: bool = False) -> lis
     # Streaming apps first when they are busy at all, then whatever else is heaviest.
     heavy = [n for n, pct in ranked if pct / cores >= 2.0]
     waiting = {n for n, _pct in background_jobs([(n, pct / cores) for n, pct in ranked])}
+    heavy = [n for n in heavy if n in waiting or n not in ADVICE]  # a job of Windows' own using little isn't named
     heavy.sort(key=lambda n: (n not in waiting, n not in known, -use[n]))  # a scan that can wait is said first
     return heavy[:limit]
 

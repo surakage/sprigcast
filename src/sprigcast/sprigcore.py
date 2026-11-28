@@ -2500,7 +2500,7 @@ class SoundMixer:
         _check(self._call(self._lib.sc_mixer_source_remove, int(source)))
 
     def cushion(self, source: int, frames: int) -> None:
-        """Keep at least `frames` of a pushed sound queued ahead (up to 4 blocks): Python's sounds ride out a held
+        """Keep at least `frames` of a pushed sound queued ahead (up to 16 blocks): Python's sounds ride out a held
         lock instead of running dry."""
         _check(self._call(self._lib.sc_mixer_source_cushion, int(source), int(frames)))
 
