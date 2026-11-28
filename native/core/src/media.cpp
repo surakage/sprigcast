@@ -368,6 +368,13 @@ struct Core : std::enable_shared_from_this<Core> {
     PicturePtr card_picture(const AVFrame *f) const;
     std::atomic<int> max_w{MAX_W}, max_h{MAX_H};
     std::atomic<int> fault{0};
+    // A camera's pictures with these edges left off (sc_media_set_crop: left, top, right, bottom), and what its
+    // pictures look like before that (sc_media_set_look: a phone's own black bars, sources/android_screen.py).
+    std::atomic<int> crop[4] = {};
+    std::atomic<int> look_dark{0};  // 0: nobody looks
+    std::atomic<bool> live_hold{false};  // sc_media_set_hold: a camera's pictures are decoded but don't show
+    sc_media_look look = {};
+    double looked_at = -1e9;
 
     // threads: `thread` is the serial of the decoder thread that counts (0 = none). An older one that is still
     // finishing sees it isn't the one any more and ends by itself: nothing ever waits for it.
@@ -907,6 +914,8 @@ void Core::open(Held &held, const std::string &file) {
             if (video) {
                 // A camera's MJPEG: one thread decodes 1080p60 in a few ms, and each more holds its own frames.
                 ctx->thread_count = camera ? 1 : decode_threads(s->codecpar->width, s->codecpar->height);
+                // A phone's screen (H.264 as it comes): each picture out as soon as it's in, not a few later.
+                if (camera && s->codecpar->codec_id == AV_CODEC_ID_H264) ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
                 if (see_through) {  // libvpx (a stinger's see-through clip): picture and alpha, all on the CPU
                     const int cores = static_cast<int>(std::thread::hardware_concurrency());
                     ctx->thread_count = std::max(ctx->thread_count, std::min(4, std::max(1, cores)));
@@ -977,6 +986,7 @@ PicturePtr card_to_memory(const Picture &on_card);
 
 bool Core::push_frame(double t, PicturePtr picture, uint64_t gen, uint64_t serial) {
     std::unique_lock<std::mutex> hold(lock);
+    if (live && live_hold.load()) return current(gen, serial);  // held: the picture on screen stays
     if (live && live_delay > 0) {  // held back: kept, by when it came, until it is due (advance)
         if (picture->card) {  // the decoder's own textures are few: a held picture waits in memory
             hold.unlock();
@@ -1268,6 +1278,58 @@ std::shared_ptr<std::vector<float>> resample(Resampler &rs, const AVFrame *f) {
     return out;
 }
 
+// How long a camera's picture is black from each side (luma under `dark` on every 8th row or column), and its
+// brightest sample: what sources/android_screen.py's black_edges and boxed read from a picture, read here so no
+// picture goes through Python for it.
+void look_at(const AVFrame *f, int dark, sc_media_look &out) {
+    const int w = f->width, h = f->height;
+    out.width = w;
+    out.height = h;
+    out.left = out.top = out.right = out.bottom = out.brightest = 0;
+    if (w < 16 || h < 16 || !f->data[0]) return;
+    std::vector<uint8_t> cols(static_cast<size_t>(w), 0), rows(static_cast<size_t>(h), 0);
+    int brightest = 0;
+    for (int y = 0; y < h; y += 8) {
+        const uint8_t *row = f->data[0] + static_cast<ptrdiff_t>(y) * f->linesize[0];
+        for (int x = 0; x < w; ++x) cols[static_cast<size_t>(x)] = std::max(cols[static_cast<size_t>(x)], row[x]);
+    }
+    for (int y = 0; y < h; ++y) {
+        const uint8_t *row = f->data[0] + static_cast<ptrdiff_t>(y) * f->linesize[0];
+        uint8_t most = 0;
+        for (int x = 0; x < w; x += 8) most = std::max(most, row[x]);
+        rows[static_cast<size_t>(y)] = most;
+        brightest = std::max<int>(brightest, most);
+    }
+    for (int x = 0; x < w; ++x) brightest = std::max<int>(brightest, cols[static_cast<size_t>(x)]);
+    auto run = [dark](const std::vector<uint8_t> &line, bool back) {
+        const int n = static_cast<int>(line.size());
+        int count = 0;
+        while (count < n && line[static_cast<size_t>(back ? n - 1 - count : count)] < dark) ++count;
+        return count;
+    };
+    out.left = run(cols, false);
+    out.right = run(cols, true);
+    out.top = run(rows, false);
+    out.bottom = run(rows, true);
+    out.brightest = brightest;
+}
+
+// A 4:2:0 picture in memory with these edges left off, in place (its planes start further in; nothing is copied).
+// False when it can't be (another format, too little left): shown whole.
+bool crop_in_place(AVFrame *f, int left, int top, int right, int bottom) {
+    if (f->format != AV_PIX_FMT_YUV420P && f->format != AV_PIX_FMT_YUVJ420P) return false;
+    left = left / 2 * 2;
+    top = top / 2 * 2;
+    const int w = (f->width - left - right) / 2 * 2, h = (f->height - top - bottom) / 4 * 4;
+    if (left < 0 || top < 0 || right < 0 || bottom < 0 || w < 16 || h < 16) return false;
+    f->data[0] += static_cast<ptrdiff_t>(top) * f->linesize[0] + left;
+    f->data[1] += static_cast<ptrdiff_t>(top / 2) * f->linesize[1] + left / 2;
+    f->data[2] += static_cast<ptrdiff_t>(top / 2) * f->linesize[2] + left / 2;
+    f->width = w;
+    f->height = h;
+    return true;
+}
+
 // Decode until the end, a jump or sleep. True when it played out (or is a file waiting for play).
 bool Core::decode(const std::string &file, uint64_t gen, uint64_t serial, double from, float at_speed, Held &held) {
     bool camera;
@@ -1340,9 +1402,12 @@ bool Core::decode(const std::string &file, uint64_t gen, uint64_t serial, double
         const AVStream *video = held.vi >= 0 ? held.fmt->streams[held.vi] : nullptr;
         const AVStream *sound = held.ai >= 0 ? held.fmt->streams[held.ai] : nullptr;
         int size_w = 0, size_h = 0;
+        int fitted_from_w = 0, fitted_from_h = 0;  // the picture size size_w, size_h were fitted from
         const int as = picture_format.load();
         if (video) {
             fit_size(held.vdec->width, held.vdec->height, max_w.load(), max_h.load(), grow.load(), size_w, size_h);
+            fitted_from_w = held.vdec->width;
+            fitted_from_h = held.vdec->height;
         }
         {
             std::lock_guard<std::mutex> hold(lock);
@@ -1431,6 +1496,30 @@ bool Core::decode(const std::string &file, uint64_t gen, uint64_t serial, double
                 if (at < skip_to - 0.001) {
                     ff.av_frame_unref(f);
                     continue;
+                }
+                if (camera) {
+                    if (const int dark = look_dark.load(); dark > 0 && !f->hw_frames_ctx && now_s() - looked_at >= 0.3) {
+                        sc_media_look seen = {};
+                        look_at(f, dark, seen);
+                        std::lock_guard<std::mutex> hold(lock);
+                        seen.serial = look.serial + 1;
+                        look = seen;
+                        looked_at = now_s();
+                    }
+                    const int cl = crop[0].load(), ct = crop[1].load(), cr = crop[2].load(), cb = crop[3].load();
+                    const int whole_w = f->width, whole_h = f->height;
+                    if ((cl | ct | cr | cb) && !f->hw_frames_ctx) crop_in_place(f, cl, ct, cr, cb);
+                    // Cut (or whole again, or another size than it opened at): the size it shows at follows.
+                    if (f->width != fitted_from_w || f->height != fitted_from_h) {
+                        fitted_from_w = f->width;
+                        fitted_from_h = f->height;
+                        fit_size(f->width, f->height, max_w.load(), max_h.load(), grow.load(), size_w, size_h);
+                        std::lock_guard<std::mutex> hold(lock);
+                        width = size_w;
+                        height = size_h;
+                        given_width = whole_w;
+                        given_height = whole_h;
+                    }
                 }
                 const float shrink_now = shrink.load();  // a new size shows from the next picture on
                 int ow, oh;
@@ -1831,6 +1920,39 @@ SC_API int sc_media_control(sc_media *media, int what, double value) {
         media->core->control(what, value);
         return SC_OK;
     });
+}
+
+SC_API int sc_media_set_crop(sc_media *media, int left, int top, int right, int bottom) {
+    if (!media || left < 0 || top < 0 || right < 0 || bottom < 0) return SC_ERR_ARGUMENT;
+    Core &c = *media->core;
+    c.crop[0].store(left);
+    c.crop[1].store(top);
+    c.crop[2].store(right);
+    c.crop[3].store(bottom);
+    return SC_OK;
+}
+
+SC_API int sc_media_set_hold(sc_media *media, int hold) {
+    if (!media) return SC_ERR_ARGUMENT;
+    Core &c = *media->core;
+    std::lock_guard<std::mutex> held(c.lock);
+    c.live_hold.store(hold != 0);
+    if (hold && c.live) c.frames.clear();  // those still waiting their delay don't show either
+    return SC_OK;
+}
+
+SC_API int sc_media_set_look(sc_media *media, int dark) {
+    if (!media || dark < 0 || dark > 255) return SC_ERR_ARGUMENT;
+    media->core->look_dark.store(dark);
+    return SC_OK;
+}
+
+SC_API int sc_media_look_get(sc_media *media, sc_media_look *out) {
+    if (!media || !out) return SC_ERR_ARGUMENT;
+    Core &c = *media->core;
+    std::lock_guard<std::mutex> hold(c.lock);
+    *out = c.look;
+    return SC_OK;
 }
 
 SC_API int sc_media_set_shrink(sc_media *media, float shrink) {

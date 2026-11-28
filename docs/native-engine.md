@@ -487,6 +487,14 @@ what is ready. None of the decoding, packing, shrinking or resampling runs under
   decoder thread, and opens an unplugged or busy camera again every 2 s. The camera source hands the player to
   the render thread like a video's; frames Python draws read it back. A player that can't be made, or faults,
   hands the camera back to Python's reader. `SPRIGCAST_NO_NATIVE_CAMERA=1` reads cameras in Python.
+- **A phone's screen** (`sources/android_screen.py`, Android Screen): the same player decodes the H.264 adb
+  sends. Python only passes adb's bytes on, over a socket on this PC the player opens as `tcp://127.0.0.1:port`
+  (format `h264`), cut into whole pictures with an access unit delimiter after each so a still screen's one
+  picture shows. Recordings in the same shape follow each other on one connection; a turned phone's next
+  recording goes to the player opened afresh on a new port. The player looks at its pictures for black bars
+  (`sc_media_set_look`, `sc_media_look_get`), leaves them off (`sc_media_set_crop`) and holds its pictures back
+  while the phone turns (`sc_media_set_hold`); Python decides when from those looks. A player that doesn't
+  connect, or faults, hands decoding back to Python. `SPRIGCAST_NO_NATIVE_PHONE=1` decodes in Python.
 
 ## Phases
 
