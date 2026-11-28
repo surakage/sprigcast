@@ -377,6 +377,9 @@ class Streamer(Recorder):
         self._held: tuple[str, str, float] | None = None  # (level, reason, shown until)
         self._send_q: queue.Queue = queue.Queue()
         self._send_error: Exception | None = None
+        from sprigcast.output.link_watch import WATCH
+
+        WATCH.add(self)  # a quiet stream can't tell a dead connection by itself (link_watch.py)
         self._backlog_bytes = 0
         self._congested = False
         self._sender: threading.Thread | None = None
@@ -604,6 +607,11 @@ class Streamer(Recorder):
                 continue
             self._backlog_bytes += packet.size
             self._send_q.put(packet)
+
+    def link_lost(self, reason: str) -> None:
+        """The server stopped answering (link_watch): end this connection so _run makes a new one."""
+        if self.connected and self._send_error is None:
+            self._send_error = ConnectionError(reason)
 
     def _send_loop(self, container) -> None:
         from sprigcast.core.pacing import ABOVE_NORMAL, raise_thread_priority

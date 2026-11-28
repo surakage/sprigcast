@@ -54,6 +54,17 @@ def _settings_in_a_folder():
         QSettings.setPath(QSettings.Format.IniFormat, scope, folder)
 
 
+def _no_link_watch():
+    """Tests make streams to servers that don't exist: the watch that asks a quiet stream's server whether it
+    still answers (output/link_watch.py) stays off, so no test reaches out to the network."""
+    from sprigcast.output import link_watch
+
+    link_watch.WATCH.enabled = False
+
+
+_no_link_watch()
+
+
 @pytest.fixture(autouse=True)
 def _keys_kept_in_memory(monkeypatch):
     """Stream keys and sign-ins saved by tests stay in memory, never in Windows Credential Manager (entries

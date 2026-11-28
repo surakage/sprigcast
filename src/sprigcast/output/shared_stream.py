@@ -333,6 +333,10 @@ class StreamLink:
         self.reconnects = 0
         self.refused = 0  # tries in a row the server ended as they started (note_refusal)
         self.frames = self.dropped = self.bytes_out = 0
+        self._lost: str | None = None  # set by link_lost: this connection is ended and made again
+        from sprigcast.output.link_watch import WATCH
+
+        WATCH.add(self)  # a quiet stream can't tell a dead connection by itself (link_watch.py)
         self.mux_seconds = self.longest_stall = 0.0
         # Time the send buffer held NETWORK_BEHIND_S or more: "waiting on the network". mux_seconds (time handing
         # packets to FFmpeg) also counts waiting for Python's lock after each send, which a busy garden makes
@@ -629,6 +633,8 @@ class StreamLink:
                     raise RuntimeError(stats.error_text or "the connection dropped")
                 if state == "finished":
                     return
+                if self._lost:
+                    raise RuntimeError(self._lost)
                 if watch.stalled(time.monotonic(), stats.frames, stats.backlog_bytes, self.connected):
                     raise RuntimeError(f"the server took nothing for {watch.stall_s:.0f} s; connecting again")
                 if state == "live" and not self.connected:
@@ -701,7 +707,13 @@ class StreamLink:
             self._first_live_at = self._first_live_at or self._connected_at
             log_live(self)
 
+    def link_lost(self, reason: str) -> None:
+        """The server stopped answering (link_watch): end this connection so _run makes a new one."""
+        if self.connected:
+            self._lost = reason
+
     def _session(self) -> None:
+        self._lost = None
         if self._engine_may_send():
             self._await_encoder()
             writer = self._engine_writer()
@@ -723,6 +735,9 @@ class StreamLink:
                 item = self._q.get()
                 if item is None:
                     return
+                if self._lost:
+                    self._backlog_bytes -= item[1]
+                    raise RuntimeError(self._lost)
                 p, size = item
                 try:
                     self._send(out, streams, p)
