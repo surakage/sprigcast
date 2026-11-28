@@ -242,8 +242,9 @@ def capture_lines() -> list[str]:
     when the cameras' code is loaded: a report never loads it."""
     camera = sys.modules.get("sprigcast.sources.camera")
     try:
-        return camera.capture_lines() if camera is not None else ["Capture devices:", "  none opened since "
-                                                                                      "SprigCast started"]
+        if camera is None:
+            return ["Capture devices:", "  none opened since SprigCast started"]
+        return camera.capture_lines()
     except Exception:  # noqa: BLE001 - a report without this section
         return ["Capture devices:", "  couldn't be read"]
 

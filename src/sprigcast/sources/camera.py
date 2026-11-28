@@ -1060,12 +1060,7 @@ def capture_lines() -> list[str]:
                      f"{rate}, read by {seen['how']}; offers {modes_line(seen['offers']) or 'no list'}")
     if len(lines) == 1:
         lines.append("  none opened since SprigCast started")
-    try:
-        from sprigcast import sprigcore
-
-        lines += [f"  the engine said: {said.removeprefix('media: ')}" for said in sprigcore.camera_said]
-    except Exception:  # noqa: BLE001 - a report without this line
-        pass
+    lines += [f"  the engine said: {said.removeprefix('media: ')}" for said in sprigcore.camera_said]
     return lines
 
 

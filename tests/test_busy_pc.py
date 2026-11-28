@@ -144,7 +144,9 @@ def test_a_card_still_pinned_at_15_gets_the_previews_at_a_few_a_second(monkeypat
     clock = [0.0]
     monkeypatch.setattr(main_window.time, "monotonic", lambda: clock[0])
     w = types.SimpleNamespace()
-    ease = lambda gpu: main_window.MainWindow._ease_previews(w, gpu)  # noqa: E731
+    def ease(gpu):
+        main_window.MainWindow._ease_previews(w, gpu)
+
     for t in range(0, 12, 2):
         clock[0] = float(t)
         ease(92.0)  # busy, not pinned: 15 a second and no slower
