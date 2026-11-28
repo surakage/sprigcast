@@ -1,5 +1,8 @@
 """Stream keys live in the operating system's credential store (Windows Credential Manager),
-never in scenes.json. Outputs only keep the name of the entry (`key_ref`)."""
+never in scenes.json. Outputs only keep the name of the entry (`key_ref`).
+
+On Linux the store is the desktop's own (Secret Service: GNOME Keyring, KWallet). A PC without one can't save
+a key, and saving says so in plain words (core/linux.py)."""
 
 from __future__ import annotations
 
@@ -54,10 +57,17 @@ def set_key(key_ref: str, key: str) -> None:
         from sprigcast.core import privacy
 
         privacy.remember_secret(key)
-        keyring.set_password(KEYRING_SERVICE, key_ref, key)
+        try:
+            keyring.set_password(KEYRING_SERVICE, key_ref, key)
+        except keyring.errors.NoKeyringError as exc:
+            from sprigcast.core import linux
+
+            if linux.is_linux():
+                raise RuntimeError(linux.NO_KEY_STORE) from exc
+            raise
     else:
         try:
             keyring.delete_password(KEYRING_SERVICE, key_ref)
-        except keyring.errors.PasswordDeleteError:
-            pass
+        except (keyring.errors.PasswordDeleteError, keyring.errors.NoKeyringError):
+            pass  # nothing saved, or nowhere it could have been saved
     _present[key_ref] = bool(key)

@@ -71,6 +71,10 @@ def _pyaudio():
     try:
         import pyaudiowpatch
     except ImportError as exc:
+        from sprigcast.core import linux
+
+        if linux.is_linux():
+            raise RuntimeError(linux.not_yet("Microphone and desktop sound")) from exc
         raise RuntimeError("unavailable: needs Windows and PyAudioWPatch") from exc
     return pyaudiowpatch
 

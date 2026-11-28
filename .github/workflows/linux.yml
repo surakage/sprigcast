@@ -1,0 +1,43 @@
+name: Linux
+
+# The Linux version (core/linux.py): the whole test suite on Ubuntu, with no screen and software OpenGL, and
+# SprigCast started once to see that its window comes up. Nothing here touches the Windows build.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["src/**", "tests/**", "pyproject.toml", "uv.lock", ".github/workflows/linux.yml"]
+  pull_request:
+    paths: ["src/**", "tests/**", "pyproject.toml", "uv.lock", ".github/workflows/linux.yml"]
+
+concurrency:
+  group: linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+      QTWEBENGINE_CHROMIUM_FLAGS: --no-sandbox
+      PYTHONPATH: src
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: What Qt and OpenGL need
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libgl1-mesa-dri libopengl0 libxkbcommon0 \
+            libdbus-1-3 libnss3 libxcomposite1 libxdamage1 libxrandr2 libxtst6 libxkbfile1 libasound2t64 libfontconfig1 \
+            libxcb-cursor0 libpulse0
+      - name: Tests
+        run: uv run --frozen pytest -q -p no:cacheprovider
+      - name: SprigCast starts
+        if: ${{ !cancelled() }}
+        run: |
+          export SPRIGCAST_LOG_DIR="$RUNNER_TEMP/logs"
+          timeout 40 uv run --frozen python -m sprigcast.app.main > start.txt 2>&1 || true
+          tail -n 40 start.txt
+          grep -q "start-up: window up" start.txt
+          grep -q "Linux: not built yet here" start.txt
