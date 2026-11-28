@@ -30,13 +30,17 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libegl1 libgl1 libgl1-mesa-dri libopengl0 libxkbcommon0 \
             libdbus-1-3 libnss3 libxcomposite1 libxdamage1 libxrandr2 libxtst6 libxkbfile1 libasound2t64 libfontconfig1 \
-            libxcb-cursor0 libpulse0
+            libxcb-cursor0 libpulse0 fonts-dejavu-core fonts-liberation2 fonts-noto-color-emoji
       - name: Tests
         # Twenty test files to a run: one run of everything grew past 8 GB and took over 20 minutes, and a
         # test that leaves something behind then only troubles its own group.
         run: |
           uv sync --frozen
-          ls tests/test_*.py | xargs -n 20 uv run --frozen pytest -q -p no:cacheprovider
+          set -o pipefail
+          ls tests/test_*.py | xargs -n 20 uv run --frozen pytest -q -p no:cacheprovider 2>&1 | tee tests.txt
+      - name: What failed, in one place
+        if: failure()
+        run: grep -E "^(FAILED|ERROR) " tests.txt || true
       - name: SprigCast starts
         if: ${{ !cancelled() }}
         run: |
