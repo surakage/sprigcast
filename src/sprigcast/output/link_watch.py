@@ -53,7 +53,7 @@ def answers(server: tuple[str, int], timeout: float = PROBE_TIMEOUT) -> bool:
     try:
         socket.create_connection(server, timeout=timeout).close()
         return True
-    except (socket.timeout, TimeoutError, socket.gaierror):
+    except (TimeoutError, socket.gaierror):
         return False
     except OSError as exc:
         return exc.errno not in _UNREACHABLE
@@ -90,7 +90,7 @@ class LinkWatch:
             idle = 0 if links else idle + 1
             try:
                 self.check(links)
-            except Exception:  # noqa: BLE001 (the watch must never take a stream down by failing itself)
+            except Exception:
                 log.exception("link watch: check failed")
         with self._lock:
             self._thread = None

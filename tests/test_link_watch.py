@@ -3,7 +3,15 @@ no sound, every packet to the server was dropped for 240 s and all six places st
 (sim PC, 2026-11-28)."""
 from types import SimpleNamespace
 
-from sprigcast.output.link_watch import FAILS, FALSE_ALARMS, PROBE_S, QUIET_KBPS, LinkWatch, answers, server_of
+from sprigcast.output.link_watch import (
+    FAILS,
+    FALSE_ALARMS,
+    PROBE_S,
+    QUIET_KBPS,
+    LinkWatch,
+    answers,
+    server_of,
+)
 
 
 def _link(name="Twitch (horizontal)", url="rtmp://live.example/app/key"):
