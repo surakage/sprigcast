@@ -2230,6 +2230,14 @@ class Engine:
                 made[key] = [frame if key[1] else Frame(canvas.id, key[0][0], key[0][1], frame[0], frame[1], "nv12")
                              for frame in native.take_outputs(canvas.id, key)]
                 lost[key] = getattr(native, "lost", 0)
+                if lost[key] and all(getattr(getattr(cb, "__self__", None), "paused_since", None) is not None
+                                     for (cb, _s), k in zip(outputs, keys) if k == key):
+                    # Every taker rests (a stream with all its places reconnecting): frames nobody would have
+                    # used. 53 warnings on the user's stream, only while its encoders rested (2026-11-27).
+                    forgive = getattr(native, "forgive", None)
+                    if forgive is not None:
+                        forgive(canvas.id, key, lost[key])
+                    lost[key] = 0
             if lost[key]:  # frames the engine let go of: the recorder or stream counts them as dropped
                 count = getattr(getattr(callback, "__self__", None), "frames_lost", None)
                 if count is not None:

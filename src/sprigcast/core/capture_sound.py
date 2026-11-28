@@ -42,8 +42,20 @@ def paired_input(camera_name: str, inputs: list[str]) -> str | None:
     wanted = _words(camera_name)
     if not wanted:
         return None
-    fits = [name for name in inputs if not is_mixer_app_device(name) and wanted <= _words(name)]
+    fits = [name for name in inputs if not is_mixer_app_device(name) and wanted <= _words(name)
+            and not _another_mic(camera_name, name)]
     return min(fits, key=lambda name: len(_words(name) - wanted)) if fits else None
+
+
+def _another_mic(camera_name: str, input_name: str) -> bool:
+    """A microphone that only shares the card's brand: "fifine Video Capture" beside "Microphone (fifine
+    Microphone)", a USB mic of the same make (a tester's desk, 2026-11-27). Pairing them would play the streamer's
+    own voice back as the card's sound. An input that holds the card's whole name is the card's, whatever it is
+    called."""
+    plain = input_name.casefold()
+    if camera_name.casefold().strip() in plain:
+        return False
+    return bool(re.search(r"\b(microphone|mic|headset)\b", plain))
 
 
 def capture_sound(collection: SceneCollection, capture_id: str) -> SourceConfig | None:

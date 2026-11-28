@@ -27,6 +27,12 @@ def asking(name: str) -> Iterator[None]:
         _asking.pop()
 
 
+def asker(otherwise: str = "") -> str:
+    """The app whose request is being handled now, or `otherwise` when the change comes from SprigCast's own
+    window (a place switched off while live read "app stopped" whoever did it: the user's stream, 2026-11-27)."""
+    return _asking[-1] if _asking else otherwise
+
+
 def sound_changed(source: Any, before: dict[str, Any]) -> None:
     """One line naming the app, the source and each sound setting it changed (nothing when none did)."""
     after = source.settings

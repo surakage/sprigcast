@@ -3,8 +3,9 @@
 from types import SimpleNamespace
 
 from sprigcast.app import health
-from sprigcast.output.stream import (REFUSED_MAX, REFUSED_SAY, RETRY_MAX, note_refusal, refused_status,
-                                     retry_plan)
+from sprigcast.output import stream
+from sprigcast.output.stream import (GRACE_RETRY, REFUSED_GRACE, REFUSED_MAX, REFUSED_SAY, RETRY_MAX, note_refusal,
+                                     refused_status, retry_plan)
 
 REFUSED = "couldn't connect to live-api-s.facebook.com: the server ended the connection as it was starting"
 
@@ -53,3 +54,17 @@ def test_a_few_refusals_still_read_as_reconnecting():
     st = SimpleNamespace(name="Kick", refused=0, connected=False, reconnects=2, status="disconnected: x")
     _tries(st, 2)
     assert health.notice([(None, st)])[1] == "Reconnecting to Kick… try 2"
+
+
+def test_a_place_that_was_just_live_is_asked_briskly_while_the_site_closes_the_old_connection(monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(stream.time, "monotonic", lambda: now[0])
+    st = SimpleNamespace(name="Twitch", refused=0)
+    _tries(st, 1, sent=True)  # it was live and dropped
+    waits = []
+    for _ in range(8):
+        waits += _tries(st, 1, delay=waits[-1] * 2 if waits else 2.0)
+        now[0] += waits[-1]
+    assert max(waits) <= GRACE_RETRY and st.refused == 0
+    now[0] += REFUSED_GRACE  # still turned away long after: now it counts, and slows
+    assert _tries(st, REFUSED_SAY)[-1] >= RETRY_MAX and st.refused == REFUSED_SAY

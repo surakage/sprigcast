@@ -902,3 +902,13 @@ def test_the_capture_dialog_keeps_a_custom_device_mode():
     assert again.custom.isChecked() and again.device_size.currentData() == (1920, 1080)
     d.deleteLater()
     again.deleteLater()
+
+
+def test_a_big_capture_mode_gets_a_bigger_buffer():
+    """The user's HD60 X at 1440p, 2026-11-27: "real-time buffer too full (69% of 16000000)"."""
+    from sprigcast.sources.camera import rtbuf_size
+
+    assert rtbuf_size({"video_size": "1280x720"}) == "16000000"  # six pictures fit in 16 MB: as before
+    assert rtbuf_size({"video_size": "2560x1440"}) == str(2560 * 1440 * 2 * 6)
+    assert rtbuf_size({"video_size": "3840x2160"}) == "64000000"  # never more
+    assert rtbuf_size({}) == "16000000"
