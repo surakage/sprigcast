@@ -234,6 +234,7 @@ class Engine:
         self._clean_scenes: dict[str, tuple] = {}  # canvas id -> (bloom on air, left out, the bloom without them)
         self._stirred = True  # something was asked of the render thread since its last working tick: no rest
         self._busy_at = float("-inf")  # the last tick that did something only Python does
+        self._lazy_due = weakref.WeakKeyDictionary()  # a tap with every_s -> when its next picture is due
         self._worked_at = float("-inf")  # the last working tick
         self._next_preview = float("inf")  # when the next preview copy is due
         self._interval = 1.0 / 60  # seconds a tick (set by the loop)
@@ -2223,6 +2224,30 @@ class Engine:
             if link_taps is not None else set()
         for (callback, _size), key in zip(outputs, keys):
             if id(getattr(callback, "__self__", None)) in linked:
+                continue
+            every = getattr(callback, "every_s", 0.0)  # a picture for the window only: a few a second will do
+            if every:
+                # Taken when one is due and no oftener, like a preview: the ticks between rest. Its frames used
+                # to pass through here 60 times a second, which kept every tick working: with the Filters window
+                # open the previews fell to 17-24 a second for as long as it stayed open (the user's stream,
+                # 2026-11-27: "sources 22.5, sprigs 15.8" ms a tick, about 200 late in every 10 s).
+                due = self._lazy_due.get(callback, 0.0)
+                if self._tick_now + 0.25 * self._interval < due:
+                    self._next_preview = min(self._next_preview, due)
+                    continue
+                self._lazy_due[callback] = due = self._tick_now + every
+                self._next_preview = min(self._next_preview, due)
+                frames = native.take_outputs(canvas.id, key) if key not in made else made[key]
+                let_go = getattr(native, "lost", 0) if key not in made else 0
+                forgive = getattr(native, "forgive", None)
+                if let_go and forgive is not None and not any(
+                        k == key and not getattr(cb, "every_s", 0.0) for (cb, _s), k in zip(outputs, keys)):
+                    forgive(canvas.id, key, let_go)  # the ones between were never wanted
+                if frames:
+                    try:
+                        callback(frames[-1])
+                    except Exception:
+                        log.exception("frame tap for %s failed", canvas.id)
                 continue
             self._busy_at = self._tick_now  # its frames pass through here: every tick has work
             self._handed = True

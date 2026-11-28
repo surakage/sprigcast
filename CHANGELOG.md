@@ -80,6 +80,11 @@ builds from 2026-11-25 on.
 
 ### Fixed
 
+- The previews stay smooth with the Filters window open. Its Before and After pictures were handed over 60
+  times a second, which kept the whole app working on every frame; they are now taken as often as the window
+  shows them (15 a second). Not tried on a real PC.
+- A web page's sound keeps a little more queued ahead (about 107 ms), so switching to a bloom full of pages no
+  longer makes its sound drop out for moments. A clips page did that each time its bloom went on air.
 - A new capture card starts at the smallest size that covers your canvas and at the canvas frame rate. Every
   card used to start at 1920x1080 at 60, so a low PC with a 480p canvas took in and shrank several times the
   picture it could show. A size you already chose is left alone.
