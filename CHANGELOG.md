@@ -80,6 +80,19 @@ builds from 2026-11-25 on.
 
 ### Fixed
 
+- The previews stay smooth with the Filters window open. Its Before and After pictures were handed over 60
+  times a second, which kept the whole app working on every frame; they are now taken as often as the window
+  shows them (15 a second). Not tried on a real PC.
+- A web page's sound keeps a little more queued ahead (about 107 ms), so switching to a bloom full of pages no
+  longer makes its sound drop out for moments. A clips page did that each time its bloom went on air.
+- A new capture card starts at the smallest size that covers your canvas and at the canvas frame rate. Every
+  card used to start at 1920x1080 at 60, so a low PC with a 480p canvas took in and shrank several times the
+  picture it could show. A size you already chose is left alone.
+- The log says when a sound goes over 0 dB (it distorts on the stream) and when an open microphone or capture
+  card has given only silence for 3 minutes, including when Windows' microphone privacy is what blocks it.
+- The "Your PC is busy" note no longer names parts of Windows nobody can close (dwm, audiodg, svchost).
+- When a capture card opens in no mode, the log says how many modes were tried. It read as if only one size had
+  been.
 - After your internet drops and comes back, places reconnect sooner. A site turns the old stream key away for a
   short while after a drop, and SprigCast used to read that as "the stream has ended" and slow to one try every
   30 s. For 90 s after a place was live it now keeps asking at least every 10 s. Not tried on a real stream.
