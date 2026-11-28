@@ -201,6 +201,11 @@ def explain_connect(url: str):
                     # The server's own words: "[Errno 1] Operation not permitted" alone said nothing (sim PC).
                     why = ("this stream key is already live there (the site is still closing the last "
                            f"connection, or another app is using the key) ({why})")
+                elif "operation not permitted" in why.lower():
+                    # What FFmpeg makes of a server turning the publish away, when its own words weren't caught
+                    # (five of six places at once got only this, sim PC 2026-11-28).
+                    why = ("the server turned the stream away; often the stream key is still live there (the "
+                           f"site is closing the last connection, or another app is using the key) ({why})")
                 raise ConnectionError(f"couldn't connect to {ingest_name(url)}{hint}: {why}{detail}") from exc
     finally:
         if louder:
@@ -700,7 +705,11 @@ class Streamer(Recorder):
                     delay = RETRY_FIRST  # it had been running fine: start the backoff again
                 self.reconnects += 1
                 hint, delay, after = retry_plan(message, self.bytes_out, delay)
-                delay, after = note_refusal(self, message, self.bytes_out > sent, delay, after)
+                # "Was live in this try" counts like "sent something": six places that had only just come back
+                # were reset before sending anything new, so the refusals after it weren't seen as following a
+                # live stream, and the waits grew to 40 s and 60 s with the server free (sim PC, 2026-11-28).
+                was_live = self.bytes_out > sent or getattr(self, "_connected_at", 0.0) >= began
+                delay, after = note_refusal(self, message, was_live, delay, after)
                 self.status = (refused_status(self, message, delay) if self.refused >= REFUSED_SAY else
                                dropped_status(self, message, hint, delay, self.bytes_out > sent))
                 if self._stop.wait(delay):
