@@ -197,6 +197,24 @@ def test_first_run_offers_the_wizard_once(tmp_path, monkeypatch):
         monkeypatch.setattr(w, "open_optimizer", lambda first_run=False: opened.append(first_run))
         monkeypatch.setattr(w, "open_starter", lambda: opened.append("starter"))
         monkeypatch.setattr(w, "open_getting_started", lambda: opened.append("guide"))  # closed: None
+        # A message waiting for an answer (no graphics driver) is never covered by Get started: the first-run
+        # steps wait until it is answered (Windows virtual PC, test build 16, 2026-11-28).
+        from PySide6.QtWidgets import QApplication
+
+        from sprigcast.app import main_window
+
+        later = []
+        monkeypatch.setattr(QApplication, "activeModalWidget", staticmethod(lambda: w))
+        monkeypatch.setattr(main_window.QTimer, "singleShot", staticmethod(lambda ms, call: later.append((ms, call))))
+        w.first_run_optimizer()
+        assert opened == [] and later == [(1000, w.first_run_optimizer)]  # asked again in a second
+        monkeypatch.undo()
+        monkeypatch.setattr(w, "open_optimizer", lambda first_run=False: opened.append(first_run))
+        monkeypatch.setattr(w, "open_starter", lambda: opened.append("starter"))
+        monkeypatch.setattr(w, "open_getting_started", lambda: opened.append("guide"))
+        import keyring
+
+        monkeypatch.setattr(keyring, "get_password", lambda svc, ref: None)
         w.first_run_optimizer()
         w.first_run_optimizer()
         # fresh: Get started first; closed, so the wizard and the starter kit are offered as before

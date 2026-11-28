@@ -414,3 +414,42 @@ def test_a_helper_programs_memory_goes_in_the_log():
         " (-264 MB since its last line, after a bloom switch)"
     assert pacing.helper_change("page helper", 1993.2) == ""
     pacing._helper_was.pop("page helper", None)
+
+
+def test_a_long_window_stall_is_said_while_it_lasts(check_window, caplog):
+    """A window that stays stuck is looked at again at 10 s, 20 s, 40 s..., and the log says where it is now
+    (the one look at 250 ms can't tell a slow line from the place it is really stuck, 2026-11-28)."""
+    import logging
+    import threading
+
+    from sprigcast.core import pacing
+
+    clock = [10.0]
+    pacing._ui.update(beat=None, ident=None, where=None, clock=lambda: clock[0])
+
+    def look(now):  # the stall watch, on its own thread, while "the window" is right here
+        t = threading.Thread(target=check_window, args=(now,))
+        t.start()
+        t.join(5)
+
+    try:
+        pacing.ui_beat()
+        with caplog.at_level(logging.WARNING, logger="sprigcast.core.pacing"):
+            look(10.5)
+            assert pacing._ui["where"] is not None
+            look(15.0)
+            assert "has not answered" not in caplog.text  # 5 s: not yet
+            look(20.5)
+            assert "the window has not answered for 10 s; it is at " in caplog.text
+            assert "test_threads.py" in caplog.text and "; meanwhile " in caplog.text
+            caplog.clear()
+            look(25.0)
+            assert "has not answered" not in caplog.text  # next at 20 s
+            look(30.5)
+            assert "the window has not answered for 20 s" in caplog.text
+        clock[0] = 31.0
+        pacing.ui_beat()  # it answers: the next stall starts over at 10 s
+        look(31.5)
+        assert pacing._ui["long"] == pacing.UI_LONG_STALL_S
+    finally:
+        pacing._ui.update(beat=None, ident=None, where=None, clock=time.perf_counter)

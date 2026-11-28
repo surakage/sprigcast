@@ -813,13 +813,37 @@ def ui_rest() -> None:
     _ui["beat"], _ui["where"] = None, None
 
 
+# A stall that goes on and on is looked at again, and said in the log while it lasts (at 10 s, 20 s, 40 s...):
+# the one look at 250 ms can't tell a slow line from the place the window is really stuck, and a window that
+# never answers again never wrote its line at all (a virtual PC without a graphics driver, 5 minutes, 2026-11-28).
+UI_LONG_STALL_S = 10.0
+
+
+def _long_stall(now: float, beat: float, ident) -> None:
+    import threading
+
+    due = _ui.get("long") or UI_LONG_STALL_S
+    if now - beat < due:
+        return
+    _ui["long"] = 2 * due
+    stack = thread_stacks().get(ident)
+    if stack is None or _ui["beat"] != beat:
+        return
+    log.warning("the window has not answered for %.0f s; it is at %s; meanwhile %s", now - beat, _where(stack),
+                busy_stacks({ident, threading.get_ident()}))
+
+
 def _check_window(now: float) -> None:
     import threading
 
     beat, ident, fine = _ui["beat"], _ui["ident"], _ui.get("fine")
     limit = UI_STALL_MS if fine is None else fine / 2
-    if beat is None or _ui["where"] is not None or 1000 * (now - beat) < limit:
+    if beat is not None and _ui["where"] is not None:
+        _long_stall(now, beat, ident)
         return
+    if beat is None or 1000 * (now - beat) < limit:
+        return
+    _ui["long"] = UI_LONG_STALL_S
     stack = thread_stacks().get(ident)
     if stack is None:
         return
