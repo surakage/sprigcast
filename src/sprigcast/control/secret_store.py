@@ -4,10 +4,13 @@ On Windows, protect() uses DPAPI (CryptProtectData, per user): the value in the 
 "dpapi:<base64>" and only this Windows account on this PC can turn it back. Old plain values still read
 (unprotect passes them through) and are re-saved encrypted (see control_server).
 
-On Linux and macOS the secret goes into the system's own password store (Secret Service: GNOME Keyring,
-KWallet; the Mac's Keychain), the one stream keys use (output/keys.py), and the saved value reads
-"keyring:<name>": only the name of the entry. A PC with no password store keeps the value as it is, as before. Elsewhere (tests) values are kept as
-they are.
+On Linux and macOS these stay in SprigCast's own settings file, which only this user can read
+(core/systems.py private_settings). Test build 16 put them in the system's password store ("keyring:<name>"),
+and SprigCast needs them the moment it starts: with the keyring locked (automatic sign-in) the first start sat
+3 min 23 s behind the keyring's own box, and a locked keyring would have meant a new password, and every app
+paired again, at each start. Values saved that way are still read (through core/password_store.py, which
+never waits on the box) and saved plain from then on. Stream keys and sign-ins do stay in the password store
+(output/keys.py): they are read when first needed.
 """
 
 from __future__ import annotations
@@ -37,33 +40,16 @@ def _keyring_here() -> bool:
     return sys.platform.startswith("linux") or sys.platform == "darwin"
 
 
-def _entry(value: str) -> str:
-    """The entry's name for a secret: the same secret saved twice is one entry, and the name says nothing
-    useful about it (a salted hash, cut short)."""
-    import hashlib
-
-    return hashlib.sha256(_ENTROPY + value.encode("utf-8")).hexdigest()[:24]
-
-
-def _keyring_protect(value: str) -> str:
-    """Put the secret in the system's password store and return "keyring:<name>", or the value as it is when
-    this PC has no store."""
-    try:
-        import keyring
-
-        name = _entry(value)
-        keyring.set_password(KEYRING_SERVICE, name, value)
-        return KEYRING_PREFIX + name
-    except Exception as exc:  # noqa: BLE001 (no store, a locked one, no desktop session)
-        log.info("secret store: no password store here (%s); kept as it was", type(exc).__name__)
-        return value
-
-
 def _keyring_unprotect(saved: str) -> str:
+    """A secret test build 16 put in the system's password store."""
     try:
         import keyring
 
-        return keyring.get_password(KEYRING_SERVICE, saved[len(KEYRING_PREFIX):]) or ""
+        from sprigcast.core import password_store
+
+        name = saved[len(KEYRING_PREFIX):]
+        return password_store.ask("a saved Control API secret",
+                                  lambda: keyring.get_password(KEYRING_SERVICE, name)) or ""
     except Exception as exc:  # noqa: BLE001
         log.warning("secret store: couldn't read a saved secret (%s)", type(exc).__name__)
         return ""
@@ -105,8 +91,6 @@ def protect(value: str) -> str:
     from sprigcast.core import privacy
 
     privacy.remember_secret(value)  # never in a log line from now on
-    if value and _keyring_here():
-        return _keyring_protect(value)
     if not value or not available():
         return value
     try:

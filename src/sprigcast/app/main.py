@@ -296,6 +296,7 @@ def run() -> None:
     QCoreApplication.setOrganizationName("Slothbloom")
     from sprigcast.core import systems
 
+    systems.private_settings()  # Linux and macOS: the settings folder is this user's alone
     systems.mend_general_settings()  # Linux: settings saved under "general" read back under their own name
     from sprigcast.app import single_instance
 
@@ -617,6 +618,9 @@ def run() -> None:
         names = ", ".join(plugins.failed)
         window.statusBar().showMessage(f"Some plugins failed to load: {names} (details in the console)", 20000)
     pacing.use_exit_guard()  # closing can't hang for ever (pacing.exit_guard)
+    from sprigcast.app import unix_signals
+
+    unix_signals.install(app, window)  # Linux and macOS: signing out or shutting down is a clean close
     from sprigcast.core import crash_test
 
     crash_test.schedule(QTimer.singleShot)  # SPRIGCAST_CRASH_TEST: crash on purpose, for testing the crash guard
