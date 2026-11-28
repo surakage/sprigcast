@@ -173,7 +173,17 @@ def heavy_apps(limit: int = 3, wait: float = 1.0, with_use: bool = False) -> lis
     return heavy[:limit]
 
 
+# Parts of Windows nobody can close, by the names friendly() gives them. They were named as "using it too.
+# Closing them helps" on a PC whose graphics card SprigCast itself had at 95% (Mikedog151, 2026-11-27: "audiodg and
+# dwm", "Memory Compression, svchost and backgroundTaskHost").
+WINDOWS_PARTS = {"audiodg", "dwm", "memory compression", "svchost", "backgroundtaskhost", "system", "csrss",
+                 "registry", "fontdrvhost", "runtimebroker", "sihost", "taskhostw", "wininit", "winlogon", "lsass",
+                 "services", "smss", "conhost", "dllhost", "ctfmon", "searchhost", "startmenuexperiencehost",
+                 "shellexperiencehost", "textinputhost", "wmiprvse", "system interrupts", "explorer"}
+
+
 def busy_message(apps: list[str], cpu: float | None, gpu: float | None) -> str:
+    apps = [a for a in apps if a in ADVICE or a.lower().removesuffix(".exe") not in WINDOWS_PARTS]
     parts = []
     if cpu is not None and cpu >= BUSY_PCT:
         parts.append(f"CPU {cpu:.0f}%")
