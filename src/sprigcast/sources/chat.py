@@ -5,7 +5,11 @@ hub fills, and are drawn with Pillow into a box you size and place like any othe
 a bloom on both canvases and set its size per shape (tall and narrow for vertical, say). It only
 redraws when chat changes, and sleeps with the rest when nothing on screen shows it.
 
-Settings: width, height, size, hide_after (seconds, 0 = never), platform_marks. Style tab (core/style.py):
+Animated emotes move (user 2026-11-27): the box's words and bubbles are drawn once per change as before, and
+ANIMATE_PER_S times a second only the moving emotes are pasted onto a copy of that picture, so a moving chat costs a
+copy and a few small pastes, not a redraw. Only while one is on screen; "animate_emotes" off keeps them still.
+
+Settings: width, height, size, hide_after (seconds, 0 = never), platform_marks, animate_emotes. Style tab (core/style.py):
 chat_look (LOOKS: Garden card = bubbles, Clean outline = outlined text and no bubbles, Minimal = no bubbles or
 marks and tight lines, Big text = cards at one and a half times the size), font, text_color, bubble_color,
 background_color, corners (the bubbles') and custom_look (text, card = the bubbles, font, size, corners, border;
@@ -41,6 +45,7 @@ DEFAULTS = {
     "background_color": "#00000000",  # the whole box ("#00000000" = see-through)
     "hide_after": 0,  # seconds before a message fades away; 0 keeps them
     "platform_marks": True,  # a small bar in the platform's colour (Twitch purple, YouTube red)
+    "animate_emotes": True,  # animated emotes move (off: their first picture)
     "corners": "round",  # the bubbles'
     "chat_look": "card",
     "custom_look": "",
@@ -54,14 +59,59 @@ LOOKS = {
 }
 TWITCH_EMOTE = "https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/2.0"
 CHECK_EVERY = 0.2  # seconds between looks at the feed
+ANIMATE_PER_S = 15  # how often moving emotes move on
+MOVING_SIDE = 56  # an animated emote's pictures are kept at most this tall...
+MOVING_FRAMES = 40  # ...and at most this many of them (a longer one skips pictures evenly)
+MOVING_KEEP = 40  # animated emotes kept moving; the ones used longest ago go back to their first picture
+MOVING_SHOWN = 30  # moving at once in one box; any more show their first picture
 NOTICE_TEXT = (191, 243, 214, 255)
 NOTICE_BUBBLE = (29, 52, 40, 220)
 
 
 # Emote pictures: fetched off the render thread, kept small ---------------------------------------
 
+class Moving:
+    """An animated emote: its pictures (RGBA) and how long each shows."""
+
+    def __init__(self, frames: list, seconds: list[float]):
+        self.frames = frames
+        self.ends: list[float] = []
+        total = 0.0
+        for s in seconds:
+            total += max(0.02, s)
+            self.ends.append(total)
+        self.total = total
+        self.width, self.height = frames[0].width, frames[0].height
+
+    def at(self, now: float):
+        """The picture showing at this time (every box and canvas shows the same one)."""
+        from bisect import bisect_right
+
+        return self.frames[min(len(self.frames) - 1, bisect_right(self.ends, now % self.total))]
+
+
+def moving_from(image) -> Moving | None:
+    """An opened GIF or WebP -> Moving, or None when it has one picture."""
+    count = min(int(getattr(image, "n_frames", 1) or 1), 400)
+    if count < 2:
+        return None
+    step = -(-count // MOVING_FRAMES)
+    frames, seconds, waited = [], [], 0.0
+    for i in range(count):
+        image.seek(i)  # in order: each picture builds on the one before
+        waited += float(image.info.get("duration") or 100) / 1000.0
+        if i % step == step - 1 or i == count - 1:
+            frame = image.convert("RGBA")
+            if frame.height > MOVING_SIDE:
+                frame = frame.resize((max(1, round(frame.width * MOVING_SIDE / frame.height)), MOVING_SIDE))
+            frames.append(frame)
+            seconds.append(waited)
+            waited = 0.0
+    return Moving(frames, seconds) if len(frames) > 1 else None
+
+
 class _Emotes:
-    """url -> RGBA picture. Fetches on one helper thread so drawing never waits on the network."""
+    """url -> RGBA picture (or Moving). Fetches on one helper thread so drawing never waits on the network."""
 
     LIMIT = 300
 
@@ -97,9 +147,11 @@ class _Emotes:
                 url = self._queue.pop(0)
             try:
                 with urllib.request.urlopen(url, timeout=10) as reply:  # noqa: S310 (https emote CDNs only)
-                    image = Image.open(BytesIO(reply.read()))
-                    image.seek(0)  # first frame of an animated emote
-                    picture = image.convert("RGBA")
+                    image = Image.open(BytesIO(reply.read(6_000_000)))
+                    picture = moving_from(image)
+                    if picture is None:
+                        image.seek(0)
+                        picture = image.convert("RGBA")
             except Exception as exc:  # unreachable, not a picture...
                 log.debug("emote %s: %s", url, exc)
                 picture = None
@@ -107,6 +159,9 @@ class _Emotes:
                 self._done[url] = picture
                 while len(self._done) > self.LIMIT:
                     self._done.popitem(last=False)
+                moving = [u for u, p in self._done.items() if isinstance(p, Moving)]
+                for old in moving[:-MOVING_KEEP]:  # (oldest used first) back to one picture: memory stays flat
+                    self._done[old] = self._done[old].frames[0]
                 self.version += 1
 
 
@@ -171,6 +226,8 @@ class ChatBox:
         self.bubble = parse_color(look.card) if bubbles else (0, 0, 0, 0)
         self.background = self._colour(get("background_color"), (0, 0, 0, 0))
         self.marks = bool(get("platform_marks")) and look.shows("marks") and marks
+        self.animate = bool(get("animate_emotes"))
+        self.scene: tuple | None = None  # (the picture without its moving emotes, as an array too, where they go)
         # Without a card the text needs its own edge to read over a game: a full outline, or a soft one
         self.stroke = (max(2, round(self.size / 11)), (0, 0, 0, 235)) if outline else \
             ((max(1, round(self.size / 20)), (0, 0, 0, 150)) if not bubbles else (0, None))
@@ -229,9 +286,14 @@ class ChatBox:
             name_colour = parse_color(readable_colour(message.color, message.user) + "ff")
             runs.append(("name", message.user, name_colour, self.bold.getlength(message.user)))
             colour = name_colour if message.action else self.colour
+        wide = {message.images.get(key): ratio for key, ratio in message.ratios.items()}
         for kind, value in _pieces(message):
             if kind == "emote":
-                runs.append(("emote", value, None, float(self.line_h)))
+                # As wide as it will be drawn: a wide emote taken as square pushed the words after it out of the
+                # bubble. Its picture says once it's here; until then, what its list said (chat/extra_emotes.py).
+                picture = EMOTES.get(value)
+                ratio = picture.width / max(1, picture.height) if picture is not None else wide.get(value, 1.0)
+                runs.append(("emote", value, None, float(max(1, round((self.line_h - 2) * ratio)))))
             else:
                 runs.append(("text", value, colour, self.font.getlength(value)))
         lines: list[list] = [[]]
@@ -252,9 +314,28 @@ class ChatBox:
             used += gap + width
         return lines
 
-    def draw(self, lines: list[Line]) -> np.ndarray:
+    @property
+    def moving(self) -> bool:
+        """Does the picture drawn last have emotes that move?"""
+        return bool(self.scene and self.scene[2])
+
+    def frame(self, now: float) -> np.ndarray:
+        """The picture drawn last, with its moving emotes as they are at `now`: a copy and a few small pastes."""
+        image, pixels, placed = self.scene
+        out = pixels.copy()
+        for picture, x, y, w, h in placed:
+            x1, y1 = min(self.width, x + w), min(self.height, y + h)
+            if x < 0 or y < 0 or x1 <= x or y1 <= y:
+                continue
+            patch = image.crop((x, y, x + w, y + h))
+            patch.alpha_composite(picture.at(now).resize((w, h)))
+            out[y:y1, x:x1] = np.asarray(patch, dtype=np.uint8)[:y1 - y, :x1 - x]
+        return out
+
+    def draw(self, lines: list[Line], now: float | None = None) -> np.ndarray:
         from PIL import Image, ImageDraw
 
+        placed: list[tuple] = []
         image = Image.new("RGBA", (self.width, self.height), self.background)
         draw = ImageDraw.Draw(image, "RGBA")
         inner = self.width - 2 * self.PAD - 2 * self.PX - (6 if self.marks else 0)
@@ -285,9 +366,12 @@ class ChatBox:
                         picture = EMOTES.get(value)
                         if picture is not None:
                             side = self.line_h - 2
-                            scaled = picture.resize((max(1, round(side * picture.width / max(1, picture.height))), side))
-                            image.alpha_composite(scaled, (round(tx), round(ty + 1)))
-                            width = scaled.width
+                            width = max(1, round(side * picture.width / max(1, picture.height)))
+                            if isinstance(picture, Moving) and self.animate and len(placed) < MOVING_SHOWN:
+                                placed.append((picture, round(tx), round(ty + 1), width, side))  # pasted by frame()
+                            else:
+                                still = picture.frames[0] if isinstance(picture, Moving) else picture
+                                image.alpha_composite(still.resize((width, side)), (round(tx), round(ty + 1)))
                         else:
                             width = self.line_h
                     else:
@@ -298,7 +382,9 @@ class ChatBox:
                     tx += width
                 ty += self.line_h
             y = top - self.GAP
-        return np.asarray(image, dtype=np.uint8).copy()
+        pixels = np.asarray(image, dtype=np.uint8).copy()
+        self.scene = (image, pixels, placed)
+        return self.frame(time.monotonic() if now is None else now) if placed else pixels
 
 
 def _layer(colour, mask):
@@ -325,6 +411,7 @@ class ChatSource(Source):
         self._seen: tuple | None = None
         self._next = 0.0
         self._aside: tuple | None = None  # (a drawing running on the pictures lane, its box, what it shows)
+        self._moved = 0.0  # when its moving emotes last moved on
         self.status = "waiting for chat"
 
     def update(self, settings: dict[str, Any]) -> None:
@@ -348,6 +435,17 @@ class ChatSource(Source):
 
     def video_frame(self) -> np.ndarray | None:
         now = time.monotonic()
+        frame = self._changed(now)
+        box = self._box
+        if frame is None and self._aside is None and box is not None and self._frame is not None and box.moving \
+                and now - self._moved >= 1.0 / ANIMATE_PER_S:
+            frame = self._frame = box.frame(now)  # nothing new in chat: only the moving emotes move on
+        if frame is not None:
+            self._moved = now
+        return frame
+
+    def _changed(self, now: float) -> np.ndarray | None:
+        """The box drawn again when chat changed (None: it hasn't, or the drawing is still running)."""
         if self._aside is not None:
             return self._landed()
         if now < self._next:

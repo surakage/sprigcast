@@ -29,6 +29,10 @@ builds from 2026-11-25 on.
   #979).
 - Chat looks: pick Classic, Bubbles, Compact or Big text in the Chat panel's ⋯ menu, and turn times, platform logos,
   badges and name colors on or off (#980).
+- Chat emotes: animated emotes move in the Chat panel and in the Chat source on your stream, and 7TV, BetterTTV
+  and FrankerFaceZ emotes show as pictures (all three for Twitch; 7TV for Kick and YouTube). Wide emotes keep
+  their shape. Turn either off in the Chat panel's ⋯ menu → Look, or with Animated emotes in the Chat source's
+  properties (#1000).
 - Echo Reducer filter, and a Listen card with meters in Filters (#962, #963, #966).
 - Video delay for cameras (#951).
 - Copy and paste filters, and leaves between sprigs; Duplicate (Ctrl+D); F2 renames blooms, sprigs and filters
@@ -60,6 +64,8 @@ builds from 2026-11-25 on.
   stream keys). The import report groups what to check, with Open buttons, and offers the store plugins the
   import needs (#981). OBS's camera Video Delay and Image Mask come over too (#984).
 - Links in the app, the installer and the notices send people to sprigcast.slothbloom.com, not GitHub (#930).
+- Android Screen: the engine decodes the phone's video itself, so no picture goes through the slower part of the
+  app. Lighter on low-end PCs; the old way stays as a fallback. Not yet tried with a real phone (#999).
 - Twitch asks for more permissions for the new plugins and mod tools, so reconnect Twitch once in Settings → Stream
   (#969, #979).
 - YouTube streams over RTMPS and reconnects a stalled connection after 5 s (#937).

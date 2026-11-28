@@ -12,9 +12,10 @@ import logging
 import time
 from collections.abc import Callable
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QSettings, Signal
 
 from sprigcast.chat import PLATFORMS, ChatMessage, hidden, make_reader, word_filter
+from sprigcast.chat.extra_emotes import EXTRA
 from sprigcast.chat.feed import FEED
 from sprigcast.core import privacy
 from sprigcast.core.quiet import Every
@@ -22,6 +23,7 @@ from sprigcast.core.quiet import Every
 log = logging.getLogger(__name__)
 
 _CHAT_LOG = Every(1800)
+EXTRA_SETTING = "chat/extra_emotes"  # 7TV, BetterTTV and FrankerFaceZ emotes (the Chat panel's Look menu)
 
 
 class ChatHub(QObject):
@@ -37,8 +39,10 @@ class ChatHub(QObject):
         self.readers: dict[str, object] = {}
         self.states: dict[str, str] = {}
         self.reasons: set[str] = set()
+        self._extra_rooms: dict[str, str] = {}  # platform -> the channel id its extra emotes were asked for
         self.hidden: frozenset[str] = frozenset(hidden.load())  # accounts whose lines are never shown
         self.set_word_filter(*word_filter.load())
+        EXTRA.enabled = str(QSettings().value(EXTRA_SETTING, True)).lower() in ("true", "1")
 
     def want(self, reason: str, on: bool) -> None:
         before = bool(self.reasons)
@@ -57,6 +61,7 @@ class ChatHub(QObject):
             if platform not in wanted:
                 reader = self.readers.pop(platform)
                 reader.stop()
+                self._extra_rooms.pop(platform, None)
                 log.info("chat %s: stopped", platform)  # in the logbook, no names
                 self.states.pop(platform, None)
         for platform, name in wanted.items():
@@ -118,8 +123,18 @@ class ChatHub(QObject):
             return
         if not message.at:
             message.at = time.time()
+        if EXTRA.enabled:  # 7TV, BetterTTV and FrankerFaceZ words become pictures
+            self._extra(message.platform)
+            EXTRA.apply(message)
         FEED.push(message)
         self.message.emit(message)
+
+    def _extra(self, platform: str) -> None:
+        """Have this chat's extra emotes looked up, once its reader knows which channel it is."""
+        room = str(getattr(self.readers.get(platform), "room", "") or "")
+        if self._extra_rooms.get(platform) != room:
+            self._extra_rooms[platform] = room
+            EXTRA.want(platform, room)
 
     def _deleted(self, platform: str, message_id: str) -> None:
         FEED.remove(platform=platform, message_id=message_id)
@@ -140,4 +155,6 @@ class ChatHub(QObject):
                 log.info("chat %s: %s%s", platform, state,
                          _CHAT_LOG.skipped((platform, state)) if routine else "")  # in the logbook, no names
         self.states[platform] = state
+        if state == "live" and EXTRA.enabled:
+            self._extra(platform)  # ready before the first message where it can be
         self.changed.emit()
