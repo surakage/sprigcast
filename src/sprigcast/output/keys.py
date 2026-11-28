@@ -2,7 +2,7 @@
 never in scenes.json. Outputs only keep the name of the entry (`key_ref`).
 
 On Linux the store is the desktop's own (Secret Service: GNOME Keyring, KWallet). A PC without one can't save
-a key, and saving says so in plain words (core/linux.py)."""
+a key, and saving says so in plain words (core/systems.py)."""
 
 from __future__ import annotations
 
@@ -60,10 +60,10 @@ def set_key(key_ref: str, key: str) -> None:
         try:
             keyring.set_password(KEYRING_SERVICE, key_ref, key)
         except keyring.errors.NoKeyringError as exc:
-            from sprigcast.core import linux
+            from sprigcast.core import systems
 
-            if linux.is_linux():
-                raise RuntimeError(linux.NO_KEY_STORE) from exc
+            if systems.is_linux():
+                raise RuntimeError(systems.NO_KEY_STORE) from exc
             raise
     else:
         try:

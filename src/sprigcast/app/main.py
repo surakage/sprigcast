@@ -334,10 +334,10 @@ def run() -> None:
                          "at most 1280x720", *split)
     else:
         logging.info("Python engine (%s)", sprigcore.why_python())
-        from sprigcast.core import linux
+        from sprigcast.core import systems
 
-        if linux.is_linux():
-            logging.info(linux.start_line())
+        if systems.is_linux() or systems.is_mac():
+            logging.info(systems.start_line())
     import_av()
     package = inside_package()
     if package:

@@ -60,10 +60,11 @@ def log_dir() -> Path:
     custom = os.environ.get("SPRIGCAST_LOG_DIR", "").strip()
     if custom:
         return Path(custom)
-    from sprigcast.core import linux
+    from sprigcast.core import systems
 
-    if linux.is_linux():
-        return linux.state_dir() / "Logs"
+    own = systems.log_dir()  # Linux and macOS have their own places for logs
+    if own is not None:
+        return own
     try:
         from PySide6.QtCore import QStandardPaths
 

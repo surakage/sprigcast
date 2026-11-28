@@ -267,3 +267,31 @@ jobs:
           DISCORD_TESTER_WEBHOOK: ${{ secrets.DISCORD_TESTER_WEBHOOK }}
         run: |
           & packaging\build\python\python.exe packaging\discord_post.py test "${{ steps.tester.outputs.tag }}" "${{ steps.tester.outputs.setup }}" --label "${{ steps.tester.outputs.label }}"
+
+  # The Linux and macOS test downloads (desktop-builds.yml), built beside the Windows installer. They never hold
+  # the Windows build back: it publishes its pre-release by itself, and "others-to-release" adds what was built.
+  others:
+    if: startsWith(github.ref, 'refs/tags/test-') || (github.event_name == 'workflow_dispatch' && inputs.tester_tag != '')
+    uses: ./.github/workflows/desktop-builds.yml
+    with:
+      tester_tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tester_tag || github.ref_name }}
+
+  others-to-release:
+    needs: [build, others]
+    if: ${{ always() && needs.build.result == 'success' && needs.others.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: SprigCast-{linux,macos}
+          merge-multiple: true
+          path: others
+      - name: Add the Linux and macOS downloads to the test pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tester_tag || github.ref_name }}
+        run: |
+          ls -l others || true
+          files=$(find others -type f \( -name 'SprigCast-*' -o -name 'SHA256-*.txt' \) 2>/dev/null)
+          if [ -z "$files" ]; then echo "::warning::No Linux or macOS download was built for $TAG"; exit 0; fi
+          gh release upload "$TAG" $files --clobber --repo "${{ github.repository }}"

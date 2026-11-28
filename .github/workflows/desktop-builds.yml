@@ -1,0 +1,96 @@
+name: Linux and macOS builds
+
+# The SprigCast test downloads for Linux and macOS (packaging/build_unix.sh): a private Python with SprigCast
+# in it, as on Windows, drawn by the Python engine. Each is built, then started the way a person starts it
+# (packaging/smoke.py) with a video playing. GitHub's Linux and macOS machines are free for this repository.
+# The Windows installer workflow calls this one for a test build and adds the two downloads to its pre-release.
+on:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      tester_tag:
+        description: "The test build's tag (test-0.5-3), stamped into the app"
+        type: string
+        required: false
+        default: ""
+  pull_request:
+    paths: ["packaging/build_unix.sh", "packaging/unix/**", "packaging/smoke.py", "packaging/notices.py",
+            ".github/workflows/desktop-builds.yml", "src/sprigcast/core/systems.py", "pyproject.toml", "uv.lock"]
+
+concurrency:
+  group: desktop-builds-${{ github.ref }}-${{ inputs.tester_tag }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false  # one system's trouble never holds the other's download back
+      matrix:
+        include:
+          - {system: linux, runner: ubuntu-22.04}  # the oldest Ubuntu GitHub runs: the download starts on newer ones too
+          - {system: macos, runner: macos-14}      # Apple chips (M1 and newer)
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: What Qt and OpenGL need (Linux)
+        if: matrix.system == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libegl1 libgl1 libgl1-mesa-dri libopengl0 libxkbcommon0 \
+            libdbus-1-3 libnss3 libxcomposite1 libxdamage1 libxrandr2 libxtst6 libxkbfile1 libasound2 libfontconfig1 \
+            libxcb-cursor0 libpulse0
+      - name: Build
+        env:
+          TESTER_TAG: ${{ inputs.tester_tag }}
+        run: ./packaging/build_unix.sh
+      - name: The built copy's pieces load
+        run: |
+          launcher="$(cat packaging/build/launcher.txt)"
+          python="$(dirname "$launcher")/python/bin/python3.12"
+          [ -x "$python" ] || python="$(dirname "$launcher")/../Resources/python/bin/python3.12"
+          echo "PY=$python" >> "$GITHUB_ENV"
+          echo "LAUNCHER=$launcher" >> "$GITHUB_ENV"
+          "$python" -c "import sprigcast, av, moderngl, PySide6.QtWidgets, numpy, cv2, keyring; print('imports OK', sprigcast.build_label())"
+          "$python" -c "from PySide6 import QtCore, QtGui, QtWidgets, QtNetwork, QtSvg, QtWebChannel, QtWebSockets, QtWebEngineCore, QtWebEngineWidgets; print('Qt modules OK')"
+      - name: Start SprigCast for 60 seconds with a video playing
+        timeout-minutes: 8
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QTWEBENGINE_CHROMIUM_FLAGS: --no-sandbox
+        run: |
+          "$PY" packaging/smoke.py 60 "$LAUNCHER"
+      - name: Export report works
+        if: ${{ !cancelled() }}
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          "$PY" - <<'PY'
+          import sys, tempfile, zipfile
+          from pathlib import Path
+          from sprigcast.app import logbook, tester_report
+          target = Path(tempfile.mkdtemp()) / "report.zip"
+          tester_report.build(target, log_folder=logbook.log_dir())
+          names = zipfile.ZipFile(target).namelist()
+          print("report holds:", names)
+          assert names, "the report is empty"
+          PY
+      - name: Keep the logs of a start that failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: start-up-logs-${{ matrix.system }}
+          path: |
+            ~/.local/state/SprigCast/Logs
+            ~/Library/Logs/SprigCast
+          if-no-files-found: ignore
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SprigCast-${{ matrix.system }}
+          path: |
+            packaging/out/SprigCast-*
+            packaging/out/SHA256-*.txt
+          retention-days: 14
+          compression-level: 0  # already packed

@@ -56,10 +56,10 @@ def _load_backend():
     try:
         from windows_capture import WindowsCapture
     except ImportError as exc:
-        from sprigcast.core import linux
+        from sprigcast.core import systems
 
-        if linux.is_linux():
-            raise RuntimeError(linux.not_yet("Screen, window and game capture")) from exc
+        if systems.is_linux() or systems.is_mac():
+            raise RuntimeError(systems.not_yet("Screen, window and game capture")) from exc
         raise RuntimeError("unavailable: needs Windows 10 1903+ (windows-capture)") from exc
     return WindowsCapture
 
