@@ -531,7 +531,7 @@ def run() -> None:
     autostart.refresh()
     # Said each start: the tester's PC took close to a minute and nothing told where (2026-11-22)
     logging.info("start-up: window up after %.1f s (app made at %.1f s, garden loaded at %.1f s, window made at "
-                 "%.1f s)", time.perf_counter() - began, app_at, garden_at, window_at)
+                 "%.1f s)%s", time.perf_counter() - began, app_at, garden_at, window_at, since_launch())
     if autostart.start_minimized(sys.argv):
         window.show_minimized_drawn()  # drawn once first: opening it later shows it at once
     else:
@@ -631,6 +631,20 @@ def run() -> None:
             server.close()  # let go first, or the new copy would only bring this closing one forward
         relaunch()
     sys.exit(code)
+
+
+def since_launch() -> str:
+    """"; N s since the program was started" for the start-up line: the time before SprigCast's own first line
+    of code (Windows loading Python and its libraries from a slow disk) was 2 min 10 s on a virtual PC shaped
+    like a tester's, and the line said 86 s (test build 16, 2026-11-28). "" when the system can't say."""
+    try:
+        import time
+
+        import psutil
+
+        return f"; {time.time() - psutil.Process().create_time():.1f} s since the program was started"
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def restart_command(argv: list[str] | None = None, frozen: bool | None = None) -> list[str]:
