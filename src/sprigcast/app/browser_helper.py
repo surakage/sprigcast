@@ -595,6 +595,15 @@ class _PipeLog(logging.Handler):
             pass
 
 
+def _card_text(text: str) -> tuple[int, int] | None:
+    """CARD_ENV's "low,high" as numbers, or None."""
+    try:
+        low, high = (int(part) for part in text.split(","))
+    except ValueError:
+        return None
+    return low, high
+
+
 def _card_from_env() -> tuple[int, int] | None:
     """The engine's card from SprigCast (CARD_ENV), with Qt Quick set up to draw on it; None when pages are drawn
     in memory (no native engine, not Windows, or Qt Quick's WebEngine missing). Before the QApplication."""
@@ -672,7 +681,7 @@ def serve() -> None:
     root.setLevel(logging.INFO)
     root.addHandler(_PipeLog(emit))
     os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = browser_host.chromium_flags(
-        os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", ""))
+        os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS", ""), card=_card_text(os.environ.get(CARD_ENV, "")))
     card = _card_from_env()
     QCoreApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app = QApplication([sys.argv[0] if sys.argv else "sprigcast-browser"])

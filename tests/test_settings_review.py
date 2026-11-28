@@ -265,3 +265,15 @@ def test_live_right_click_is_one_canvas_card(window):
     card = window._live_canvas_card("horizontal")
     card.screen_buttons[0].click()
     assert projected[-1][1] is not None
+
+
+def test_chromium_draws_pages_on_the_engines_card(monkeypatch):
+    """CRGPlays, 2026-11-27: Chromium drew pages on the laptop's HD 630 while the engine drew on the GTX 1070."""
+    from sprigcast.app import browser_helper, browser_host
+
+    monkeypatch.setattr(browser_host, "_big_memory", lambda: False)
+    flags = browser_host.chromium_flags("", card=(0xD1A2, 0))
+    assert "--use-adapter-luid=0,53666" in flags  # Chromium reads "<high part>,<low part>" in decimal
+    assert browser_host.chromium_flags("--use-adapter-luid=1,2", card=(5, 0)).count("--use-adapter-luid") == 1
+    assert "--use-adapter-luid" not in browser_host.chromium_flags("")
+    assert browser_helper._card_text("53666,0") == (53666, 0) and browser_helper._card_text("") is None
