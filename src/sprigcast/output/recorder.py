@@ -997,7 +997,12 @@ class Recorder:
         from sprigcast.output.replay import FRAGMENTED
 
         # An MP4 in fragments survives a crash (see PacketFile); naming.finish_mp4() makes it plain afterwards.
-        options = {"movflags": FRAGMENTED, "flush_packets": "1"} if self.container_kind == "mp4" else {}
+        # Every packet goes to the file as it is written, in MKV and FLV too: a recording of a still picture
+        # had 0 bytes on disk after 45 s (FFmpeg held it all in memory), so a crash or power cut left an empty
+        # file (sim PC, 2026-11-28). Windows still gathers the small writes before they reach the disk.
+        options = {"flush_packets": "1"}
+        if self.container_kind == "mp4":
+            options["movflags"] = FRAGMENTED
         return av.open(str(self.path), "w", format=CONTAINERS[self.container_kind], options=options)
 
     @staticmethod
@@ -1199,7 +1204,9 @@ class Recorder:
         else:
             target = str(self.path)
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            muxing = {"movflags": FRAGMENTED, "flush_packets": "1"} if self.container_kind == "mp4" else None
+            muxing = {"flush_packets": "1"}  # as in _open_container: nothing waits in memory
+            if self.container_kind == "mp4":
+                muxing["movflags"] = FRAGMENTED
         titles = [self.track_titles.get(t, t.title()) for t in self.tracks] if len(self.tracks) > 1 else None
         device = self._card_device()
         if self.uses_direct() and device is None:

@@ -572,3 +572,27 @@ def test_a_fill_gives_way_to_real_frames_and_says_what_it_did(tmp_path, caplog):
     with caplog.at_level("WARNING"):
         rec.check_flow(14.0)
     assert "60 filled with the picture that ended it, 29 counted as dropped" in caplog.text
+
+
+def test_recordings_reach_the_disk_packet_by_packet_in_every_container(tmp_path):
+    """A recording of a still picture had 0 bytes on disk after 45 s in MKV: a crash left an empty file
+    (sim PC, 2026-11-28)."""
+    import av
+    import numpy as np
+
+    from sprigcast.output.recorder import CONTAINERS, Recorder
+
+    for kind in CONTAINERS:
+        recorder = Recorder.__new__(Recorder)
+        recorder.path, recorder.container_kind = tmp_path / f"still.{kind}", kind
+        container = recorder._open_container()
+        video = container.add_stream("libx264", rate=30)
+        video.options = {"preset": "ultrafast", "tune": "zerolatency"}
+        video.width, video.height, video.pix_fmt = 64, 36, "yuv420p"
+        frame = av.VideoFrame.from_ndarray(np.zeros((36, 64, 3), np.uint8), format="rgb24")
+        for i in range(60):
+            frame.pts = i
+            for packet in video.encode(frame):
+                container.mux(packet)
+        assert recorder.path.stat().st_size > 0, kind  # before it is closed
+        container.close()

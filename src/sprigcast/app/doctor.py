@@ -325,6 +325,10 @@ def _sources(c: Checkup) -> list[Finding]:
         if status == "no file":  # an empty media source waits for a file (a raid clip, cleared on end): idle
             found.append(Finding("info", "Sources", f"{s.name} has no file yet: it shows nothing until one is set."))
             continue
+        if status and "isn't on " in status and status.endswith(" yet"):  # Linux, macOS: not built there yet
+            found.append(Finding("warning", "Sources", f"{s.name} is left out: "
+                                                       f"{status.removeprefix('unavailable: ')}."))
+            continue
         if status and "needs Windows" in status:  # nothing to plug in: this Windows is too old for it
             found.append(Finding("bad", "Sources", f"{s.name} doesn't work on this Windows "
                                                    f"({status.removeprefix('unavailable: ')}): remove it in Sources."))

@@ -1,4 +1,4 @@
-"""The Linux version's foundation (core/linux.py): where its files go, how it saves secrets, and what it says
+"""The Linux and macOS versions' foundation (core/systems.py): where its files go, how it saves secrets, and what it says
 about the parts that aren't on Linux yet."""
 
 import sys
@@ -7,18 +7,18 @@ from pathlib import Path
 import pytest
 
 from sprigcast.control import secret_store
-from sprigcast.core import linux
+from sprigcast.core import systems
 
 on_linux = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux only")
 
 
 def test_state_folder_follows_the_desktop(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-    assert linux.state_dir() == tmp_path / "SprigCast"
+    assert systems.state_dir() == tmp_path / "SprigCast"
     monkeypatch.setenv("XDG_STATE_HOME", "relative/path")  # the desktop's rule: a relative one is ignored
-    assert linux.state_dir() == Path.home() / ".local" / "state" / "SprigCast"
+    assert systems.state_dir() == Path.home() / ".local" / "state" / "SprigCast"
     monkeypatch.delenv("XDG_STATE_HOME")
-    assert linux.state_dir() == Path.home() / ".local" / "state" / "SprigCast"
+    assert systems.state_dir() == Path.home() / ".local" / "state" / "SprigCast"
 
 
 @on_linux
@@ -32,10 +32,18 @@ def test_logs_go_to_the_state_folder_not_documents(monkeypatch, tmp_path):
     assert logbook.log_dir() == tmp_path / "mine"
 
 
-def test_words_for_what_is_not_built_yet():
-    assert linux.not_yet("Virtual camera") == "unavailable: Virtual camera isn't on Linux yet"
-    line = linux.start_line()
-    assert line.startswith("Linux: not built yet here: ") and all(part in line for part in linux.NOT_YET)
+def test_words_and_folders_per_system(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert systems.not_yet("Virtual camera") == "unavailable: Virtual camera isn't on Linux yet"
+    line = systems.start_line()
+    assert line.startswith("Linux: not built yet here: ") and all(part in line for part in systems.NOT_YET)
+    assert systems.log_dir() == systems.state_dir() / "Logs"
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert systems.not_yet("Virtual camera") == "unavailable: Virtual camera isn't on macOS yet"
+    assert systems.start_line().startswith("macOS: not built yet here: ")
+    assert systems.log_dir() == Path.home() / "Library" / "Logs" / "SprigCast"
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert systems.log_dir() is None  # Windows: Documents, as ever
 
 
 @on_linux
@@ -71,3 +79,25 @@ def test_a_pc_without_a_password_store_says_so_in_plain_words(monkeypatch):
 def test_a_keyring_value_cannot_be_read_off_linux(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     assert secret_store.is_protected("keyring:abc") and secret_store.unprotect("keyring:abc") == ""
+
+
+@on_linux
+def test_general_settings_keep_their_name_across_starts(tmp_path):
+    """Qt's .ini file writes the "general" group as [%General] and reads it back as "General": the optimizer's
+    "offered once" flag was saved and never found again (sim PC, 2026-11-28)."""
+    from PySide6.QtCore import QSettings
+
+    path = tmp_path / "SprigCast.conf"
+    path.write_text("[%General]\noptimized=true\ntheme=night\n\n[live]\nx=1\n", encoding="utf-8")  # as Qt wrote it
+    q = QSettings(str(path), QSettings.Format.IniFormat)
+    assert q.value("general/optimized", False, type=bool) is False  # the trouble itself
+    assert systems.mend_general_settings(q) == 2
+    assert q.value("general/optimized", False, type=bool) is True and q.value("general/theme") == "night"
+    assert not [key for key in q.allKeys() if key.startswith("General/")] and q.value("live/x") == "1"
+    q.sync()
+    assert systems.mend_general_settings(QSettings(str(path), QSettings.Format.IniFormat)) in (0, 2)
+
+
+def test_general_settings_are_left_alone_off_linux(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert systems.mend_general_settings() == 0

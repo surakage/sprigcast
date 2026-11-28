@@ -96,6 +96,8 @@ def test_errors_name_their_field():
     taken = ask(do="bloom.new", name="BRB")
     assert taken["code"] == "busy" and taken["field"] == "name" and taken["reason"] == "already_exists"
     assert "field" not in ask(do="bloom.show", bloom="Nope")
+    long = ask(do="bloom.new", name="x" * 100_000)  # froze the window for good (sim PC, 2026-11-28)
+    assert long["code"] == "bad_request" and "too long" in long["message"]
 
 
 def test_steps_answer_with_their_own_ids():

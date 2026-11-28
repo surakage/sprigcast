@@ -4,9 +4,9 @@ On Windows, protect() uses DPAPI (CryptProtectData, per user): the value in the 
 "dpapi:<base64>" and only this Windows account on this PC can turn it back. Old plain values still read
 (unprotect passes them through) and are re-saved encrypted (see control_server).
 
-On Linux the secret goes into the desktop's own password store (Secret Service: GNOME Keyring, KWallet), the
-one stream keys use (output/keys.py), and the saved value reads "keyring:<name>": only the name of the entry.
-A Linux PC with no password store keeps the value as it is, as before. Elsewhere (tests) values are kept as
+On Linux and macOS the secret goes into the system's own password store (Secret Service: GNOME Keyring,
+KWallet; the Mac's Keychain), the one stream keys use (output/keys.py), and the saved value reads
+"keyring:<name>": only the name of the entry. A PC with no password store keeps the value as it is, as before. Elsewhere (tests) values are kept as
 they are.
 """
 
@@ -32,6 +32,11 @@ def is_protected(value: str) -> bool:
     return value.startswith((PREFIX, KEYRING_PREFIX))
 
 
+def _keyring_here() -> bool:
+    """Linux and macOS keep secrets in the system's password store."""
+    return sys.platform.startswith("linux") or sys.platform == "darwin"
+
+
 def _entry(value: str) -> str:
     """The entry's name for a secret: the same secret saved twice is one entry, and the name says nothing
     useful about it (a salted hash, cut short)."""
@@ -40,8 +45,8 @@ def _entry(value: str) -> str:
     return hashlib.sha256(_ENTROPY + value.encode("utf-8")).hexdigest()[:24]
 
 
-def _linux_protect(value: str) -> str:
-    """Put the secret in the desktop's password store and return "keyring:<name>", or the value as it is when
+def _keyring_protect(value: str) -> str:
+    """Put the secret in the system's password store and return "keyring:<name>", or the value as it is when
     this PC has no store."""
     try:
         import keyring
@@ -54,7 +59,7 @@ def _linux_protect(value: str) -> str:
         return value
 
 
-def _linux_unprotect(saved: str) -> str:
+def _keyring_unprotect(saved: str) -> str:
     try:
         import keyring
 
@@ -100,8 +105,8 @@ def protect(value: str) -> str:
     from sprigcast.core import privacy
 
     privacy.remember_secret(value)  # never in a log line from now on
-    if value and sys.platform.startswith("linux"):
-        return _linux_protect(value)
+    if value and _keyring_here():
+        return _keyring_protect(value)
     if not value or not available():
         return value
     try:
@@ -120,7 +125,7 @@ def unprotect(saved: str) -> str:
         privacy.remember_secret(saved)
         return saved
     if saved.startswith(KEYRING_PREFIX):
-        value = _linux_unprotect(saved) if sys.platform.startswith("linux") else ""
+        value = _keyring_unprotect(saved) if _keyring_here() else ""
         if value:
             privacy.remember_secret(value)
         return value

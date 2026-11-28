@@ -117,9 +117,21 @@ def known_secrets(settings=None, collection=None) -> list[str]:
 # About this PC -----------------------------------------------------------------------------------------
 
 
+def _system_word() -> str:
+    """The summary line's first word: "Windows" there, "System" on Linux and macOS."""
+    return "Windows" if sys.platform == "win32" else "System"
+
+
 def _windows() -> str:
+    if sys.platform == "darwin":
+        return f"macOS {platform.mac_ver()[0]} ({platform.machine()})"
     if sys.platform != "win32":
-        return f"{platform.system()} {platform.release()} ({platform.version()})"
+        try:  # the distribution's own name ("Ubuntu 24.04.1 LTS"), then the kernel
+            distro = platform.freedesktop_os_release().get("PRETTY_NAME", "")
+        except OSError:
+            distro = ""
+        desktop = os.environ.get("XDG_SESSION_TYPE", "")  # wayland or x11: capture and hotkeys differ
+        return ", ".join(part for part in (distro, f"{platform.system()} {platform.release()}", desktop) if part)
     try:
         import winreg
 
@@ -204,7 +216,7 @@ def pc_lines() -> list[str]:
     # build (Mikedog151's report, 2026-11-23).
     installed = getattr(sys, "frozen", False) or installed_dir() is not None
     lines = [f"SprigCast {_version()}{'' if installed else ' (run from source)'}",
-             f"Windows: {_windows()}"]
+             f"{_system_word()}: {_windows()}"]
     try:
         from sprigcast.app.optimize import _cpu_name
 

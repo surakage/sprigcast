@@ -98,6 +98,8 @@ def packages(site: Path) -> list[metadata.Distribution]:
 
 def write(home: Path, root: Path) -> Path:
     site = home / "Lib" / "site-packages"
+    if not site.is_dir():  # Linux and macOS builds (build_unix.sh): lib/python3.12/site-packages
+        site = next(iter(sorted(home.glob("lib/python3.*/site-packages"))), site)
     ours = (root / "LICENSE").read_text(encoding="utf-8")
     # Python's own license sits in the same folder under the same name: read it before ours takes its place.
     python_text = ""

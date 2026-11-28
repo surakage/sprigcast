@@ -193,3 +193,24 @@ def test_switching_a_canvas_off_centres_the_other_and_gives_it_the_stage(app, tm
         assert h.align == "right" and v.align == "left"
     finally:
         w.close()
+
+
+def test_a_huge_one_word_name_is_laid_out_at_once(app):
+    """A 100,000 letter name (sent through the Control API) froze the window for good: the long-word branch
+    measured the whole name again for every letter it took off (sim PC, 2026-11-28)."""
+    import time
+
+    from sprigcast.app.live_panel import BloomTile
+
+    tile = BloomTile("x" * 100_000)
+    tile.wrap = True
+    began = time.perf_counter()
+    tile.resize(140, BloomTile.HEIGHT)
+    lines = tile._lines(tile._text_width())
+    assert time.perf_counter() - began < 1.0
+    assert len(lines) == 2 and lines[1].endswith("…") and len(lines[0]) < 40
+    short = BloomTile("Supercalifragilistic" * 2)  # an ordinary long word still breaks where it runs out of room
+    short.wrap = True
+    short.resize(140, BloomTile.HEIGHT)
+    first, rest = short._lines(short._text_width())
+    assert first and (first + rest.rstrip("…")).startswith(first) and "Supercalifragilistic".startswith(first[:10])

@@ -39,6 +39,7 @@ from sprigcast.output.stream import (
     plain_reason,
     REFUSED_SAY,
     dropped_status,
+    note_ended,
     note_refusal,
     refused_status,
     retry_plan,
@@ -409,6 +410,7 @@ class StreamLink:
         self._thread.start()
 
     def stop(self, timeout: float = 5.0) -> None:
+        note_ended(self)
         sender = self._sender
         if sender is not None and self._ready and self.delay_s > 0:
             self.status = f"ending: sending the last {self.delay_s:g} s"

@@ -1,6 +1,6 @@
 name: Linux
 
-# The Linux version (core/linux.py): the whole test suite on Ubuntu, with no screen and software OpenGL, and
+# The Linux version (core/systems.py): the whole test suite on Ubuntu, with no screen and software OpenGL, and
 # SprigCast started once to see that its window comes up. Nothing here touches the Windows build.
 on:
   workflow_dispatch:

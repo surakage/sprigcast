@@ -1,4 +1,5 @@
 import logging
+import sys
 import os
 import threading
 import zipfile
@@ -175,7 +176,7 @@ def test_file_menu_exports_a_report(tmp_path, monkeypatch):
         assert made == tmp_path / "SprigCast report.zip"
         with zipfile.ZipFile(made) as z:
             assert "about.txt" in z.namelist() and any(n.startswith("logs/sprigcast ") for n in z.namelist())
-            assert "Windows: " in z.read("about.txt").decode()
+            assert (("Windows: " if sys.platform == "win32" else "System: ")) in z.read("about.txt").decode()
         assert w.statusBar().currentMessage() == "Report saved: SprigCast report.zip"
     finally:
         w.close()
