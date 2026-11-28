@@ -298,12 +298,15 @@ class Updater(QObject):
         report = update.helper_report(downloads_dir())
         if report:  # how the last update went, in this run's log (the helper can't write ours)
             log.info("update: last update's helper said:\n%s", report)
-        QTimer.singleShot(FIRST_CHECK_MS, lambda: self.check(manual=False))
+        # A test copy asks at every start: with the 3 hours between checks a tester who started twice in an
+        # evening was never told builds 12 and 13 were out, and stayed on the one with the freezes
+        # (Mikedog151, 2026-11-27).
+        QTimer.singleShot(FIRST_CHECK_MS, lambda: self.check(manual=False, at_start=update.is_test_copy()))
         self._timer.start(check_every_s() * 1000)
 
     # Checking --------------------------------------------------------------------
 
-    def check(self, manual: bool = True) -> None:
+    def check(self, manual: bool = True, at_start: bool = False) -> None:
         if self._checking or self._dialog is not None:
             if manual and self._dialog is not None:
                 self._dialog.raise_()
@@ -311,9 +314,12 @@ class Updater(QObject):
         settings = QSettings()
         if not manual:
             if not auto_check_enabled() or self.pending is not None:
+                log.info("update check: not made (%s)", "automatic checks are off" if self.pending is None else
+                         "an update is already downloaded")
                 return
             last = settings.value(LAST_CHECK, 0.0, type=float)
-            if time.time() - last < check_every_s() - 60:
+            if not at_start and time.time() - last < check_every_s() - 60:
+                log.info("update check: not due yet (the last one was %.0f min ago)", (time.time() - last) / 60)
                 return
         self._checking = True
         settings.setValue(LAST_CHECK, time.time())
@@ -343,8 +349,10 @@ class Updater(QObject):
             return
         log.info("update check: %s is out (you have %s)", release.label, this_build())
         if not manual and QSettings().value(SKIPPED, "", type=str) == release.skip_id:
+            log.info("update check: %s was skipped here before, so it isn't offered again", release.label)
             return
         if not manual and self.busy():
+            log.info("update check: the offer waits until the stream and recording are off")
             self._waiting = release  # never pop up on air: wait until stream and recording are off
             self._busy_timer.start()
             return
