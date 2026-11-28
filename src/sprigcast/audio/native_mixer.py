@@ -53,6 +53,11 @@ log = logging.getLogger(__name__)
 
 CAPTURE_GIVE_UP_S = 4.0  # a capture that never found its device by then goes back to Python's
 PY_CUSHION = BLOCK * 2  # a sound Python pushes keeps about 43 ms queued ahead in the engine
+# A web page's sound keeps more: switching to a bloom full of pages holds Python up for 50 to 100 ms a few times,
+# and with two blocks a clips page ran dry 5 to 7 times in its first 30 s on air, every time (the user's stream,
+# 2026-11-27; the engine's own growing reaches four blocks only after as many gaps, then gives it back). About
+# 107 ms, close to how late a page's pictures already are.
+PAGE_CUSHION = BLOCK * 5
 CATCH_UP = 4  # blocks pushed at most in one go after the feeder was held up (more would only add delay)
 AHEAD_MOST = 24  # ... and of a sound kept well ahead (ahead_of), which hands on everything it has
 WAIT_MS = 200
@@ -594,7 +599,8 @@ class NativeMixer:
         wanted = PY_CUSHION if (self._clocked and sound.capture is None and sound.media is None
                                 and not is_voice(source)) else 0  # unclocked (checks): pushed and mixed in step
         if wanted:
-            wanted = max(wanted, ahead_of(source))
+            page = getattr(source, "kind", "") == "browser"
+            wanted = max(PAGE_CUSHION if page else wanted, ahead_of(source))
         if wanted != sound.cushion:
             try:
                 self._engine.cushion(sound.id, wanted)

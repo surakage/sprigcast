@@ -303,4 +303,12 @@ def test_python_sounds_ask_the_engine_for_a_cushion_and_voices_do_not():
     mixer._cushion(page.obj, page)
     mixer._cushion(mic.obj, mic)
     mixer._cushion(page.obj, page)  # asked once
-    assert mixer._engine.asked == [(1, nm.PY_CUSHION)]
+    # A page keeps more than other pushed sounds: a clips page ran dry each time its bloom went on air (2026-11-27).
+    assert mixer._engine.asked == [(1, nm.PAGE_CUSHION)] and nm.PAGE_CUSHION > nm.PY_CUSHION
+
+    class AppSound:
+        id, kind, settings = "sound-voice", "app_audio", {}
+
+    app = nm._Sound(AppSound(), 3)
+    mixer._cushion(app.obj, app)
+    assert mixer._engine.asked[-1] == (3, nm.PY_CUSHION)
