@@ -246,9 +246,13 @@ def shrink(image: QImage, width: int | None) -> QImage:
     return image
 
 
+NAME_IN_FILE = 60  # letters of a canvas or bloom name kept in a screenshot's file name
+
+
 def path_for(folder: Path, canvas_id: str, when: datetime | None = None) -> Path:
     when = when or datetime.now()
-    base = f"screenshot {canvas_id} {when:%Y-%m-%d %H-%M-%S}"
+    # A bloom's name can stand here: a 300 letter one made a file name no disk takes (sim PC, 2026-11-28).
+    base = f"screenshot {canvas_id[:NAME_IN_FILE].strip()} {when:%Y-%m-%d %H-%M-%S}"
     path, n = folder / f"{base}.png", 2
     while path.exists():
         path, n = folder / f"{base} ({n}).png", n + 1

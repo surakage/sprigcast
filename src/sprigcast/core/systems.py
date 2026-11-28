@@ -58,3 +58,24 @@ def log_dir() -> Path | None:
 def start_line() -> str:
     """One line for the log at start, so a report from a Linux PC or a Mac says what to expect."""
     return f"{name()}: not built yet here: " + "; ".join(sorted(NOT_YET))
+
+
+def mend_general_settings(settings=None) -> int:
+    """Linux: give the "general" settings back their name, once at start. Returns how many were mended.
+
+    Qt keeps settings in an .ini file there, where a group called "general" is written as [%General] and read
+    back as "General": every general/ setting (theme, tray, "the optimizer was offered") was saved and then
+    never found again, so the first-start wizard opened at every start (sim PC, 2026-11-28). Renamed here in
+    memory, they read as general/ for this run and are written the same way again when SprigCast saves.
+    Windows (the registry) and macOS (a property list) keep the name as it is."""
+    if not is_linux():
+        return 0
+    from PySide6.QtCore import QSettings
+
+    q = settings or QSettings()
+    found = [key for key in q.allKeys() if key.startswith("General/")]
+    for key in found:
+        value = q.value(key)
+        q.remove(key)
+        q.setValue("general/" + key[len("General/"):], value)
+    return len(found)

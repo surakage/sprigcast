@@ -294,6 +294,9 @@ def run() -> None:
     began = time.perf_counter()
     QCoreApplication.setApplicationName("SprigCast")
     QCoreApplication.setOrganizationName("Slothbloom")
+    from sprigcast.core import systems
+
+    systems.mend_general_settings()  # Linux: settings saved under "general" read back under their own name
     from sprigcast.app import single_instance
 
     first_copy = single_instance.claim()  # at once: a slow start mustn't let a second click open a second copy

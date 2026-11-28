@@ -79,3 +79,25 @@ def test_a_pc_without_a_password_store_says_so_in_plain_words(monkeypatch):
 def test_a_keyring_value_cannot_be_read_off_linux(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     assert secret_store.is_protected("keyring:abc") and secret_store.unprotect("keyring:abc") == ""
+
+
+@on_linux
+def test_general_settings_keep_their_name_across_starts(tmp_path):
+    """Qt's .ini file writes the "general" group as [%General] and reads it back as "General": the optimizer's
+    "offered once" flag was saved and never found again (sim PC, 2026-11-28)."""
+    from PySide6.QtCore import QSettings
+
+    path = tmp_path / "SprigCast.conf"
+    path.write_text("[%General]\noptimized=true\ntheme=night\n\n[live]\nx=1\n", encoding="utf-8")  # as Qt wrote it
+    q = QSettings(str(path), QSettings.Format.IniFormat)
+    assert q.value("general/optimized", False, type=bool) is False  # the trouble itself
+    assert systems.mend_general_settings(q) == 2
+    assert q.value("general/optimized", False, type=bool) is True and q.value("general/theme") == "night"
+    assert not [key for key in q.allKeys() if key.startswith("General/")] and q.value("live/x") == "1"
+    q.sync()
+    assert systems.mend_general_settings(QSettings(str(path), QSettings.Format.IniFormat)) in (0, 2)
+
+
+def test_general_settings_are_left_alone_off_linux(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert systems.mend_general_settings() == 0
