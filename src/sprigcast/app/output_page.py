@@ -207,6 +207,10 @@ class EncoderForm(QGroupBox):
         self.adaptive_quant = QCheckBox("Adaptive quantization")
         self.adaptive_quant.setToolTip("Spends more bits on flat areas (skies, walls) where blockiness shows most.")
         self.adaptive_quant.setChecked(settings.adaptive_quant)
+        self.steady_bitrate = QCheckBox("Steady bitrate")
+        self.steady_bitrate.setToolTip("Always sends the full bitrate, even on a still picture. Off sends only "
+                                       "what the picture needs, which uses less upload.")
+        self.steady_bitrate.setChecked(settings.steady_bitrate)
         self.audio = QComboBox()
         for kbps in sorted({*AUDIO_KBPS, settings.audio_kbps}):
             self.audio.addItem(f"{kbps} kbps", kbps)
@@ -263,6 +267,7 @@ class EncoderForm(QGroupBox):
             label.hide()
             self._fine_pairs[widget] = label
         outer.addWidget(self.adaptive_quant)
+        outer.addWidget(self.steady_bitrate)
         outer.addWidget(self.reset, 0, Qt.AlignmentFlag.AlignLeft)
         self.fine.setVisible(False)
 
@@ -335,6 +340,7 @@ class EncoderForm(QGroupBox):
         self.b_frames.setValue(d.b_frames)
         self.lookahead.setChecked(d.lookahead)
         self.adaptive_quant.setChecked(d.adaptive_quant)
+        self.steady_bitrate.setChecked(d.steady_bitrate)
         self.audio.setCurrentIndex(max(0, self.audio.findData(d.audio_kbps)))
         self._show_quality()
 
@@ -371,6 +377,7 @@ class EncoderForm(QGroupBox):
         }
         self._lay_out_fine([w for w, show in fine.items() if show])
         self.adaptive_quant.setVisible(fam in ("nvenc", "amf", "x264"))
+        self.steady_bitrate.setVisible(fam in ("nvenc", "amf", "x264") and self.rate_control.currentData() == "cbr")
         self.fine.setVisible(x)
         notes = {
             "x264": "x264 encodes on the CPU. It looks great but competes with your game for CPU time.",
@@ -398,6 +405,7 @@ class EncoderForm(QGroupBox):
             profile=self.profile.currentData(),
             lookahead=self.lookahead.isChecked(),
             adaptive_quant=self.adaptive_quant.isChecked(),
+            steady_bitrate=self.steady_bitrate.isChecked(),
             b_frames=self.b_frames.value(),
             audio_kbps=self.audio.currentData(),
         )

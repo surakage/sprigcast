@@ -412,6 +412,9 @@ class EncoderSettings(BaseModel):
     profile: Literal["high", "main", "baseline"] = "high"
     lookahead: bool = False
     adaptive_quant: bool = True
+    # With cbr: pad still pictures up to the full bitrate (filler data). Off sends only what the picture
+    # needs, so a still screen uses far less upload; the stream link is then watched by output/link_watch.py.
+    steady_bitrate: bool = True
     b_frames: int = 0  # none: SprigCast's own lighter NVENC path needs none (2 was the old default)
     audio_kbps: int = 160
 
