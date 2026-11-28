@@ -109,6 +109,7 @@ class KickChat(QObject):
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
         self.channel = ""
+        self.room = ""  # the channel's Kick id, once the relay has said it
         self.socket = None
         self._wanted = False
         self._tries = 0
@@ -130,7 +131,7 @@ class KickChat(QObject):
         if self._wanted and slug == self.channel:
             return
         self.stop()
-        self.channel, self._wanted, self._tries, self._why = slug, True, 0, ""
+        self.channel, self._wanted, self._tries, self._why, self.room = slug, True, 0, "", ""
         self._open()
 
     def stop(self) -> None:
@@ -199,6 +200,7 @@ class KickChat(QObject):
         kind = frame.get("type")
         if kind == "ready":
             self._tries, self._why = 0, ""
+            self.room = str(frame.get("user_id") or "")  # the channel's id: its 7TV emotes
             self.status.emit("live")
         elif kind == "error":
             why = str(frame.get("why") or "Kick chat isn't available")[:120]

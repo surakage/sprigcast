@@ -227,6 +227,11 @@ class YouTubeChat(QObject):
         self._stage = "find"
         self._checks = 0  # "not live yet" checks in a row
 
+    @property
+    def room(self) -> str:
+        """The channel's YouTube id, when that is how it was named (for its 7TV emotes)."""
+        return self.channel[len("channel/"):] if self.channel.startswith("channel/UC") else ""
+
     def start(self, handle: str) -> None:
         if self._wanted and handle == self.channel:
             return

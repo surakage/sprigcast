@@ -47,6 +47,8 @@ from PySide6.QtWidgets import (
 
 from sprigcast.app import theme
 from sprigcast.chat import PLATFORMS, ChatMessage, hidden, name_for, readable_colour
+from sprigcast.chat.extra_emotes import EXTRA
+from sprigcast.chat.hub import EXTRA_SETTING
 
 log = logging.getLogger(__name__)
 KEY = "chat"  # the panel's key in app/panels.py
@@ -63,6 +65,9 @@ EMOTE_KEEP = 400  # pictures kept in memory across a start-over, newest used fir
 EMOTE_FETCHES = 4  # pictures downloading at once; the rest wait their turn (one request each is UI-thread work)
 EMOTE_URL = "https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/1.0"
 EMOTE_SIZE = 22
+MOVING_MS = 100  # how often animated emotes in the panel move on (only while one is on the page and it's shown)
+MOVING_FRAMES = 30  # pictures kept of one animated emote (a longer one skips pictures evenly)
+MOVING_KEEP = 40  # animated emotes kept moving; the ones used longest ago go back to their first picture
 MOD_LOG_KEEP = 200  # mod log lines kept this run
 MOD_BAR = "chat/mod_bar"  # the Mod chip's on/off
 MOD_MODES = (("slow_mode", "Slow", "One message every 30 seconds"),
@@ -77,7 +82,9 @@ URL_RE = re.compile(r"(https?://[^\s<]+)")
 LOOK = "chat/look"  # how the panel draws lines: "classic" | "bubbles" | "compact" | "big"
 LOOKS = (("classic", "Classic"), ("bubbles", "Bubbles"), ("compact", "Compact"), ("big", "Big text"))
 SHOWS = (("times", "chat/show_times", "Times", False), ("logos", "chat/show_logos", "Platform logos", True),
-         ("badges", "chat/show_badges", "Badges", True), ("colors", "chat/name_colors", "Name colors", True))
+         ("badges", "chat/show_badges", "Badges", True), ("colors", "chat/name_colors", "Name colors", True),
+         ("moving", "chat/animate_emotes", "Animated emotes", True),
+         ("extra", EXTRA_SETTING, "7TV, BTTV and FFZ emotes", True))
 BUBBLE_INSET = 4  # a bubble's gap to the panel's sides
 BUBBLE_PAD = 5  # room above and below the words inside a bubble (Look.spacing leaves 16 px between lines: 6 px gap)
 BUBBLE_RADIUS = 12
@@ -92,6 +99,8 @@ class Look:
     logos: bool = True  # the platform logo, when several chats are mixed
     badges: bool = True  # the dots for you, mods and VIPs, and the First tag
     colors: bool = True  # each chatter's own name colour (off: every name in one colour)
+    moving: bool = True  # animated emotes move (off: their first picture)
+    extra: bool = True  # 7TV, BetterTTV and FrankerFaceZ words become pictures (chat/extra_emotes.py)
 
     @classmethod
     def saved(cls) -> "Look":
@@ -206,7 +215,8 @@ def _body(message: ChatMessage, emote: int = EMOTE_SIZE) -> str:
         if start < at or end >= len(text):
             continue
         out.append(_words(text[at:start]))
-        out.append(f"<img src='emote:{html.escape(emote_id)}' width={emote} height={emote}"
+        wide = round(emote * message.ratios.get(emote_id, 1.0))  # (most are square; many 7TV ones are wide)
+        out.append(f"<img src='emote:{html.escape(emote_id)}' width={wide} height={emote}"
                    f" title='{html.escape(text[start:end + 1])}' style='vertical-align: middle'>")
         at = end + 1
     out.append(_words(text[at:]))
@@ -350,6 +360,12 @@ class ChatView(QTextBrowser):
         self._given = 0  # pictures handed to the page since it last started over
         self._queue: deque[QUrl] = deque()
         self._loading = 0
+        # Animated emotes: emote id -> (its pictures, when each ends, how long it all takes), newest used last
+        self._moving: OrderedDict[str, tuple[list, list[float], float]] = OrderedDict()
+        self._moving_at: dict[str, int] = {}  # emote id -> which of its pictures the page has now
+        self._move = QTimer(self)
+        self._move.setInterval(MOVING_MS)
+        self._move.timeout.connect(self._move_on)
         self._relayout = QTimer(self)  # pictures arriving together cost one re-layout, not one each
         self._relayout.setSingleShot(True)
         self._relayout.setInterval(250)
@@ -534,6 +550,8 @@ class ChatView(QTextBrowser):
         self.messages.append(message)
         self._urls.update(message.images)
         self._pending.append(message)
+        if self._moving and not self._move.isActive() and any(k in self._moving for _s, _e, k in message.emotes):
+            self._wake_moving()
         if len(self._pending) > KEEP:
             del self._pending[:-KEEP]
         if not self._flush.isActive():
@@ -654,6 +672,11 @@ class ChatView(QTextBrowser):
     def set_look(self, look: Look) -> None:
         if look != self.look:
             self.look = look
+            if not look.moving:
+                self._move.stop()
+                self._moving_at.clear()
+            else:
+                self._wake_moving()
             self._fresh_cache()  # starts the page over, so the logos come again at the new size
 
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt naming)
@@ -770,10 +793,16 @@ class ChatView(QTextBrowser):
 
         self._loading -= 1
         image = QImage()
-        if image.loadFromData(reply.readAll().data()):
-            if max(image.width(), image.height()) > 4 * EMOTE_SIZE:  # big source pictures: kept at a size we draw
-                image = image.scaled(2 * EMOTE_SIZE, 2 * EMOTE_SIZE, Qt.AspectRatioMode.KeepAspectRatio,
-                                     Qt.TransformationMode.SmoothTransformation)
+        data = reply.readAll().data()
+        moving = moving_pictures(data)
+        if moving is not None:
+            image = moving[0][0]
+            self._moving[url.path()] = moving
+            while len(self._moving) > MOVING_KEEP:  # the one used longest ago shows its first picture from now on
+                old, _ = self._moving.popitem(last=False)
+                self._moving_at.pop(old, None)
+        if moving is not None or image.loadFromData(data):
+            image = _fitted(image)
             self._asked.discard(url.path())
             self._pictures[url.path()] = image
             while len(self._pictures) > EMOTE_KEEP:
@@ -790,6 +819,84 @@ class ChatView(QTextBrowser):
         self.viewport().update()
         if stay:
             self.to_bottom()
+        self._wake_moving()
+
+    # Animated emotes: every MOVING_MS the page is given the picture each one shows now, and painted again. Nothing
+    # is laid out again (each keeps its size), and the timer only runs while one is on the page and it's shown.
+
+    def _wake_moving(self) -> None:
+        if self.look.moving and self._moving and self.isVisible() and not self._move.isActive():
+            self._move.start()
+
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        super().showEvent(event)
+        self._wake_moving()
+
+    def hideEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        super().hideEvent(event)
+        self._move.stop()
+
+    def _move_on(self, now: float | None = None) -> None:
+        import time
+        from bisect import bisect_right
+
+        used = {k for m in self.messages for _s, _e, k in m.emotes if k in self._moving} if self._moving else ()
+        if not used or not self.look.moving or not self.isVisible():
+            self._move.stop()  # (a new line with one, or being shown again, starts it)
+            return
+        now = time.monotonic() if now is None else now
+        document, changed = self.document(), False
+        for key in used:
+            frames, ends, total = self._moving[key]
+            at = min(len(frames) - 1, bisect_right(ends, now % total))
+            if self._moving_at.get(key) != at:
+                self._moving_at[key] = at
+                self._moving.move_to_end(key)
+                document.addResource(QTextDocument.ResourceType.ImageResource, QUrl(f"emote:{key}"), frames[at])
+                changed = True
+        if changed:
+            self.viewport().update()
+
+
+def _fitted(image):
+    """An emote's picture at a size the panel draws (big source pictures aren't kept big)."""
+    if image.height() > 4 * EMOTE_SIZE or image.width() > 16 * EMOTE_SIZE:
+        return image.scaledToHeight(2 * EMOTE_SIZE, Qt.TransformationMode.SmoothTransformation)
+    return image
+
+
+def moving_pictures(data: bytes) -> tuple[list, list[float], float] | None:
+    """An animated emote's bytes (GIF or WebP) -> (its pictures, when each ends in seconds, how long it all
+    takes), at most MOVING_FRAMES of them; None when it has one picture or can't be read."""
+    from PySide6.QtCore import QBuffer, QByteArray
+    from PySide6.QtGui import QImageReader
+
+    buffer = QBuffer()
+    buffer.setData(QByteArray(data))
+    buffer.open(QBuffer.OpenModeFlag.ReadOnly)
+    reader = QImageReader(buffer)
+    if not reader.supportsAnimation():
+        return None
+    read: list[tuple[object, float]] = []
+    while len(read) < 400:
+        image = reader.read()
+        if image.isNull():
+            break
+        read.append((image, max(20, reader.nextImageDelay() or 100) / 1000.0))
+    if len(read) < 2:
+        return None
+    step = -(-len(read) // MOVING_FRAMES)
+    frames, ends, total, waited = [], [], 0.0, 0.0
+    for i, (image, seconds) in enumerate(read):
+        waited += seconds
+        if i % step == step - 1 or i == len(read) - 1:
+            total += waited
+            waited = 0.0
+            if image.height() > 2 * EMOTE_SIZE:  # kept at the size they're drawn: 30 of them stay small
+                image = image.scaledToHeight(2 * EMOTE_SIZE, Qt.TransformationMode.SmoothTransformation)
+            frames.append(image)
+            ends.append(total)
+    return frames, ends, total
 
 
 def saved_names() -> dict[str, str]:
@@ -1840,6 +1947,7 @@ class ChatPanel(QWidget):
 
     def use_look(self, look: Look) -> None:
         look.save()
+        EXTRA.enabled = look.extra  # (lines already here keep the emotes they came with)
         self.view.set_look(look)
 
     def shutdown(self) -> None:
