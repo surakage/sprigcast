@@ -323,3 +323,18 @@ def test_the_look_menu_switches_extra_emotes_off(app, monkeypatch):
     assert not extra.enabled and not chat_panel.Look.saved().extra
     chat_hub.ChatHub(lambda: {})
     assert not extra.enabled  # remembered the next time SprigCast opens
+
+
+def test_the_panel_hands_the_page_emotes_at_the_size_it_draws_them(app):
+    """The page's own scaling is the quick kind: emotes looked pixelated (user 2026-11-27)."""
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QTextDocument
+
+    _panel, view = _panel_with_a_moving_emote(app)
+    try:
+        given = view.document().resource(QTextDocument.ResourceType.ImageResource, QUrl("emote:bttv-1"))
+        ratio = view.devicePixelRatioF()
+        assert given.height() == round(view.look.emote * ratio) and given.devicePixelRatio() == ratio
+        assert view._pictures["bttv-1"].height() == 28  # the one kept is as it came, for other sizes
+    finally:
+        view.close()

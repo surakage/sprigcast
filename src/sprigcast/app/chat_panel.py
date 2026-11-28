@@ -63,7 +63,7 @@ MENU_READY_MS = 5000  # after the panel is made: its ⋯ menu made ready (ChatPa
 EMOTE_CACHE = 600  # distinct emote pictures handed to the page before it starts over (long streams stay flat)
 EMOTE_KEEP = 400  # pictures kept in memory across a start-over, newest used first, so it fetches nothing again
 EMOTE_FETCHES = 4  # pictures downloading at once; the rest wait their turn (one request each is UI-thread work)
-EMOTE_URL = "https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/1.0"
+EMOTE_URL = "https://static-cdn.jtvnw.net/emoticons/v2/{id}/default/dark/2.0"  # sharp on a 4K screen too
 EMOTE_SIZE = 22
 MOVING_MS = 100  # how often animated emotes in the panel move on (only while one is on the page and it's shown)
 MOVING_FRAMES = 30  # pictures kept of one animated emote (a longer one skips pictures evenly)
@@ -761,10 +761,20 @@ class ChatView(QTextBrowser):
             if picture is not None:
                 self._pictures.move_to_end(url.path())
                 self._given += 1
-                return picture
+                return self._sharp(picture)
             self._fetch(url)
             return None  # drawn as a blank box until the picture arrives
         return super().loadResource(kind, url)
+
+    def _sharp(self, image):
+        """An emote's picture at exactly the size the page draws it on this screen, scaled smoothly here: the
+        page's own scaling is the quick kind, and emotes came out pixelated (user 2026-11-27)."""
+        ratio = max(1.0, self.devicePixelRatioF())
+        height = max(1, round(self.look.emote * ratio))
+        if image.height() != height:
+            image = image.scaledToHeight(height, Qt.TransformationMode.SmoothTransformation)
+        image.setDevicePixelRatio(ratio)
+        return image
 
     def _fetch(self, url: QUrl) -> None:
         emote_id = url.path()
@@ -808,7 +818,7 @@ class ChatView(QTextBrowser):
             while len(self._pictures) > EMOTE_KEEP:
                 self._pictures.popitem(last=False)
             self._given += 1
-            self.document().addResource(QTextDocument.ResourceType.ImageResource, url, image)
+            self.document().addResource(QTextDocument.ResourceType.ImageResource, url, self._sharp(image))
             self._relayout.start()
         reply.deleteLater()
         self._next_fetch()
@@ -852,7 +862,8 @@ class ChatView(QTextBrowser):
             if self._moving_at.get(key) != at:
                 self._moving_at[key] = at
                 self._moving.move_to_end(key)
-                document.addResource(QTextDocument.ResourceType.ImageResource, QUrl(f"emote:{key}"), frames[at])
+                document.addResource(QTextDocument.ResourceType.ImageResource, QUrl(f"emote:{key}"),
+                                     self._sharp(frames[at]))
                 changed = True
         if changed:
             self.viewport().update()
