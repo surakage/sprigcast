@@ -141,3 +141,21 @@ def test_refusals_after_a_try_that_was_live_come_briskly():
     _tries(st, 1, message="Connection reset by peer", sent=True, delay=30.0)  # was live in this try
     waits = _tries(st, 6, delay=30.0)
     assert max(waits) <= GRACE_RETRY and st.refused == 0
+
+
+def test_an_outage_is_not_counted_as_the_server_turning_tries_away(caplog):
+    """Tries that never reach the server (4 minute outage, sim PC 2026-11-28) keep the usual pace, say nothing
+    about a stream key, and the tries after the outage come briskly while the site closes the old connection."""
+    st = SimpleNamespace(name="Twitch", refused=0)
+    timed_out = "couldn't connect to x: the server didn't answer in time ([Errno 110] Connection timed out)"
+    waits = _tries(st, 12, message=timed_out)
+    assert st.refused == 0 and max(waits) == RETRY_MAX
+    assert "tries in a row" not in caplog.text
+    for message in ("couldn't connect to x: the server couldn't be reached ([Errno 110] Connection timed out)",
+                    "couldn't connect to x: the server refused the connection ([Errno 111] Connection refused)",
+                    "[Errno 101] Network is unreachable", "[Errno 113] No route to host"):
+        assert stream.unreached(message)
+    assert not stream.unreached(REFUSED)
+    already = "couldn't connect to x: this stream key is already live there ([Errno 1] Operation not permitted)"
+    waits = _tries(st, 6, message=already, delay=RETRY_MAX)
+    assert max(waits) == GRACE_RETRY and st.refused == 0
