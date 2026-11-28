@@ -65,6 +65,8 @@ WINDOWS_ONLY = ["sprigcast.output.nvenc_d3d11"]
 def warm(modules: list[str] | None = None, pause_s: float | None = None) -> list[str]:
     """Import each module not loaded yet, pause_s apart (None: pause_between()). Returns the ones it loaded. Never
     raises."""
+    from sprigcast.core import pacing
+
     if pause_s is None:
         pause_s = pause_between()
     names = list(MODULES if modules is None else modules)
@@ -77,7 +79,8 @@ def warm(modules: list[str] | None = None, pause_s: float | None = None) -> list
             continue
         try:
             at = time.perf_counter()
-            importlib.import_module(name)
+            with pacing.no_collection():  # this is a worker thread: see pacing.no_collection
+                importlib.import_module(name)
             took.append((1000 * (time.perf_counter() - at), name))
             loaded.append(name)
         except Exception as exc:  # noqa: BLE001 (a missing optional part: it loads, or fails, when used)
