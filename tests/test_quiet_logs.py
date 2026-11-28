@@ -29,6 +29,7 @@ def test_chat_waiting_is_logged_now_and_then(caplog, monkeypatch):
     fake.readers = {"youtube": type("R", (), {"channel": "me"})()}
     fake.states = {}
     fake.changed = type("S", (), {"emit": lambda self: None})()
+    fake._extra = lambda platform: None  # extra emotes, when this PC has them switched on
     caplog.set_level(logging.INFO, logger="sprigcast.chat.hub")
     for _ in range(50):
         hub.ChatHub._state(fake, "youtube", "connecting")

@@ -124,7 +124,8 @@ def test_missing_backend_reports_status(monkeypatch):
     src = create_source("display_capture", "d", {})
     src.start()
     src.stop()
-    assert "windows-capture" in src.status
+    # Windows names what's missing; Linux and macOS say capture isn't built there yet (core/systems.py).
+    assert ("windows-capture" if sys.platform == "win32" else "isn't on") in src.status
 
 
 def test_find_window_prefers_process_and_title(monkeypatch):

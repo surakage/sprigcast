@@ -32,7 +32,11 @@ jobs:
             libdbus-1-3 libnss3 libxcomposite1 libxdamage1 libxrandr2 libxtst6 libxkbfile1 libasound2t64 libfontconfig1 \
             libxcb-cursor0 libpulse0
       - name: Tests
-        run: uv run --frozen pytest -q -p no:cacheprovider
+        # Twenty test files to a run: one run of everything grew past 8 GB and took over 20 minutes, and a
+        # test that leaves something behind then only troubles its own group.
+        run: |
+          uv sync --frozen
+          ls tests/test_*.py | xargs -n 20 uv run --frozen pytest -q -p no:cacheprovider
       - name: SprigCast starts
         if: ${{ !cancelled() }}
         run: |
