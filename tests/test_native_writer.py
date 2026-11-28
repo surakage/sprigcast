@@ -776,3 +776,59 @@ def test_the_mixer_feeds_a_writers_sound_itself_in_order_and_a_pause_leaves_soun
         with av.open(str(path)) as f:
             both.append(sum(frame.samples for frame in f.decode(audio=i)))
     assert both[0] == both[1]
+
+
+@pytest.mark.skipif(not sprigcore.available(), reason="sprigcore.dll isn't built here")
+def test_a_canvas_is_drawn_only_as_often_as_its_places_take_frames(player_lib, tmp_path):  # noqa: F811
+    """CRGPlays 2026-11-27: the vertical canvas at 60 fps fed only TikTok at 30, and was drawn 60 times a second
+    anyway, on a laptop whose graphics card was at 100%. A writer at 30 on a 60 fps canvas: drawn about 30 times a
+    second, with every one of its frames still there."""
+    from sprigcast.core.scene import Canvas, Scene, SceneCollection, SceneItem, SourceConfig
+    from sprigcast.render import native_bridge
+
+    assert sprigcore.media_ready()
+    col = SceneCollection(
+        canvases=[Canvas(id="h", width=64, height=36, fps=60)],
+        sources=[SourceConfig(id="pic", kind="color", name="Picture")],
+        scenes=[Scene(id="a", name="A", canvas="h", items=[SceneItem(source="pic")])],
+        active_scenes={"h": "a"},
+    )
+    bridge = native_bridge.NativeCanvases(col, warp=True)
+    frame = np.zeros((36, 64, 4), np.uint8)
+    writer = sprigcore.Writer(str(tmp_path / "half.mkv"), "libx264", 64, 36, fps=30,
+                              video_options={"preset": "ultrafast"}, audio_tracks=0, queue_frames=60)
+
+    def span(seconds):  # a new picture every few ms, as a camera sends them: nothing is kept as it was
+        before = bridge.engine.stats()
+        end = time.perf_counter() + seconds
+        n = 0
+        while time.perf_counter() < end:
+            n += 1
+            frame[:, :, 0] = n % 255
+            bridge.upload("pic", frame, "RGBA", (64, 36))
+            time.sleep(0.004)
+        after = bridge.engine.stats()
+        return after["ticks"] - before["ticks"], after["canvas_draws"] - before["canvas_draws"]
+
+    try:
+        bridge.sync(col, {}, lambda collection, layout: (layout, None), False)
+        bridge.upload("pic", frame, "RGBA", (64, 36))
+        bridge.set_outputs("h", [((64, 36), False)])
+        time.sleep(0.3)
+        ticks, draws = span(1.0)
+        assert ticks > 20 and draws >= ticks - 3  # frames Python takes: every one, as before
+        start = time.perf_counter()
+        bridge.engine.link_output(0, 0, writer, start, 30, fill_seconds=1.0)
+        time.sleep(0.3)
+        ticks, draws = span(2.0)
+        assert ticks > 40 and draws <= ticks * 0.65  # about half: the writer takes 30 a second
+        last, linked = bridge.engine.unlink_output(0, 0)
+        assert linked and not bridge.failed
+        writer.finish()
+        assert writer.wait(20)
+        stats = writer.stats()
+        assert stats.state_name == "finished", stats.error_text
+        assert last > 50 and stats.frames_repeated <= max(3, last // 10)  # its frames all drawn: no holes filled
+    finally:
+        writer.close()
+        bridge.close()
