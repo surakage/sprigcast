@@ -16,6 +16,7 @@ WINDOW_S = 10.0  # judged over about the last ten seconds
 BUSY_SHARE = 0.85  # encoding a frame takes more than this share of the frame's time
 FULL_QUEUE = 0.5  # the encoder's queue is more than half full
 FULL_SAMPLES = 3  # ... in this many samples of the window
+QUEUE_SLOW_SHARE = 0.6  # ... while a frame takes more than this share of its time (else the pictures came late)
 
 X264_FASTER = ["placebo", "veryslow", "slower", "slow", "medium", "fast", "faster", "veryfast", "superfast",
                "ultrafast"]
@@ -100,7 +101,11 @@ class EncoderWatch:
             per_frame = (last[2] - first[2]) / frames if frames > 0 else 0.0
             busy = frames > 0 and per_frame > BUSY_SHARE / last[5]
             eased = last[3] > first[3]
-            full = sum(1 for s in line if s[4] > FULL_QUEUE) >= FULL_SAMPLES
+            # A full queue counts only while encoding itself is slow-ish: with frames done in well under their time,
+            # the queue filled because pictures came late and then in a rush (a graphics card behind), and a
+            # lighter encoder changes nothing (CRGPlays, 2026-11-27: "can't keep up" three times at 6-12 ms a
+            # frame of 16.7).
+            full = sum(1 for s in line if s[4] > FULL_QUEUE) >= FULL_SAMPLES and per_frame > QUEUE_SLOW_SHARE / last[5]
             if busy or eased or full:
                 kinds.add(kind)
         return [k for k in ("stream", "recording", "replay buffer") if k in kinds]
