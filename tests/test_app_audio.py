@@ -216,3 +216,37 @@ def test_the_gpu_query_is_opened_fresh_every_few_minutes(monkeypatch):
     clock[0] += 10
     gpu_usage.windows_gpu_load()
     assert len(made) == 2 and closed == [made[0]]  # the old query closed: its handles go back
+
+
+def test_closing_never_frees_an_apps_sound_while_its_thread_still_reads(monkeypatch):
+    """Freed after waiting 1 s for the reader whatever it was doing, a PC stalled for 14 s closed with an access
+    violation in mmdevapi.DLL (a tester's 4 GB PC, 2026-11-27)."""
+    import threading
+
+    from sprigcast.sources import app_audio
+
+    freed = []
+    monkeypatch.setattr(app_audio, "_release", lambda ptr: freed.append(ptr) if ptr else None)
+    monkeypatch.setattr(app_audio, "_method", lambda ptr, index, *types: lambda *args: 0)
+    monkeypatch.setattr(app_audio._ProcessCapture, "CLOSE_WAIT_S", 0.05)
+    cap = object.__new__(app_audio._ProcessCapture)
+    cap.pid, cap.name, cap.owner = 1, "Discord.exe", "sound-voice"
+    cap._stop, cap.alive = threading.Event(), True
+    cap._client, cap._capture, cap._event = 11, 22, None
+    stuck = threading.Event()
+
+    def read():  # the reader, held up inside Windows
+        stuck.wait(5)
+        cap.alive = False
+        if cap._stop.is_set():
+            cap._free()
+
+    cap._thread = threading.Thread(target=read, daemon=True)
+    cap._thread.start()
+    cap.close()
+    assert freed == [] and not cap.alive  # still reading: nothing let go under it
+    stuck.set()
+    cap._thread.join(2)
+    assert sorted(freed) == [11, 22]
+    cap.close()  # and only once
+    assert sorted(freed) == [11, 22]

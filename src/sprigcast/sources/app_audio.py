@@ -676,23 +676,40 @@ class _ProcessCapture:
         except Exception as exc:  # the app closed: its stream goes invalid
             log.info("%s: %s (%d) stopped: %s", self.owner, self.name, self.pid, exc)
         self.alive = False
+        if self._stop.is_set():
+            self._free()  # close() may have given up waiting for this thread: what it reads is let go here
+
+    CLOSE_WAIT_S = 1.0
 
     def close(self) -> None:
-        import ctypes
-
+        """Stop reading and let go of Windows' objects, but never while the reading thread may still be inside
+        them. It used to wait 1 s for that thread and free them regardless: on a PC stalled for 14 s (a 4 GB PC
+        downloading an update) the thread was still reading, and SprigCast closed with "Access violation in
+        mmdevapi.DLL", taking the update with it (Mikedog151, 2026-11-27). A thread that is slow to stop now
+        frees them itself when it does."""
         self._stop.set()
+        self.alive = False
         thread = getattr(self, "_thread", None)
         if thread is not None and thread is not threading.current_thread():
-            thread.join(timeout=1)
+            thread.join(timeout=self.CLOSE_WAIT_S)
+            if thread.is_alive():
+                log.info("%s: %s (%d) is slow to stop reading; it lets go of its sound when it does", self.owner,
+                         self.name, self.pid)
+                return
+        self._free()
+
+    def _free(self) -> None:
+        import ctypes
+
+        with self.__dict__.setdefault("_free_lock", threading.Lock()):
+            client, capture, event = self._client, self._capture, self._event
+            self._capture = self._client = self._event = None
         try:
-            if self._client:
-                _method(self._client, 11)()  # Stop
-        except Exception:
+            if client:
+                _method(client, 11)()  # Stop
+        except Exception:  # noqa: BLE001 - already stopped, or the app is gone
             pass
-        _release(self._capture)
-        _release(self._client)
-        self._capture = self._client = None
-        if self._event:
-            ctypes.windll.kernel32.CloseHandle(self._event)
-            self._event = None
-        self.alive = False
+        _release(capture)
+        _release(client)
+        if event:
+            ctypes.windll.kernel32.CloseHandle(event)
