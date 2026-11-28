@@ -124,6 +124,7 @@ class BloomTile(QPushButton):
 
     HEIGHT = 38
     TALL = 54  # two lines of name, for a list too narrow for it on one
+    MEASURED = 400  # letters of a name ever measured: far more than two lines hold
 
     def __init__(self, name: str, colour: str | None = None):
         super().__init__(name)
@@ -145,6 +146,8 @@ class BloomTile(QPushButton):
         """The name in at most two lines for `width` (the second ends in "…" if it still doesn't fit)."""
         metrics = QFontMetrics(self.font())
         text = self.text()
+        if len(text) > self.MEASURED:  # two lines never show more: a 100,000 letter name measured letter by
+            text = text[:self.MEASURED] + "…"  # letter froze the window for good (sim PC, 2026-11-28)
         if metrics.horizontalAdvance(text) <= width or not self.wrap:
             return [text]
         words = text.split()
@@ -158,9 +161,13 @@ class BloomTile(QPushButton):
         else:
             return [text]
         if not first:  # one long word: break it where it runs out of room
-            cut = len(text)
-            while cut > 1 and metrics.horizontalAdvance(text[:cut]) > width:
-                cut -= 1
+            low, cut = 1, len(text)  # the longest start that fits, found by halving
+            while low < cut:
+                middle = (low + cut + 1) // 2
+                if metrics.horizontalAdvance(text[:middle]) > width:
+                    cut = middle - 1
+                else:
+                    low = middle
             first, rest = text[:cut], text[cut:]
         return [first, metrics.elidedText(rest, Qt.TextElideMode.ElideRight, int(width))]
 

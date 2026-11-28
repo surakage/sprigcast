@@ -291,6 +291,9 @@ def aliased(fields: dict[str, str] | None, data: dict[str, Any], exact: bool = T
     return out
 
 
+NAME_MAX = 200  # a bloom, sprig, source, garden or path name: longer ones only ever came from a mistake
+
+
 def _get(data: dict[str, Any], key: str, kind: type | tuple[type, ...], optional: bool = False, default: Any = None):
     """data[key] checked against kind (float accepts whole numbers; bools are never numbers)."""
     if data.get(key) is None:
@@ -304,6 +307,8 @@ def _get(data: dict[str, Any], key: str, kind: type | tuple[type, ...], optional
         return value if kind is int else float(value)
     if not isinstance(value, kind):
         raise _bad(f"{key} has the wrong type.")
+    if key == "name" and isinstance(value, str) and len(value) > NAME_MAX:
+        raise _bad(f"name is too long ({NAME_MAX} characters at most).")
     return value
 
 
