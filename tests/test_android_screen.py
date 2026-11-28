@@ -8,6 +8,9 @@ import time
 
 import numpy as np
 import pytest
+from test_native_media import (
+    player_lib,  # noqa: F401 (builds or finds the engine's media library)
+)
 
 from sprigcast.sources import android_screen as screen
 
@@ -709,3 +712,200 @@ def test_ffmpegs_lines_about_a_damaged_picture_from_the_phone_stay_out_of_the_lo
     t.start()
     t.join()
     assert not kept["phone"] and logger.filter(record)  # a video file's or a camera's are still said
+
+
+# The engine's player decodes it (SPRIGCAST_ENGINE=native) --------------------------------------------------
+
+def test_adbs_bytes_are_cut_into_whole_pictures(fake_adb):
+    _adb, log = fake_adb
+    data = (log.parent / "screen.h264").read_bytes()
+    pictures = screen.Pictures()
+    out = []
+    for at in range(0, len(data), 7):  # pieces that end anywhere, as adb sends them
+        whole = pictures.feed(data[at:at + 7])
+        if whole:
+            out.append(whole)
+    assert pictures.open
+    out.append(pictures.rest())
+    assert b"".join(out) == data  # nothing lost or moved
+    assert len(out) > 20 and all(piece.startswith((b"\x00\x00\x01", b"\x00\x00\x00\x01")) for piece in out)
+    # Each piece ends where a picture does: none starts in the middle of one (a slice that isn't a picture's first)
+    for piece in out[1:]:
+        at = piece.find(b"\x00\x00\x01") + 3
+        kind = piece[at] & 0x1F
+        assert kind in (6, 7, 8, 9) or (kind in (1, 5) and piece[at + 1] & 0x80)
+
+
+def test_the_engines_look_gives_the_same_trim_and_turn_as_a_picture():
+    from sprigcast import sprigcore
+
+    def look(w, h, left=0, top=0, right=0, bottom=0, brightest=200):
+        return sprigcore.MediaLook(1, w, h, left, top, right, bottom, brightest)
+
+    assert screen.look_edges(look(1280, 576, left=40, right=3)) == (40, 0, 0, 0)  # a sliver isn't trimmed
+    assert screen.look_edges(look(1280, 576, left=41)) == (40, 0, 0, 0)  # even
+    assert screen.look_edges(look(1280, 576, left=500, right=500)) == (0, 0, 0, 0)  # too much: the picture is dark
+    assert screen.look_boxed(look(1280, 576, left=500, right=500))  # the other shape boxed in the middle
+    assert not screen.look_boxed(look(1280, 576, left=500, right=100))
+    assert not screen.look_boxed(look(1280, 576, left=1280, right=1280, brightest=16))  # all black: a dark moment
+    assert screen.look_boxed(look(576, 1280, top=450, bottom=450))
+    assert not screen.look_boxed(look(576, 1280, left=200, right=200))
+
+
+def _stub_engine(source, look_of):
+    """An engine whose player says what the test wants (no library needed)."""
+    from types import SimpleNamespace
+
+    from sprigcast import sprigcore
+
+    calls = []
+    info = SimpleNamespace(faulted=0, status_text="ok", width=1280, height=576)
+    player = SimpleNamespace(info=lambda: info, look=lambda: sprigcore.MediaLook(*look_of()),
+                             set_crop=lambda *e: calls.append(("crop", e)),
+                             set_hold=lambda h: calls.append(("hold", h)), close=lambda: None)
+    source._engine = screen._Engine(player)
+    source._engine.shape = (1280, 576)
+    return calls
+
+
+def test_with_the_engine_a_steady_bar_is_trimmed_there(monkeypatch):
+    source = screen.AndroidScreenSource("android-1", dict(screen.DEFAULTS))
+    clock = [100.0]
+    monkeypatch.setattr(screen.time, "monotonic", lambda: clock[0])
+    serial = [0]
+    calls = _stub_engine(source, lambda: (serial[0], 1280, 576, 60, 0, 0, 0, 200))
+    source._current = 1
+    for _ in range(screen.TRIM_SURE - 1):
+        serial[0] += 1
+        source._engine_look(1)
+        clock[0] += screen.TRIM_EVERY_S
+    assert calls == [] and source.size == (1280, 576) and source.status == "capturing 1280x576"
+    serial[0] += 1
+    source._engine_look(1)
+    assert calls == [("crop", (60, 0, 0, 0))]
+    source._engine_look(1)  # the same look again: nothing more
+    assert len(calls) == 1
+    source.settings["trim"] = False
+    serial[0] += 1
+    source._engine_look(1)
+    assert calls[-1] == ("crop", (0, 0, 0, 0))
+
+
+def test_with_the_engine_a_turned_phones_pictures_are_held_there(monkeypatch):
+    source = screen.AndroidScreenSource("android-1", dict(screen.DEFAULTS))
+    clock = [100.0]
+    monkeypatch.setattr(screen.time, "monotonic", lambda: clock[0])
+    calls = _stub_engine(source, lambda: (1, 1280, 576, 500, 0, 500, 0, 200))  # boxed: it turned under us
+    source._current = 1
+    source._engine_look(1)
+    assert ("hold", True) in calls and source._hold == 1 and source._look_now.is_set()
+    # The phone hadn't turned after all (a dark picture): it shows again, as _run does
+    source._hold, source._not_turned = None, 1
+    source._engine_hold()
+    assert calls[-1] == ("hold", False)
+    # A real turn with no next recording coming: shown again after HOLD_MOST_S
+    source._hold_from(1)
+    assert calls[-1] == ("hold", True)
+    clock[0] += screen.HOLD_MOST_S + 0.1
+    source._engine_look(1)
+    assert calls[-1] == ("hold", False)
+
+
+@pytest.fixture
+def engine(player_lib, monkeypatch):  # noqa: F811
+    from sprigcast import sprigcore
+
+    if not sprigcore.camera_ready():
+        pytest.skip("FFmpeg's input devices (libavdevice) aren't here")
+    monkeypatch.setattr(screen, "use_engine", lambda: True)
+
+
+def _engine_picture(source, seconds=8.0):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        frame = source.video_frame()
+        if frame is not None:
+            return frame
+        time.sleep(0.05)
+    return None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in adb is a script")
+def test_the_engine_decodes_the_phones_screen(fake_adb, engine):
+    adb, _log = fake_adb
+    source = screen.AndroidScreenSource("android-1", dict(screen.DEFAULTS))
+    source.adb_path = adb
+    source.start()
+    try:
+        frame = _engine_picture(source)
+        assert frame is not None, source.status
+        assert source.engine_player is not None and source.channel_order.startswith("I420/")
+        assert frame.shape == (176 + 88, 320)
+        deadline = time.monotonic() + 3
+        while not source.status.startswith("capturing") and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert source.status.startswith("capturing 320x176") and source.size == (320, 176)
+        assert not source._waiting  # no picture went through Python
+    finally:
+        source.stop()
+    assert source._engine is None and source.engine_player is None and not source._engine_refused
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in adb is a script")
+def test_the_engine_shows_a_still_screens_one_picture(fake_adb, engine, monkeypatch):
+    adb, _log = fake_adb
+    monkeypatch.setenv("FAKE_STILL", "1")
+    source = screen.AndroidScreenSource("android-1", dict(screen.DEFAULTS))
+    source.adb_path = adb
+    source.start()
+    try:
+        assert _engine_picture(source) is not None, source.status
+    finally:
+        source.stop()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in adb is a script")
+def test_with_the_engine_the_next_recording_carries_on_and_a_turn_opens_afresh(fake_adb, engine, monkeypatch):
+    adb, log = fake_adb
+    monkeypatch.setattr(screen, "SEGMENT_S", 0.8)
+    source = screen.AndroidScreenSource("android-1", dict(screen.DEFAULTS))
+    source.adb_path = adb
+    source.start()
+    try:
+        assert _engine_picture(source) is not None, source.status
+        first = source._engine.conn
+        assert first is not None and source._engine.shape == (1280, 576)
+        deadline = time.monotonic() + 8
+        while source._current < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert source._current >= 2
+        assert source._engine.conn is first  # the same shape: on the same connection, no gap
+        assert _engine_picture(source) is not None
+        (log.parent / "turn.txt").write_text("Viewport INTERNAL: displayId=0, orientation=ROTATION_0, x\n")
+        deadline = time.monotonic() + 8
+        while source._engine.shape != (576, 1280) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert source._engine.shape == (576, 1280) and source._engine.conn is not first
+        assert not source._engine.held
+        assert _engine_picture(source) is not None  # the freshly opened player shows the new recording
+        assert source._engine.player.info().status == b"ok" and not source._engine_refused
+    finally:
+        source.stop()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stand-in adb is a script")
+def test_python_decodes_when_the_engines_player_doesnt_connect(fake_adb, engine, monkeypatch):
+    from sprigcast import sprigcore
+
+    adb, _log = fake_adb
+    monkeypatch.setattr(screen, "ENGINE_ACCEPT_S", 0.3)
+    monkeypatch.setattr(screen, "RETRY_S", 0.1)
+    monkeypatch.setattr(sprigcore.MediaPlayer, "set_device", lambda self, *a, **k: None)  # it never opens
+    source = screen.AndroidScreenSource("android-1", dict(screen.DEFAULTS))
+    source.adb_path = adb
+    source.start()
+    try:
+        assert _engine_picture(source, 10.0) is not None, source.status
+        assert source._engine_refused and source._engine is None and source.channel_order
+    finally:
+        source.stop()

@@ -4,6 +4,10 @@ Phone browsers can't share their screen, so this goes over the cable. With USB d
 phone's Developer options), Android's own screen recorder (screenrecord, part of every Android) sends H.264 to
 the PC through Android's USB tool (adb), and FFmpeg (PyAV) decodes it here: nothing is installed on the phone.
 
+With the native engine its own player decodes it instead ("The engine's player" below): adb's bytes are passed on
+to it over a socket on this PC as they come, so no picture goes through Python at all. On a tester's 4 GB PC
+(2026-11-27) decoding and packing 30 pictures a second here was the busiest thing Python did.
+
 screenrecord stops by itself after 3 minutes, so the next one starts a few seconds before that and takes over
 once its first picture is in: the picture carries on without a gap. The phone's turn is checked every
 TURN_CHECK_S too: screenrecord keeps the shape it started with (a landscape game came in squeezed into a portrait
@@ -22,6 +26,7 @@ import os
 import queue
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import threading
@@ -31,6 +36,7 @@ from typing import Any
 
 import numpy as np
 
+from sprigcast import sprigcore
 from sprigcast.core.mailbox import Mailbox
 from sprigcast.core.source import Source, register
 
@@ -68,6 +74,10 @@ SOUND_KEEP_S = 0.25  # more than this waiting (the mixer fell behind): the oldes
 SOUND_RETRY_S = 3.0
 SOUND_SHORT_S = 10.0  # the helper ending sooner than this "ended at once"
 SOUND_RETRY_MOST_S = 60.0
+AUD = b"\x00\x00\x00\x01\x09\xf0"  # an access unit delimiter: tells the engine's reader the picture before it is whole
+ENGINE_OPTIONS = "analyzeduration=0:probesize=32"  # the engine's reader starts on the first bytes, not after 5 s of them
+ENGINE_ACCEPT_S = 5.0  # the engine's player connects in a few ms; longer than this and Python decodes instead
+ENGINE_SEND_S = 5.0
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
 # Google's adb isn't shipped with SprigCast: one already on the PC is used, or it's downloaded from Google when
@@ -213,8 +223,7 @@ def black_edges(y: np.ndarray) -> tuple[int, int, int, int]:
     rows = y[:, ::8].max(axis=1) < DARK
 
     def run(flags: np.ndarray, most: int) -> int:
-        n = int(np.argmin(flags)) if not flags.all() else len(flags)
-        return n // 2 * 2 if TRIM_LEAST <= n <= most else 0
+        return trim_of(int(np.argmin(flags)) if not flags.all() else len(flags), most)
 
     return (run(cols, int(w * TRIM_MOST)), run(rows, int(h * TRIM_MOST)),
             run(cols[::-1], int(w * TRIM_MOST)), run(rows[::-1], int(h * TRIM_MOST)))
@@ -251,6 +260,104 @@ def crop_yuv(frame, left: int, top: int, right: int, bottom: int):
                           np.ascontiguousarray(u[t2:t2 + nh // 2, l2:l2 + nw // 2]).reshape(nh // 4, nw),
                           np.ascontiguousarray(v[t2:t2 + nh // 2, l2:l2 + nw // 2]).reshape(nh // 4, nw)])
     return av.VideoFrame.from_ndarray(out, format="yuv420p")
+
+
+def trim_of(n: int, most: int) -> int:
+    """A dark run of n pixels from a side -> what's trimmed there (see black_edges)."""
+    return n // 2 * 2 if TRIM_LEAST <= n <= most else 0
+
+
+def look_edges(look) -> tuple[int, int, int, int]:
+    """black_edges from the engine's look at a picture (sprigcore.MediaLook: dark runs from each side)."""
+    w, h = int(look.width), int(look.height)
+    return (trim_of(look.left, int(w * TRIM_MOST)), trim_of(look.top, int(h * TRIM_MOST)),
+            trim_of(look.right, int(w * TRIM_MOST)), trim_of(look.bottom, int(h * TRIM_MOST)))
+
+
+def look_boxed(look) -> bool:
+    """boxed from the engine's look at a picture."""
+    w, h = int(look.width), int(look.height)
+    n, first, last = (w, look.left, look.right) if w >= h else (h, look.top, look.bottom)
+    ends = int(n * BOXED)
+    return bool(ends >= 2 and ends <= first < n and last >= ends and look.brightest >= DARK * 2)
+
+
+class Pictures:
+    """adb's H.264 as it comes -> whole pictures (access units), so a delimiter can follow each one and the
+    engine's reader shows it without waiting for the next (a still screen sends no next one)."""
+
+    def __init__(self) -> None:
+        self._data = bytearray()
+        self._at = 0  # start codes before this have been looked at
+        self.open = False  # the picture being gathered has picture data in it
+
+    def feed(self, data: bytes) -> bytes:
+        """Every whole picture so far ("" when there is none yet)."""
+        buf = self._data
+        buf += data
+        cut = 0
+        while True:
+            p = buf.find(b"\x00\x00\x01", self._at)
+            if p < 0:
+                self._at = max(self._at, len(buf) - 2)
+                break
+            if p + 4 >= len(buf):  # its first bytes aren't in yet
+                self._at = p
+                break
+            kind = buf[p + 3] & 0x1F
+            picture = kind in (1, 5)
+            # A new picture starts at its settings (SPS, PPS, SEI), a delimiter, or a slice that begins at the
+            # picture's first block (first_mb_in_slice 0 is a single 1 bit).
+            if self.open and (kind in (6, 7, 8, 9) or (picture and buf[p + 4] & 0x80)):
+                cut = p - 1 if p > 0 and buf[p - 1] == 0 else p
+                self.open = False
+            if picture:
+                self.open = True
+            self._at = p + 3
+        if not cut:
+            return b""
+        out = bytes(buf[:cut])
+        del buf[:cut]
+        self._at -= cut
+        return out
+
+    def rest(self) -> bytes:
+        """What's held, taken as a whole picture (adb has been quiet: nothing more of it is coming)."""
+        out = bytes(self._data)
+        self._data.clear()
+        self._at, self.open = 0, False
+        return out
+
+
+def use_engine() -> bool:
+    """True when the engine's own player decodes the phone's screen (wherever it reads cameras itself);
+    SPRIGCAST_NO_NATIVE_PHONE=1 keeps decoding in Python."""
+    return not os.environ.get("SPRIGCAST_NO_NATIVE_PHONE") and sprigcore.use_native_camera()
+
+
+class _Engine:
+    """The engine's player and the socket adb's bytes go to it on."""
+
+    def __init__(self, player) -> None:
+        self.player = player
+        self.lock = threading.RLock()  # who sends, and where to
+        self.server: socket.socket | None = None
+        self.conn: socket.socket | None = None
+        self.shape: tuple[int, int] | None = None  # the recording size the connection carries
+        self.looked = 0  # the last look taken (sprigcore.MediaLook.serial)
+        self.crop = (0, 0, 0, 0)
+        self.held = False
+
+    def close(self) -> None:
+        with self.lock:
+            sockets, self.conn, self.server = (self.conn, self.server), None, None
+        for s in sockets:
+            if s is not None:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+        self.player.close()
 
 
 def parse_size(text: str) -> tuple[int, int] | None:
@@ -326,6 +433,8 @@ class AndroidScreenSource(Source):
         self._waiting: list[tuple] = []  # (when, recording, picture, order, size): shown SHOW_AFTER_S later
         self._watched: tuple[bool, float] | None = None  # (turned, when): the watcher's latest answer
         self._watch_proc: subprocess.Popen | None = None
+        self._engine: _Engine | None = None  # the engine's player decodes it (use_engine)
+        self._engine_refused = False  # the engine's player couldn't: Python decodes from now on
 
     # Source ---------------------------------------------------------------------------------------
 
@@ -354,6 +463,9 @@ class AndroidScreenSource(Source):
         if self._thread is not None and self._thread is not threading.current_thread():
             self._thread.join(timeout=3)
         self._thread = None
+        engine, self._engine = self._engine, None  # the render thread lets go of it; the engine keeps it until then
+        if engine is not None:
+            engine.close()
 
     VIDEO_KEYS = ("serial", "longest", "bitrate_kbps")  # "trim" is read as each picture comes
 
@@ -527,6 +639,18 @@ class AndroidScreenSource(Source):
             self._stop.wait(wait)
 
     def video_frame(self) -> np.ndarray | None:
+        engine = self._engine
+        if engine is not None:  # read back for a frame Python draws itself
+            if engine.shape is None:
+                return None
+            try:
+                got = engine.player.video_frame()
+            except sprigcore.NativeError:
+                return None
+            if got is None or isinstance(got, str):
+                return None
+            frame, self.channel_order = got
+            return frame
         self._release()
         item = self._frames.take()
         if item is None:
@@ -618,6 +742,8 @@ class AndroidScreenSource(Source):
     def _run(self) -> None:
         segment = failed = 0
         while not self._stop.is_set():
+            if self._engine is None and not self._engine_refused and use_engine():
+                self._engine_open()
             adb = self._adb()
             if adb is None:
                 self.status = "needs Android's USB tool (adb)"
@@ -633,14 +759,16 @@ class AndroidScreenSource(Source):
             self._start_sound(adb, serial)
             segment += 1
             mine = segment
-            reader = threading.Thread(target=self._segment, args=(mine, command), name=f"android-{self.id}-{mine}",
-                                      daemon=True)
+            reader = threading.Thread(target=self._segment if self._engine is None else self._segment_engine,
+                                      args=(mine, command), name=f"android-{self.id}-{mine}", daemon=True)
             reader.start()
             self._start_watch(adb, serial)
             began = looked = time.monotonic()
             while not self._stop.is_set() and reader.is_alive() and time.monotonic() - began < SEGMENT_S:
                 asked = self._look_now.wait(0.25)
                 self._look_now.clear()
+                if self._engine is not None:
+                    self._engine_look(mine)
                 watched = self._watched
                 fresh = watched is not None and time.monotonic() - watched[1] < WATCH_FRESH_S
                 if fresh and watched[0] != turned and not self._stop.is_set():
@@ -655,6 +783,7 @@ class AndroidScreenSource(Source):
                         break  # the next recording, in the new shape, takes over once its first picture is in
                     if asked:
                         self._hold, self._not_turned = None, mine  # only a dark picture: it shows again
+                        self._engine_hold()
             if not reader.is_alive() and not self._stop.is_set():
                 # It ended early (unplugged, the screen recorder refused): again soon, and later each time it
                 # ends without a picture. One that never showed a picture went round with no wait at all: about
@@ -743,6 +872,7 @@ class AndroidScreenSource(Source):
             self._waiting = [w for w in self._waiting if w[1] > mine]
         if self._hold != mine:
             self._hold, self._hold_at = mine, time.monotonic()
+        self._engine_hold()
 
     def _release(self) -> None:
         """Pictures whose SHOW_AFTER_S has passed: the newest of them shows."""
@@ -839,7 +969,18 @@ class AndroidScreenSource(Source):
         """The black bars the phone draws itself (in landscape, the strip beside the camera cutout: PC
         2026-11-26), as (left, top, right, bottom), or None. Looked at once a second; a change is used once seen
         TRIM_SURE times running, so a dark moment in a game doesn't trim it."""
-        dims = (frame.width, frame.height)
+        def measure():
+            try:
+                plane = frame.planes[0]
+                y = np.frombuffer(plane, np.uint8).reshape(frame.height, plane.line_size)[:, :frame.width]
+                return black_edges(y)
+            except (ValueError, TypeError):
+                return (0, 0, 0, 0)
+
+        return self._trim_for((frame.width, frame.height), measure)
+
+    def _trim_for(self, dims: tuple[int, int], measure) -> tuple[int, int, int, int] | None:
+        """_trim_edges for a picture of this size; measure() gives its black edges when it's time to look."""
         now = time.monotonic()
         if self._trim is not None and self._trim[0] != dims:  # turned: this shape's trim, if it had one
             self._trims[self._trim[0]] = self._trim[1]
@@ -850,12 +991,7 @@ class AndroidScreenSource(Source):
         every = TRIM_EVERY_S if self._trim is not None else TRIM_EVERY_S / 3  # a new shape settles sooner
         if now - self._trim_at >= every:
             self._trim_at = now
-            try:
-                plane = frame.planes[0]
-                y = np.frombuffer(plane, np.uint8).reshape(frame.height, plane.line_size)[:, :frame.width]
-                edges = black_edges(y)
-            except (ValueError, TypeError):
-                edges = (0, 0, 0, 0)
+            edges = measure()
             seen = (dims, edges)
             self._trim_count = self._trim_count + 1 if seen == self._trim_seen else 1
             self._trim_seen = seen
@@ -866,6 +1002,210 @@ class AndroidScreenSource(Source):
         if self._trim is None or self._trim[0] != dims:
             return None
         return self._trim[1]
+
+    # The engine's player (SPRIGCAST_ENGINE=native) -------------------------------------------------
+    #
+    # adb's bytes go to the engine's player over a socket on this PC (it opens "tcp://127.0.0.1:port" as H.264),
+    # cut into whole pictures with a delimiter after each, so each shows as it comes. Recordings in the same shape
+    # follow each other on one connection: the picture carries on. A turned phone's next recording goes to a
+    # freshly opened player (another shape, and the pictures still waiting their SHOW_AFTER_S are let go); the
+    # picture on screen stays until its first one.
+
+    @property
+    def engine_player(self):
+        """The engine's player decoding this phone (with the native engine): render/engine.py hands it over, and
+        the render thread then only calls :meth:`engine_tick`."""
+        engine = self._engine
+        return engine.player if engine is not None and engine.shape is not None else None
+
+    def engine_tick(self) -> None:
+        """Render thread, on a tick the engine showed the picture itself: nothing to do."""
+
+    def _engine_open(self) -> None:
+        try:
+            player = sprigcore.MediaPlayer(playing=True)
+        except (sprigcore.NativeError, OSError) as exc:
+            log.info("%s: the engine can't decode the phone's screen (%s); Python does", self.id, exc)
+            self._engine_refused = True
+            return
+        try:
+            player.set_picture("", (0, 0))
+            player.set_delay(SHOW_AFTER_S)
+            player.set_look(DARK)
+        except sprigcore.NativeError as exc:
+            player.close()
+            log.info("%s: the engine can't decode the phone's screen (%s); Python does", self.id, exc)
+            self._engine_refused = True
+            return
+        self._engine = _Engine(player)
+        log.info("%s: the engine decodes the phone's screen", self.id)
+
+    def _engine_refuse(self, why: str) -> None:
+        if self._stop.is_set():
+            return  # being stopped: stop() lets the player go, and the next start tries it again
+        if not self._engine_refused:
+            log.warning("%s: the engine's player %s; Python decodes the phone's screen", self.id, why)
+        self._engine_refused = True
+        engine, self._engine = self._engine, None
+        if engine is not None:
+            engine.close()
+
+    def _engine_hold(self) -> None:
+        """The engine's player holds its pictures back while the recording showing is held (_hold_from)."""
+        engine = self._engine
+        if engine is None:
+            return
+        held = self._hold is not None and self._hold == self._current and (
+            time.monotonic() - self._hold_at < HOLD_MOST_S)
+        if held != engine.held:
+            engine.held = held
+            try:
+                engine.player.set_hold(held)
+            except sprigcore.NativeError:
+                pass
+
+    def _engine_look(self, mine: int) -> None:
+        """A few times a second: what the engine's player says (its size, a fault), and its look at the newest
+        picture: boxed (the phone turned under this recording) and the black bars to trim."""
+        engine = self._engine
+        if engine is None:
+            return
+        try:
+            info = engine.player.info()
+            look = engine.player.look()
+        except sprigcore.NativeError:
+            return
+        if info.faulted:
+            self._engine_refuse("faulted")
+            self._end_all()
+            return
+        if info.status_text == "ok" and info.width > 0 and self._current == mine:
+            self._size = (info.width, info.height)
+            note = self.sound_note if sound_on(self.settings) else ""
+            self.status = f"capturing {info.width}x{info.height}" + (f"; no phone sound: {note}" if note else "")
+        self._engine_hold()  # (held too long with no next recording: it shows again)
+        if look.serial == engine.looked or look.width <= 0 or self._current != mine:
+            return
+        engine.looked = look.serial
+        if self._hold != mine and self._not_turned != mine and look_boxed(look):
+            self._hold_from(mine)
+            self._look_now.set()
+        edges = None
+        if self.settings.get("trim", True):
+            edges = self._trim_for((int(look.width), int(look.height)), lambda: look_edges(look))
+        self._engine_crop(engine, edges or (0, 0, 0, 0))
+
+    def _engine_crop(self, engine: _Engine, edges: tuple[int, int, int, int]) -> None:
+        if edges != engine.crop:
+            engine.crop = edges
+            try:
+                engine.player.set_crop(*edges)
+            except sprigcore.NativeError:
+                pass
+
+    def _engine_take(self, engine: _Engine, mine: int, shape: tuple[int, int]) -> bool:
+        """Recording `mine` has its first picture: it takes over (engine.lock held). False when the engine's
+        player didn't connect."""
+        with self._lock:
+            old = [p for n, p in self._procs.items() if n < mine]
+            turned = self._hold is not None and self._hold == self._current
+            self._current = mine
+        for p in old:
+            _end(p)
+        if engine.conn is not None and engine.shape == shape and not turned:
+            self._engine_hold()
+            return True  # the same shape: it carries on where the one before stopped
+        server = socket.socket()
+        before = (engine.conn, engine.server)
+        try:
+            server.bind(("127.0.0.1", 0))
+            server.listen(2)
+            server.settimeout(ENGINE_ACCEPT_S)
+            trim = self._trims.get(shape) if self.settings.get("trim", True) else None
+            self._engine_crop(engine, trim or (0, 0, 0, 0))  # this shape's trim from its first picture
+            engine.player.set_device("h264", [(f"tcp://127.0.0.1:{server.getsockname()[1]}", ENGINE_OPTIONS)])
+            engine.held = False
+            engine.player.set_hold(False)
+            # The player has moved on: its reader of the recording before, waiting on that socket, ends without a
+            # word once it closes (and only then opens the new one).
+            for s in before:
+                if s is not None:
+                    s.close()
+            before = ()
+            engine.conn = engine.server = None
+            conn, _addr = server.accept()
+            conn.settimeout(ENGINE_SEND_S)
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except (OSError, sprigcore.NativeError) as exc:
+            server.close()
+            engine.conn = engine.server = None
+            for s in before:
+                if s is not None:
+                    s.close()
+            self._engine_refuse(f"didn't take the phone's screen ({exc})")
+            return False
+        engine.conn, engine.server, engine.shape = conn, server, shape
+        return True
+
+    def _segment_engine(self, mine: int, command: list[str]) -> None:
+        """One screenrecord, passed on to the engine's player: it takes over at its first whole picture."""
+        engine = self._engine
+        if engine is None:
+            return
+        try:
+            w, h = (int(v) for v in command[command.index("--size") + 1].split("x"))
+        except (ValueError, IndexError):
+            w = h = 0
+        try:
+            proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                    creationflags=_NO_WINDOW, bufsize=0)
+        except OSError as exc:
+            self.status = f"couldn't start: {exc}"
+            return
+        with self._lock:
+            self._procs[mine] = proc
+        try:
+            pictures = Pictures()
+            chunks: queue.Queue = queue.Queue(maxsize=256)
+            threading.Thread(target=_read_into, args=(proc.stdout, chunks, proc), name=f"android-{self.id}-read",
+                             daemon=True).start()
+            ended = False
+            while not ended and not self._stop.is_set():
+                try:
+                    data = chunks.get(timeout=IDLE_S)
+                except queue.Empty:
+                    data = None
+                ended = data is _EOF
+                if data is None or ended:  # adb is quiet: the picture held is whole
+                    whole = pictures.rest() if pictures.open else b""
+                else:
+                    whole = pictures.feed(data)
+                if not whole:
+                    continue
+                with engine.lock:
+                    if self._current > mine or self._engine is not engine:
+                        break  # a newer recording has taken over
+                    if self._current < mine and not self._engine_take(engine, mine, (w, h)):
+                        break
+                    conn = engine.conn
+                    try:
+                        if conn is None:
+                            raise OSError("not connected")
+                        conn.sendall(whole + AUD)
+                    except OSError as exc:
+                        # The player let go (it opens again by itself in 2 s): the next recording starts on a
+                        # whole picture with a freshly opened player.
+                        engine.conn = None
+                        if not self._stop.is_set():
+                            log.info("%s: the engine's player stopped taking the phone's screen: %s", self.id, exc)
+                        break
+        except Exception as exc:  # noqa: BLE001 (unplugged mid-stream, a phone that can't record: tried again)
+            if not self._stop.is_set():
+                log.info("%s: the phone's screen stopped: %s", self.id, exc)
+        finally:
+            _end(proc)
+            with self._lock:
+                self._procs.pop(mine, None)
 
     def _end_all(self) -> None:
         with self._lock:

@@ -1292,6 +1292,14 @@ class MediaInfo(ctypes.Structure):
         return self.status.decode("utf-8", "replace")
 
 
+class MediaLook(ctypes.Structure):
+    """include/sprigcore.h sc_media_look."""
+
+    _fields_ = [("serial", ctypes.c_uint32), ("width", ctypes.c_int32), ("height", ctypes.c_int32),
+                ("left", ctypes.c_int32), ("top", ctypes.c_int32), ("right", ctypes.c_int32),
+                ("bottom", ctypes.c_int32), ("brightest", ctypes.c_int32)]
+
+
 class MediaPicture(ctypes.Structure):
     _fields_ = [("format", ctypes.c_int), ("width", ctypes.c_int), ("height", ctypes.c_int), ("stride", ctypes.c_int),
                 ("matrix", ctypes.c_int), ("full_range", ctypes.c_int), ("bytes", ctypes.c_uint64),
@@ -1503,6 +1511,10 @@ def _media_sigs() -> dict:
         "sc_media_set_mirror": (c_int, [vp, c_int]),
         "sc_media_set_delay": (c_int, [vp, ctypes.c_double]),
         "sc_media_control": (c_int, [vp, c_int, ctypes.c_double]),
+        "sc_media_set_crop": (c_int, [vp, c_int, c_int, c_int, c_int]),
+        "sc_media_set_look": (c_int, [vp, c_int]),
+        "sc_media_set_hold": (c_int, [vp, c_int]),
+        "sc_media_look_get": (c_int, [vp, ctypes.POINTER(MediaLook)]),
         "sc_media_set_shrink": (c_int, [vp, ctypes.c_float]),
         "sc_media_info_get": (c_int, [vp, ctypes.POINTER(MediaInfo)]),
         "sc_media_video_frame": (c_int, [vp, ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(MediaPicture), vp,
@@ -1787,6 +1799,24 @@ class MediaPlayer:
 
     def control(self, what: int, value: float = 0.0) -> None:
         _check(self._call(self._lib.sc_media_control, what, float(value)))
+
+    def set_crop(self, left: int = 0, top: int = 0, right: int = 0, bottom: int = 0) -> None:
+        """A camera's pictures with these edges left off, from its next picture (sc_media_set_crop)."""
+        _check(self._call(self._lib.sc_media_set_crop, int(left), int(top), int(right), int(bottom)))
+
+    def set_hold(self, hold: bool) -> None:
+        """A camera's pictures decoded but not shown while held: the one on screen stays (sc_media_set_hold)."""
+        _check(self._call(self._lib.sc_media_set_hold, int(bool(hold))))
+
+    def set_look(self, dark: int) -> None:
+        """Have a camera's pictures looked at for black edges (luma under ``dark``); 0 stops. See :meth:`look`."""
+        _check(self._call(self._lib.sc_media_set_look, int(dark)))
+
+    def look(self) -> MediaLook:
+        """The newest look (sc_media_look_get): ``serial`` 0 until there is one."""
+        look = MediaLook()
+        _check(self._call(self._lib.sc_media_look_get, ctypes.byref(look)))
+        return look
 
     def set_shrink(self, shrink: float) -> None:
         self._call(self._lib.sc_media_set_shrink, float(shrink))

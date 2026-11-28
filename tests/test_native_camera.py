@@ -117,3 +117,131 @@ def test_the_camera_source_hands_the_engine_its_player(devices, monkeypatch):
     finally:
         src.stop()
     assert src.engine_player is None
+
+
+# A phone's screen (sources/android_screen.py): H.264 over a local socket, its own black bars seen and left off.
+
+AUD = b"\x00\x00\x00\x01\x09\xf0"  # an access unit delimiter: tells the reader the picture before it is whole
+
+
+def _h264(w, h, count, bars=0, level=200):
+    """`count` pictures as Annex B H.264, one bytes per picture: `level` grey with `bars` black on the left and
+    right."""
+    from fractions import Fraction
+
+    import av
+
+    enc = av.CodecContext.create("libx264", "w")
+    enc.width, enc.height, enc.pix_fmt = w, h, "yuv420p"
+    enc.time_base = Fraction(1, 30)
+    enc.options = {"preset": "ultrafast", "tune": "zerolatency", "bframes": "0",
+                   "x264-params": "keyint=30:repeat-headers=1"}
+    out = []
+    for i in range(count):
+        img = np.zeros((h, w, 3), np.uint8)
+        img[:, bars:w - bars] = level
+        frame = av.VideoFrame.from_ndarray(img, format="rgb24").reformat(format="yuv420p")
+        frame.pts = i
+        out += [bytes(p) for p in enc.encode(frame)]
+    return out + [bytes(p) for p in enc.encode(None)]
+
+
+def _phone(player):
+    """A listening socket the player is opened on, as the Android Screen source does."""
+    import socket
+
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(2)
+    server.settimeout(5)
+    player.set_device("h264", [(f"tcp://127.0.0.1:{server.getsockname()[1]}", "analyzeduration=0:probesize=32")])
+    conn, _addr = server.accept()
+    return server, conn
+
+
+def test_h264_from_a_socket_shows_each_picture_as_it_comes(devices):
+    player = sprigcore.MediaPlayer(playing=True)
+    server = conn = None
+    try:
+        server, conn = _phone(player)
+        pictures = _h264(320, 176, 6)
+        conn.sendall(pictures[0] + AUD)  # one picture, then a still screen: it shows without waiting for the next
+        pixels, order = _picture(player)
+        assert order.startswith("I420/") and pixels.shape == (176 + 88, 320)
+        assert (player.info().width, player.info().height) == (320, 176)
+        for data in pictures[1:]:
+            conn.sendall(data + AUD)
+        assert _wait(lambda: player.info().decoded >= 6)
+    finally:
+        player.close()
+        for s in (conn, server):
+            if s is not None:
+                s.close()
+
+
+def test_a_pictures_black_bars_are_seen_and_left_off(devices):
+    player = sprigcore.MediaPlayer(playing=True)
+    server = conn = None
+    try:
+        player.set_look(24)
+        server, conn = _phone(player)
+        pictures = _h264(320, 176, 40, bars=48)
+        conn.sendall(pictures[0] + AUD)
+        assert _wait(lambda: player.look().serial >= 1)
+        look = player.look()
+        assert (look.width, look.height) == (320, 176) and (look.top, look.bottom) == (0, 0)
+        assert abs(look.left - 48) <= 2 and abs(look.right - 48) <= 2 and look.brightest > 150
+        player.set_crop(48, 0, 48, 0)
+        sent = 1
+
+        def send_until(check):
+            nonlocal sent
+            end = time.monotonic() + 5
+            while time.monotonic() < end and sent < len(pictures):
+                conn.sendall(pictures[sent] + AUD)
+                sent += 1
+                time.sleep(0.03)
+                if check():
+                    return True
+            return check()
+
+        assert send_until(lambda: player.info().width == 224)  # 320 - 96
+        info = player.info()
+        assert (info.height, info.given_width, info.given_height) == (176, 320, 176)
+        got = []
+        assert send_until(lambda: got.append(player.video_frame()) or (
+            got[-1] not in (None, "blank") and got[-1][0].shape == (176 + 88, 224)))
+        assert got[-1][0][:176].min() > 150  # no black left
+        player.set_crop()  # whole again
+        assert send_until(lambda: player.info().width == 320)
+    finally:
+        player.close()
+        for s in (conn, server):
+            if s is not None:
+                s.close()
+
+
+def test_held_pictures_are_decoded_but_the_one_on_screen_stays(devices):
+    player = sprigcore.MediaPlayer(playing=True)
+    server = conn = None
+    try:
+        server, conn = _phone(player)
+        pictures = _h264(320, 176, 12)
+        conn.sendall(pictures[0] + AUD + AUD)  # (a second delimiter, as a phone that sends its own, is harmless)
+        assert _picture(player) is not None
+        player.set_hold(True)
+        for data in pictures[1:6]:
+            conn.sendall(data + AUD)
+        assert _wait(lambda: player.info().decoded >= 6)
+        time.sleep(0.1)
+        assert player.video_frame() is None  # nothing new showed
+        player.set_hold(False)
+        for data in pictures[6:]:
+            conn.sendall(data + AUD + AUD)
+        assert _picture(player) is not None
+        assert player.info().status == b"ok"
+    finally:
+        player.close()
+        for s in (conn, server):
+            if s is not None:
+                s.close()
