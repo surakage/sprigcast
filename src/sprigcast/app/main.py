@@ -278,7 +278,13 @@ def second_launch(app) -> bool:
     if notice is not None:
         notice.done()
     if answered:
+        # Said in the log: two copies started 8 s apart after an update and the second one's four lines ended
+        # with no reason (CRGPlays, 2026-11-27).
+        logging.info("another copy of SprigCast is open (or was starting): this one closes, that window comes "
+                     "forward")
         say_already_open(app)
+    else:
+        logging.info("the other copy of SprigCast closed while this one waited: this one opens")
     return answered
 
 
@@ -319,7 +325,8 @@ def run() -> None:
         cards = sprigcore.adapters()
         logging.info("native engine: %s, cards %s",
                      "loaded" if sprigcore.available() else "not available, using the Python engine",
-                     [c["name"] for c in cards])
+                     [c["name"] + (f" ({c['screens']} screen{'s' if c['screens'] != 1 else ''})"
+                                   if c.get("screens") else "") for c in cards])
         split = sprigcore.hybrid_split(cards)
         if split is not None:  # (app/main_window.py _hybrid_previews)
             sprigcore.HYBRID = split
@@ -386,6 +393,7 @@ def run() -> None:
 
     if first_copy:
         if single_instance.ask_running_copy():  # already open (no mutex: not Windows): that window comes forward
+            logging.info("another copy of SprigCast is open: this one closes, that window comes forward")
             say_already_open(app)
             sys.exit(0)
     elif second_launch(app):  # open or still starting: that window comes forward instead
