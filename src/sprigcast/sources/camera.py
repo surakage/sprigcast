@@ -490,6 +490,21 @@ def other_modes(modes, w: int, h: int, fps: int, tried: list[dict[str, str]]) ->
 _BYTES_PER_PIXEL = {"nv12": 1.5, "yuyv422": 2.0, "mjpeg": 0.3}  # mjpeg: compressed, roughly
 
 
+RTBUF_BYTES, RTBUF_MOST, RTBUF_PICTURES = 16_000_000, 64_000_000, 6
+
+
+def rtbuf_size(option: dict[str, str]) -> str:
+    """dshow's rtbufsize for a mode: room for RTBUF_PICTURES raw pictures, 16 MB at least and 64 MB at most. At 16 MB
+    a 2560x1440 card had room for two pictures (7.4 MB each as yuyv422) and dropped one whenever reading paused a
+    moment: "real-time buffer too full (69% of 16000000)" on the user's HD60 X, 2026-11-27. Small modes keep 16 MB
+    (light PCs). The engine does the same (native/core/src/media.cpp rtbuf_size)."""
+    try:
+        w, h = (int(v) for v in str(option.get("video_size", "")).split("x"))
+    except ValueError:
+        return str(RTBUF_BYTES)
+    return str(max(RTBUF_BYTES, min(RTBUF_MOST, w * h * 2 * RTBUF_PICTURES)))
+
+
 def mode_cost(option: dict[str, str], fps: int) -> float:
     """Roughly how many bytes a second a dshow option takes in (copied, converted, shrunk)."""
     w, h = (int(v) for v in option["video_size"].split("x"))
@@ -866,7 +881,7 @@ class _Feed:
         for name in names:
             for mode in modes:
                 try:
-                    container = av.open(name, format="dshow", options={**mode, "rtbufsize": "16M"})
+                    container = av.open(name, format="dshow", options={**mode, "rtbufsize": rtbuf_size(mode)})
                 except Exception as exc:  # busy, mode not supported, name not found, ...
                     log.debug("%s: dshow %s %s failed: %s", self.id, name, mode, exc)
                     self.open_errors.append(f"{name[:24]}… {mode}: {exc}")

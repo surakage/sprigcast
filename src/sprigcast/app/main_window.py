@@ -1357,6 +1357,8 @@ class MainWindow(QMainWindow):
         if camera:  # a capture card's sound is an input of its own
             inputs = [INPUT + d.name for d in list_audio_devices(loopback=False, rescan=False)]
             lists.append(("From an input", inputs))
+            log.info("capture sound menu for %s: inputs: %s", capture_id,
+                     "; ".join(name[len(INPUT):] for name in inputs) or "none listed")
         lists.append(("From an output", [d.name for d in list_audio_devices(loopback=True, rescan=False)]))
         if current not in (None, APP) and all(current not in names for _, names in lists):
             lists[0 if current.startswith(INPUT) else -1][1].append(current)  # unplugged now: still shown, ticked
@@ -1385,9 +1387,18 @@ class MainWindow(QMainWindow):
         if config.id not in {s.id for s in self.collection.sources} or capture_sound(self.collection, config.id):
             return
         inputs = [d.name for d in list_audio_devices(loopback=False, rescan=False)]
-        found = paired_input(str(config.settings.get("name") or config.name), inputs)
+        device = str(config.settings.get("name") or config.name)
+        found = paired_input(device, inputs)
+        from sprigcast.sources.camera import is_capture_card
+
+        # (Names only, as the mixer's own lines have them: which inputs a tester's PC offers says why a card's
+        # sound wasn't found. Mikedog151, 2026-11-27: the log had nothing to go on.)
+        log.info("capture sound: %r pairs with %s; inputs: %s", device, repr(found) if found else "none of them",
+                 "; ".join(inputs) or "none listed")
         if found:
             self._set_capture_sound(config.id, INPUT + found)
+        elif is_capture_card(device):
+            self.statusBar().showMessage("For this card's sound, right-click it and pick Sound.", 12000)
 
     def _set_capture_sound(self, capture_id: str, choice: str | None) -> None:
         from sprigcast.core.capture_sound import set_capture_sound
@@ -4627,6 +4638,8 @@ class MainWindow(QMainWindow):
             msgbox.information(self, "SprigCast", "Audio capture is only available on Windows.")
             return None
         names = ["default"] + [d.name for d in devices]
+        log.info("sound picker (%s): %d listed: %s", "outputs" if kind == "audio_output" else "inputs", len(devices),
+                 "; ".join(names[1:]))
         if current not in names:  # not plugged in right now: still listed, and picked
             names.append(current)
         labels = ["Default (follows Windows)"] + [sound_label(n) for n in names[1:]]
@@ -7579,7 +7592,9 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             log.warning("could not start %s: %s", target.name, exc)
             return f"Couldn't start {target.name}: {exc}"
-        log.info("app started %s while live", target.name)
+        from sprigcast.control.who import asker
+
+        log.info("%s started %s while live", asker("the places list"), target.name)
         self._stream_status_at = 0.0
         self._refresh_stream_status()
         return None
@@ -7593,8 +7608,10 @@ class MainWindow(QMainWindow):
         if len(self.streaming.streamers) == 1:
             QTimer.singleShot(0, self._stop_streaming)  # just after replying, like stream.stop
             return None
+        from sprigcast.control.who import asker
+
         self.streaming.drop(output_id)
-        log.info("app stopped %s while live", output_id)
+        log.info("%s stopped %s while live", asker("the places list"), output_id)
         self._stream_status_at = 0.0
         self._refresh_stream_status()
         return None
@@ -7823,6 +7840,10 @@ class MainWindow(QMainWindow):
         seconds = int(session.elapsed)
         lines = [f"Offline. Last stream {seconds // 3600}:{seconds // 60 % 60:02d}:{seconds % 60:02d}"]
         lines += [st.summary() for _, st in session.streamers]
+        # Places switched off before the end: their numbers too (the user's stream, 2026-11-27, ended with two of
+        # its five places in the summary).
+        lines += [f"{line} (switched off {at // 3600}:{at // 60 % 60:02d}:{at % 60:02d} in)"
+                  for at, line in getattr(session, "left", [])]
         doctor.save_last_streams(QSettings(), session.streamers)
         from sprigcast.app import optimize
 

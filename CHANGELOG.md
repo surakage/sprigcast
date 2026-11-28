@@ -80,6 +80,16 @@ builds from 2026-11-25 on.
 
 ### Fixed
 
+- After your internet drops and comes back, places reconnect sooner. A site turns the old stream key away for a
+  short while after a drop, and SprigCast used to read that as "the stream has ended" and slow to one try every
+  30 s. For 90 s after a place was live it now keeps asking at least every 10 s. Not tried on a real stream.
+- The log no longer says "dropped N frames that Python took too late" while a stream's places are all
+  reconnecting. Those frames had nowhere to go, and the count started from hours earlier.
+- A place switched off while live is named in the log with who did it (the places list or the app that asked
+  over the Control API), and the end-of-stream summary keeps that place's numbers.
+- A capture card is no longer paired with a microphone of the same make (a fifine card with a fifine mic). When
+  no sound is found for a card, SprigCast says where to pick it, and the log lists the inputs it saw.
+- Capture cards at large modes get a bigger buffer, so "real-time buffer too full" drops are less likely.
 - Streamer.bot and other apps can connect as soon as SprigCast starts: the Control API opens first and answers
   their requests once the window is ready, so they no longer fail and wait 30 s to try again (#984).
 - A freeze in Filters, a freeze after stopping a stream, x264 log spam, the bitrate-step warning and the stream

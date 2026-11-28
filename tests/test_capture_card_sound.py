@@ -24,6 +24,17 @@ def test_a_capture_card_finds_its_own_sound_by_name(camera, sound):
     assert paired_input(camera, INPUTS) == sound
 
 
+def test_a_microphone_of_the_same_make_is_not_the_cards_sound():
+    """Mikedog151, 2026-11-27: a fifine capture card beside a fifine USB mic."""
+    assert paired_input("fifine Video Capture", ["Microphone (fifine Microphone)"]) is None
+    assert paired_input("fifine Video Capture", ["Microphone (fifine Microphone)",
+                                                 "Digital Audio Interface (fifine Video Capture)"]) \
+        == "Digital Audio Interface (fifine Video Capture)"
+    # called a microphone, but named after the card: it is the card's
+    assert paired_input("fifine Video Capture", ["Microphone (fifine Video Capture)"]) \
+        == "Microphone (fifine Video Capture)"
+
+
 def _collection():
     return SceneCollection(
         canvases=[Canvas(id="horizontal", width=1920, height=1080)],
