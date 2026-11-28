@@ -3625,9 +3625,14 @@ class MainWindow(QMainWindow):
                     self._show_spin_values(selected)  # its size just became known
                     self._updating = False
             elif isinstance(event, EngineError):
-                self.statusBar().showMessage(event.message.split("\n")[0], 10000)
-                if event.graphics or "compositor" in event.message:
+                graphics = event.graphics or "compositor" in event.message
+                # No picture at all stays said until SprigCast closes (it went after 10 s, and a virtual PC with
+                # no graphics driver showed a black preview and nothing else, test build 16, 2026-11-28).
+                self.statusBar().showMessage(event.message.split("\n")[0], 0 if graphics else 10000)
+                if graphics:
+                    log.warning("graphics: no picture; telling the streamer: %s", " ".join(event.message.split()))
                     msgbox.critical(self, "SprigCast", event.message)
+                    log.info("graphics: the message was answered")
         if self.recording is not None:
             self._refresh_recording_status()
         if self.streaming is not None:
