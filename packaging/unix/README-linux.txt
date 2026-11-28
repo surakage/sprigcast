@@ -12,6 +12,9 @@ Start it
 1. Unpack this folder anywhere you like.
 2. Run the file named SprigCast inside it (double-click, or ./SprigCast in a terminal).
 
+After the first start SprigCast is in your desktop's apps list too, with its own name and icon. If you move
+the folder, start it once from the new place.
+
 Stream keys are kept in your desktop's password store (GNOME Keyring or KWallet).
 
 Send us what you find
