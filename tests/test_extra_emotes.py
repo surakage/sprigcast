@@ -338,3 +338,21 @@ def test_the_panel_hands_the_page_emotes_at_the_size_it_draws_them(app):
         assert view._pictures["bttv-1"].height() == 28  # the one kept is as it came, for other sizes
     finally:
         view.close()
+
+
+def test_on_stream_the_words_after_a_wide_emote_stay_inside_the_box(monkeypatch):
+    from PIL import Image
+
+    wide = Image.new("RGBA", (168, 56), (120, 200, 150, 255))
+    monkeypatch.setattr(chat_source.EMOTES, "get", lambda url: wide)
+    box = chat_source.ChatBox({"width": 300, "height": 200, "size": 20})
+    message = ChatMessage("twitch", "Willow", "WideHard no way you landed that", emotes=[(0, 7, "ffz-1")],
+                          images={"ffz-1": "https://cdn.frankerfacez.com/emote/1/2"}, ratios={"ffz-1": 3.0})
+    inner = 300 - 2 * box.PAD - 2 * box.PX - 6
+    lines = box._wrap(message, inner)
+    emote = next(run for line in lines for run in line if run[0] == "emote")
+    assert emote[3] == round((box.line_h - 2) * 3.0)  # measured as wide as it's drawn
+    for line in lines:
+        assert sum(run[3] for run in line) + box.space * (len(line) - 1) <= inner
+    monkeypatch.setattr(chat_source.EMOTES, "get", lambda url: None)  # not downloaded yet: its list's shape
+    assert next(r for ln in box._wrap(message, inner) for r in ln if r[0] == "emote")[3] == emote[3]
