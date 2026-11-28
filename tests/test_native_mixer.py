@@ -204,6 +204,27 @@ def test_a_sound_python_pushes_keeps_a_cushion_and_rides_out_a_held_lock(mixer):
     assert all(np.allclose(b[1], 0.5) for b in take_all(mixer, tap, 1))
 
 
+def test_a_phones_sound_kept_well_ahead_rides_out_a_long_hold(mixer):
+    """A tester's 4 GB PC (2026-11-27): the phone's sound ran dry up to 40 times in 30 s with Python held up far
+    longer than four blocks. It is late with its pictures anyway, so it keeps that quarter second queued here: ten
+    blocks with nothing pushed is no gap, and what was late fills the queue again."""
+    s = mixer.add_source(tracks=("stream",))
+    mixer.cushion(s, BLOCK * 11)
+    tap = mixer.add_tap([0])
+    for _ in range(12):
+        mixer.push(s, tone(0.5))
+        mixer.tick(1)
+    blocks = take_all(mixer, tap, 1)
+    assert [np.allclose(b[1], 0.5) for b in blocks] == [False] * 11 + [True]  # plays once the cushion is in
+    for t in range(200):
+        held = t % 50 in range(5, 15)  # Python held for ten blocks...
+        if not held:
+            mixer.push(s, tone(0.5, BLOCK * (11 if t % 50 == 15 else 1)))  # ...then all of it comes at once
+        mixer.tick(1)
+    assert mixer.levels(s)[3] == 0  # never ran dry
+    assert all(np.allclose(b[1], 0.5) for b in take_all(mixer, tap, 1))
+
+
 def test_levels_and_a_full_tap_drops_its_oldest(mixer):
     s = mixer.add_source(gain=0.5, tracks=("stream",))
     tap = mixer.add_tap([0])

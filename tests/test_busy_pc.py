@@ -80,7 +80,10 @@ def test_a_job_of_windows_own_is_named_first_with_what_to_do():
     assert busy_pc.friendly("MsMpEng.exe") == "Windows Defender" and busy_pc.friendly("TiWorker.exe") == "Windows Update"
     jobs = busy_pc.background_jobs([("OBS", 30.0), ("Windows Update", 12.0), ("Windows Defender", 41.0),
                                     ("Windows Search", 2.0)])
-    assert jobs == [("Windows Defender", 41.0), ("Windows Update", 12.0)]
+    assert jobs == [("Windows Defender", 41.0)]  # Update at 12% under OBS's 30% isn't what holds the PC up
+    # A tester's note (2026-11-27): "Windows Defender is using 10% of the CPU" with svchost at 20%.
+    assert busy_pc.background_jobs([("svchost", 20.0), ("Windows Defender", 10.0)]) == []
+    assert busy_pc.background_jobs([("Windows Defender", 12.0), ("dwm", 3.0)]) == [("Windows Defender", 12.0)]
     assert busy_pc.job_message(*jobs[0]) == \
         "Windows Defender is using 41% of the CPU: schedule its scans outside stream hours."
     assert busy_pc.busy_message(["Windows Defender", "OBS"], 100.0, None) == \

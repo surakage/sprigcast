@@ -53,6 +53,7 @@ log = logging.getLogger(__name__)
 CAPTURE_GIVE_UP_S = 4.0  # a capture that never found its device by then goes back to Python's
 PY_CUSHION = BLOCK * 2  # a sound Python pushes keeps about 43 ms queued ahead in the engine
 CATCH_UP = 4  # blocks pushed at most in one go after the feeder was held up (more would only add delay)
+AHEAD_MOST = 24  # ... and of a sound kept well ahead (ahead_of), which hands on everything it has
 WAIT_MS = 200
 
 
@@ -268,6 +269,18 @@ def _python_only(source) -> list[str]:
     return names or ["unknown"]
 
 
+def ahead_of(source) -> int:
+    """Frames a sound asks the engine to keep queued ahead of what plays (0: the usual small cushion). A sound that
+    is late on purpose anyway (a phone's, shown a quarter second late with its pictures) keeps that lateness there
+    and hands its blocks on with read_ahead(n) (None while it hasn't n frames), so a held-up Python isn't a gap."""
+    if not callable(getattr(source, "read_ahead", None)):
+        return 0
+    try:
+        return max(0, int(getattr(source, "sound_ahead", 0) or 0)) // BLOCK * BLOCK
+    except (TypeError, ValueError):
+        return 0
+
+
 def _python_chain(source, sound) -> object | None:
     """The filters Python runs on this sound: none when the engine runs them."""
     return None if sound.filters is not None else getattr(source, "audio_chain", None)
@@ -472,12 +485,16 @@ class NativeMixer:
         self._send_ducking()
         self._send_push(sounds)
         self._sync_taps()
-        for _ in range(blocks):
+        for n in range(blocks):
             for source, sound in sounds:
                 if sound.capture is not None:
                     continue  # the engine reads its device itself
                 if sound.media is None:
-                    self._push(source, sound, heard)
+                    if sound.cushion > PY_CUSHION and ahead_of(source):
+                        if n == 0:
+                            self._push_ahead(source, sound, heard)
+                    else:
+                        self._push(source, sound, heard)
                 else:
                     kept = getattr(source, "sound_kept", None)
                     if kept is not None:
@@ -509,6 +526,8 @@ class NativeMixer:
         times in 30 s (PC 2026-11-21). Not a voice (lips stay in sync) or a sound the engine reads itself."""
         wanted = PY_CUSHION if (self._clocked and sound.capture is None and sound.media is None
                                 and not is_voice(source)) else 0  # unclocked (checks): pushed and mixed in step
+        if wanted:
+            wanted = max(wanted, ahead_of(source))
         if wanted != sound.cushion:
             try:
                 self._engine.cushion(sound.id, wanted)
@@ -712,9 +731,24 @@ class NativeMixer:
             elif st["error"]:
                 source.status = st["error"]
 
-    def _push(self, source, sound: _Sound, heard: dict) -> None:
+    def _push_ahead(self, source, sound: _Sound, heard: dict) -> None:
+        """A sound kept well ahead in the engine (a phone's: ahead_of) hands on every whole block it has and
+        nothing when it has none: the engine plays from what is queued while Python or the phone is late, and what
+        was late fills the queue again when it comes."""
+        for _ in range(AHEAD_MOST):
+            try:
+                block = source.read_ahead(BLOCK)
+            except Exception as exc:  # noqa: BLE001
+                self._problem(f"source {getattr(source, 'id', '?')}", exc)
+                return
+            if block is None:
+                return
+            self._push(source, sound, heard, block)
+
+    def _push(self, source, sound: _Sound, heard: dict, block=None) -> None:
         try:
-            block = source.read_block(BLOCK)
+            if block is None:
+                block = source.read_block(BLOCK)
             if getattr(block, "shape", None) != (BLOCK, 2):
                 block = np.asarray(block, dtype=np.float32).reshape(BLOCK, 2)
         except Exception as exc:  # noqa: BLE001 (silent this block)
