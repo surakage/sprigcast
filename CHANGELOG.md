@@ -86,6 +86,15 @@ builds from 2026-11-25 on.
 - The Live banner is clearer in an outage. When every place drops at once it says "Your internet seems down"
   in place of one "Reconnecting to…" per place, a place that keeps refusing reads "may have ended this stream.
   Start a new one there, or check its stream key", and a green "Back live" shows for 8 s once places return.
+- A crash ("Access violation in mmdevapi.DLL") when an app's sound was let go while the PC was stalled: its
+  reading thread could still be using what was freed. It ended a tester's update download half way. Not
+  reproduced; found by reading the code after his crash.
+- Test builds check for a newer build at every start, not at most once in 3 hours: a tester who restarted
+  twice within an evening never heard that two fixed builds were out. The log now says when a check is not
+  due, when a build was skipped and when the offer waits for the stream to end.
+- Twitch Enhanced's numbers survive a reconnect: its frame count no longer starts again while its drops carry
+  on (a stream read 6.0% dropped where it was about 1.5%, and 1,382 ms to encode a frame), and the stream
+  report's header counts the encoders its places share.
 - The log no longer says "dropped N frames that Python took too late" while a stream's places are all
   reconnecting. Those frames had nowhere to go, and the count started from hours earlier.
 - A place switched off while live is named in the log with who did it (the places list or the app that asked

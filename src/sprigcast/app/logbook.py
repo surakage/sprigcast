@@ -481,7 +481,10 @@ class StreamReport:
             self._write(f"Stream encoder settings: {enc.rate_control}, {self._preset_words(enc)}, "
                         f"B-frames {enc.b_frames}, look-ahead {enc.lookahead}, multipass {enc.multipass}, "
                         f"keyframes every {enc.keyint_sec or 2} s, audio {enc.audio_kbps} kbps")
-        self._write(f"{len(self.session.streamers)} destination(s), {len(shared)} shared encoder(s)")
+        # Places that send another's packets count too: Twitch Enhanced's qualities are shared by the places that
+        # link to them and aren't in session.shared ("0 shared encoder(s)" with four places sharing, 2026-11-27).
+        sharing = {id(e) for e in shared} | {id(st.shared) for _, st in self.session.streamers if hasattr(st, "shared")}
+        self._write(f"{len(self.session.streamers)} destination(s), {len(sharing)} shared encoder(s)")
         for canvas_id, st in self.session.streamers:
             sharing = " (sharing an encoder)" if hasattr(st, "shared") else ""
             auto = " auto-bitrate" if getattr(st, "autopilot", None) is not None else ""

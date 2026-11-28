@@ -120,3 +120,9 @@ def test_live_sound_card_back_button_is_a_round_icon():
     page = TunePage(lambda *a: None, lambda *a: None, lambda: None)
     back = next(b for b in page.findChildren(QPushButton) if b.toolTip() == "Back to all sounds")
     assert back.text() == "" and not back.icon().isNull() and back.size().width() == back.size().height() == 30
+
+
+def test_a_fifine_card_pairs_with_its_own_sound_not_the_fifine_microphone():
+    # What a tester's PC listed (2026-11-27): the card's sound is the "Audio Capture" one.
+    inputs = ["Microphone (fifine Microphone)", "Digital Audio Interface (fifine Audio Capture)"]
+    assert paired_input("fifine Video Capture", inputs) == "Digital Audio Interface (fifine Audio Capture)"

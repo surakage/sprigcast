@@ -258,6 +258,9 @@ def test_automatic_checks_respect_the_setting_and_the_wait(qt, monkeypatch):
     assert started == [(False,)]
     updater.check(manual=True)  # asking always checks
     assert started == [(False,), (True,)]
+    updater._checking = False
+    updater.check(manual=False, at_start=True)  # a test build's first check of a run doesn't wait 3 hours
+    assert started == [(False,), (True,), (False,)]
 
 
 def test_a_finished_download_while_live_installs_on_quit(qt, monkeypatch, tmp_path):
