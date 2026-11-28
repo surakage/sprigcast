@@ -953,6 +953,24 @@ SC_API int sc_media_set_mirror(sc_media *media, int mirror);
  * with a sound that arrives late. Held pictures wait in memory (at most 128). */
 SC_API int sc_media_set_delay(sc_media *media, double seconds);
 SC_API int sc_media_control(sc_media *media, int what, double value);
+/* A camera's pictures with these edges left off (pixels of the picture it gives; even numbers are used, and what is
+ * left is even across and a multiple of 4 down), from its next picture; all 0 shows it whole. For 4:2:0 pictures
+ * decoded in memory (a phone's screen with its own black bars); others are shown whole. sc_media_info's width and
+ * height follow. */
+SC_API int sc_media_set_crop(sc_media *media, int left, int top, int right, int bottom);
+/* hold != 0: a camera's pictures are still read and decoded but none shows, and those waiting their delay are let
+ * go: the picture on screen stays (a phone turning under a recording in the old shape). 0: they show again. */
+SC_API int sc_media_set_hold(sc_media *media, int hold);
+/* dark > 0: a camera's pictures are looked at as they are decoded (about three a second, before any crop), for
+ * sc_media_look_get; 0 stops. */
+SC_API int sc_media_set_look(sc_media *media, int dark);
+typedef struct sc_media_look {
+    uint32_t serial;       /* goes up with each look (0: none yet) */
+    int32_t width, height; /* the picture looked at, before any crop */
+    int32_t left, top, right, bottom; /* how far in from each side every 8th row or column stays under `dark` */
+    int32_t brightest;     /* its brightest sample */
+} sc_media_look;
+SC_API int sc_media_look_get(sc_media *media, sc_media_look *out);
 /* Shown at most `shrink` of its size anywhere (1, 1/2, 1/4): the next pictures are made that small. */
 SC_API int sc_media_set_shrink(sc_media *media, float shrink);
 SC_API int sc_media_info_get(sc_media *media, sc_media_info *out);
