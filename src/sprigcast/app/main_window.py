@@ -4964,7 +4964,7 @@ class MainWindow(QMainWindow):
         wanted = {k: config.settings[k] for k in ("width", "height", "fps", "mirror", "pause_off_screen", "delay_ms")
                   if k in config.settings}
         dialog = CameraDialog([device], {"name": device.name, "path": device.path, **wanted}, self,
-                              max_fps=self._camera_max_fps())
+                              max_fps=self._camera_max_fps(), canvas_size=self._camera_canvas_size())
         settings = dialog.settings()
         dialog.deleteLater()
         config.settings = {**config.settings, **settings, "name": device.name, "path": device.path}
@@ -5975,6 +5975,13 @@ class MainWindow(QMainWindow):
         rates = [int(round(c.fps)) for c in self.collection.canvases if c.enabled]
         return max(rates) if rates else 60
 
+    def _camera_canvas_size(self) -> tuple[int, int] | None:
+        """The biggest canvas in use: a new capture card needn't take in more picture than that."""
+        # (An upright canvas counts on its side: a console's picture is wide, and is cropped to fit it.)
+        sizes = [(max(int(c.width), int(c.height)), min(int(c.width), int(c.height)))
+                 for c in self.collection.canvases if c.enabled]
+        return max(sizes, key=lambda s: s[0] * s[1]) if sizes else None
+
     def _camera_dialog(self, current: dict | None = None, source_id: str | None = None) -> dict | None:
         cameras = list_cameras()
         if not cameras:
@@ -5982,7 +5989,7 @@ class MainWindow(QMainWindow):
             return None
         source = self.engine._sources.get(source_id) if source_id else None
         modes = getattr(source, "modes_seen", None) or None
-        dialog = CameraDialog(cameras, current, self, max_fps=self._camera_max_fps(), modes=modes)
+        dialog = CameraDialog(cameras, current, self, max_fps=self._camera_max_fps(), canvas_size=self._camera_canvas_size(), modes=modes)
         return dialog.settings() if modal(dialog) else None
 
     def _add_camera(self, device=None) -> None:
@@ -5993,7 +6000,7 @@ class MainWindow(QMainWindow):
             return
         if device is not None:
             dialog = CameraDialog([device], {"name": device.name, "path": device.path}, self,
-                                  max_fps=self._camera_max_fps())
+                                  max_fps=self._camera_max_fps(), canvas_size=self._camera_canvas_size())
             settings = dialog.settings()  # the mode it would suggest, without asking
             dialog.deleteLater()
             name = short_name(settings["name"], "Camera")
@@ -8777,7 +8784,7 @@ class MainWindow(QMainWindow):
     def _device_source_settings(self, device) -> dict:
         """A camera (or capture card) as source settings: its best mode, as the camera window picks it."""
         probe = CameraDialog([device], {"name": device.name, "path": device.path}, self,
-                             max_fps=self._camera_max_fps())
+                             max_fps=self._camera_max_fps(), canvas_size=self._camera_canvas_size())
         settings = probe.settings()
         probe.deleteLater()
         return settings

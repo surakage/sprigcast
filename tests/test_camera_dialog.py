@@ -79,3 +79,22 @@ def test_pausing_doesnt_split_a_shared_feed():
 
     base = {"name": "A", "path": "a", "width": 1280, "height": 720, "fps": 30}
     assert _feed_key({**base, "pause_off_screen": True}) == _feed_key({**base, "pause_off_screen": False})
+
+
+def test_a_new_capture_card_starts_no_bigger_than_the_canvas_needs(qapp):
+    from sprigcast.app.camera_dialog import CameraDialog, card_size
+    from sprigcast.sources.camera import CameraDevice
+
+    assert card_size(None) == (1920, 1080) and card_size((1920, 1080)) == (1920, 1080)
+    assert card_size((2560, 1440)) == (1920, 1080)  # never above full HD by itself
+    assert card_size((1280, 720)) == (1280, 720)
+    assert card_size((854, 480)) == (1280, 720)  # the smallest that covers it: 640x480 would be narrower
+    card = CameraDevice(0, "fifine Video Capture", "card")
+    dialog = CameraDialog([card], {"name": card.name, "path": card.path}, max_fps=30, canvas_size=(854, 480))
+    got = dialog.settings()
+    assert (got["width"], got["height"], got["fps"]) == (1280, 720, 30)
+    dialog.deleteLater()
+    kept = CameraDialog([card], {"name": card.name, "path": card.path, "width": 1920, "height": 1080, "fps": 30},
+                        max_fps=30, canvas_size=(854, 480))
+    assert kept.settings()["width"] == 1920  # a size already chosen is left alone
+    kept.deleteLater()
