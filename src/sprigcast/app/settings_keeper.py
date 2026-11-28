@@ -212,8 +212,9 @@ def restore(config: Path, settings=None) -> list[str]:
             live.setValue(key, copy.value(key))
         live.sync()
         if back:
-            log.warning("settings: %d were missing and came back from the copy kept at %s: %s",
-                        len(back), copy.value(MARKER), ", ".join(sorted(back)))
+            log.warning("settings: %d missing %s came back from the copy kept at %s: %s",
+                        len(back), "setting" if len(back) == 1 else "settings", copy.value(MARKER),
+                        ", ".join(sorted(back)))
         return back
     except Exception as exc:  # noqa: BLE001
         log.warning("settings: couldn't put back the kept copy: %s", exc)
