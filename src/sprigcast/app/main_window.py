@@ -208,6 +208,7 @@ def _hybrid() -> bool:
 
 PREVIEW_EASE_PCT, PREVIEW_EASE_AFTER_S = 90.0, 10.0  # a card this busy this long: previews at 15 a second
 PREVIEW_CALM_PCT, PREVIEW_CALM_AFTER_S = 70.0, 30.0  # and back to 30 once it stays under this
+PREVIEW_SLOW_PCT, PREVIEW_SLOW_AFTER_S, PREVIEW_SLOW_FPS = 97.0, 20.0, 5  # still pinned at 15: a few a second
 
 
 # Kinds that have their own button or dock; everything else with a `label` goes under + → Plugins.
@@ -3377,8 +3378,16 @@ class MainWindow(QMainWindow):
         """A graphics card that stays pinned gets the previews at 15 a second until it calms down: on a hybrid
         laptop each preview frame also crosses to the chip the screen is on (CRGPlays, 2026-11-27: the card was
         pinned at 100% and the render thread waited on it 593 times while SprigCast's own frame work took 2 ms).
-        The stream and the recording aren't touched."""
+        The stream and the recording aren't touched.
+
+        A card still pinned with the previews at 15 gets them at PREVIEW_SLOW_FPS: what it can draw goes to the
+        stream first (Mikedog151's Radeon R2 with a capture card, 2026-11-27: 97-100% for half an hour at 15)."""
         now = time.monotonic()
+        pinned = gpu is not None and gpu >= PREVIEW_SLOW_PCT
+        if not pinned:
+            self._gpu_pinned_since = None
+        elif getattr(self, "_gpu_pinned_since", None) is None:
+            self._gpu_pinned_since = now
         hot = gpu is not None and gpu >= PREVIEW_EASE_PCT
         calm = gpu is None or gpu < PREVIEW_CALM_PCT
         if not hot:
@@ -3397,8 +3406,13 @@ class MainWindow(QMainWindow):
             log.info("graphics card at %.0f%% for %.0f s: previews at 15 a second until it calms down; by card: %s",
                      gpu, PREVIEW_EASE_AFTER_S, gpu_usage.cards_line() or "unknown")
         elif eased and calm and now - self._gpu_calm_since >= PREVIEW_CALM_AFTER_S:
-            self._previews_eased = False
+            self._previews_eased = self._previews_slow = False
             log.info("graphics card calm again: previews back to 30 a second")
+        elif eased and pinned and not getattr(self, "_previews_slow", False) \
+                and now - self._gpu_pinned_since >= PREVIEW_SLOW_AFTER_S:
+            self._previews_slow = True
+            log.info("graphics card still at %.0f%% with the previews at 15 a second: previews at %d a second until "
+                     "it calms down", gpu, PREVIEW_SLOW_FPS)
 
     def _check_busy_pc(self) -> None:
         """When the whole PC stays busy, name the other apps using it (looked up off the UI thread)."""
@@ -3507,6 +3521,8 @@ class MainWindow(QMainWindow):
                 projector.take_pending()
         mode = self._preview_mode()
         fps = 15 if mode == "light" or getattr(self, "_previews_eased", False) or _hybrid() else 30
+        if getattr(self, "_previews_slow", False):
+            fps = PREVIEW_SLOW_FPS
         if getattr(self.engine, "preview_fps", fps) != fps:
             self.engine.preview_fps = fps
         off = mode == "off"

@@ -509,6 +509,10 @@ struct PreviewGpu {
     int64_t retry_at = 0;  // after a failure: when to try making it again
 };
 
+// How far behind the card may be before frames go undrawn for it (card_behind), and the most frames marked at once.
+constexpr double CARD_BEHIND_S = 0.1;
+constexpr int CARD_MARKS = 8;
+
 }  // namespace
 
 struct sc_engine {
@@ -592,6 +596,13 @@ struct sc_engine {
     int build_failures = 0;
     int64_t next_build = 0;
     double trimmed_at = 0;  // when idle staging textures were last let go of (sc::trim_staging)
+    // The card's own pace (card_behind): a mark after each frame's work, and when it was put there (0: reached).
+    ComPtr<ID3D11Query> frame_marks[CARD_MARKS];
+    int64_t frame_marked[CARD_MARKS] = {};
+    int64_t behind_since = 0;  // qpc() when the card was first found behind; 0 while it keeps up
+    bool frame_held = false;   // this frame drew nothing new, so the card could catch up
+    uint64_t held_frames = 0, held_of = 0;  // frames held, of the frames since the log last said so
+    int64_t held_said = 0;
 
     // ---- threads ----
     HANDLE quit = nullptr;  // manual reset: everything stops
@@ -664,6 +675,11 @@ void drop_gpu(sc_engine &e) {
     for (auto &r : e.readers) r = Reader();
     for (auto &row : e.out_readers)
         for (auto &r : row) r = OutReader();
+    for (int k = 0; k < CARD_MARKS; ++k) {  // the old device's marks go with it
+        e.frame_marks[k].Reset();
+        e.frame_marked[k] = 0;
+    }
+    e.behind_since = 0;
     {
         std::lock_guard<std::mutex> lock(e.state);
         for (auto &row : e.outputs)
@@ -889,9 +905,77 @@ void mark_copy(sc_device &dev, ComPtr<ID3D11Query> &query) {
     if (query) dev.context->End(query.Get());
 }
 
+// The longest the frames go undrawn for a card that is behind: then one is drawn all the same, and the wait starts
+// over (a card that busy still shows a picture every couple of seconds).
+constexpr double CARD_WAIT_MAX_S = 2.0;
+constexpr double CARD_SAID_EVERY_S = 10.0;
+
+// Whether the card is behind: work handed to it CARD_BEHIND_S ago still isn't done (or CARD_MARKS frames wait).
+// Then this frame draws nothing new (draw_frame). Nothing here ever waits on the card, so a card that can't keep
+// up was handed every frame's work all the same, and the work waiting on it grew without end: each copy back came
+// later than the one before, until none came at all, and everything else on that card (the window, Windows
+// itself) waited behind the pile. A tester's Radeon R2 at 100% with a capture card: the stream got no frame for
+// 64 s, and the window froze for up to 50 s (Mikedog151, 2026-11-27). With this the card never has more than
+// CARD_BEHIND_S of our work waiting: the picture is drawn as often as the card can draw it, and the frames it
+// can't are missed one at a time (a stream fills them with the last picture). A card that is only slow to start
+// on a frame now and then (a game has it) stays inside CARD_BEHIND_S, and misses none.
+bool card_behind(sc_engine &e, int64_t now) {
+    bool room = false;
+    int64_t oldest = 0;
+    {
+        sc_device &dev = *e.dev;
+        std::lock_guard<std::mutex> lock(dev.lock);
+        for (int k = 0; k < CARD_MARKS; ++k) {
+            if (e.frame_marked[k] && copy_done(dev, e.frame_marks[k].Get())) e.frame_marked[k] = 0;
+            if (!e.frame_marked[k]) room = true;
+            else if (!oldest || e.frame_marked[k] < oldest) oldest = e.frame_marked[k];
+        }
+    }
+    const double f = static_cast<double>(qpf());
+    if (room && (!oldest || static_cast<double>(now - oldest) < CARD_BEHIND_S * f)) {
+        e.behind_since = 0;
+        return false;
+    }
+    if (!e.behind_since) e.behind_since = now;
+    if (static_cast<double>(now - e.behind_since) < CARD_WAIT_MAX_S * f) return true;
+    e.behind_since = now;  // waited long enough: this one is drawn, then it waits again
+    return false;
+}
+
+// After a frame's work: a mark the card reaches once it has done all of it (card_behind looks for it).
+void mark_frame(sc_engine &e, int64_t now) {
+    sc_device &dev = *e.dev;
+    std::lock_guard<std::mutex> lock(dev.lock);
+    for (int k = 0; k < CARD_MARKS; ++k) {
+        if (e.frame_marked[k]) continue;
+        mark_copy(dev, e.frame_marks[k]);
+        e.frame_marked[k] = e.frame_marks[k] ? std::max<int64_t>(1, now) : 0;
+        return;
+    }
+}
+
+// Says now and then how many frames went undrawn for a card that was behind.
+void say_held(sc_engine &e, int64_t now) {
+    ++e.held_of;
+    if (e.frame_held) ++e.held_frames;
+    if (!e.held_said) e.held_said = now;
+    if (static_cast<double>(now - e.held_said) < CARD_SAID_EVERY_S * static_cast<double>(qpf())) return;
+    if (e.held_frames) {
+        char line[200];
+        std::snprintf(line, sizeof line,
+                      "engine: the graphics card is behind: %llu of the last %llu frames weren't drawn, so it could "
+                      "catch up",
+                      static_cast<unsigned long long>(e.held_frames), static_cast<unsigned long long>(e.held_of));
+        log_line(SC_LOG_INFO, line);
+    }
+    e.held_said = now;
+    e.held_frames = e.held_of = 0;
+}
+
 // Copies of watched canvases: draw the small picture, start its copy back, and collect copies that are done,
-// never waiting on the card (a copy still on its way is looked at again next frame).
-void read_back(sc_engine &e, int index, const sc_canvas *canvas, const Watch &want, double seconds, int64_t now) {
+// never waiting on the card (a copy still on its way is looked at again next frame). hold: only collect.
+void read_back(sc_engine &e, int index, const sc_canvas *canvas, const Watch &want, double seconds, int64_t now,
+               bool hold) {
     Reader &r = e.readers[index];
     sc_device &dev = *e.dev;
     at(e, "read-back: waiting for the device", static_cast<uint64_t>(index) + 1);
@@ -934,7 +1018,7 @@ void read_back(sc_engine &e, int index, const sc_canvas *canvas, const Watch &wa
         out.drawn = r.drawn[s];
         ++out.seq;
     }
-    if (!picture_due(want.max_fps, r.last, now)) return;
+    if (hold || !picture_due(want.max_fps, r.last, now)) return;
     if (r.target.width != want.width || r.target.height != want.height) {
         r = Reader();
         check(make_target(dev.device.Get(), want.width, want.height, r.target));
@@ -1695,9 +1779,16 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     }
 
     const double clock = static_cast<double>(now) / static_cast<double>(qpf());  // Python's perf_counter()
+    // A card that is behind gets no new work this frame: finished copies are collected, and
+    // the canvases, their copies, the outputs' frames and the previews wait for the next one (card_behind).
+    at(e, "asking how far the card is");
+    const bool held = e.frame_held = card_behind(e, now);
+    say_held(e, now);
     bool due[SC_ENGINE_CANVASES][SC_ENGINE_OUTPUTS];
     for (int i = 0; i < SC_ENGINE_CANVASES; ++i) {
-        for (int o = 0; o < SC_ENGINE_OUTPUTS; ++o) due[i][o] = output_due(e, i, o, outputs[i][o], clock);
+        // (A frame held isn't numbered for a linked writer: its next one fills the gap, see frame_numbers.)
+        for (int o = 0; o < SC_ENGINE_OUTPUTS; ++o)
+            due[i][o] = !(held && !read_asked[i]) && output_due(e, i, o, outputs[i][o], clock);
     }
     for (int i = 0; i < SC_ENGINE_CANVASES; ++i) {
         const CanvasCfg &cfg = canvases[i];
@@ -1745,7 +1836,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         // other canvas of a garden shown on one), and one only a preview takes on the frames between its pictures
         // (a preview takes 30 a second or fewer; the engine draws 60). The imported garden's two canvases were
         // both drawn 60 times a second with one preview at 30 watching: 71% of the graphics card (2026-11-19).
-        if (!read_asked[i] && !canvas_taken(e, i, watches[i], due[i], previews, now)) continue;
+        if (!read_asked[i] && (held || !canvas_taken(e, i, watches[i], due[i], previews, now))) continue;
         if (still.valid && now - still.drawn < qpf()) continue;
         ++e.canvas_draws;
         if (kept) why = SC_REDRAW_SECOND;  // still, drawn again on its once-a-second refresh
@@ -1776,7 +1867,8 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         still.drawn = now;
     }
     at(e, "reading the canvases back for the previews");
-    for (int i = 0; i < SC_ENGINE_CANVASES; ++i) read_back(e, i, e.gpu[i], watches[i], seconds, now);
+    for (int i = 0; i < SC_ENGINE_CANVASES; ++i)
+        read_back(e, i, e.gpu[i], watches[i], seconds, now, held && !read_asked[i]);
     at(e, "making the outputs' frames");
     for (int i = 0; i < SC_ENGINE_CANVASES; ++i) {
         for (int o = 0; o < SC_ENGINE_OUTPUTS; ++o) output_back(e, i, o, e.gpu[i], outputs[i][o], clock, due[i][o]);
@@ -1788,7 +1880,10 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         it = wanted ? std::next(it) : e.shown.erase(it);
     }
     at(e, "showing the previews");
-    for (const PreviewCfg &cfg : previews) show_preview(e, cfg, e.shown[cfg.id], now, presented, skipped);
+    if (!held) {
+        for (const PreviewCfg &cfg : previews) show_preview(e, cfg, e.shown[cfg.id], now, presented, skipped);
+        mark_frame(e, now);
+    }
     at(e, "finishing the frame");
     if (detach_seen) {  // let the window go for good before telling Python it can close it
         std::lock_guard<std::mutex> lock(e.dev->lock);
@@ -1862,6 +1957,7 @@ void tick(sc_engine &e) {
             s.render_ms_avg = s.ticks == 1 ? ms : s.render_ms_avg + (ms - s.render_ms_avg) * 0.05;
             s.render_ms_max = std::max(s.render_ms_max, ms);
         }
+        if (drew && e.frame_held) ++s.late;  // a frame time nothing was drawn for
         s.presented += presented;
         s.preview_skips += skipped;
         s.canvases = static_cast<int>(std::count_if(std::begin(e.gpu), std::end(e.gpu), [](sc_canvas *c) { return c != nullptr; }));

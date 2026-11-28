@@ -87,6 +87,14 @@ moment); `2@60` is an access violation; `4@60` a stuck frame (the log says so, t
 `1@60x7` faults seven times running, so the engine stops and the log says the Python compositor draws again.
 Recordings and streams should carry on through all of them.
 
+**A card that is behind.** Nothing in the frame waits on the graphics card, so the frame thread could hand a
+slow card more work than it finishes. Each drawn frame ends with a mark (an event query); when work handed over
+0.1 s ago still isn't done, the next frames draw nothing new (no canvas, copy, output frame or preview), only
+collect finished copies, until the card has caught up. After 2 s one frame is drawn all the same. Held frames count
+as late in the stats, and the log says "the graphics card is behind: N of the last M frames weren't drawn" every
+10 s while it lasts. Before this a Radeon R2 at 100% got so far behind that a stream had no frame for 64 s
+(2026-11-27).
+
 To try SprigCast.exe's own crash guard, which catches what nothing else does, start it with
 `SPRIGCAST_CRASH_TEST=30` (an unguarded access violation on a thread of its own, 30 s in) or
 `SPRIGCAST_CRASH_TEST=30,main` (on the window's thread). Expect a crash.log entry, a .dmp in the Logs folder

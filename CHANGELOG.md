@@ -95,6 +95,11 @@ builds from 2026-11-25 on.
 - The PNGtuber card opens without a stall, and Filters opens without a hitch (#942, #943).
 - About buttons keep their rounded shape in the installed app, and the Build inspector fits beside its scroll bar
   (#932, #967).
+- A graphics chip that can't keep up no longer freezes the window or the stream. SprigCast used to hand it every
+  frame's work anyway, so the work piled up: a tester's stream sent no picture for 64 s and the window froze for up
+  to 50 s with a capture card on a low-end PC. Now the picture is drawn as often as the chip can draw it, and
+  previews drop to 5 a second while the chip stays pinned. Not yet tried on that PC (#1001).
+- Reports list each camera and capture card: what was asked for, what it gave and what it offers (#1001).
 
 ## Beta 0.4 (2026-11-24)
 

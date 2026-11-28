@@ -123,6 +123,7 @@ def make(target: Path, stream_report: Path | None, *, collection=None, log_folde
     about = [f"SprigCast {kind} report, {now:%Y-%m-%d %H:%M}", "", *tester_report.pc_lines()]
     if collection is not None:
         about += ["", *tester_report.collection_lines(collection)]
+    about += ["", *tester_report.capture_lines()]
     target.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         z.writestr("summary.txt", scrub(_summary(kind, None)))

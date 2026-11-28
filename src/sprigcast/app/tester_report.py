@@ -237,6 +237,18 @@ def _plain(value):
     return value if isinstance(value, (str, int, float, bool)) or value is None else str(value)
 
 
+def capture_lines() -> list[str]:
+    """The cameras and capture cards opened since SprigCast started (sources/camera.py capture_lines). Read only
+    when the cameras' code is loaded: a report never loads it."""
+    camera = sys.modules.get("sprigcast.sources.camera")
+    try:
+        if camera is None:
+            return ["Capture devices:", "  none opened since SprigCast started"]
+        return camera.capture_lines()
+    except Exception:  # noqa: BLE001 - a report without this section
+        return ["Capture devices:", "  couldn't be read"]
+
+
 def collection_lines(collection) -> list[str]:
     """Canvases, destinations, encoder, recording, sound and what the garden holds (counts, not names)."""
     lines = ["Canvases:"]
@@ -390,6 +402,7 @@ def build(target: Path, *, log_folder: Path | None = None, collection=None, sett
     sections += plugin_lines(plugins_dir)
     if collection is not None:
         sections += ["", *collection_lines(collection)]
+    sections += ["", *capture_lines()]
     if settings is not None:
         sections += ["", "Settings:", *settings_lines(settings)]
     target.parent.mkdir(parents=True, exist_ok=True)
