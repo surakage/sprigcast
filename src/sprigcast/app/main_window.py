@@ -355,6 +355,8 @@ def close_reason(user: bool, app=None) -> str:
     own close (×, Alt+F4, the tray's Quit). StreamBridge 2026-11-20 couldn't tell a deliberate close from a crash."""
     if app is not None and app.property("sprigcast_restart"):
         return "SprigCast restarts (Settings' Restart now)"
+    if app is not None and app.property("sprigcast_signal"):
+        return f"the system asked it to close ({app.property('sprigcast_signal')}: signing out, shutting down or kill)"
     if app is not None and app.property("sprigcast_session_end"):
         return "Windows asked it to close (an installer or update, or signing out / shutting down)"
     if user:

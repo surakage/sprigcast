@@ -133,10 +133,14 @@ def test_secrets_are_encrypted_and_old_plain_ones_moved_over(monkeypatch):
     if secret_store.available():  # Windows: encrypted (differently each time, DPAPI salts it) and read back
         saved = secret_store.protect("leafy")
         assert saved.startswith("dpapi:") and "leafy" not in saved and secret_store.unprotect(saved) == "leafy"
-    elif sys.platform.startswith("linux") or sys.platform == "darwin":  # in the system's password store; only its name is saved
-        saved = secret_store.protect("leafy")
-        assert saved.startswith("keyring:") and "leafy" not in saved and secret_store.unprotect(saved) == "leafy"
-        assert secret_store.protect("leafy") == saved  # the same secret is one entry
+    elif sys.platform.startswith("linux") or sys.platform == "darwin":
+        # Kept in the settings file (private to this user): needed at start, and the system's password store
+        # may be locked then. One that test build 16 put in the store is still read.
+        import keyring
+
+        assert secret_store.protect("leafy") == "leafy" and secret_store.unprotect("leafy") == "leafy"
+        keyring.set_password(secret_store.KEYRING_SERVICE, "abc", "mossy")
+        assert secret_store.unprotect("keyring:abc") == "mossy"
     else:
         assert secret_store.protect("leafy") == "leafy"
     if not secret_store.available():
