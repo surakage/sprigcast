@@ -286,9 +286,14 @@ class ChatBox:
             name_colour = parse_color(readable_colour(message.color, message.user) + "ff")
             runs.append(("name", message.user, name_colour, self.bold.getlength(message.user)))
             colour = name_colour if message.action else self.colour
+        wide = {message.images.get(key): ratio for key, ratio in message.ratios.items()}
         for kind, value in _pieces(message):
             if kind == "emote":
-                runs.append(("emote", value, None, float(self.line_h)))
+                # As wide as it will be drawn: a wide emote taken as square pushed the words after it out of the
+                # bubble. Its picture says once it's here; until then, what its list said (chat/extra_emotes.py).
+                picture = EMOTES.get(value)
+                ratio = picture.width / max(1, picture.height) if picture is not None else wide.get(value, 1.0)
+                runs.append(("emote", value, None, float(max(1, round((self.line_h - 2) * ratio)))))
             else:
                 runs.append(("text", value, colour, self.font.getlength(value)))
         lines: list[list] = [[]]
