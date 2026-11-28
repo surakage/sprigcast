@@ -561,3 +561,26 @@ def test_item_found_in_each_shape_on_its_own():
     assert _ok(api, "item.status", bloom="Chatting", item="Cam") == {"visible": True}
     assert _ok(api, "item.toggle", bloom="Chatting", item="Cam") == {"visible": False}
     assert not col.scene("p-frame").items[0].visible and not col.scene("chat-v").items[0].visible
+
+
+def test_source_set_refuses_values_of_the_wrong_kind():
+    """A color set to nothing, or a list where text goes, was answered ok and the source then failed every time
+    it was drawn (sim PC 2026-11-28)."""
+    from sprigcast.control.native import ApiError, _checked_settings
+
+    for kind, bad in (("color", {"color": None}), ("color", {"color": 5}), ("color", {"color": "red"}),
+                      ("color", {"width": "wide"}), ("color", {"height": 0}), ("media", {"loop": "yes"}),
+                      ("media", {"path": []}), ("text", {"text": None})):
+        with pytest.raises(ApiError) as caught:
+            _checked_settings(None, kind, bad)
+        assert caught.value.code == "bad_request", (kind, bad)
+    assert _checked_settings(None, "color", {"color": "#336699", "width": 640}) == {"color": "#336699", "width": 640}
+    assert _checked_settings(None, "media", {"loop": True, "path": "a.mp4"}) == {"loop": True, "path": "a.mp4"}
+
+
+def test_a_saved_color_that_is_not_one_draws_black():
+    from sprigcast.sources.color import ColorSource
+
+    source = ColorSource("color-1", {"color": None, "width": None})
+    assert source.size == (1920, 1080)
+    assert source.video_frame()[0, 0].tolist() == [0, 0, 0, 255]

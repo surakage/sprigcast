@@ -16,6 +16,7 @@ holding Python's lock, so whichever thread triggers it stalls and every other th
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import logging
 import os
@@ -90,6 +91,23 @@ def collect_on_main_thread() -> None:
 def deferred_count() -> int:
     """Objects other threads' collections found that the main thread hasn't let go of yet (tests)."""
     return sum(len(batch) for batch in _deferred)
+
+
+@contextlib.contextmanager
+def no_collection():
+    """No automatic collection while this runs. For a worker thread about to make a lot of objects (importing
+    modules): a collection started there saves what it finds for the main thread, but still runs finalizers and
+    weak reference callbacks on the worker, and the packaged Linux build crashed in one 20 s after start
+    (sim PC, test build 16, 2026-11-28). The main thread's tidy collects soon after."""
+    global _gc_held
+    held = gc.isenabled() and not _gc_held
+    if held:
+        gc.disable()
+    try:
+        yield
+    finally:
+        if held and not _gc_held:  # (a bloom switch that began meanwhile lets it go itself)
+            gc.enable()
 
 
 def watch_gc() -> None:

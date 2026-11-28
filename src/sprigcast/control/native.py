@@ -324,12 +324,33 @@ def _check_filter_settings(kind, settings: dict[str, Any]) -> None:
             raise _bad(f"{kind.kind}'s {key} {problem}.")
 
 
+def _type_problem(usual: Any, value: Any) -> str:
+    """Why `value` can't stand where a source kind's usual value is `usual`, or "" when it can."""
+    import math
+
+    if isinstance(usual, bool):
+        return "" if isinstance(value, bool) else "must be true or false"
+    if isinstance(usual, (int, float)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            return "must be a number"
+        return ""
+    if isinstance(usual, str):
+        return "" if isinstance(value, str) else "must be text"
+    return ""
+
+
 def _checked_settings(col, kind: str, settings: dict[str, Any]) -> dict[str, Any]:
     """Settings an app sends, checked by the source's kind when it can (a plugin's check_settings(col, settings)
     returns them tidied, e.g. a name matched to an id, or raises ValueError saying what's wrong)."""
     from sprigcast.core.source import source_class
 
-    check = getattr(source_class(kind), "check_settings", None)
+    cls = source_class(kind)
+    for key, usual in (getattr(cls, "defaults", None) or {}).items():
+        # A value of another type than the kind's own (a list for a number, nothing for text) made the source
+        # fail every time it was drawn (sim PC 2026-11-28).
+        if key in settings and (problem := _type_problem(usual, settings[key])):
+            raise _bad(f"{kind}'s {key} {problem}.")
+    check = getattr(cls, "check_settings", None)
     if check is None:
         return settings
     try:
