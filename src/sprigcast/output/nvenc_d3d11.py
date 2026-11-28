@@ -368,7 +368,8 @@ class D3D11Encoder:
                  bitrate_kbps: int = 0, rate_control: str = "vbr", max_kbps: int = 0, buffer_kbits: int = 0,
                  cq_level: int = 23, gop_frames: int = 0, tuning: str = "ll", adaptive_quant: bool = False,
                  multipass: str = "disabled", codec: str = "h264", shared: bool = False,
-                 device: c_void_p | None = None):
+                 device: c_void_p | None = None, filler: bool = True):
+        self.filler = filler  # with cbr: pad still pictures up to the bitrate (Settings: Steady bitrate)
         self.device = device if device is not None else c_void_p()  # ours to let go from here on
         self.encoder = c_void_p()
         self.input = self.output = None
@@ -482,7 +483,7 @@ class D3D11Encoder:
             if buffer_kbits:
                 struct.pack_into("<I", buf, rc + RC_VBV_SIZE, buffer_kbits * 1000)
                 struct.pack_into("<I", buf, rc + RC_VBV_DELAY, buffer_kbits * 1000)
-        if rate_control == "cbr" and kbps:
+        if rate_control == "cbr" and kbps and self.filler:
             set_filler(buf, self.codec)
         if adaptive_quant:
             flags = struct.unpack_from("<I", buf, rc + RC_FLAGS)[0]
