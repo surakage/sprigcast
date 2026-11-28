@@ -1864,6 +1864,9 @@ def gl_version(text: str) -> tuple[int, int] | None:
     return (int(match.group(1)), int(match.group(2))) if match else None
 
 
+RENDERER = ""  # what draws (OpenGL's own name for it), once the first compositor is made
+
+
 def graphics_message(version: str, renderer: str, detail: str = "") -> str:
     """What to tell the user when OpenGL 3.3 can't start, from what the driver says it offers."""
     name = (renderer or "").strip()
@@ -1912,6 +1915,8 @@ def create_context() -> moderngl.Context:
             log.warning("OpenGL 3.3 unavailable: %s (driver offers %r on %r)", first, version, renderer)
             raise GraphicsError(graphics_message(version, renderer, str(first))) from first
     try:
+        global RENDERER
+        RENDERER = str(ctx.info.get("GL_RENDERER") or "")  # app/lowend.py: is the CPU doing the drawing?
         log.info("graphics: %s, OpenGL %s", ctx.info.get("GL_RENDERER"), ctx.info.get("GL_VERSION"))
     except Exception:
         pass

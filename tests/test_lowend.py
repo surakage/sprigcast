@@ -109,3 +109,17 @@ def test_recordings_shrink_and_cpu_encoding_gets_superfast():
     assert "superfast" in " ".join(lines)
     again, _ = lowend.light_changes(col, pending_fps={"horizontal": 30, "vertical": 30}, cpu_encoding=True)
     assert again == []
+
+
+def test_a_pc_whose_cpu_does_the_drawing_gets_light_settings():
+    """An Ubuntu virtual PC with no graphics driver drew the defaults at 22 fps (test build 16, 2026-11-28)."""
+    from sprigcast.app import lowend
+
+    strong = dict(threads=16, memory_gb=32.0, codec="h264_nvenc")
+    assert lowend.tier(lowend.PcFacts(**strong)) == "best"
+    soft = lowend.PcFacts(**strong, renderer="llvmpipe (LLVM 20.1.2, 256 bits)")
+    assert lowend.tier(soft) == "light"
+    assert any("llvmpipe" in reason and "CPU draws" in reason for reason in lowend.weak_reasons(soft))
+    assert lowend.software_drawing("Microsoft Basic Render Driver") and lowend.software_drawing("SwiftShader")
+    assert not lowend.software_drawing("NVIDIA GeForce RTX 5060 Ti/PCIe/SSE2")
+    assert not lowend.software_drawing("Mesa Intel(R) UHD Graphics 620 (KBL GT2)")

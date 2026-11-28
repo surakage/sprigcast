@@ -79,3 +79,26 @@ def mend_general_settings(settings=None) -> int:
         q.remove(key)
         q.setValue("general/" + key[len("General/"):], value)
     return len(found)
+
+
+def private_settings(folder: Path | None = None) -> bool:
+    """Linux and macOS: only this user may read SprigCast's settings folder, which holds the Control API password
+    and paired apps' keys (control/secret_store.py). True when it was (or already is) so."""
+    if not (is_linux() or is_mac()):
+        return False
+    import os
+
+    try:
+        if folder is None:
+            from PySide6.QtCore import QSettings
+
+            folder = Path(QSettings().fileName()).parent
+        folder.mkdir(parents=True, exist_ok=True)
+        if folder.stat().st_mode & 0o077:
+            os.chmod(folder, 0o700)
+        return True
+    except OSError as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("settings folder %s couldn't be made private: %s", folder, exc)
+        return False

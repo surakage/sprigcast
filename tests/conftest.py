@@ -83,7 +83,11 @@ def _keys_kept_in_memory(monkeypatch):
     monkeypatch.setattr(keyring, "get_password", lambda service, name: saved.get((service, name)))
     monkeypatch.setattr(keyring, "set_password", lambda service, name, value: saved.__setitem__((service, name), value))
     monkeypatch.setattr(keyring, "delete_password", delete_password)
+    from sprigcast.core import password_store
+
+    password_store.reset()  # a store one test made say no is asked again by the next
     yield
+    password_store.reset()
 
 
 @pytest.fixture(autouse=True)

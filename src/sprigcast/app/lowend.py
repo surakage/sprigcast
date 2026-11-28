@@ -53,6 +53,7 @@ class PcFacts:
     codec: str
     cpu_name: str = ""
     gpus: tuple[str, ...] = ()  # display adapter names, as Windows lists them
+    renderer: str = ""  # what OpenGL draws with (render/compositor.py RENDERER); "" before the first frame
 
 
 def cpu_name() -> str:
@@ -86,6 +87,19 @@ def gpu_names() -> tuple[str, ...]:
         if name and name not in names:
             names.append(name)
     return tuple(names)
+
+
+# Drawing done by the CPU: Mesa's llvmpipe/softpipe (a Linux PC or virtual PC with no graphics driver), Chrome's
+# SwiftShader, Windows' basic driver. An Ubuntu virtual PC with 4 CPUs drew the defaults (two canvases, 60 fps) at
+# 22 fps with the CPU at 278% (test build 16, 2026-11-28).
+SOFTWARE_DRAWING = re.compile(r"llvmpipe|softpipe|swrast|SwiftShader|Software Rasterizer|Microsoft Basic Render",
+                              re.IGNORECASE)
+
+
+def software_drawing(renderer: str) -> str:
+    """The software renderer's short name ("llvmpipe") when the CPU does the drawing, else ""."""
+    found = SOFTWARE_DRAWING.search(renderer or "")
+    return found.group(0) if found else ""
 
 
 def older_cpu(name: str) -> bool:
@@ -150,7 +164,13 @@ def pc_facts() -> PcFacts:
         gpus = gpu_names()
     except Exception:
         gpus = ()
-    return PcFacts(os.cpu_count() or 1, memory_gb, pick_codec(), cpu_name(), gpus)
+    try:
+        from sprigcast.render import compositor
+
+        renderer = compositor.RENDERER
+    except Exception:
+        renderer = ""
+    return PcFacts(os.cpu_count() or 1, memory_gb, pick_codec(), cpu_name(), gpus, renderer)
 
 
 def weak_reasons(facts: PcFacts) -> list[str]:
@@ -162,6 +182,8 @@ def weak_reasons(facts: PcFacts) -> list[str]:
         reasons.append(f"{round(facts.memory_gb)} GB of memory")
     if facts.codec == "libx264" and not cpu_encodes(facts):  # older AMD graphics: said by older_reasons
         reasons.append("no graphics-card encoder, so the CPU encodes")
+    if software_drawing(facts.renderer):
+        reasons.append(f"no graphics driver, so the CPU draws the picture too ({software_drawing(facts.renderer)})")
     return reasons + older_reasons(facts)
 
 

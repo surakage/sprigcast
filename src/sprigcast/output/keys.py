@@ -34,7 +34,13 @@ def get_key(key_ref: str | None) -> str | None:
         windows_store_only()
         import keyring
 
-        key = keyring.get_password(KEYRING_SERVICE, key_ref) or None
+        from sprigcast.core import password_store
+
+        try:
+            key = password_store.ask(f"reading {key_ref}",
+                                     lambda: keyring.get_password(KEYRING_SERVICE, key_ref)) or None
+        except password_store.Unavailable:
+            return None  # said once by password_store; the key may well be there (_present left as it was)
         _present[key_ref] = key is not None
         if key:
             from sprigcast.core import privacy
@@ -53,12 +59,14 @@ def set_key(key_ref: str, key: str) -> None:
     windows_store_only()
     import keyring
 
+    from sprigcast.core import password_store
+
     if key:
         from sprigcast.core import privacy
 
         privacy.remember_secret(key)
         try:
-            keyring.set_password(KEYRING_SERVICE, key_ref, key)
+            password_store.ask(f"saving {key_ref}", lambda: keyring.set_password(KEYRING_SERVICE, key_ref, key))
         except keyring.errors.NoKeyringError as exc:
             from sprigcast.core import systems
 
@@ -67,7 +75,7 @@ def set_key(key_ref: str, key: str) -> None:
             raise
     else:
         try:
-            keyring.delete_password(KEYRING_SERVICE, key_ref)
-        except (keyring.errors.PasswordDeleteError, keyring.errors.NoKeyringError):
+            password_store.ask(f"removing {key_ref}", lambda: keyring.delete_password(KEYRING_SERVICE, key_ref))
+        except (keyring.errors.PasswordDeleteError, keyring.errors.NoKeyringError, password_store.Unavailable):
             pass  # nothing saved, or nowhere it could have been saved
     _present[key_ref] = bool(key)
