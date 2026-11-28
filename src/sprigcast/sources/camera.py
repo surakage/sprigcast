@@ -760,6 +760,7 @@ class _Feed:
                     self.picture = (info.width, info.height)
                     given = (getattr(info, "given_width", 0), getattr(info, "given_height", 0))
                     self.given = given if min(given) > 0 else self.picture
+                    _note_capture(self, device.name)
                     if getattr(self, "asked_first", None):
                         if not_given(device.name, (w, h), self.given):
                             log.info("%s: asked the camera for %dx%d though its list doesn't show it: it sends %dx%d. "
@@ -874,6 +875,7 @@ class _Feed:
                 if not mode and self.open_errors:  # say why its own modes didn't open
                     log.info("%s: modes offered %s; tried first: %s", self.id, self.modes_seen[:4], self.open_errors[:2])
                 self.opened_with = mode
+                _note_capture(self, device.name)
                 if early and mode not in early and not_given(device.name, (w, h), (0, 0)):
                     log.info("%s: asked the camera for %dx%d though its list doesn't show it: refused. Its whole "
                              "list: %s", self.id, w, h,
@@ -1028,6 +1030,43 @@ def forget_refusals(device: str) -> None:
     """A card given a signal lists other sizes: what it refused before is asked again."""
     for key in [k for k in _not_given if k[0] == device]:
         _not_given.discard(key)
+
+
+_captures_seen: dict[str, dict] = {}  # device name -> what it was asked for and gave, since SprigCast started
+
+
+def _note_capture(feed: _Feed, device_name: str) -> None:
+    """Remember how a camera or capture card opened, for the reports (capture_lines)."""
+    mode = feed.opened_with or {}
+    seen = {"asked": feed._mode(), "given": tuple(feed.given or ()), "mode": dict(mode),
+            "how": feed.backend or "Python", "offers": feed.modes_seen}
+    if _captures_seen.get(device_name) != seen:
+        _captures_seen[device_name] = seen
+
+
+def capture_lines() -> list[str]:
+    """A "Capture devices" section for the tester report and the stream report: each camera or capture card opened
+    since SprigCast started, the mode asked for, what it gave and what it offers. Which devices testers use, and how
+    they open, says which settings and fixes matter (user 2026-11-27). The day's log has the same, until it rolls
+    over."""
+    lines = ["Capture devices:"]
+    for name, seen in sorted(_captures_seen.items()):
+        w, h, fps = seen["asked"]
+        mode = seen["mode"]
+        gave = "x".join(map(str, seen["given"])) if seen["given"] else mode.get("video_size", "")
+        fmt = mode.get("pixel_format") or mode.get("vcodec") or ""
+        rate = f" at {mode['framerate']} fps" if mode.get("framerate") else ""
+        lines.append(f"  {name}: asked {w}x{h} at {fps} fps, gives {' '.join(filter(None, [gave, fmt])) or 'unknown'}"
+                     f"{rate}, read by {seen['how']}; offers {modes_line(seen['offers']) or 'no list'}")
+    if len(lines) == 1:
+        lines.append("  none opened since SprigCast started")
+    try:
+        from sprigcast import sprigcore
+
+        lines += [f"  the engine said: {said.removeprefix('media: ')}" for said in sprigcore.camera_said]
+    except Exception:  # noqa: BLE001 - a report without this line
+        pass
+    return lines
 
 
 def _engine_choices(feed: _Feed, device: CameraDevice) -> tuple[str, list[tuple[str, dict]]]:

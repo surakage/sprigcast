@@ -533,6 +533,9 @@ def set_windows_ducking(opt_out: bool) -> bool:
     return lib.sc_audio_windows_ducking(int(bool(opt_out))) == 0
 
 
+camera_said: list[str] = []  # the engine's newest "the camera gives ..." lines (the format a device really sends)
+
+
 def drain_log() -> int:
     """Moves the engine's queued log lines into SprigCast's log. Returns how many lines moved."""
     lib = _lib() or _media_lib()
@@ -550,6 +553,9 @@ def drain_log() -> int:
             # than ten times a minute (app/logbook.py Floods), and every engine line was that one message. The
             # PC's camera lines never reached the log after a start with ten engine lines before them (2026-11-21).
             log.log(_LEVELS.get(int(level) if level.isdigit() else 20, logging.INFO), "engine: " + message)
+            if "the camera gives " in message:  # for the reports' Capture devices (sources/camera.py capture_lines)
+                camera_said.append(message.strip())
+                del camera_said[:-6]
             moved += 1
 
 
