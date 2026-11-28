@@ -28,7 +28,7 @@ jobs:
       matrix:
         include:
           - {system: linux, runner: ubuntu-22.04}  # the oldest Ubuntu GitHub runs: the download starts on newer ones too
-          - {system: macos, runner: macos-14}      # Apple chips (M1 and newer)
+          - {system: macos, runner: macos-latest}  # Apple chips (M1 and newer)
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
     steps:
