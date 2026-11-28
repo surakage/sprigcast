@@ -326,7 +326,7 @@ class Updater(QObject):
             release = update.fetch_newest(channel())  # QSettings is safe to read here (its own instance)
         except Exception as exc:  # noqa: BLE001 (offline, GitHub down, odd reply: never crash over it)
             log.info("update check failed: %s", exc)
-            self.checked.emit(None, manual, str(exc) or exc.__class__.__name__)
+            self.checked.emit(None, manual, update.trouble(exc))
             return
         self.checked.emit(release, manual, "")
 
@@ -334,8 +334,7 @@ class Updater(QObject):
         self._checking = False
         if error:
             if manual:
-                self._message("Couldn't check for updates", "The update check got no answer. Check your connection and "
-                              "try again.")
+                self._message("Couldn't check for updates", error)
             return
         if not update.newer_than_this(release):
             log.info("update check: %s is the newest (channel %s)", this_build(), channel())
@@ -368,27 +367,23 @@ class Updater(QObject):
         return dialog
 
     def _message(self, title: str, text: str) -> None:
+        from sprigcast.app.card import section
         from sprigcast.app.empty import ArtPicture
 
         dialog = self._popup("Updates")
-        page = QWidget()
-        row = QHBoxLayout(page)
-        row.setContentsMargins(4, 0, 4, 0)
-        row.setSpacing(16)
-        row.addWidget(ArtPicture("happy" if "up to date" in title else "trouble", 84))
-        words = QVBoxLayout()
-        head = QLabel(title)
-        head.setStyleSheet(f"color: {theme.TEXT_BRIGHT}; font-size: 16px; font-weight: 700;")
-        words.addStretch(1)
-        words.addWidget(head)
+        page, inside = section(title)  # its own card, the brand look (user 2026-11-27: on brand, less gap)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(14)
+        row.addWidget(ArtPicture("happy" if "up to date" in title else "trouble", 72),
+                      0, Qt.AlignmentFlag.AlignTop)
         line = QLabel(text)
         line.setObjectName("updateMessage")
         line.setWordWrap(True)
         line.setStyleSheet(theme.MUTED_STYLE)
-        words.addWidget(line)
-        words.addStretch(1)
-        row.addLayout(words, 1)
-        page.setMinimumWidth(380)
+        row.addWidget(line, 1, Qt.AlignmentFlag.AlignVCenter)
+        inside.addLayout(row)
+        page.setMinimumWidth(400)
         dialog.add_tab("updates", "Updates", page)
         dialog.done_button.show()
         dialog.done_button.setText("OK")
@@ -446,7 +441,7 @@ class Updater(QObject):
             return
         except Exception as exc:  # noqa: BLE001
             log.warning("update download failed: %s", exc)
-            problem = "The download didn't finish. Check your connection and try again."
+            problem = update.trouble(exc, fallback="The download didn't finish.")
         if problem:
             target.unlink(missing_ok=True)
         self.downloaded.emit(str(target), problem)
