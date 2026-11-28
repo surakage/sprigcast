@@ -132,6 +132,10 @@ def load(settings) -> list[HealthRecord]:
         return []
 
 
+OFFLINE_WORDS = "can't reach the internet"  # output/stream.py retry_plan puts it in the status
+BACK_LIVE_S = 8.0  # how long "Back live" shows after a place reconnects
+
+
 def notice(streamers) -> tuple[str, str]:
     """(level, text) for Live's stage while something needs a glance; ("", "") when all is well.
 
@@ -142,21 +146,36 @@ def notice(streamers) -> tuple[str, str]:
 
     parts, level = [], ""
     lowered: dict[int, list[str]] = {}
+    waiting, offline, back = [], [], []
     for _, st in streamers:
         status = str(getattr(st, "status", ""))
         if not getattr(st, "connected", True) and getattr(st, "reconnects", 0) and \
                 status.startswith(("reconnecting", "disconnected")):
             if getattr(st, "refused", 0) >= REFUSED_SAY:  # say it plainly, not "try 80"
-                parts.append(f"{st.name} keeps turning the stream away. Check its stream key, or whether the "
-                             "stream ended there")
+                parts.append(f"{st.name} may have ended this stream. Start a new one there, or check its "
+                             "stream key")
             else:
-                parts.append(f"Reconnecting to {st.name}… try {st.reconnects}")
+                waiting.append(st)
+                if OFFLINE_WORDS in status:
+                    offline.append(st)
             level = "bad"
             continue
+        if getattr(st, "connected", False) and time.monotonic() - getattr(st, "back_live_at", -1e9) < BACK_LIVE_S:
+            back.append(str(st.name))
         pilot = getattr(st, "autopilot", None)
         if pilot is not None and pilot.lowered:
             lowered.setdefault(int(pilot.current_kbps), []).append(str(st.name))
             level = level or "warning"
+    every = len(waiting) == len(streamers) and len(streamers) > 1
+    if waiting and (every or len(offline) == len(waiting)) and (offline or every):
+        # Not one place's trouble: every place dropped together, or this PC can't look the servers up (the
+        # user's stream, 2026-11-27: five "Reconnecting to…" in a row said nothing about the internet).
+        parts.insert(0, "Your internet seems down. Waiting for it to come back, retrying…" if every or
+                     len(waiting) > 1 else f"Waiting for internet, retrying {waiting[0].name}…")
+    else:
+        parts[:0] = [f"Reconnecting to {st.name}… try {st.reconnects}" for st in waiting]
+    if back and not level:
+        return "good", f"Back live: {_names(back)}"
     for kbps, names in lowered.items():
         parts.append(f"Bitrate lowered to {kbps:,} kbps: {_names(names)}")
     return level, "  ·  ".join(parts)

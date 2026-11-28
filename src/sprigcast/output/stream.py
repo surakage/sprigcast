@@ -24,6 +24,8 @@ log = logging.getLogger(__name__)
 RETRY_FIRST, RETRY_MAX = 2.0, 30.0
 REFUSED_SAY = 3  # tries in a row the server ends as they start before the streamer is told plainly
 REFUSED_MAX = 300.0  # then the tries slow to one every 5 minutes
+REFUSED_GRACE = 90.0  # after a place was live (or the PC offline), refusals don't count for this long
+GRACE_RETRY = 10.0  # and the tries come at least this often
 OFFLINE_RETRY = 5.0  # the PC can't look the server up (its internet is down): ask again this often, not slower
 CONNECT_TIMEOUT, SEND_TIMEOUT = 10.0, 20.0  # seconds: connecting, and any one send stalled on the network
 GRACE_SECONDS = 5.0  # right after connecting, frames queued during the handshake are still going out
@@ -223,10 +225,20 @@ def note_refusal(st, message: str, sent: bool, delay: float, after: float) -> tu
     From the REFUSED_SAY-th the streamer is told plainly (st.refused, health.notice), it is logged once, and the
     tries slow down towards REFUSED_MAX. Facebook ended a stream after 2 h and then turned away 80 tries every
     30 s for 40 minutes with only "reconnecting" to show for it (stream review 2026-11-23). A try that sent
-    something, or a PC that is offline, starts the count again. Returns (wait now, next backoff)."""
+    something, or a PC that is offline, starts the count again, and for REFUSED_GRACE after it refusals aren't
+    counted. Returns (wait now, next backoff)."""
+    now = time.monotonic()
     if sent or offline(message):
-        st.refused = 0
+        st.refused, st.live_lost = 0, now
         return delay, after
+    lost = getattr(st, "live_lost", None)
+    if lost is not None and now - lost < REFUSED_GRACE:
+        # It was live a moment ago: a site turns the same key away until it has closed the old connection
+        # (Twitch and Kick for about 45 s after the user's internet came back, 2026-11-27, by when the tries
+        # had slowed to one every 30 s). Keep asking briskly instead.
+        st.refused = 0
+        wait = min(delay, GRACE_RETRY)
+        return wait, min(wait * 2, GRACE_RETRY)
     st.refused = getattr(st, "refused", 0) + 1
     if st.refused < REFUSED_SAY:
         return delay, after
@@ -673,6 +685,7 @@ def log_live(st) -> None:
     """One line when a destination starts going out, and when it's back after dropping; the first time also
     which server it went to and how far away that is (looked up on a thread of its own)."""
     if st.reconnects:
+        st.back_live_at = time.monotonic()  # Live says "Back live" for a moment (app/health.py notice)
         log.info("stream %s back live after %d reconnect%s", st.name, st.reconnects,
                  "" if st.reconnects == 1 else "s")
     else:
@@ -1010,6 +1023,12 @@ class StreamSession:
             self.engine.remove_frame_tap(canvas_id, callback)
         self.taps = [t for t in getattr(self, "taps", []) if all(t is not g for g in gone)]
         self.engine.mixer.remove_tap(st.push_audio)
+
+        left = self.__dict__.setdefault("left", [])  # (seconds in, its summary): for the end of the stream
+        try:  # now, while its clock still runs: its averages are over the time it was live
+            left.append((int(getattr(self, "elapsed", 0) or 0), st.summary()))
+        except Exception:  # the place still stops
+            log.exception("%s: no summary for the place that stopped", output_id)
 
         def finish():
             st.stop(timeout=5)

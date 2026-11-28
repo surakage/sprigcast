@@ -1193,15 +1193,16 @@ class StageCard(QFrame):
 
 
     def set_notice(self, text: str, level: str = "warning") -> None:
-        """Show (or with "" hide) the banner: amber for a lowered bitrate, red while reconnecting."""
+        """Show (or with "" hide) the banner: amber for a lowered bitrate, red while reconnecting, green for a
+        moment once a place is back."""
         if not text:
             self.notice.hide()
             return
-        shown = (("⟳  " if level == "bad" else "↓  ") + text, level)
+        shown = ({"bad": "⟳  ", "good": "✓  "}.get(level, "↓  ") + text, level)
         if self.notice.isVisible() and getattr(self, "_notice_shown", None) == shown:
             return  # asked every second while live: the same words keep their size and place
         self._notice_shown = shown
-        colour = theme.BAD if level == "bad" else theme.WARN
+        colour = {"bad": theme.BAD, "good": theme.ACCENT}.get(level, theme.WARN)
         self.notice.setText(shown[0])
         self.notice.setStyleSheet(f"QLabel {{ background: {theme.CHROME}; color: {colour}; border: 1px solid {colour};"
                                   " border-radius: 16px; padding: 0 18px; font-weight: 600; }")

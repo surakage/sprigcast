@@ -29,17 +29,36 @@ extern "C" {
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
 
 namespace {
+
+// dshow's rtbufsize for a camera mode ("video_size=2560x1440:framerate=60:..."): room for six raw pictures, 16 MB at
+// least and 64 MB at most. At 16 MB a 2560x1440 card had room for two pictures and dropped one whenever reading
+// paused a moment ("real-time buffer too full (69% of 16000000)", an HD60 X, 2026-11-27). Small modes keep 16 MB.
+// The same sum as sources/camera.py rtbuf_size.
+std::string rtbuf_size(const std::string &options) {
+    long long bytes = 16000000;
+    const size_t at = options.find("video_size=");
+    if (at != std::string::npos) {
+        char *end = nullptr;  // (strtol, not sscanf: MSVC warns about that one, and warnings are errors here)
+        const long w = std::strtol(options.c_str() + at + 11, &end, 10);
+        const long h = end && *end == 'x' ? std::strtol(end + 1, nullptr, 10) : 0;
+        if (w > 0 && h > 0 && w <= 16384 && h <= 16384)
+            bytes = std::max(bytes, std::min<long long>(64000000, static_cast<long long>(w) * h * 2 * 6));
+    }
+    return std::to_string(bytes);
+}
 
 using sc::ffm::av_text;
 using sc::ffm::ff;
@@ -811,7 +830,7 @@ void Core::open(Held &held, const std::string &file) {
         for (const auto &[name, options] : choices) {
             AVDictionary *opts = nullptr;
             if (!options.empty()) ff.av_dict_parse_string(&opts, options.c_str(), "=", ":", 0);
-            ff.av_dict_set(&opts, "rtbufsize", "16M", 0);
+            ff.av_dict_set(&opts, "rtbufsize", rtbuf_size(options).c_str(), 0);
             r = ff.avformat_open_input(&held.fmt, name.c_str(), input, &opts);
             ff.av_dict_free(&opts);
             if (r < 0 && refused.size() < 240)  // (the mode only: a device's name can hold its path)

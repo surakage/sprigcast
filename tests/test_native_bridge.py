@@ -1718,3 +1718,24 @@ def test_a_link_that_gets_no_frames_twice_running_hands_them_through_python(monk
     bridge._links[(0, 0)] = (stream, object(), ())
     clock["now"] += 11  # again 11 s later: the link gets nothing
     assert bridge.reset_outputs() and bridge._refused(stream)  # its frames go through Python from now on
+
+
+def test_frames_let_go_while_every_taker_rests_are_not_counted_or_warned_about():
+    from sprigcast.render.native_bridge import NativeCanvases
+
+    native = object.__new__(NativeCanvases)
+    native._dropped, native._late, native.output_drops = {}, {}, 0
+    key = ((1280, 720), False)
+    native._count_drops(0, 1, 100, "h", key)  # the first number seen is where the count starts
+    native._count_drops(0, 1, 130, "h", key)
+    assert native.output_drops == 30 and native._late == {"h 1280x720": 30}
+    native.forgive("h", key, 30)  # the stream's places were all reconnecting: nobody wanted them
+    assert native.output_drops == 0 and native._late == {}
+    native.forgive("h", key, 5)  # never below nothing
+    assert native.output_drops == 0
+
+    # While the engine hands the frames over itself its count runs on; once Python takes them again the count
+    # starts from what it reads then, not from two hours ago (1,342 "too late" at once, 2026-11-27).
+    native._dropped.pop((0, 1), None)  # what linking and unlinking do
+    native._count_drops(0, 1, 1472, "h", key)
+    assert native.output_drops == 0

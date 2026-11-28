@@ -891,6 +891,7 @@ class NativeCanvases:
                             " on the card" if on_card else "")
                 owner.linked = True
                 self._links[(slot, out)] = (owner, writer, settings)
+                self._dropped.pop((slot, out), None)  # counted afresh once Python takes its frames again
             linked.add(id(owner))
         return linked
 
@@ -968,6 +969,11 @@ class NativeCanvases:
         entry = self._links.pop((slot, out), None)
         if entry is None:
             return
+        # The engine's count ran on while it handed the frames over itself: the first number Python sees after is
+        # where its own count starts (_count_drops). Without this every frame the engine had let go of in two hours
+        # was said to be one "Python took too late" the moment a stream's places all dropped: 1,342 at once, in
+        # the same half second its encoder went to rest (the user's stream, 2026-11-27).
+        self._dropped.pop((slot, out), None)
         owner, writer, _settings = entry
         last = -1
         try:
@@ -1006,6 +1012,19 @@ class NativeCanvases:
             name = f"{canvas_id} {size[0]}x{size[1]}" if size else (canvas_id or "an output")
             name += " on the card" if len(key) > 1 and key[1] else ""
             self._late[name] = self._late.get(name, 0) + gone
+
+    def forgive(self, canvas_id: str, key: tuple, count: int) -> None:
+        """Frames of this output the engine let go of that nobody wanted: its only takers are resting (a stream
+        whose places are all reconnecting pauses its encoder). Not counted, not warned about."""
+        size = key[0] if key else None
+        name = f"{canvas_id} {size[0]}x{size[1]}" if size else (canvas_id or "an output")
+        name += " on the card" if len(key) > 1 and key[1] else ""
+        count = min(count, self.output_drops, self._late.get(name, 0))
+        if count > 0:
+            self.output_drops -= count
+            self._late[name] -= count
+            if not self._late[name]:
+                del self._late[name]
 
     def _pool(self, pool_id: int) -> CardPool:
         pool = self._pools.get(pool_id)
