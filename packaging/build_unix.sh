@@ -52,6 +52,11 @@ find "$qt" -path '*qtwebengine_locales*' -name '*.pak' ! -name 'en-US.pak' -dele
 find "$build/python" -type d \( -name tests -o -name test \) -path '*site-packages*' -prune -exec rm -rf {} + 2>/dev/null || true
 
 # SprigCast's license and every bundled part's license.
+# Compiled ahead, as the Windows installer's files are: without it every start compiled each file again (start-up
+# was slower, and the compiling made the garbage whose collection on the warm-up thread crashed build 16 on Linux).
+# unchecked-hash: used whatever the unpacked files' times say.
+"$python" -m compileall -q -j 0 --invalidation-mode unchecked-hash "$build/python/lib/python3.12" >/dev/null || true
+
 "$python" "$here/notices.py" "$build/python" "$root" || echo "notices.py: not written on this system yet"
 [ -f "$build/python/LICENSE.txt" ] || cp "$root/LICENSE" "$build/python/LICENSE.txt"
 

@@ -347,3 +347,17 @@ def test_the_frame_rate_shown_is_the_engines_while_it_carries_the_picture():
     assert engine_rate((11.0, 660, 3, 4.0), None) is None and engine_rate(None, (10.0, 600, 2, 3.5)) is None
     assert engine_rate((1.0, 60, 0, 4.0), (10.0, 600, 2, 3.5)) is None  # a new engine: its clock started over
     assert "no frame lost" in LATE_CARRIED
+
+
+def test_no_collection_holds_automatic_collection_and_gives_it_back():
+    import gc
+
+    from sprigcast.core import pacing
+
+    assert gc.isenabled()
+    with pacing.no_collection():
+        assert not gc.isenabled()
+        with pacing.no_collection():  # nested: the outer one gives it back
+            assert not gc.isenabled()
+        assert not gc.isenabled()
+    assert gc.isenabled()
