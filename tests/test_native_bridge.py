@@ -1739,3 +1739,23 @@ def test_frames_let_go_while_every_taker_rests_are_not_counted_or_warned_about()
     native._dropped.pop((0, 1), None)  # what linking and unlinking do
     native._count_drops(0, 1, 1472, "h", key)
     assert native.output_drops == 0
+
+
+def test_a_picture_for_the_window_only_is_taken_when_due_and_the_ticks_between_rest(monkeypatch):
+    """The Filters window's Before and After: handed over 60 times a second they kept every tick working, and the
+    previews fell to 17-24 a second while it was open (the user's stream, 2026-11-27)."""
+    engine, fake = _resting(monkeypatch, FakeNative), FakeCompositor()  # no links: Python hands the frames on
+    engine.previews = frozenset()
+    got = []
+
+    def take(frame):
+        got.append(frame)
+
+    take.every_s = 1 / 15
+    engine.add_frame_tap("h", take, nv12_size=(64, 36))
+    _run(engine, fake, seconds=1.0)
+    start = len(got)
+    for i in range(120):
+        engine._tick(fake, 11.0 + i / 60)
+    assert 26 <= len(got) - start <= 34, len(got) - start  # about 15 a second, not 60
+    assert engine.rested_ticks >= 60, engine.rested_ticks

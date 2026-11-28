@@ -667,6 +667,7 @@ class EngineGrab:
                 self._count += 1
                 self.latest[name] = (bytes(frame.data), frame.width, frame.height, self._count)
 
+            take.every_s = self.every_ms / 1000.0  # the window asks this often: the engine needn't hand over more
             takers[name] = take
         return takers[name]
 
