@@ -218,6 +218,17 @@ def offline(message: str) -> bool:
     return "resolve hostname" in m or "name does not resolve" in m or "getaddrinfo" in m
 
 
+_UNREACHED = ("the server didn't answer in time", "the server couldn't be reached", "the server refused the "
+              "connection", "timed out", "connection refused", "network is unreachable", "no route to host")
+
+
+def unreached(message: str) -> bool:
+    """The try never got to the server (no answer, no route, nothing listening): an outage on the way, not the
+    site turning the stream away."""
+    m = message.lower()
+    return any(words in m for words in _UNREACHED)
+
+
 def retry_plan(message: str, bytes_out: int, delay: float) -> tuple[str, float, float]:
     """After a failed (re)connect: (hint for the status, seconds to wait now, the next backoff). With the PC
     offline the wait stays short, so the stream is back within seconds of the internet (light-PC test
@@ -247,10 +258,13 @@ def note_refusal(st, message: str, sent: bool, delay: float, after: float) -> tu
     From the REFUSED_SAY-th the streamer is told plainly (st.refused, health.notice), it is logged once, and the
     tries slow down towards REFUSED_MAX. Facebook ended a stream after 2 h and then turned away 80 tries every
     30 s for 40 minutes with only "reconnecting" to show for it (stream review 2026-11-23). A try that sent
-    something, or a PC that is offline, starts the count again, and for REFUSED_GRACE after it refusals aren't
-    counted. Returns (wait now, next backoff)."""
+    something, a PC that is offline, or a try that never reached the server starts the count again, and for
+    REFUSED_GRACE after it refusals aren't counted. Returns (wait now, next backoff)."""
     now = time.monotonic()
-    if sent or offline(message):
+    if sent or offline(message) or unreached(message):
+        # (A try that never reached the server is an outage, not a refusal: after 90 s of a 4 minute outage the
+        # timeouts were counted as "the server ended 3 tries", the waits grew to 1 and 2 minutes, and the places
+        # came back 173 s after the internet did; sim PC, 2026-11-28.)
         st.refused, st.live_lost = 0, now
         return delay, after
     lost = getattr(st, "live_lost", None)
