@@ -490,6 +490,10 @@ class StreamReport:
                         f"{getattr(st, 'out_height', '?')} @ {getattr(st, 'fps', '?')} fps, "
                         f"{getattr(st, 'bitrate_kbps', '?')} kbps{auto}, "
                         f"{codec_label(codec) if codec else '?'}{sharing}")
+        from sprigcast.app.tester_report import capture_lines
+
+        for line in capture_lines():
+            self._write(line)
         self._write("")
         self._write("time   destination: status, kbps sent (last 5 s / average), frames, dropped, backlog, "
                     "auto-pilot, encode ms, network wait")
