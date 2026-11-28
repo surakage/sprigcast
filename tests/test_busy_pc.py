@@ -128,3 +128,16 @@ def test_a_pinned_graphics_card_eases_the_previews_until_it_calms(monkeypatch):
         clock[0] = float(t)
         ease(40.0)
     assert not w._previews_eased
+
+
+def test_a_hybrid_laptop_is_told_from_a_pc_with_one_card():
+    """CRGPlays, 2026-11-27: the GTX 1070 has no screen wired to it; the HD 630 has the laptop's screen."""
+    from sprigcast import sprigcore
+
+    nvidia = {"name": "NVIDIA GeForce GTX 1070", "software": False, "screens": 0}
+    intel = {"name": "Intel(R) HD Graphics 630", "software": False, "screens": 1}
+    basic = {"name": "Microsoft Basic Render Driver", "software": True, "screens": 0}
+    assert sprigcore.hybrid_split([nvidia, intel, basic]) == ("NVIDIA GeForce GTX 1070", "Intel(R) HD Graphics 630")
+    assert sprigcore.hybrid_split([dict(nvidia, screens=2), basic]) is None  # a desktop
+    assert sprigcore.hybrid_split([dict(nvidia, screens=1), intel]) is None  # a monitor on the card's own port
+    assert sprigcore.hybrid_split([dict(nvidia, screens=0), dict(intel, screens=0)]) is None  # an older engine DLL

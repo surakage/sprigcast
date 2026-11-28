@@ -64,7 +64,7 @@ class AdapterInfo(ctypes.Structure):
         ("dedicated_video_memory", ctypes.c_uint64),
         ("shared_system_memory", ctypes.c_uint64),
         ("software", ctypes.c_int32),
-        ("reserved", ctypes.c_int32),
+        ("screens", ctypes.c_int32),  # monitors wired to it (0 for a laptop's render-only card; older DLLs: 0)
     ]
 
     def as_dict(self) -> dict:
@@ -76,6 +76,7 @@ class AdapterInfo(ctypes.Structure):
             "dedicated_mb": self.dedicated_video_memory >> 20,
             "shared_mb": self.shared_system_memory >> 20,
             "software": bool(self.software),
+            "screens": int(self.screens),
         }
 
 
@@ -593,6 +594,21 @@ def adapters() -> list[dict]:
             found.append(info.as_dict())
     drain_log()
     return found
+
+
+HYBRID: tuple[str, str] | None = None  # set at start (app/main.py): a hybrid laptop's two chips, by name
+
+
+def hybrid_split(cards: list[dict]) -> tuple[str, str] | None:
+    """(the card SprigCast draws on, the chip the screen is on) for a hybrid laptop, else None: a hardware card with
+    no screen wired to it while another one has the screens. An engine DLL from before screens were counted says 0
+    for every card, so nothing is seen there."""
+    hardware = [c for c in cards if not c.get("software")]
+    blind = [c for c in hardware if not c.get("screens")]
+    shown = [c for c in hardware if c.get("screens")]
+    if not blind or not shown:
+        return None
+    return blind[0]["name"], shown[0]["name"]
 
 
 def _upload_args(frame, channel_order: str, size):

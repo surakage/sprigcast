@@ -316,9 +316,15 @@ def run() -> None:
     from sprigcast import sprigcore
 
     if sprigcore.engine_choice() == "native":  # the default on Windows (docs/native-engine.md)
+        cards = sprigcore.adapters()
         logging.info("native engine: %s, cards %s",
                      "loaded" if sprigcore.available() else "not available, using the Python engine",
-                     [c["name"] for c in sprigcore.adapters()])
+                     [c["name"] for c in cards])
+        split = sprigcore.hybrid_split(cards)
+        if split is not None:  # (app/main_window.py _hybrid_previews)
+            sprigcore.HYBRID = split
+            logging.info("hybrid laptop: SprigCast draws on %s, the screen is on %s: previews at 15 a second, "
+                         "at most 1280x720", *split)
     else:
         logging.info("Python engine (%s)", sprigcore.why_python())
     import_av()
