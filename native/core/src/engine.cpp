@@ -388,19 +388,24 @@ void clear_shared(Output &o) {
 // skipped, a draw really late leaves a gap, and a gap up to `fill` seconds is filled with this picture. Returns
 // whether the frame should also be queued for Python (keep). Never throws: a link that fails just ends.
 // The frame numbers a draw at `drawn` fills (first .. pts), or false for a spare draw. `use` must be held.
-bool link_number(const Link &l, double drawn, int64_t &first, int64_t &pts) {
-    const double fps = static_cast<double>(l.fps_num) / l.fps_den;
-    const double x = (drawn - l.start) * fps;
-    const int64_t expected = l.last + 1;
+bool frame_numbers(double start, int fps_num, int fps_den, int64_t last, double fill, double drawn, int64_t &first,
+                   int64_t &pts) {
+    const double fps = static_cast<double>(fps_num) / fps_den;
+    const double x = (drawn - start) * fps;
+    const int64_t expected = last + 1;
     if (x < static_cast<double>(expected) - 0.4) return false;
-    if (l.last < 0) {
+    if (last < 0) {
         pts = std::max<int64_t>(0, static_cast<int64_t>(std::floor(x + 0.3)));
     } else {
         pts = x < static_cast<double>(expected) + 0.9 ? expected : std::llround(x);
     }
     first = pts;
-    if (l.last >= 0 && pts - l.last > 1 && static_cast<double>(pts - l.last - 1) <= l.fill * fps) first = l.last + 1;
+    if (last >= 0 && pts - last > 1 && static_cast<double>(pts - last - 1) <= fill * fps) first = last + 1;
     return true;
+}
+
+bool link_number(const Link &l, double drawn, int64_t &first, int64_t &pts) {
+    return frame_numbers(l.start, l.fps_num, l.fps_den, l.last, l.fill, drawn, first, pts);
 }
 
 // What the writer said about a frame: the numbering goes on, or the link ends. `use` must be held.
@@ -467,6 +472,7 @@ struct OutputWant {  // the frame thread's copy of what Python asked for
     int width = 0, height = 0, scale = 0;
     uint64_t serial = 0;
     bool share = false;
+    std::shared_ptr<Link> link;  // the writer or camera it feeds itself, if any (output_due)
 };
 
 struct PoolEntry {
@@ -483,6 +489,11 @@ struct OutReader {  // the frame thread's: an output's two planes and three copi
     uint64_t serial[3] = {0, 0, 0};
     int next = 0;
     double camera_at = -1e9;  // when the last frame for the virtual camera alone was drawn
+    // output_due's: the frame number the last draw for a linked writer got (the link's own `last` lags while that
+    // frame is still on its way back), and the writer and start it was counted for.
+    int64_t due_last = -1;
+    const void *due_writer = nullptr;
+    double due_start = 0;
     // A shared output's instead: NV12 textures an encoder reads on the card.
     uint64_t pool = 0;
     int pool_w = 0, pool_h = 0;
@@ -1077,9 +1088,10 @@ void share_back(sc_engine &e, int index, int slot, const sc_canvas *canvas, cons
     }
 }
 
-// An output's frames: collect the copies that are done into its queue, then draw this frame as NV12 and start its
-// copy back, never waiting on the card (a copy still on its way is looked at again next frame).
-void output_back(sc_engine &e, int index, int slot, const sc_canvas *canvas, const OutputWant &want, double drawn) {
+// An output's frames: collect the copies that are done into its queue, then, when it takes this frame (due), draw it
+// as NV12 and start its copy back, never waiting on the card (a copy still on its way is looked at again next frame).
+void output_back(sc_engine &e, int index, int slot, const sc_canvas *canvas, const OutputWant &want, double drawn,
+                 bool due) {
     OutReader &r = e.out_readers[index][slot];
     sc_device &dev = *e.dev;
     std::lock_guard<std::mutex> lock(dev.lock);
@@ -1092,7 +1104,10 @@ void output_back(sc_engine &e, int index, int slot, const sc_canvas *canvas, con
         }
         if (!canvas || want.width <= 0) return;
     }
-    if (want.share) return share_back(e, index, slot, canvas, want, drawn);
+    if (want.share) {
+        if (due) share_back(e, index, slot, canvas, want, drawn);
+        return;
+    }
     const int w = r.planes.width, h = r.planes.height;
     for (int k = 0; k < 3; ++k) {  // oldest first
         const int s = (r.next + k) % 3;
@@ -1178,6 +1193,7 @@ void output_back(sc_engine &e, int index, int slot, const sc_canvas *canvas, con
         const std::shared_ptr<Link> &l = e.outputs[index][slot].link;
         camera_only = l && !l->ended.load() && l->camera_only.load();
     }
+    if (!due) return;  // a spare draw for this output (output_due): nothing to make
     if (camera_only) {
         if (drawn - r.camera_at < CAMERA_GAP_S) return;
         r.camera_at = drawn;
@@ -1222,12 +1238,39 @@ int hand_over_texture(Link &l, const std::shared_ptr<Alive> &alive, int index, i
     }
 }
 
-// Whether anything takes this canvas's picture this frame: an output (a recording, stream or the virtual camera
-// takes every frame), a watch whose next copy is due, or a preview window whose next picture is due.
-bool canvas_taken(sc_engine &e, int index, const Watch &watch, const OutputWant *outs,
+// Whether an output takes a frame drawn at `clock` (Python's perf_counter() seconds). One linked to a writer takes
+// one at its own rate, numbered as link_number numbers them: a 30 fps stream on a 60 fps canvas takes every other
+// frame, and the canvas needn't be drawn for the frames between (CRGPlays, 2026-11-27: the vertical canvas drawn
+// 60 times a second for TikTok's 30, on a laptop's graphics card already at 100%). The virtual camera alone takes
+// 30 a second (output_back). Anything else (frames Python takes, a link that also keeps frames for Python) takes
+// every frame. Sets the output's count as if the frame is drawn.
+bool output_due(sc_engine &e, int index, int slot, const OutputWant &want, double clock) {
+    if (want.width <= 0) return false;
+    const std::shared_ptr<Link> &l = want.link;
+    if (!l || l->ended.load()) return true;
+    OutReader &r = e.out_readers[index][slot];
+    std::lock_guard<std::mutex> hold(l->use);
+    if (l->camera) return l->keep || !l->camera_only.load() || clock - r.camera_at >= CAMERA_GAP_S;
+    if (!l->writer || l->keep) return true;
+    if (r.due_writer != l->writer.get() || r.due_start != l->start) {
+        r.due_writer = l->writer.get();
+        r.due_start = l->start;
+        r.due_last = -1;
+    }
+    // link_number's numbers, from whichever is further on: the link or the draws still on their way back
+    int64_t first = 0, pts = 0;
+    if (!frame_numbers(l->start, l->fps_num, l->fps_den, std::max(l->last, r.due_last), 0, clock, first, pts))
+        return false;
+    r.due_last = pts;
+    return true;
+}
+
+// Whether anything takes this canvas's picture this frame: an output whose next frame is due (output_due), a watch
+// whose next copy is due, or a preview window whose next picture is due.
+bool canvas_taken(sc_engine &e, int index, const Watch &watch, const bool *due,
                   const std::vector<PreviewCfg> &previews, int64_t now) {
     for (int o = 0; o < SC_ENGINE_OUTPUTS; ++o) {
-        if (outs[o].width > 0) return true;
+        if (due[o]) return true;
     }
     if (watch.width > 0 && picture_due(watch.max_fps, e.readers[index].last, now)) return true;
     for (const PreviewCfg &cfg : previews) {
@@ -1329,7 +1372,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
             watches[i].max_fps = e.watches[i].max_fps;
             for (int o = 0; o < SC_ENGINE_OUTPUTS; ++o) {
                 const Output &out = e.outputs[i][o];
-                outputs[i][o] = OutputWant{out.width, out.height, out.scale, out.serial, out.share};
+                outputs[i][o] = OutputWant{out.width, out.height, out.scale, out.serial, out.share, out.link};
             }
         }
         uploads.swap(e.uploads);
@@ -1651,6 +1694,11 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         e.holds_made[id] = want.serial;
     }
 
+    const double clock = static_cast<double>(now) / static_cast<double>(qpf());  // Python's perf_counter()
+    bool due[SC_ENGINE_CANVASES][SC_ENGINE_OUTPUTS];
+    for (int i = 0; i < SC_ENGINE_CANVASES; ++i) {
+        for (int o = 0; o < SC_ENGINE_OUTPUTS; ++o) due[i][o] = output_due(e, i, o, outputs[i][o], clock);
+    }
     for (int i = 0; i < SC_ENGINE_CANVASES; ++i) {
         const CanvasCfg &cfg = canvases[i];
         sc_canvas *&c = e.gpu[i];
@@ -1697,7 +1745,7 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
         // other canvas of a garden shown on one), and one only a preview takes on the frames between its pictures
         // (a preview takes 30 a second or fewer; the engine draws 60). The imported garden's two canvases were
         // both drawn 60 times a second with one preview at 30 watching: 71% of the graphics card (2026-11-19).
-        if (!read_asked[i] && !canvas_taken(e, i, watches[i], outputs[i], previews, now)) continue;
+        if (!read_asked[i] && !canvas_taken(e, i, watches[i], due[i], previews, now)) continue;
         if (still.valid && now - still.drawn < qpf()) continue;
         ++e.canvas_draws;
         if (kept) why = SC_REDRAW_SECOND;  // still, drawn again on its once-a-second refresh
@@ -1729,10 +1777,9 @@ void draw_frame(sc_engine &e, double seconds, int64_t now, uint64_t &presented, 
     }
     at(e, "reading the canvases back for the previews");
     for (int i = 0; i < SC_ENGINE_CANVASES; ++i) read_back(e, i, e.gpu[i], watches[i], seconds, now);
-    const double clock = static_cast<double>(now) / static_cast<double>(qpf());  // Python's perf_counter()
     at(e, "making the outputs' frames");
     for (int i = 0; i < SC_ENGINE_CANVASES; ++i) {
-        for (int o = 0; o < SC_ENGINE_OUTPUTS; ++o) output_back(e, i, o, e.gpu[i], outputs[i][o], clock);
+        for (int o = 0; o < SC_ENGINE_OUTPUTS; ++o) output_back(e, i, o, e.gpu[i], outputs[i][o], clock, due[i][o]);
     }
 
     for (auto it = e.shown.begin(); it != e.shown.end();) {

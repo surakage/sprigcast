@@ -579,7 +579,8 @@ SC_API int sc_engine_output_give_back(sc_engine *engine, int index, int slot, ui
  * hands each finished frame straight to the writer, numbered by when it was drawn: frame n is due at
  * start + n * fps_den / fps_num (performance counter seconds), as Python's recorder numbers them (a draw a little late
  * still gets the next number, a spare draw of a faster canvas is skipped, a hole up to fill_seconds long is filled
- * with the next picture). Nothing goes through the caller per frame. last_pts: the last frame number the
+ * with the next picture). Nothing goes through the caller per frame. Without keep, the canvas is drawn for this
+ * output only on the frames it takes: a 30 fps writer on a 60 fps canvas, every other frame. last_pts: the last frame number the
  * writer already has from elsewhere (-1: none). keep = 1 still queues frames for sc_engine_output_take too (other
  * outputs share this one). Linking the same writer again changes start, rate, keep and fill and keeps the
  * numbering. The link ends by itself when the writer refuses (finished or failed), when the output changes, and
