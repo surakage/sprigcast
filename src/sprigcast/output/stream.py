@@ -685,6 +685,7 @@ def log_live(st) -> None:
     """One line when a destination starts going out, and when it's back after dropping; the first time also
     which server it went to and how far away that is (looked up on a thread of its own)."""
     if st.reconnects:
+        st.back_live_at = time.monotonic()  # Live says "Back live" for a moment (app/health.py notice)
         log.info("stream %s back live after %d reconnect%s", st.name, st.reconnects,
                  "" if st.reconnects == 1 else "s")
     else:

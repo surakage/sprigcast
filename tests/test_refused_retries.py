@@ -47,7 +47,7 @@ def test_status_and_live_notice_say_it_plainly():
     assert st.status.startswith("disconnected:") and "stream key" in st.status and "30 s" in st.status
     assert "5 min" in refused_status(st, REFUSED, REFUSED_MAX)
     level, text = health.notice([(None, st)])
-    assert level == "bad" and "Facebook keeps turning the stream away" in text and "try" not in text
+    assert level == "bad" and "Facebook may have ended this stream" in text and "try " not in text
 
 
 def test_a_few_refusals_still_read_as_reconnecting():
@@ -68,3 +68,36 @@ def test_a_place_that_was_just_live_is_asked_briskly_while_the_site_closes_the_o
     assert max(waits) <= GRACE_RETRY and st.refused == 0
     now[0] += REFUSED_GRACE  # still turned away long after: now it counts, and slows
     assert _tries(st, REFUSED_SAY)[-1] >= RETRY_MAX and st.refused == REFUSED_SAY
+
+
+def _place(name, status="", connected=False, reconnects=1, **more):
+    return (None, SimpleNamespace(name=name, refused=0, connected=connected, reconnects=reconnects, status=status,
+                                  **more))
+
+
+def test_every_place_dropping_at_once_reads_as_the_internet_not_five_reconnects():
+    gone = "disconnected: I/O error; retrying in 4 s"
+    level, text = health.notice([_place("Twitch", gone), _place("Kick", gone), _place("YouTube", gone)])
+    assert level == "bad" and text == "Your internet seems down. Waiting for it to come back, retrying…"
+    # One of several is that place's own trouble.
+    live = _place("Kick", "live", connected=True, reconnects=0)
+    assert health.notice([_place("Twitch", gone, reconnects=2), live])[1] == "Reconnecting to Twitch… try 2"
+
+
+def test_a_pc_that_cant_look_the_server_up_is_waiting_for_internet():
+    _, delay, _ = retry_plan("Failed to resolve hostname live.twitch.tv", 1000, 2.0)
+    st = SimpleNamespace(name="Twitch", same_key_as="")
+    status = stream.dropped_status(st, "Failed to resolve hostname", retry_plan("Failed to resolve hostname x", 1, 2.0)[0],
+                                   delay)
+    assert health.OFFLINE_WORDS in status
+    assert health.notice([_place("Twitch", status)])[1] == "Waiting for internet, retrying Twitch…"
+
+
+def test_a_place_that_came_back_says_so_for_a_moment(monkeypatch):
+    now = [500.0]
+    monkeypatch.setattr(health.time, "monotonic", lambda: now[0])
+    back = [_place("Twitch", "live", connected=True, back_live_at=499.0),
+            _place("Kick", "live", connected=True, back_live_at=498.0)]
+    assert health.notice(back) == ("good", "Back live: Twitch and Kick")
+    now[0] += health.BACK_LIVE_S
+    assert health.notice(back) == ("", "")

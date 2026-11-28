@@ -83,6 +83,9 @@ builds from 2026-11-25 on.
 - After your internet drops and comes back, places reconnect sooner. A site turns the old stream key away for a
   short while after a drop, and SprigCast used to read that as "the stream has ended" and slow to one try every
   30 s. For 90 s after a place was live it now keeps asking at least every 10 s. Not tried on a real stream.
+- The Live banner is clearer in an outage. When every place drops at once it says "Your internet seems down"
+  in place of one "Reconnecting to…" per place, a place that keeps refusing reads "may have ended this stream.
+  Start a new one there, or check its stream key", and a green "Back live" shows for 8 s once places return.
 - The log no longer says "dropped N frames that Python took too late" while a stream's places are all
   reconnecting. Those frames had nowhere to go, and the count started from hours earlier.
 - A place switched off while live is named in the log with who did it (the places list or the app that asked
