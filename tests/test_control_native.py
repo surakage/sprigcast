@@ -98,6 +98,13 @@ def test_sounds_filters_and_sources():
     out = _ok(api, "filter.set", source="Cam", filter="Colour", on=False, settings={"saturation": 0.4})
     assert out["on"] is False and out["settings"]["saturation"] == 0.4 and out["settings"]["gamma"] == 0.0
     assert _fails(api, "filter.set", source="Cam", filter="Colour", settings={"sparkle": 1}) == "bad_request"
+    # A setting of the wrong type or out of range is refused (a list for a number was saved and ended the
+    # drawing thread at every start, sim PC 2026-11-28).
+    for wrong in ([], "lots", None, True, float("nan"), 99):
+        if wrong is None:
+            continue
+        assert _fails(api, "filter.set", source="Cam", filter="Colour", settings={"saturation": wrong}) == "bad_request"
+    assert _fails(api, "filter.set", source="Cam", filter="Colour", settings={"color": 5}) == "bad_request"
     assert _ok(api, "filter.toggle", source="Cam", filter="color_correction")["on"] is True
     kinds = {k["kind"] for k in _ok(api, "filters.kinds")["kinds"]}
     assert "color_correction" in kinds

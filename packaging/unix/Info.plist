@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>SprigCast</string>
+  <key>CFBundleDisplayName</key><string>SprigCast</string>
+  <key>CFBundleIdentifier</key><string>com.slothbloom.sprigcast</string>
+  <key>CFBundleExecutable</key><string>SprigCast</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>@VERSION@</string>
+  <key>CFBundleVersion</key><string>@VERSION@</string>
+  <key>CFBundleGetInfoString</key><string>SprigCast @SHOWN@</string>
+  <key>LSMinimumSystemVersion</key><string>12.0</string>
+  <key>NSHighResolutionCapable</key><true/>
+  <key>NSCameraUsageDescription</key><string>SprigCast shows your camera in your stream when you add it.</string>
+  <key>NSMicrophoneUsageDescription</key><string>SprigCast puts your microphone in your stream when you add it.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>SprigCast lets your phone and stream tools on your network connect to it.</string>
+</dict>
+</plist>

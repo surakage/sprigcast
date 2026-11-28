@@ -294,6 +294,9 @@ def run() -> None:
     began = time.perf_counter()
     QCoreApplication.setApplicationName("SprigCast")
     QCoreApplication.setOrganizationName("Slothbloom")
+    from sprigcast.core import systems
+
+    systems.mend_general_settings()  # Linux: settings saved under "general" read back under their own name
     from sprigcast.app import single_instance
 
     first_copy = single_instance.claim()  # at once: a slow start mustn't let a second click open a second copy
@@ -334,6 +337,10 @@ def run() -> None:
                          "at most 1280x720", *split)
     else:
         logging.info("Python engine (%s)", sprigcore.why_python())
+        from sprigcast.core import systems
+
+        if systems.is_linux() or systems.is_mac():
+            logging.info(systems.start_line())
     import_av()
     package = inside_package()
     if package:

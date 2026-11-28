@@ -444,6 +444,9 @@ class ReplayBuffer(Recorder):
                 return
             try:
                 done["result"] = job()
+            except RuntimeError as exc:  # expected: nothing buffered yet, asked too soon. The asker is told why.
+                log.info("%s: request not done: %s", self.canvas_id, exc)
+                done["error"] = str(exc) or exc.__class__.__name__
             except Exception as exc:
                 log.exception("%s: request failed", self.canvas_id)
                 done["error"] = str(exc) or exc.__class__.__name__

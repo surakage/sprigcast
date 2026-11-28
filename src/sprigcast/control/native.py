@@ -291,6 +291,9 @@ def aliased(fields: dict[str, str] | None, data: dict[str, Any], exact: bool = T
     return out
 
 
+NAME_MAX = 200  # a bloom, sprig, source, garden or path name: longer ones only ever came from a mistake
+
+
 def _get(data: dict[str, Any], key: str, kind: type | tuple[type, ...], optional: bool = False, default: Any = None):
     """data[key] checked against kind (float accepts whole numbers; bools are never numbers)."""
     if data.get(key) is None:
@@ -304,7 +307,21 @@ def _get(data: dict[str, Any], key: str, kind: type | tuple[type, ...], optional
         return value if kind is int else float(value)
     if not isinstance(value, kind):
         raise _bad(f"{key} has the wrong type.")
+    if key == "name" and isinstance(value, str) and len(value) > NAME_MAX:
+        raise _bad(f"name is too long ({NAME_MAX} characters at most).")
     return value
+
+
+def _check_filter_settings(kind, settings: dict[str, Any]) -> None:
+    """A filter's settings as an app sent them: each known one must be the right type and in its range (a list
+    for a number was saved and ended the drawing thread at every start, sim PC 2026-11-28)."""
+    from sprigcast.core.filters import setting_problem
+
+    fields = {f.key: f for f in kind.fields}
+    for key, value in settings.items():
+        problem = setting_problem(fields[key], value) if key in fields else ""
+        if problem:
+            raise _bad(f"{kind.kind}'s {key} {problem}.")
 
 
 def _checked_settings(col, kind: str, settings: dict[str, Any]) -> dict[str, Any]:
@@ -1262,6 +1279,7 @@ class NativeApi:
                 unknown = set(settings) - {f.key for f in kind.fields}
                 if unknown:
                     raise _bad(f"{found.kind} has no setting {', '.join(sorted(unknown))}.")
+                _check_filter_settings(kind, settings)
             found.settings = {**found.settings, **settings}
         if on is not None:
             switch(found, on)
@@ -1289,7 +1307,9 @@ class NativeApi:
         if kind is None:
             raise _missing("No such filter kind (filters.kinds lists them).", "kind", data.get("kind"))
         name = _get(data, "name", str, optional=True, default=kind.label)
-        settings = {**kind.defaults, **_get(data, "settings", dict, optional=True, default={})}
+        sent = _get(data, "settings", dict, optional=True, default={})
+        _check_filter_settings(kind, sent)
+        settings = {**kind.defaults, **sent}
         enabled = _get(data, "on", bool, optional=True, default=True)
 
         def one(source):

@@ -205,6 +205,7 @@ class DirectVideo:
             width, height, fps, enc.preset, bitrate_kbps=bitrate_kbps, rate_control=enc.rate_control,
             max_kbps=max_kbps, buffer_kbits=buffer_kbits, cq_level=enc.cq_level,
             gop_frames=fps * (enc.keyint_sec or 2), tuning=enc.tuning, adaptive_quant=enc.adaptive_quant,
+            filler=getattr(enc, "steady_bitrate", True),
             multipass=enc.multipass, codec=raw, shared=shared, device=device,
         )
         # Can also take frames on the card (encode_texture): the OpenGL hand-off's (render/gpu_share.py) or,
@@ -504,7 +505,8 @@ def _amf_options(enc, k: int) -> dict[str, str]:
         opts.update(rc="cqp", qp_i=str(enc.cq_level), qp_p=str(enc.cq_level))
     elif enc.rate_control == "cbr":
         # filler_data: a still scene still sends the bitrate; enforce_hrd: no bursts over it (as OBS does)
-        opts.update(rc="cbr", maxrate=f"{k}k", bufsize=f"{k}k", filler_data="1", enforce_hrd="1")
+        opts.update(rc="cbr", maxrate=f"{k}k", bufsize=f"{k}k", enforce_hrd="1",
+                    filler_data="1" if getattr(enc, "steady_bitrate", True) else "0")
     else:
         opts.update(rc="vbr_peak", maxrate=f"{int(k * 1.5)}k", bufsize=f"{k * 2}k")
     return opts
@@ -580,7 +582,9 @@ def video_options(codec: str, enc, bitrate_kbps: int, hrd: bool = True) -> dict[
             opts.update(rc="constqp", qp=str(enc.cq_level))
         elif enc.rate_control == "cbr":
             # cbr_padding: filler data, so a still scene still sends the bitrate (see nvenc_d3d11.FILLER_BIT)
-            opts.update(rc="cbr", maxrate=f"{k}k", bufsize=f"{k}k", cbr_padding="1")
+            opts.update(rc="cbr", maxrate=f"{k}k", bufsize=f"{k}k")
+            if getattr(enc, "steady_bitrate", True):
+                opts["cbr_padding"] = "1"
         else:
             opts.update(rc="vbr", maxrate=f"{int(k * 1.5)}k", bufsize=f"{k * 2}k")
         if enc.lookahead:
@@ -616,7 +620,7 @@ def video_options(codec: str, enc, bitrate_kbps: int, hrd: bool = True) -> dict[
         opts["crf"] = str(enc.cq_level)
     elif enc.rate_control == "cbr":
         opts.update({"maxrate": f"{k}k", "bufsize": f"{k}k"})
-        if hrd:
+        if hrd and getattr(enc, "steady_bitrate", True):
             opts["nal-hrd"] = "cbr"
     if not enc.adaptive_quant:
         opts["aq-mode"] = "0"
@@ -997,7 +1001,12 @@ class Recorder:
         from sprigcast.output.replay import FRAGMENTED
 
         # An MP4 in fragments survives a crash (see PacketFile); naming.finish_mp4() makes it plain afterwards.
-        options = {"movflags": FRAGMENTED, "flush_packets": "1"} if self.container_kind == "mp4" else {}
+        # Every packet goes to the file as it is written, in MKV and FLV too: a recording of a still picture
+        # had 0 bytes on disk after 45 s (FFmpeg held it all in memory), so a crash or power cut left an empty
+        # file (sim PC, 2026-11-28). Windows still gathers the small writes before they reach the disk.
+        options = {"flush_packets": "1"}
+        if self.container_kind == "mp4":
+            options["movflags"] = FRAGMENTED
         return av.open(str(self.path), "w", format=CONTAINERS[self.container_kind], options=options)
 
     @staticmethod
@@ -1199,7 +1208,9 @@ class Recorder:
         else:
             target = str(self.path)
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            muxing = {"movflags": FRAGMENTED, "flush_packets": "1"} if self.container_kind == "mp4" else None
+            muxing = {"flush_packets": "1"}  # as in _open_container: nothing waits in memory
+            if self.container_kind == "mp4":
+                muxing["movflags"] = FRAGMENTED
         titles = [self.track_titles.get(t, t.title()) for t in self.tracks] if len(self.tracks) > 1 else None
         device = self._card_device()
         if self.uses_direct() and device is None:

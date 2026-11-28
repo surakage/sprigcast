@@ -389,3 +389,44 @@ def test_the_echo_reducer_takes_the_rooms_echo_off_and_leaves_the_voice():
     assert db(voice[:1200]) - db(out[512:1712]) < 0.5  # the start of a word passes
     assert db(voice[12000:24000]) - db(out[12512:24512]) > 5  # its echo is turned down
     assert len(out) == len(voice)
+
+
+def test_a_saved_setting_of_the_wrong_type_never_ends_the_drawing(caplog):
+    """filter.set once saved {"saturation": []}: float([]) ended the drawing thread, at every start, until the
+    garden file was edited by hand (sim PC, 2026-11-28)."""
+    import logging
+
+    from sprigcast.core import filters
+    from sprigcast.core.scene import Filter
+
+    filters._told_bad.clear()
+    bad = Filter(id="f1", kind="color_correction", name="Tone",
+                 settings={"saturation": [], "contrast": {"a": 1}, "gamma": "0.5", "color": 7})
+    with caplog.at_level(logging.WARNING, logger="sprigcast.core.filters"):
+        fx = filters.video_effects([bad])
+        filters.video_effects([bad])
+    plain = filters.video_effects([Filter(id="f2", kind="color_correction", name="Tone", settings={"gamma": 0.5})])
+    assert fx.saturation == plain.saturation and fx.contrast == plain.contrast  # the usual values
+    assert fx.gamma == plain.gamma  # a number saved as text still counts
+    assert sum("saturation" in r.message for r in caplog.records) == 1  # said once, not on every frame
+    kind = filters.filter_kind("color_correction")
+    saturation = next(f for f in kind.fields if f.key == "saturation")
+    assert filters.setting_problem(saturation, []) == "must be a number"
+    assert filters.setting_problem(saturation, True) == "must be a number"
+    assert filters.setting_problem(saturation, 0.2) == ""
+    assert "must be" in filters.setting_problem(saturation, saturation.maximum + 1)
+    assert filters.setting_problem(saturation, saturation.maximum + 1, ranged=False) == ""
+
+
+def test_filters_that_cannot_be_folded_leave_the_source_plain(monkeypatch, caplog):
+    import logging
+
+    from sprigcast.core import filters
+    from sprigcast.core.scene import Filter
+
+    filters._told_bad.clear()
+    monkeypatch.setattr(filters, "_video_effects", lambda _filters: 1 / 0)
+    with caplog.at_level(logging.ERROR, logger="sprigcast.core.filters"):
+        fx = filters.video_effects([Filter(id="f1", kind="blur", name="Blur", settings={})])
+        filters.video_effects([Filter(id="f1", kind="blur", name="Blur", settings={})])
+    assert not fx.active and len([r for r in caplog.records if "drawn without them" in r.message]) == 1

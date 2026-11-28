@@ -67,7 +67,7 @@ def crash_line(crash) -> str:
 def _summary(kind: str, crash) -> str:
     from sprigcast.app.logbook import _version
 
-    lines = [f"SprigCast {_version()}", f"Windows: {tester_report._windows()}", f"Report: {kind}"]
+    lines = [f"SprigCast {_version()}", f"{tester_report._system_word()}: {tester_report._windows()}", f"Report: {kind}"]
     if crash is not None:
         lines.append(f"Crash: {crash.summary()}" + (f" (at {crash.where})" if crash.where else ""))
         if crash.started:

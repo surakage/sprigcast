@@ -1,6 +1,7 @@
 """Pair a device (a short code instead of the password) and the password kept encrypted (PC test 2026-11-15:
 the Stream Deck plugin was refused twice for a wrong password, and the password sat in the registry as plain text)."""
 
+import sys
 import json
 
 from test_control_api import FakeHost, _collection
@@ -132,6 +133,10 @@ def test_secrets_are_encrypted_and_old_plain_ones_moved_over(monkeypatch):
     if secret_store.available():  # Windows: encrypted (differently each time, DPAPI salts it) and read back
         saved = secret_store.protect("leafy")
         assert saved.startswith("dpapi:") and "leafy" not in saved and secret_store.unprotect(saved) == "leafy"
+    elif sys.platform.startswith("linux") or sys.platform == "darwin":  # in the system's password store; only its name is saved
+        saved = secret_store.protect("leafy")
+        assert saved.startswith("keyring:") and "leafy" not in saved and secret_store.unprotect(saved) == "leafy"
+        assert secret_store.protect("leafy") == saved  # the same secret is one entry
     else:
         assert secret_store.protect("leafy") == "leafy"
     if not secret_store.available():

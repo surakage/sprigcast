@@ -101,3 +101,22 @@ def test_a_place_that_came_back_says_so_for_a_moment(monkeypatch):
     assert health.notice(back) == ("good", "Back live: Twitch and Kick")
     now[0] += health.BACK_LIVE_S
     assert health.notice(back) == ("", "")
+
+
+def test_going_live_again_right_after_a_stop_keeps_asking_briskly(monkeypatch):
+    """The server still held the old session ("Already publishing"): 3 refusals in 6 s, then no try for a minute
+    and a half though it was free seconds later (sim PC, 2026-11-28)."""
+    now = [1000.0]
+    monkeypatch.setattr(stream.time, "monotonic", lambda: now[0])
+    stream._ended_at.clear()
+    old = SimpleNamespace(name="Twitch (horizontal)", _url="rtmp://live.example/app/key")
+    stream.note_ended(old)  # Stop
+    now[0] += 2
+    new = SimpleNamespace(name="Twitch (horizontal)", refused=0, _url="rtmp://live.example/app/key")  # Go live again
+    waits = _tries(new, 8)
+    assert max(waits) <= GRACE_RETRY and new.refused == 0
+    now[0] += REFUSED_GRACE  # still turned away long after: now it is said plainly and tried less often
+    assert max(_tries(new, 6)) >= RETRY_MAX and new.refused == 6
+    other = SimpleNamespace(name="Kick (horizontal)", refused=0, _url="rtmp://kick.example/app/other")
+    now[0] = 1001.0
+    assert max(_tries(other, 6)) >= RETRY_MAX  # a place that wasn't just stopped is counted as before

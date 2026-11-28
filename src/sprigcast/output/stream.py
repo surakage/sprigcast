@@ -197,6 +197,10 @@ def explain_connect(url: str):
                 hint = "" if urlsplit(url).path.strip("/").count("/") else " (the server address has no app part)"
                 detail = " | FFmpeg: " + " / ".join(said[-4:]) if said else ""
                 why = plain_reason(str(exc) or exc.__class__.__name__)
+                if any("already publishing" in line.lower() for line in said):
+                    # The server's own words: "[Errno 1] Operation not permitted" alone said nothing (sim PC).
+                    why = ("this stream key is already live there (the site is still closing the last "
+                           f"connection, or another app is using the key) ({why})")
                 raise ConnectionError(f"couldn't connect to {ingest_name(url)}{hint}: {why}{detail}") from exc
     finally:
         if louder:
@@ -220,6 +224,19 @@ def retry_plan(message: str, bytes_out: int, delay: float) -> tuple[str, float, 
     return hint, delay, min(delay * 2, RETRY_MAX)
 
 
+_ended_at: dict[int, float] = {}  # a server and key (hashed) -> when a stream to it was last stopped here
+
+
+def note_ended(st) -> None:
+    """A stream to this server and key was just stopped: for REFUSED_GRACE the site may still hold the old
+    connection and turn the same key away ("Already publishing"). Going live again at once was refused 3 times
+    in 6 s, then not tried again for a minute and a half though the server was free seconds later (sim PC,
+    2026-11-28)."""
+    url = getattr(st, "_url", None)
+    if url:
+        _ended_at[hash(url)] = time.monotonic()
+
+
 def note_refusal(st, message: str, sent: bool, delay: float, after: float) -> tuple[float, float]:
     """After a failed try: count the tries in a row that sent nothing (the server ended them as they started).
     From the REFUSED_SAY-th the streamer is told plainly (st.refused, health.notice), it is logged once, and the
@@ -232,6 +249,8 @@ def note_refusal(st, message: str, sent: bool, delay: float, after: float) -> tu
         st.refused, st.live_lost = 0, now
         return delay, after
     lost = getattr(st, "live_lost", None)
+    if lost is None:
+        lost = _ended_at.get(hash(getattr(st, "_url", None) or id(st)))  # stopped a moment ago, live again now
     if lost is not None and now - lost < REFUSED_GRACE:
         # It was live a moment ago: a site turns the same key away until it has closed the old connection
         # (Twitch and Kick for about 45 s after the user's internet came back, 2026-11-27, by when the tries
@@ -358,6 +377,9 @@ class Streamer(Recorder):
         self._held: tuple[str, str, float] | None = None  # (level, reason, shown until)
         self._send_q: queue.Queue = queue.Queue()
         self._send_error: Exception | None = None
+        from sprigcast.output.link_watch import WATCH
+
+        WATCH.add(self)  # a quiet stream can't tell a dead connection by itself (link_watch.py)
         self._backlog_bytes = 0
         self._congested = False
         self._sender: threading.Thread | None = None
@@ -586,6 +608,11 @@ class Streamer(Recorder):
             self._backlog_bytes += packet.size
             self._send_q.put(packet)
 
+    def link_lost(self, reason: str) -> None:
+        """The server stopped answering (link_watch): end this connection so _run makes a new one."""
+        if self.connected and self._send_error is None:
+            self._send_error = ConnectionError(reason)
+
     def _send_loop(self, container) -> None:
         from sprigcast.core.pacing import ABOVE_NORMAL, raise_thread_priority
 
@@ -617,6 +644,7 @@ class Streamer(Recorder):
     def stop(self, timeout: float = 15.0) -> None:
         """Stop sending. With a stream delay the delayed part still goes out first (like OBS), in the
         background, so ending a stream never freezes the window for the length of the delay."""
+        note_ended(self)
         if self.delay_s > 0 and self._delay_line is not None and self._send_error is None:
             self.status = f"ending: sending the last {self.delay_s:g} s"
             threading.Thread(target=super().stop, args=(self.delay_s + timeout,),

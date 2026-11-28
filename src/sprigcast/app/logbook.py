@@ -60,6 +60,11 @@ def log_dir() -> Path:
     custom = os.environ.get("SPRIGCAST_LOG_DIR", "").strip()
     if custom:
         return Path(custom)
+    from sprigcast.core import systems
+
+    own = systems.log_dir()  # Linux and macOS have their own places for logs
+    if own is not None:
+        return own
     try:
         from PySide6.QtCore import QStandardPaths
 
@@ -480,7 +485,8 @@ class StreamReport:
             enc = collection.stream_encoder
             self._write(f"Stream encoder settings: {enc.rate_control}, {self._preset_words(enc)}, "
                         f"B-frames {enc.b_frames}, look-ahead {enc.lookahead}, multipass {enc.multipass}, "
-                        f"keyframes every {enc.keyint_sec or 2} s, audio {enc.audio_kbps} kbps")
+                        f"keyframes every {enc.keyint_sec or 2} s, steady bitrate {'on' if enc.steady_bitrate else 'off'}, "
+                        f"audio {enc.audio_kbps} kbps")
         # Places that send another's packets count too: Twitch Enhanced's qualities are shared by the places that
         # link to them and aren't in session.shared ("0 shared encoder(s)" with four places sharing, 2026-11-27).
         sharing = {id(e) for e in shared} | {id(st.shared) for _, st in self.session.streamers if hasattr(st, "shared")}
