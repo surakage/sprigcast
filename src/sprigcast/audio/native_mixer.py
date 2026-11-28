@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
 import time
 import weakref
@@ -158,10 +159,15 @@ class LevelLog:
     on the PC can then be told apart from a sound that really is silent in the mix (2026-11-21)."""
 
     EVERY_S = 60.0
+    SILENT_MINUTES = 3  # an open microphone or capture card that gives nothing this long is said, once
+    CLIP_AGAIN_S = 600.0  # a sound that keeps going over 0 dB is said this often
 
-    def __init__(self, now: float | None = None):
+    def __init__(self, now: float | None = None, inputs: Callable[[], dict[str, str]] | None = None):
         self.loudest: dict[str, float] = {}
         self.since = time.monotonic() if now is None else now
+        self.inputs = inputs  # sound id -> its device's name, for the microphones and cards the engine has open
+        self._silent: dict[str, int] = {}  # minutes in a row an input gave nothing (-1 once said)
+        self._clipped: dict[str, float] = {}  # when a sound going over 0 dB was last said
 
     @staticmethod
     def name(sid: str) -> str:
@@ -181,6 +187,8 @@ class LevelLog:
             return None
         heard = {sid: db for sid, db in self.loudest.items() if db > FLOOR_DB}
         silent = len(self.loudest) - len(heard)
+        self._say_clipping(heard, now)
+        self._say_silent_inputs(heard)
         self.loudest, self.since = {}, now
         if not heard and not silent:
             return None
@@ -192,6 +200,65 @@ class LevelLog:
         line = "sound levels, loudest in the last minute: " + ", ".join(parts)
         log.info(line)
         return line
+
+
+    def _say_clipping(self, heard: dict[str, float], now: float) -> None:
+        """A sound that went over 0 dB distorts on the stream, and nothing told the streamer: a capture card's
+        sound peaked at +5 to +11 dB for a whole stream (Mikedog151, 2026-11-27)."""
+        for sid, db in sorted(heard.items()):
+            if db > 0.5 and now - self._clipped.get(sid, float("-inf")) >= self.CLIP_AGAIN_S:
+                self._clipped[sid] = now
+                log.warning("sound %s peaked at +%.0f dB. Above 0 dB it distorts: lower it by about %.0f dB",
+                            self.name(sid), db, db + 3)
+
+    def _say_silent_inputs(self, heard: dict[str, float]) -> None:
+        """An open microphone or capture card that gives only silence: said once, with what usually causes it. A
+        card's sound strip was paired and open with a flat meter, and the log could not tell a console sending no
+        sound from Windows keeping the device from desktop apps (Mikedog151, 2026-11-27)."""
+        try:
+            inputs = dict(self.inputs()) if self.inputs is not None else {}
+        except Exception:  # noqa: BLE001 - a log line is never worth a mixer step
+            return
+        self._silent = {sid: n for sid, n in self._silent.items() if sid in inputs}
+        for sid, device in inputs.items():
+            if sid in heard or sid not in self.loudest:
+                self._silent.pop(sid, None)
+                continue
+            minutes = self._silent.get(sid, 0)
+            if minutes < 0:
+                continue
+            self._silent[sid] = minutes + 1
+            if minutes + 1 >= self.SILENT_MINUTES:
+                self._silent[sid] = -1
+                blocked = microphone_blocked()
+                log.warning("sound %s: only silence from %s for %d min, though the device is open. %s", sid,
+                            device or "the Windows default", minutes + 1,
+                            "Windows' microphone privacy is keeping it from desktop apps: turn on Settings > Privacy "
+                            "> Microphone > \"Let desktop apps access your microphone\"" if blocked else
+                            "A capture card: is the console sending sound over HDMI (stereo, PCM)? A microphone: "
+                            "is it muted on the device or in Windows?")
+
+
+def microphone_blocked() -> bool:
+    """Windows' privacy settings keep microphones (capture cards' sound too) from desktop apps: the device then
+    opens and gives pure silence. False when it can't be told."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import winreg
+
+        base = r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone"
+        for root, path in ((winreg.HKEY_LOCAL_MACHINE, base), (winreg.HKEY_CURRENT_USER, base),
+                           (winreg.HKEY_CURRENT_USER, base + r"\NonPackaged")):
+            try:
+                with winreg.OpenKey(root, path) as key:
+                    if str(winreg.QueryValueEx(key, "Value")[0]).lower() == "deny":
+                        return True
+            except OSError:
+                continue
+    except Exception:  # noqa: BLE001
+        return False
+    return False
 
 
 _CURRENT: Callable[[], NativeMixer | None] = lambda: None
@@ -337,7 +404,7 @@ class NativeMixer:
         self._thread = threading.Thread(target=self._run, name="sprigcast-audio", daemon=True)
         self._said: dict[str, tuple[str, float]] = {}
         self._meters: dict[str, tuple[float, float]] = {}
-        self._level_log = LevelLog()
+        self._level_log = LevelLog(inputs=self._open_inputs)
         self._fed = -1  # the last block number pushed for
         self._sounds: list = []  # (source, _Sound) as last fed
         self._visuals: dict = {}  # SoundVisual -> the sound it hears (a source id or listen.MIX); swapped whole
@@ -681,6 +748,16 @@ class NativeMixer:
             return
         sound.capture_key, sound.capture_since = key, time.monotonic()
         source.engine_captures(True)
+
+    def _open_inputs(self) -> dict[str, str]:
+        """Sound id -> device name, for the microphones and capture cards the engine has open (not what plays on
+        the PC: silence there is ordinary)."""
+        out = {}
+        for source, sound in list(self._sounds):
+            key = sound.capture_key
+            if sound.capture is not None and key is not None and not key[1]:
+                out[str(getattr(source, "id", ""))] = str(key[0] or "")
+        return out
 
     @staticmethod
     def _say_capture(sid, sound: _Sound, said: str) -> None:
