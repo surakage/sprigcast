@@ -120,6 +120,25 @@ def engine_rate(pace: tuple | None, before: tuple | None) -> tuple[float, float,
 VIEW_LOOK = Filter(id="view-look", kind="view_look", name="View look", enabled=False)
 
 
+_bad_size_told: set[str] = set()
+
+
+def size_of(source) -> tuple[int, int]:
+    """A source's size, whatever its settings hold. A color source whose width had been set to "" raised here on
+    every frame, and once outside the per-frame guard, which ended the drawing thread for good (sim PC, test
+    build 16, 2026-11-28). A source that can't say its size counts as 1 x 1 and is logged once."""
+    try:
+        width, height = source.size
+        return int(width), int(height)
+    except Exception as exc:  # noqa: BLE001 (any source, any plugin)
+        sid = str(getattr(source, "id", "") or getattr(source, "source_id", "") or id(source))
+        if sid not in _bad_size_told:
+            _bad_size_told.add(sid)
+            log.warning("source %s (%s) can't say its size (%s: %s): drawn as 1 x 1 until its settings are mended",
+                        sid, getattr(source, "kind", "?"), type(exc).__name__, exc)
+        return 1, 1
+
+
 class Frame:
     """One finished canvas image, top row first: RGBA bytes, or NV12 (Y plane then CbCr) at an output's size."""
 
@@ -890,12 +909,15 @@ class Engine:
                     self.events.put(Stats(fps=shown_fps, render_ms=avg_ms, dropped_ticks=dropped,
                                            readbacks=(self.readbacks - readbacks_at) / (now - stats_at)))
                     readbacks_at = self.readbacks
-                    self.events.put(
-                        SourceInfo(
-                            sizes={sid: src.size for sid, src in self._sources.items()},
-                            statuses={sid: src.status for sid, src in self._sources.items()},
+                    try:
+                        self.events.put(
+                            SourceInfo(
+                                sizes={sid: size_of(src) for sid, src in self._sources.items()},
+                                statuses={sid: src.status for sid, src in self._sources.items()},
+                            )
                         )
-                    )
+                    except Exception:  # the once-a-second report must never end the drawing thread
+                        log.exception("source report failed")
                     ticks, stats_at = 0, now
         finally:
             with self._warm_lock:
@@ -1452,7 +1474,7 @@ class Engine:
         if not sharp and not shrinks:
             return
         try:
-            scales = shown_detail(self._collection, {sid: s.size for sid, s in {**sharp, **shrinks}.items()})
+            scales = shown_detail(self._collection, {sid: size_of(s) for sid, s in {**sharp, **shrinks}.items()})
         except Exception as exc:  # never stop the render loop for this: they keep the detail they have
             log.warning("couldn't work out how big sharp sources are shown: %s", exc)
             return
@@ -1465,7 +1487,7 @@ class Engine:
                 log.warning("source %s set_shrink failed: %s", source_id, exc)
         for source_id, source in sharp.items():
             try:
-                step = detail_step(scales.get(source_id, 1.0), source.size)
+                step = detail_step(scales.get(source_id, 1.0), size_of(source))
                 if step != source.detail:
                     source.set_detail(step)
             except Exception as exc:  # a plugin's source
@@ -1905,7 +1927,7 @@ class Engine:
     def _move_layout(self, running: Running, canvas, hidden: frozenset = frozenset()) -> tuple[list, list]:
         """A Move's two blooms on a canvas as pieces (render/move.py flatten): the one it leaves, the one it goes
         to. The native engine takes them once, when the Move starts, and works out every frame itself."""
-        sizes = {source_id: source.size for source_id, source in self._sources.items()}
+        sizes = {source_id: size_of(source) for source_id, source in self._sources.items()}
         return self._move_both(running.outgoing, self._collection.active_scene(canvas.id), sizes, hidden)
 
     def _move_frame(self, running: Running, canvas, progress: float, hidden: frozenset = frozenset()) -> list:
@@ -2712,7 +2734,7 @@ class Engine:
                     first_bytes += getattr(frame, "nbytes", 0)
             if frame is not None:
                 self._busy_at = now  # a picture made in Python: while they keep coming every tick works
-                layout = source.size if getattr(source, "sharp", False) or getattr(source, "shrinks", False) else None
+                layout = size_of(source) if getattr(source, "sharp", False) or getattr(source, "shrinks", False) else None
                 if native is not None and not self._python_drew and source_id not in awaited and freeze is None:
                     # Python's compositor drew nothing last tick: only the engine gets it. Python's copy waits
                     # here (the newest only) for a tick it draws again. The native simple run (2026-11-17) had
@@ -2727,7 +2749,7 @@ class Engine:
                     else:
                         # (One color is a few pixels stretched over its size: the engine has to be told the size,
                         # or it draws a 2 x 2 dot. Python's compositor knows it from the layout.)
-                        stretched = source.size if getattr(source, "stretched", False) else None
+                        stretched = size_of(source) if getattr(source, "stretched", False) else None
                         native.upload(source_id, frame, source.channel_order, layout or stretched)
             spent = time.perf_counter() - began
             self._charge(source_id, source, spent)
@@ -2741,7 +2763,7 @@ class Engine:
         self._mark("sources")
         with self._taps_lock:
             taps = {canvas_id: list(callbacks) for canvas_id, callbacks in self._taps.items() if callbacks}
-        sizes = {source_id: source.size for source_id, source in self._sources.items()}
+        sizes = {source_id: size_of(source) for source_id, source in self._sources.items()}
         self._served_views = set()
         view_fx = self.view_effects
         if view_fx is not self._view_fx_seen and hasattr(compositor, "effects"):  # the Filters window's looks
