@@ -793,7 +793,11 @@ class StreamLink:
                     delay = RETRY_FIRST
                 self.reconnects += 1
                 hint, delay, after = retry_plan(message, self.bytes_out, delay)
-                delay, after = note_refusal(self, message, self.bytes_out > sent, delay, after)
+                # "Was live in this try" counts like "sent something": six places that had only just come back
+                # were reset before sending anything new, so the refusals after it weren't seen as following a
+                # live stream, and the waits grew to 40 s and 60 s with the server free (sim PC, 2026-11-28).
+                was_live = self.bytes_out > sent or getattr(self, "_connected_at", 0.0) >= began
+                delay, after = note_refusal(self, message, was_live, delay, after)
                 self.status = (refused_status(self, message, delay) if self.refused >= REFUSED_SAY else
                                dropped_status(self, message, hint, delay, self.bytes_out > sent))
                 if self._stop.wait(delay):

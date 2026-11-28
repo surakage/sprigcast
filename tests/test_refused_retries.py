@@ -120,3 +120,24 @@ def test_going_live_again_right_after_a_stop_keeps_asking_briskly(monkeypatch):
     other = SimpleNamespace(name="Kick (horizontal)", refused=0, _url="rtmp://kick.example/app/other")
     now[0] = 1001.0
     assert max(_tries(other, 6)) >= RETRY_MAX  # a place that wasn't just stopped is counted as before
+
+
+def test_a_bare_not_permitted_at_connect_is_said_in_plain_words():
+    """Five of six places turned away at once got only "[Errno 1] Operation not permitted" (sim PC 2026-11-28)."""
+    import pytest
+
+    with pytest.raises(ConnectionError) as caught:
+        with stream.explain_connect("rtmp://live.example/app/key"):
+            raise PermissionError(1, "Operation not permitted")
+    said = str(caught.value)
+    assert "turned the stream away" in said and "still live there" in said and "key" not in said.split(":")[0]
+    assert "live.example" in said and "app/key" not in said
+
+
+def test_refusals_after_a_try_that_was_live_come_briskly():
+    """A place reset before it sent anything new was still live a moment ago: the tries after it stay at most
+    GRACE_RETRY apart (they grew to 40 s and 60 s with the server free, sim PC 2026-11-28)."""
+    st = SimpleNamespace(name="Custom RTMP", refused=0)
+    _tries(st, 1, message="Connection reset by peer", sent=True, delay=30.0)  # was live in this try
+    waits = _tries(st, 6, delay=30.0)
+    assert max(waits) <= GRACE_RETRY and st.refused == 0
