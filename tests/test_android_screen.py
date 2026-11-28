@@ -232,7 +232,8 @@ def test_a_downloaded_adb_is_found(tmp_path, monkeypatch):
     name = "adb.exe" if sys.platform == "win32" else "adb"
     (tmp_path / "adb" / "platform-tools").mkdir(parents=True)
     (tmp_path / "adb" / "platform-tools" / name).write_text("x")
-    assert screen.find_adb() == str(tmp_path / "adb" / "platform-tools" / name)
+    assert screen.find_adb() is None  # "not on this PC" is remembered a few seconds...
+    assert screen.find_adb(fresh=True) == str(tmp_path / "adb" / "platform-tools" / name)  # ...unless asked afresh
 
 
 def test_the_download_card_fetches_and_closes():
@@ -587,3 +588,124 @@ def test_a_damaged_picture_is_skipped_not_the_whole_recording():
     assert list(source._decoded(Codec(), ["a", "bad", "b"], damaged)) == ["a", "b"]
     with pytest.raises(av.InvalidDataError):
         list(source._decoded(Codec(), ["bad"] * screen.DAMAGED_MOST, [0]))
+
+
+def test_adbs_place_is_remembered_instead_of_walking_the_disk_each_time(tmp_path, monkeypatch):
+    """A tester's 4 GB PC (2026-11-27): shutil.which walked PATH on the window's thread each time the pop-up looked
+    for phones, 0.7-1.1 s a time, and the leaf walked it again every time it tried the phone."""
+    looks = []
+    monkeypatch.setattr(screen, "look_for_adb", lambda: looks.append(1) or "C:/tools/adb.exe")
+    monkeypatch.setattr(screen, "_adb_known", None)
+    clock = [50.0]
+    monkeypatch.setattr(screen.time, "monotonic", lambda: clock[0])
+    assert [screen.find_adb() for _ in range(5)] == ["C:/tools/adb.exe"] * 5 and len(looks) == 1
+    clock[0] += screen.ADB_KNOWN_S + 1
+    assert screen.find_adb() and len(looks) == 2  # looked at again now and then (it may have been removed)
+    monkeypatch.setattr(screen, "look_for_adb", lambda: looks.append(1) or None)
+    assert screen.find_adb(fresh=True) is None and screen.find_adb() is None and len(looks) == 3
+    clock[0] += screen.ADB_NONE_S + 1
+    assert screen.find_adb() is None and len(looks) == 4
+    monkeypatch.setattr(screen, "ADB_HOME", tmp_path)  # downloaded somewhere new: looked for at once
+    assert screen.find_adb() is None and len(looks) == 5
+
+
+def test_a_sliver_of_black_isnt_trimmed_and_a_trim_packs_in_one_copy():
+    """A tester's stream (2026-11-27): 2 pixels trimmed, then none, then 2 on another side, each a new picture
+    size, and cutting them off copied the whole picture four times, every picture."""
+    from sprigcast.sources.media import pack_i420
+
+    y = np.full((176, 320), 200, np.uint8)
+    y[:, :4] = 0
+    y[-2:, :] = 0
+    assert screen.black_edges(y) == (0, 0, 0, 0)
+    frame = _landscape_frame(14)
+    whole, order = pack_i420(frame, (320, 176))
+    cut, cut_order = pack_i420(frame, (320, 176), crop=(14, 0, 0, 0))
+    assert cut_order == order and cut.shape == (176 * 3 // 2, 306)
+    assert np.array_equal(cut[:176], whole[:176, 14:])  # the picture's own rows, the bar left out
+    assert np.array_equal(cut[176:, :153], whole[176:, 7:160]) and np.array_equal(cut[176:, 153:], whole[176:, 167:])
+    same = screen.crop_yuv(frame, 14, 0, 0, 0)
+    assert np.array_equal(cut, pack_i420(same, (306, 176))[0])  # as cutting it to a new frame first did
+    assert pack_i420(frame, (320, 176), crop=(160, 0, 150, 0)) is None  # nothing left: not packed
+    source = screen.AndroidScreenSource("android-1", dict(screen.DEFAULTS))
+    source._trim = ((320, 176), (14, 0, 0, 0))
+    source._trim_at = float("inf")
+    picture, got_order, size = source._picture(frame, lambda f, t: pytest.fail("packed straight from the planes"))
+    assert size == (306, 176) and got_order == order and np.array_equal(picture, cut)
+
+
+def test_the_phones_sound_is_handed_on_whole_or_not_at_all():
+    """With the engine's mixer the sound's lateness is queued in the engine: the leaf hands on each whole block as
+    it came and nothing while the phone is late (a made-up silent block was a gap you heard)."""
+    from sprigcast.audio import native_mixer as nm
+
+    source = screen.AndroidScreenSource("android-1", dict(screen.DEFAULTS))
+    assert nm.ahead_of(source) == int(screen.SHOW_AFTER_S * screen.SOUND_RATE) // nm.BLOCK * nm.BLOCK > nm.PY_CUSHION
+    assert source.read_ahead(nm.BLOCK) is None
+    source._heard(np.full((1000, 2), 0.25, np.float32))
+    assert source.read_ahead(nm.BLOCK) is None  # not a whole block yet
+    source._heard(np.full((1100, 2), 0.5, np.float32))
+    block = source.read_ahead(nm.BLOCK)
+    assert block.shape == (nm.BLOCK, 2) and np.allclose(block[:1000], 0.25) and np.allclose(block[1000:], 0.5)
+    assert source.read_ahead(nm.BLOCK).shape == (nm.BLOCK, 2) and source.read_ahead(nm.BLOCK) is None
+    assert source._sound_frames == 2100 - 2 * nm.BLOCK
+
+    class Engine:
+        def __init__(self):
+            self.cushions, self.pushed = [], []
+
+        def cushion(self, sid, frames):
+            self.cushions.append((sid, frames))
+
+        def push(self, sid, block):
+            self.pushed.append((sid, np.array(block)))
+
+    mixer = nm.NativeMixer.__new__(nm.NativeMixer)
+    mixer._engine, mixer._clocked = Engine(), True
+    sound = nm._Sound(source, 7)
+    mixer._cushion(source, sound)
+    assert mixer._engine.cushions == [(7, nm.ahead_of(source))]
+    mixer._push_ahead(source, sound, {})
+    assert mixer._engine.pushed == []  # under a block left: nothing pushed, the engine plays from its queue
+    source._heard(np.full((5 * nm.BLOCK, 2), 0.1, np.float32))  # held up, then it all comes at once
+    mixer._push_ahead(source, sound, {})
+    assert len(mixer._engine.pushed) == 5 and source._sound_frames == 2100 - 2 * nm.BLOCK
+
+
+def test_a_reader_isnt_left_waiting_on_a_queue_nobody_takes_from():
+    """Three "android-...-read" threads were still alive after a tester's stream (2026-11-27): each waited to put
+    into the full queue of a recording that was over."""
+    import io
+    import queue as q
+    import threading
+
+    class Ended:
+        def poll(self):
+            return 0
+
+    chunks = q.Queue(maxsize=1)
+    chunks.put(b"x")
+    t = threading.Thread(target=screen._read_into, args=(io.BytesIO(b"more"), chunks, Ended()))
+    t.start()
+    t.join(timeout=5)
+    assert not t.is_alive()
+
+
+def test_ffmpegs_lines_about_a_damaged_picture_from_the_phone_stay_out_of_the_log():
+    import logging
+    import threading
+
+    screen.quiet_damaged()
+    screen.quiet_damaged()
+    logger = logging.getLogger("libav.h264")
+    assert sum(isinstance(f, screen.DamagedQuiet) for f in logger.filters) == 1
+    record = logging.LogRecord("libav.h264", logging.ERROR, "", 0, "No start code is found.", None, None)
+    kept = {}
+
+    def phone():
+        kept["phone"] = logger.filter(record)
+
+    t = threading.Thread(target=phone, name="android-android-screen-1-4")
+    t.start()
+    t.join()
+    assert not kept["phone"] and logger.filter(record)  # a video file's or a camera's are still said

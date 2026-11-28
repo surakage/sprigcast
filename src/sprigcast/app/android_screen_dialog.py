@@ -188,10 +188,11 @@ class AndroidScreenDialog(CardDialog):
         self.status.setText("Looking for phones…")
         self.again.setEnabled(False)
         self._found = None
-        adb = android_screen.find_adb() if self._lister is android_screen.list_phones else "given"
+        ours = self._lister is android_screen.list_phones
 
-        def work() -> None:
-            self._found = self._lister() if adb else ["no adb"]
+        def work() -> None:  # finding adb too: it walks the disk (0.7-1.1 s on the window's thread, 2026-11-27)
+            adb = android_screen.find_adb() if ours else "given"
+            self._found = (self._lister(adb) if ours else self._lister()) if adb else ["no adb"]
 
         threading.Thread(target=work, name="android phones", daemon=True).start()
         self._poll.start()
