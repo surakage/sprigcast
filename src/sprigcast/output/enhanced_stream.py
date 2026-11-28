@@ -57,6 +57,10 @@ class _Track:
         self.reset()
 
     def reset(self) -> None:
+        # What earlier connections sent stays counted: after a reconnect the report read "110 frames (+-201251)"
+        # beside drops that had carried on, so 6.0% lost where it was 1.5%, and 1,382 ms to encode a frame (the
+        # user's stream, 2026-11-27). Twitch's own numbers (metrics) start again with each connection.
+        self.frames_before = getattr(self, "frames_before", 0) + getattr(self, "frames", 0)
         self.last_queued = -1
         self.last_pts = -1
         self.last_key_group = -1
@@ -627,7 +631,8 @@ class EnhancedStreamer(Streamer):
             packet.is_keyframe = p.keyframe
             packet.stream = track.stream
         if track.index == 0:
-            self.frames, self.dropped, self._rendered = track.frames, track.dropped, enc.frames + enc.dropped
+            self.frames, self.dropped = track.frames_before + track.frames, track.dropped
+            self._rendered = enc.frames + enc.dropped
             self.encode_seconds = enc.encode_seconds
         self._mux(container, [packet])
 
