@@ -164,7 +164,7 @@ def _big_memory() -> bool:
         return False
 
 
-def chromium_flags(current: str = "") -> str:
+def chromium_flags(current: str = "", card: tuple[int, int] | None = None) -> str:
     """Chromium's start flags with a cap on page processes: each site got its own (60-100 MB each), so five
     overlays from five sites cost five. Two keeps one crashing page from taking all of them down with it.
     Must be set before Qt WebEngine loads (main() does it first thing)."""
@@ -182,6 +182,13 @@ def chromium_flags(current: str = "") -> str:
         # 34 overlays; told 512 MB it held 344 MB less, every page drawn the same (A/B on the PC, 2026-11-24).
         # A PC with 8 GB or less is left to Chromium, which already keeps its budget small there.
         flags = f"{flags} --force-gpu-mem-available-mb={GPU_MEM_MB}"
+    if card is not None and "--use-adapter-luid" not in flags:
+        # Chromium draws pages on the engine's card. Left alone it takes Windows' default, which on a hybrid
+        # laptop is the small chip: every page was drawn on the HD 630 and copied across to the GTX 1070 each
+        # frame, and the stream fell to 6-30 fps on the bloom with pages (CRGPlays, 2026-11-27). (low, high) as
+        # Windows gives a LUID; Chromium takes it high part first.
+        low, high = card
+        flags = f"{flags} --use-adapter-luid={int(high)},{int(low) & 0xFFFFFFFF}"
     if "--renderer-process-limit" in current:
         return flags.strip()  # set by hand (to test something): kept
     return f"{flags} --renderer-process-limit={RENDERER_LIMIT}".strip()
