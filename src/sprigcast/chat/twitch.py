@@ -121,6 +121,7 @@ class TwitchChat(QObject):
     def __init__(self, parent: QObject | None = None):
         super().__init__(parent)
         self.channel = ""
+        self.room = ""  # the channel's Twitch id, once Twitch has said it
         self.socket = None
         self._tries = 0
         self._wanted = False
@@ -137,7 +138,7 @@ class TwitchChat(QObject):
         if self._wanted and channel == self.channel:
             return
         self.stop()
-        self.channel, self._wanted, self._tries = channel, True, 0
+        self.channel, self._wanted, self._tries, self.room = channel, True, 0, ""
         self._open()
 
     def stop(self) -> None:
@@ -206,6 +207,8 @@ class TwitchChat(QObject):
             self._dropped("Twitch asked to reconnect")
         elif command == "ROOMSTATE" or command == "JOIN":
             self._tries = 0
+            if tags.get("room-id"):
+                self.room = tags["room-id"]  # the channel's id: its 7TV, BetterTTV and FrankerFaceZ emotes
             self.status.emit("live")
         elif command == "CLEARMSG":
             if tags.get("target-msg-id"):

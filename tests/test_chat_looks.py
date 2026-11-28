@@ -78,7 +78,8 @@ def test_panel_menu_has_the_look_choices(app, monkeypatch):
     menu = panel.build_menu()
     look = next(a.menu() for a in menu.actions() if a.text() == "Look")
     labels = [a.text() for a in look.actions() if not a.isSeparator()]
-    assert labels == ["Classic", "Bubbles", "Compact", "Big text", "Times", "Platform logos", "Badges", "Name colors"]
+    assert labels == ["Classic", "Bubbles", "Compact", "Big text", "Times", "Platform logos", "Badges", "Name colors",
+                      "Animated emotes", "7TV, BTTV and FFZ emotes"]
     next(a for a in look.actions() if a.text() == "Bubbles").trigger()
     assert panel.view.look.style == "bubbles" and chat_panel.Look.saved().style == "bubbles"
     next(a for a in look.actions() if a.text() == "Times").trigger()

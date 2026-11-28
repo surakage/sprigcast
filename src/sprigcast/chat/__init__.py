@@ -28,6 +28,7 @@ class ChatMessage:
     badges: tuple[str, ...] = ()  # "broadcaster", "moderator", "vip", "subscriber", ...
     emotes: list[tuple[int, int, str]] = field(default_factory=list)  # (start, end inclusive, emote id)
     images: dict[str, str] = field(default_factory=dict)  # emote id -> picture URL (platforms without a template)
+    ratios: dict[str, float] = field(default_factory=dict)  # emote id -> width / height, for those that aren't square
     action: bool = False  # "/me waves"
     notice: bool = False  # subs, raids and other events the platform announces
     at: float = 0.0  # when it arrived here (time.time()), for the Chat panel's times
