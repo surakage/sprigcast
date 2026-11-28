@@ -145,10 +145,27 @@ def _gpus() -> list[str]:
     try:
         from sprigcast.output.enhanced import _gpus_windows
 
-        return [f"{g['model']}, driver {g['driver_version']}, {g['dedicated_video_memory'] / 2**30:.0f} GB"
-                for g in _gpus_windows()]
+        lines = [f"{g['model']}, driver {g['driver_version']}, {g['dedicated_video_memory'] / 2**30:.0f} GB"
+                 for g in _gpus_windows()]
     except Exception as exc:
         return [f"? ({exc})"]
+    return lines + _cards_and_screens()
+
+
+def _cards_and_screens() -> list[str]:
+    """Which card the screens hang off and which one SprigCast draws on: a hybrid laptop's two chips (CRGPlays,
+    2026-11-27: nothing said the screen was on the HD 630 while SprigCast drew on the GTX 1070)."""
+    try:
+        from sprigcast import sprigcore
+
+        cards = [c for c in sprigcore.adapters() if not c.get("software")]
+    except Exception:  # noqa: BLE001 (no engine here)
+        return []
+    lines = [f"{c['name']}: {c['screens']} screen{'' if c['screens'] == 1 else 's'} wired to it"
+             for c in cards if "screens" in c]
+    if getattr(sprigcore, "HYBRID", None):
+        lines.append("hybrid laptop: SprigCast draws on {}, the screen is on {}".format(*sprigcore.HYBRID))
+    return lines
 
 
 def _screens() -> list[str]:

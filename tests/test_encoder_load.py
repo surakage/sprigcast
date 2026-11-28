@@ -70,8 +70,14 @@ def test_too_soon_to_say_and_easing_or_a_full_queue_count():
     for _ in range(5):
         shared._video.put_nowait(object())  # half full and more
     shared._video.put_nowait(object())
-    w = _watch(clock, 8, each=lambda s: shared.run(s, 2.0), streamers=[("a", _Link(shared)), ("b", _Link(shared))])
+    w = _watch(clock, 8, each=lambda s: shared.run(s, 11.0), streamers=[("a", _Link(shared)), ("b", _Link(shared))])
     assert w.overloaded() == ["stream"]  # one shared encoder, judged once
+    # The same full queue with frames encoded in 2-12 ms of 16.7: the pictures came late (a busy graphics card),
+    # not a slow encoder (CRGPlays, 2026-11-27)
+    for ms in (2.0, 9.0):
+        clock = _Clock()
+        w = _watch(clock, 8, each=lambda s, ms=ms: shared.run(s, ms), streamers=[("a", _Link(shared))])
+        assert w.overloaded() == []
 
     clock, rec = _Clock(), _Enc()
     w = _watch(clock, 8, each=lambda s: (rec.run(s, 2.0), setattr(rec, "eased", rec.eased + 5)),
