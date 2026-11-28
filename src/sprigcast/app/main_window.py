@@ -194,6 +194,18 @@ from sprigcast.app.names import (ask_name, plain_problem, short_name, short_stat
                                  status_summary, window_name)
 
 log = logging.getLogger(__name__)
+HYBRID_PREVIEW = (1280, 720)  # a hybrid laptop's previews: at most this many pixels each, 15 a second
+
+
+def _hybrid() -> bool:
+    """A hybrid laptop (sprigcore.hybrid_split): SprigCast draws on the NVIDIA or AMD card, the screen is on the small
+    chip, and every preview picture is copied back off the card to be shown there (CRGPlays, GTX 1070 + HD 630, 2026-11-27: 100% with the
+    previews on, and it dropped with them off)."""
+    from sprigcast import sprigcore
+
+    return sprigcore.HYBRID is not None
+
+
 PREVIEW_EASE_PCT, PREVIEW_EASE_AFTER_S = 90.0, 10.0  # a card this busy this long: previews at 15 a second
 PREVIEW_CALM_PCT, PREVIEW_CALM_AFTER_S = 70.0, 30.0  # and back to 30 once it stays under this
 
@@ -3476,6 +3488,9 @@ class MainWindow(QMainWindow):
             if preview.isVisible():
                 r, dpr = preview.canvas_rect(), preview.devicePixelRatioF()
                 aw, ah = preview.aspect  # zoomed in, never ask for more pixels than the canvas has
+                if _hybrid():  # each preview picture comes back off the card: at most 1280x720 of it
+                    dpr *= min(1.0, HYBRID_PREVIEW[0] / max(1.0, r.width() * dpr),
+                               HYBRID_PREVIEW[1] / max(1.0, r.height() * dpr))
                 sizes[key] = (min(int(r.width() * dpr), int(aw)), min(int(r.height() * dpr), int(ah)))
         for projector in [p for p in self.projectors if p.view is None]:  # a screen's worth of pixels
             pw, ph = projector.pixel_size()
@@ -3491,7 +3506,7 @@ class MainWindow(QMainWindow):
             if projector.view is not None:
                 projector.take_pending()
         mode = self._preview_mode()
-        fps = 15 if mode == "light" or getattr(self, "_previews_eased", False) else 30
+        fps = 15 if mode == "light" or getattr(self, "_previews_eased", False) or _hybrid() else 30
         if getattr(self.engine, "preview_fps", fps) != fps:
             self.engine.preview_fps = fps
         off = mode == "off"

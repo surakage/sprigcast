@@ -321,6 +321,11 @@ SC_API int sc_adapter_info_get(int index, sc_adapter_info *out) {
         hr = adapter->GetDesc1(&desc);
         if (FAILED(hr)) return fail_hr(SC_ERR_DEVICE, "GetDesc1", hr);
         fill_info(desc, out);
+        // On a hybrid laptop the screen hangs off the small chip and the NVIDIA or AMD card has none: every
+        // picture drawn there crosses to the chip to be shown. Python eases the previews then.
+        ComPtr<IDXGIOutput> output;
+        for (UINT i = 0; i < 16 && SUCCEEDED(adapter->EnumOutputs(i, output.ReleaseAndGetAddressOf())); ++i)
+            ++out->screens;
         return SC_OK;
     });
 }

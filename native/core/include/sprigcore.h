@@ -64,7 +64,7 @@ typedef struct sc_adapter_info {
     uint64_t dedicated_video_memory;
     uint64_t shared_system_memory;
     int32_t software;       /* 1 for the software renderer */
-    int32_t reserved;
+    int32_t screens;        /* monitors wired to it: 0 for a laptop's render-only card (was reserved, always 0) */
 } sc_adapter_info;
 
 typedef struct sc_device sc_device;
