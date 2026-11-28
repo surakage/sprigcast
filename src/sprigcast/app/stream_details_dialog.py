@@ -44,6 +44,7 @@ log = logging.getLogger(__name__)
 LABEL_W = 92
 CHIP_W = 104
 WAITING_TEXT = "Nothing is scheduled on YouTube. Save sets up your next stream."
+PRIVACY_TEXT = "On YouTube this stream is {there} right now. Save makes it {mine}."
 LAST_TEXT = "Nothing is scheduled on YouTube, so this is your last stream's. Save sets up your next one."
 DUAL_SETUP_URL = "https://www.youtube.com/live_dashboard"  # opens YouTube Studio's Live Control Room  # every platform chip the same width
 SEARCH_WAIT_MS = 350  # look a category up once typing pauses
@@ -301,8 +302,13 @@ class Pane(QWidget):
             self.privacy.setCurrentIndex(max(0, self.privacy.findData(details.privacy)))
             found = self.video_category.findData(details.video_category or "20")  # a new stream: Gaming
             self.video_category.setCurrentIndex(max(0, found))
-            self.waiting_note.setText(LAST_TEXT if details.from_last else WAITING_TEXT)
-            self.waiting_note.setVisible(not details.broadcast_id)
+            if details.broadcast_id and details.youtube_privacy:  # YouTube has the waiting stream otherwise
+                there = PRIVACY_NAMES.get(details.youtube_privacy, details.youtube_privacy.title())
+                self.waiting_note.setText(PRIVACY_TEXT.format(there=there, mine=PRIVACY_NAMES[details.privacy]))
+                self.waiting_note.setVisible(True)
+            else:
+                self.waiting_note.setText(LAST_TEXT if details.from_last else WAITING_TEXT)
+                self.waiting_note.setVisible(not details.broadcast_id)
             self.show_dual_note(details.vertical_key_name)
         self.dialog.say("" if self.description is not None else details.note)
         self.dialog.refresh_save()

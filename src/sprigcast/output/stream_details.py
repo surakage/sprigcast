@@ -91,6 +91,34 @@ class Details:
     video_category: str = ""  # YouTube: the category id (YOUTUBE_CATEGORIES); "" = leave it as it is
     unread: bool = False  # Kick sent nothing back, so what's typed is all there is (tags are always sent)
     note: str = ""  # what didn't go through although the rest did (the thumbnail), or where these came from
+    youtube_privacy: str = ""  # YouTube: what the waiting stream has there, when it isn't the choice shown
+
+
+PRIVACY_SETTING = "youtube/privacy"  # QSettings: the YouTube privacy you last saved with ("public" until then)
+
+
+def chosen_privacy() -> str:
+    """The privacy a new YouTube stream gets: the one you last saved with, Public until you pick another. A new
+    stream used to copy your last stream's, so one Unlisted stream made every next one Unlisted too (user,
+    2026-11-27: "streamed unlisted a few times by mistake")."""
+    try:
+        from PySide6.QtCore import QSettings
+
+        value = str(QSettings().value(PRIVACY_SETTING, "public") or "public")
+    except Exception:  # noqa: BLE001
+        value = "public"
+    return value if value in PRIVACY else "public"
+
+
+def remember_privacy(value: str) -> None:
+    if value not in PRIVACY:
+        return
+    try:
+        from PySide6.QtCore import QSettings
+
+        QSettings().setValue(PRIVACY_SETTING, value)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # Who's signed in, without opening the credential store --------------------------------------------------
@@ -514,8 +542,9 @@ def _youtube_load(stream_key: str | None = None, vertical_key: str | None = None
             # read its settings ahead. Start from your last stream's details; Save sets up the next one with them.
             found = _youtube_last(token)
             from_last = True
+        chosen = chosen_privacy()
         if found is None:
-            return Details(privacy="public", vertical_key_name=vertical_name)
+            return Details(privacy=chosen, vertical_key_name=vertical_name)
         snippet, status = found.get("snippet") or {}, found.get("status") or {}
         try:  # the category sits on the stream's video
             video = (_yt(token, "GET", f"videos?part=snippet&id={found.get('id', '')}").get("items") or [{}])[0]
@@ -523,8 +552,12 @@ def _youtube_load(stream_key: str | None = None, vertical_key: str | None = None
             video = {}
         thumbs = snippet.get("thumbnails") or {}
         thumb = next((thumbs[k].get("url", "") for k in ("medium", "high", "default") if k in thumbs), "")
+        there = status.get("privacyStatus") or chosen
+        # Your choice, not your last stream's. A stream already waiting that YouTube has otherwise (it copies your
+        # last one) shows your choice too, with a note: Save sets it.
         return Details(title=snippet.get("title", ""), description=snippet.get("description", ""),
-                       privacy=status.get("privacyStatus", "public"),
+                       privacy=chosen,
+                       youtube_privacy="" if from_last or there == chosen else there,
                        broadcast_id="" if from_last else found.get("id", ""),
                        starts="" if from_last else snippet.get("scheduledStartTime", ""),
                        thumbnail="" if from_last else thumb, from_last=from_last,
@@ -561,6 +594,7 @@ def _youtube_save(details: Details, thumbnail: bytes | None, stream_key: str | N
     if not title:
         raise DetailsError("YouTube needs a title.")
     privacy = details.privacy if details.privacy in PRIVACY else "public"
+    remember_privacy(privacy)  # the next stream starts from it
     snippet = {"title": title, "description": details.description[:DESCRIPTION_MAX],
                "scheduledStartTime": details.starts or _soon()}
 
@@ -795,6 +829,7 @@ def save(service: str, details: Details, thumbnail_path: str = "", stream_key_re
         key = get_key(stream_key_ref) if stream_key_ref and not details.broadcast_id else None
         details.note = ""
         _youtube_save(details, picture, key)
+        details.youtube_privacy = ""  # YouTube has your choice now
     log.info("stream details: %s saved", service)
     return details
 

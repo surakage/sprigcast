@@ -187,9 +187,13 @@ def test_youtube_edits_the_stream_live_now_else_the_soonest_waiting(monkeypatch)
                                       _broadcast("soon", "2026-11-19T01:00:00Z", "Soon")]})
     web.on("GET", sd.YOUTUBE_API + "/videos?part=snippet&id=soon", {"items": [{"snippet": {"categoryId": "24"}}]})
     web.on("GET", sd.YOUTUBE_API + "/videos", sd.DetailsError("no video"))
+    from PySide6.QtCore import QSettings
+
+    QSettings().remove(sd.PRIVACY_SETTING)
     first = sd.load("youtube")
-    assert (first.broadcast_id, first.title, first.privacy, first.starts, first.video_category) == \
-        ("soon", "Soon", "unlisted", "2026-11-19T01:00:00Z", "24")
+    # Your choice shows (Public until you pick another), with what YouTube has noted (user, 2026-11-27)
+    assert (first.broadcast_id, first.title, first.privacy, first.youtube_privacy, first.starts,
+            first.video_category) == ("soon", "Soon", "public", "unlisted", "2026-11-19T01:00:00Z", "24")
     assert sd.load("youtube").broadcast_id == "live1"
 
 
@@ -573,3 +577,16 @@ def test_a_failed_save_is_a_quiet_note(monkeypatch):
     assert dialog.save_button.isEnabled()
     dialog.done(0)
     dialog.deleteLater()
+
+
+def test_youtube_privacy_is_your_last_choice_not_your_last_streams(monkeypatch):
+    """User, 2026-11-27: one Unlisted stream made every next one Unlisted ("streamed unlisted a few times")."""
+    from PySide6.QtCore import QSettings
+
+    QSettings().remove(sd.PRIVACY_SETTING)
+    assert sd.chosen_privacy() == "public"
+    sd.remember_privacy("private")
+    assert sd.chosen_privacy() == "private"
+    sd.remember_privacy("nonsense")
+    assert sd.chosen_privacy() == "private"
+    QSettings().remove(sd.PRIVACY_SETTING)
