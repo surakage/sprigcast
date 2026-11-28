@@ -181,6 +181,44 @@ def _request(url: str, accept: str) -> urllib.request.Request:
 Opener = Callable[..., object]
 
 
+def download_page(stamp: dict | None = None) -> str:
+    """Where people get SprigCast by hand: the test page for a test build, else the website."""
+    return f"{SITE_URL}/test" if is_test_copy(stamp) else SITE_URL
+
+
+def trouble(exc: BaseException, stamp: dict | None = None, fallback: str = "The update check got no answer.") -> str:
+    """What went wrong with an update check or download, in plain words, with where to get it by hand.
+    A tester (2026-11-27) only ever saw "Check your connection": a server limiting checks from their network or
+    a certificate Windows couldn't confirm read the same as being offline."""
+    import socket
+    import ssl
+
+    by_hand = f"You can also download it from {download_page(stamp).removeprefix('https://')}."
+    seen: set[int] = set()
+    cause: BaseException | None = exc
+    while cause is not None and id(cause) not in seen:  # URLError wraps the real reason
+        seen.add(id(cause))
+        if isinstance(cause, urllib.error.HTTPError):
+            if cause.code in (403, 429):
+                return ("The update server is limiting checks from your network right now. Try again in an hour. "
+                        + by_hand)
+            if cause.code >= 500:
+                return f"The update server is having trouble right now. Try again later. {by_hand}"
+            return f"The update server said no (error {cause.code}). {by_hand}"
+        if isinstance(cause, ssl.SSLCertVerificationError):
+            return ("Windows couldn't confirm the update server's certificate. Run Windows Update, check the PC's "
+                    f"date and time, and turn off any web filter that checks secure sites. {by_hand}")
+        if isinstance(cause, ssl.SSLError):
+            return f"The secure connection to the update server failed. {by_hand}"
+        if isinstance(cause, (socket.timeout, TimeoutError)):
+            return f"The update server took too long to answer. Check your connection and try again. {by_hand}"
+        if isinstance(cause, socket.gaierror):
+            return f"This PC couldn't find the update server. Check your connection and try again. {by_hand}"
+        nxt = getattr(cause, "reason", None)
+        cause = nxt if isinstance(nxt, BaseException) else (cause.__cause__ or cause.__context__)
+    return f"{fallback} Check your connection and try again. {by_hand}"
+
+
 def fetch_latest(opener: Opener = urllib.request.urlopen, timeout: float = 15) -> Release | None:
     """The newest published release, or None when there isn't one yet. Network errors raise OSError."""
     try:
