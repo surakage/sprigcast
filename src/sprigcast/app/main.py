@@ -366,6 +366,9 @@ def run() -> None:
     # 5 ms before handing it over, and the renderer asks for it several times a frame: while the window
     # rebuilt itself after a bloom switch, that added up to a dropped frame. 1 ms keeps it on time.
     sys.setswitchinterval(0.001)
+    from sprigcast.app import linux_desktop
+
+    linux_desktop.name_app()  # before the first window: a Linux desktop called the app "python3" otherwise
     app = QApplication(sys.argv)
     app.setApplicationName("SprigCast")
     app.setOrganizationName("Slothbloom")
@@ -379,6 +382,12 @@ def run() -> None:
     # A copy even if closing is cut short; made aside, so the window and the show don't wait for the file
     QTimer.singleShot(30_000, lambda: settings_keeper.keep_aside_soon(config_dir()))
     app.setWindowIcon(app_icon())
+    if sys.platform.startswith("linux"):
+        def _entry():  # the download's entry in the desktop's apps list, aside (a small file)
+            with resources.as_file(resources.files("sprigcast.data").joinpath("logo.svg")) as logo:
+                linux_desktop.keep_entry(str(logo))
+
+        QTimer.singleShot(5000, lambda: threading.Thread(target=_entry, name="launcher entry", daemon=True).start())
     app_at = time.perf_counter() - began
     from sprigcast.app import autostart
 

@@ -88,7 +88,8 @@ if [ "$system" = linux ]; then
 #!/bin/sh
 # Starts SprigCast with the Python next to this file, wherever the folder was unpacked.
 here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-exec "$here/python/bin/python3.12" -m sprigcast.app.main "$@"
+# (its own path: SprigCast keeps its entry in the desktop's apps list pointing here)
+SPRIGCAST_LAUNCHER="$here/SprigCast" exec "$here/python/bin/python3.12" -m sprigcast.app.main "$@"
 SH
   chmod +x "$app/SprigCast"
   cp "$app/python/LICENSE.txt" "$app/LICENSE.txt"
