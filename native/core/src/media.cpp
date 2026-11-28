@@ -29,12 +29,14 @@ extern "C" {
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -49,9 +51,10 @@ std::string rtbuf_size(const std::string &options) {
     long long bytes = 16000000;
     const size_t at = options.find("video_size=");
     if (at != std::string::npos) {
-        int w = 0, h = 0;
-        if (std::sscanf(options.c_str() + at, "video_size=%dx%d", &w, &h) == 2 && w > 0 && h > 0 && w <= 16384 &&
-            h <= 16384)
+        char *end = nullptr;  // (strtol, not sscanf: MSVC warns about that one, and warnings are errors here)
+        const long w = std::strtol(options.c_str() + at + 11, &end, 10);
+        const long h = end && *end == 'x' ? std::strtol(end + 1, nullptr, 10) : 0;
+        if (w > 0 && h > 0 && w <= 16384 && h <= 16384)
             bytes = std::max(bytes, std::min<long long>(64000000, static_cast<long long>(w) * h * 2 * 6));
     }
     return std::to_string(bytes);
