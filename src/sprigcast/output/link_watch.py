@@ -29,8 +29,14 @@ PROBE_S = 5.0  # how often a quiet place's server is asked
 PROBE_TIMEOUT = 4.0  # how long one ask may take
 FAILS = 3  # asks in a row with no answer before the link is called lost (15 to 27 s)
 QUIET_KBPS = 800  # a live place sending less than this can't notice a dead connection by itself in time
-FALSE_ALARMS = 2  # a server that answered again straight after this many alarms isn't asked any more this run
-SOON_S = 15.0  # "straight after"
+# After an alarm a server isn't asked again for a while, twice as long each time: a server that takes the stream
+# but never answers the asks can then only cost a few reconnects, not one every 15 s. Once it has answered for
+# STEADY_S the wait starts small again, so a second and third real outage are noticed as fast as the first.
+# (It used to stop asking for the whole run after 2 alarms that ended soon; two real outages did that, and a
+# third went unnoticed for its full 120 s, sim PC 2026-11-28.)
+REST_FIRST_S = 20.0
+REST_MOST_S = 600.0
+STEADY_S = 60.0
 PORTS = {"rtmp": 1935, "rtmps": 443}
 _UNREACHABLE = {errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN, errno.ETIMEDOUT}
 
@@ -67,8 +73,8 @@ class LinkWatch:
         self._thread: threading.Thread | None = None
         self._sent: dict[int, tuple[int, float]] = {}  # id(link) -> (bytes_out, when), for its rate
         self._fails: dict[tuple[str, int], int] = {}
-        self._alarmed: dict[tuple[str, int], float] = {}  # server -> when its links were last told
-        self._false: dict[tuple[str, int], int] = {}
+        self._rest: dict[tuple[str, int], tuple[float, float]] = {}  # server -> (not asked before, next wait)
+        self._steady: dict[tuple[str, int], float] = {}  # server -> answering without a miss since
         self.enabled = True  # the tests switch the shared one off: they make streams to servers that don't exist
 
     def add(self, link) -> None:
@@ -116,7 +122,7 @@ class LinkWatch:
                 self._sent.pop(id(link), None)
                 continue
             server = server_of(getattr(link, "_url", "") or "")
-            if server is not None and self.quiet(link, now) and self._false.get(server, 0) < FALSE_ALARMS:
+            if server is not None and self.quiet(link, now) and now >= self._rest.get(server, (0.0, 0.0))[0]:
                 quiet.setdefault(server, []).append(link)
         for key in [key for key in self._sent if key not in seen]:
             del self._sent[key]
@@ -126,18 +132,16 @@ class LinkWatch:
         for server, members in quiet.items():
             if self._ask(server):
                 self._fails.pop(server, None)
-                alarmed = self._alarmed.pop(server, None)
-                if alarmed is not None and now - alarmed < SOON_S:
-                    self._false[server] = self._false.get(server, 0) + 1
-                    if self._false[server] >= FALSE_ALARMS:
-                        log.warning("link watch: %s answered again straight after %d alarms: it isn't asked any "
-                                    "more this run", server[0], FALSE_ALARMS)
+                if server in self._rest and now - self._steady.setdefault(server, now) >= STEADY_S:
+                    del self._rest[server]  # answering steadily again: the next outage is a first one
                 continue
+            self._steady.pop(server, None)
             self._fails[server] = self._fails.get(server, 0) + 1
             if self._fails[server] < FAILS:
                 continue
             self._fails.pop(server, None)
-            self._alarmed[server] = now
+            wait = self._rest.get(server, (0.0, REST_FIRST_S))[1]
+            self._rest[server] = (now + wait, min(wait * 2, REST_MOST_S))
             reason = (f"{server[0]} stopped answering for about {FAILS * PROBE_S:.0f} s while little was being "
                       "sent; connecting again")
             for link in members:

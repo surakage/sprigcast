@@ -5,9 +5,10 @@ from types import SimpleNamespace
 
 from sprigcast.output.link_watch import (
     FAILS,
-    FALSE_ALARMS,
     PROBE_S,
     QUIET_KBPS,
+    REST_FIRST_S,
+    STEADY_S,
     LinkWatch,
     answers,
     server_of,
@@ -61,17 +62,24 @@ def test_one_missed_answer_is_not_an_outage_and_offline_places_are_left_alone():
     assert _rounds(watch2, [link], clock, 10) == []  # reconnecting already: its own tries handle it
 
 
-def test_a_server_that_answers_straight_after_alarms_is_left_alone_for_the_run():
-    clock, up = [0.0], [False]
+def test_a_third_outage_is_noticed_as_fast_as_the_first():
+    clock, up = [0.0], [True]
     watch = LinkWatch(ask=lambda server: up[0], clock=lambda: clock[0])
     link = _link()
-    alarms = 0
-    for _ in range(FALSE_ALARMS + 2):
+    _rounds(watch, [link], clock, 2)
+    for _ in range(3):  # two outages that ended soon used to switch the watch off for the run
         up[0] = False
-        alarms += len(_rounds(watch, [link], clock, FAILS + 1))
+        assert _rounds(watch, [link], clock, FAILS) == [link]
         up[0] = True
-        _rounds(watch, [link], clock, 1)
-    assert alarms == FALSE_ALARMS  # after that many it isn't asked any more
+        _rounds(watch, [link], clock, int((REST_FIRST_S + STEADY_S) / PROBE_S) + 4)
+
+
+def test_a_server_that_never_answers_the_asks_costs_fewer_and_fewer_reconnects():
+    clock = [0.0]
+    watch = LinkWatch(ask=lambda server: False, clock=lambda: clock[0])
+    link = _link()  # stays "connected": the server takes the stream, only the asks get no answer
+    told = _rounds(watch, [link], clock, int(1800 / PROBE_S))
+    assert 3 <= len(told) <= 8  # one every 15 s would be 120 in that half hour
 
 
 def test_servers_and_answers():
