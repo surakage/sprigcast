@@ -495,3 +495,24 @@ def test_the_setup_helper_leaves_sprigcasts_job_and_says_what_it_did(tmp_path, m
     assert (tmp_path / update.HELPER_LOG).exists()  # kept for the next start to read
     assert update.helper_report(tmp_path) == "waiting\nSetup started"
     assert update.helper_report(tmp_path) is None
+
+
+def test_a_failed_check_says_why_and_where_to_get_it_by_hand():
+    """A tester only ever saw "Check your connection": a limited network or a certificate Windows couldn't
+    confirm read the same as being offline (2026-11-27)."""
+    import socket
+    import ssl
+    import urllib.error
+
+    from sprigcast import update as u
+
+    test, release = {"tag": "test-0.5-10"}, {}
+    limited = urllib.error.HTTPError(u.RELEASES_URL, 403, "rate limit exceeded", {}, None)
+    assert "limiting checks" in u.trouble(limited, test) and "sprigcast.slothbloom.com/test" in u.trouble(limited, test)
+    cert = urllib.error.URLError(ssl.SSLCertVerificationError(1, "certificate verify failed"))
+    assert "certificate" in u.trouble(cert, test)
+    assert "couldn't find" in u.trouble(urllib.error.URLError(socket.gaierror(11001, "getaddrinfo failed")), release)
+    assert "took too long" in u.trouble(TimeoutError(), release)
+    offline = u.trouble(OSError("nope"), release, fallback="The download didn't finish.")
+    assert offline.startswith("The download didn't finish. Check your connection")
+    assert offline.endswith("sprigcast.slothbloom.com.") and "github" not in offline.lower()

@@ -326,7 +326,7 @@ class Updater(QObject):
             release = update.fetch_newest(channel())  # QSettings is safe to read here (its own instance)
         except Exception as exc:  # noqa: BLE001 (offline, GitHub down, odd reply: never crash over it)
             log.info("update check failed: %s", exc)
-            self.checked.emit(None, manual, str(exc) or exc.__class__.__name__)
+            self.checked.emit(None, manual, update.trouble(exc))
             return
         self.checked.emit(release, manual, "")
 
@@ -334,8 +334,7 @@ class Updater(QObject):
         self._checking = False
         if error:
             if manual:
-                self._message("Couldn't check for updates", "The update check got no answer. Check your connection and "
-                              "try again.")
+                self._message("Couldn't check for updates", error)
             return
         if not update.newer_than_this(release):
             log.info("update check: %s is the newest (channel %s)", this_build(), channel())
@@ -446,7 +445,7 @@ class Updater(QObject):
             return
         except Exception as exc:  # noqa: BLE001
             log.warning("update download failed: %s", exc)
-            problem = "The download didn't finish. Check your connection and try again."
+            problem = update.trouble(exc, fallback="The download didn't finish.")
         if problem:
             target.unlink(missing_ok=True)
         self.downloaded.emit(str(target), problem)
