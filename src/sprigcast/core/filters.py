@@ -19,6 +19,7 @@ Plugins can add audio filters:
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from collections.abc import Callable
@@ -29,6 +30,7 @@ import numpy as np
 from sprigcast.core.looks import FROM_FILE, LOOKS, SHAPE_IDS, SHAPES
 
 SAMPLE_RATE = 48000
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -121,12 +123,53 @@ def filter_kinds(media: str | None = None) -> list[FilterKind]:
     return [k for k in _KINDS.values() if media is None or k.media == media]
 
 
+def setting_problem(field: Field, value: Any, ranged: bool = True) -> str:
+    """Why `value` can't be this setting, in a few words, or "" when it can. With ranged=False only its type is
+    looked at (a saved number outside the slider's range still draws)."""
+    kind = field.kind
+    if kind == "bool":
+        if isinstance(value, bool) or (not ranged and value in (0, 1)):  # older gardens saved 0 and 1
+            return ""
+        return "must be true or false"
+    if kind in ("int", "float"):
+        if not ranged and isinstance(value, str):  # a number saved as text still reads as one
+            try:
+                return "" if math.isfinite(float(value)) else "must be a number"
+            except ValueError:
+                return "must be a number"
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            return "must be a number"
+        if ranged and not field.minimum <= value <= field.maximum:
+            return f"must be {field.minimum:g} to {field.maximum:g}"
+        return ""
+    if not isinstance(value, str):
+        return "must be text"
+    if kind == "choice" and ranged and value not in [choice for choice, _label in field.choices]:
+        return "must be one of " + ", ".join(choice for choice, _label in field.choices)
+    return ""
+
+
+_told_bad: set[tuple[str, str]] = set()  # (filter kind, setting) already logged: once, not on every frame
+
+
 def settings_for(kind: str, settings: dict[str, Any]) -> dict[str, Any]:
-    """The filter's defaults overlaid with its saved settings (unknown keys dropped)."""
+    """The filter's defaults overlaid with its saved settings (unknown keys dropped). A saved value of the wrong
+    type (a list where a number goes) is left for the default: one, sent through the Control API and saved,
+    ended the drawing thread at every start until the garden file was edited by hand (sim PC, 2026-11-28)."""
     info = _KINDS.get(kind)
     if info is None:
         return dict(settings)
-    return {key: settings.get(key, default) for key, default in info.defaults.items()}
+    out = {}
+    for field in info.fields:
+        value = settings.get(field.key, field.default)
+        if value is not field.default and setting_problem(field, value, ranged=False):
+            if (kind, field.key) not in _told_bad:
+                _told_bad.add((kind, field.key))
+                log.warning("filter %s: its %s setting is a %s, which it can't use: the usual value is used",
+                            kind, field.key, type(value).__name__)
+            value = field.default
+        out[field.key] = value
+    return out
 
 
 # Names ----------------------------------------------------------------------------------------
@@ -471,7 +514,19 @@ def switch(flt: Filter, on: bool) -> None:
 
 
 def video_effects(filters) -> VideoEffects:
-    """Fold a source's enabled video filters into shader uniforms."""
+    """Fold a source's enabled video filters into shader uniforms. Filters that can't be folded (a setting
+    nothing here expected) leave the source drawn plain, with one log line: the drawing thread goes on."""
+    try:
+        return _video_effects(filters)
+    except Exception as exc:  # noqa: BLE001 (one source's filters must never end the drawing)
+        kinds = ", ".join(sorted({str(getattr(flt, "kind", "?")) for flt in filters}))
+        if ("fold", kinds) not in _told_bad:
+            _told_bad.add(("fold", kinds))
+            log.error("filters (%s) couldn't be used (%s: %s): drawn without them", kinds, type(exc).__name__, exc)
+        return VideoEffects()
+
+
+def _video_effects(filters) -> VideoEffects:
     fx = VideoEffects()
     halos: dict[str, Halo] = {}
     for flt in filters:

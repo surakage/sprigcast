@@ -312,6 +312,18 @@ def _get(data: dict[str, Any], key: str, kind: type | tuple[type, ...], optional
     return value
 
 
+def _check_filter_settings(kind, settings: dict[str, Any]) -> None:
+    """A filter's settings as an app sent them: each known one must be the right type and in its range (a list
+    for a number was saved and ended the drawing thread at every start, sim PC 2026-11-28)."""
+    from sprigcast.core.filters import setting_problem
+
+    fields = {f.key: f for f in kind.fields}
+    for key, value in settings.items():
+        problem = setting_problem(fields[key], value) if key in fields else ""
+        if problem:
+            raise _bad(f"{kind.kind}'s {key} {problem}.")
+
+
 def _checked_settings(col, kind: str, settings: dict[str, Any]) -> dict[str, Any]:
     """Settings an app sends, checked by the source's kind when it can (a plugin's check_settings(col, settings)
     returns them tidied, e.g. a name matched to an id, or raises ValueError saying what's wrong)."""
@@ -1267,6 +1279,7 @@ class NativeApi:
                 unknown = set(settings) - {f.key for f in kind.fields}
                 if unknown:
                     raise _bad(f"{found.kind} has no setting {', '.join(sorted(unknown))}.")
+                _check_filter_settings(kind, settings)
             found.settings = {**found.settings, **settings}
         if on is not None:
             switch(found, on)
@@ -1294,7 +1307,9 @@ class NativeApi:
         if kind is None:
             raise _missing("No such filter kind (filters.kinds lists them).", "kind", data.get("kind"))
         name = _get(data, "name", str, optional=True, default=kind.label)
-        settings = {**kind.defaults, **_get(data, "settings", dict, optional=True, default={})}
+        sent = _get(data, "settings", dict, optional=True, default={})
+        _check_filter_settings(kind, sent)
+        settings = {**kind.defaults, **sent}
         enabled = _get(data, "on", bool, optional=True, default=True)
 
         def one(source):
