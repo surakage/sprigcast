@@ -863,7 +863,11 @@ void Core::open(Held &held, const std::string &file) {
                 news = refusal_said != refused_all;
                 refusal_said = refused_all;
             }
-            if (news) sc::log_line(SC_LOG_WARNING, "media: the camera opened in no mode: " + refused_all);
+            // (All of them were tried; the list below is cut short. It read as if only one size had been.)
+            if (news)
+                sc::log_line(SC_LOG_WARNING, "media: the camera opened in none of the " + std::to_string(choices.size()) +
+                                                 " modes tried (every size it lists, then its own); the first said: " +
+                                                 refused_all);
         }
         throw Error(av_text(r));
     }

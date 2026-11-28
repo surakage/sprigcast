@@ -24,6 +24,17 @@ from sprigcast.sources.camera import (
 )
 
 RATES = (60, 30, 15)
+
+
+def card_size(canvas_size: tuple[int, int] | None) -> tuple[int, int]:
+    """The size a new capture card starts at: full HD, or the smallest size that still covers the canvas when
+    that is smaller. Every card started at 1920x1080 at 60, so a 4 GB PC with an 854x480 canvas at 30 took in
+    4.5 times the picture it could show and shrank each one (Mikedog151, 2026-11-27)."""
+    if canvas_size:
+        covering = [s for s in SIZES if s[0] >= canvas_size[0] and s[1] >= canvas_size[1] and s <= (1920, 1080)]
+        if covering:
+            return min(covering, key=lambda s: s[0] * s[1])
+    return (1920, 1080)
 FORMAT_NAMES = {"nv12": "NV12", "yuyv422": "YUY2", "mjpeg": "MJPEG", "uyvy422": "UYVY", "bgr24": "RGB24"}
 
 
@@ -38,7 +49,8 @@ def _field(label: str, box: QWidget) -> QVBoxLayout:
 
 class CameraDialog(CardDialog):
     def __init__(self, cameras: list[CameraDevice], current: dict[str, Any] | None = None,
-                 parent: QWidget | None = None, *, max_fps: int = 60, modes: list | None = None):
+                 parent: QWidget | None = None, *, max_fps: int = 60, modes: list | None = None,
+                 canvas_size: tuple[int, int] | None = None):
         """max_fps: the canvas frame rate (a camera faster than that only costs more); modes: what the
         chosen camera said it offers, when it's already open (see CameraSource.modes_seen)."""
         super().__init__("Camera", parent, width=480)
@@ -73,7 +85,7 @@ class CameraDialog(CardDialog):
             self.rate.addItem(f"{r} fps", r)
         card = "width" not in current and is_capture_card(cameras[index].name) if cameras else False
         if card and (1920, 1080) in SIZES:  # a console or second PC: full HD, filling the canvas
-            self.size.setCurrentIndex(SIZES.index((1920, 1080)))
+            self.size.setCurrentIndex(SIZES.index(card_size(canvas_size)))
         fps = min(int(current.get("fps", 60 if card else 30)), max(rates))
         self.rate.setCurrentIndex(next((i for i, r in enumerate(rates) if r == fps), rates.index(min(30, max(rates)))
                                        if min(30, max(rates)) in rates else 0))

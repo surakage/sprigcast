@@ -176,3 +176,12 @@ def test_a_hybrid_laptop_is_told_from_a_pc_with_one_card():
     assert sprigcore.hybrid_split([dict(nvidia, screens=2), basic]) is None  # a desktop
     assert sprigcore.hybrid_split([dict(nvidia, screens=1), intel]) is None  # a monitor on the card's own port
     assert sprigcore.hybrid_split([dict(nvidia, screens=0), dict(intel, screens=0)]) is None  # an older engine DLL
+
+
+def test_parts_of_windows_nobody_can_close_are_never_blamed():
+    from sprigcast.app import busy_pc
+
+    text = busy_pc.busy_message(["audiodg", "dwm"], 40, 95)
+    assert "audiodg" not in text and "dwm" not in text and "Preview off" in text
+    text = busy_pc.busy_message(["Memory Compression", "svchost", "Discord"], 90, 95)
+    assert "Discord is using it too" in text and "svchost" not in text
